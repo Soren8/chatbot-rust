@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, maximum-scale=1.0, user-scalable=no">
     <title>AI Chat</title>
     <style>
         body {
@@ -19,8 +19,8 @@
             height: 100px;
             margin-bottom: 10px;
             box-sizing: border-box;
-            background-color: #1e2229;  /* Dark gray with a hint of blue */
-            color: #d0d0d0;  /* Light grey text */
+            background-color: #1e2229;
+            color: #d0d0d0;
             border: 1px solid #2c3e50;
             resize: none;
             padding: 10px;
@@ -32,8 +32,51 @@
             width: 100%;
             padding: 10px;
             margin-bottom: 10px;
-            background-color: #2c3e50;  /* Dark blue-gray */
-            color: #d0d0d0;  /* Light grey text */
+            background-color: #2c3e50;
+            color: #d0d0d0;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            border-radius: 5px;
+        }
+        #toggle-memory {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: #2c3e50;
+            color: #d0d0d0;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            border-radius: 5px;
+            text-align: left;
+        }
+        #memory-container {
+            display: none;
+            background-color: #1e2229;
+            border: 1px solid #2c3e50;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            padding: 10px;
+        }
+        #user-memory {
+            width: 100%;
+            height: 100px;
+            box-sizing: border-box;
+            background-color: #1e2229;
+            color: #d0d0d0;
+            border: 1px solid #2c3e50;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        #save-memory {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+            background-color: #2c3e50;
+            color: #d0d0d0;
             border: none;
             cursor: pointer;
             font-size: 16px;
@@ -42,13 +85,13 @@
         #chat-box {
             height: calc(80vh);
             border: 1px solid #2c3e50;
-            overflow-y: auto; /* Enables vertical scrolling */
+            overflow-y: auto;
             padding: 10px;
             margin-bottom: 10px;
             box-sizing: border-box;
             display: flex;
-            flex-direction: column; /* Natural top-to-bottom order */
-            background-color: #1e2229;  /* Dark gray with a hint of blue */
+            flex-direction: column;
+            background-color: #1e2229;
             border-radius: 5px;
         }
         #chat-content {
@@ -59,8 +102,8 @@
             width: 100%;
             padding: 10px;
             box-sizing: border-box;
-            background-color: #1e2229;  /* Dark gray with a hint of blue */
-            color: #d0d0d0;  /* Light grey text */
+            background-color: #1e2229;
+            color: #d0d0d0;
             border: 1px solid #2c3e50;
             border-radius: 5px;
             font-size: 16px;
@@ -71,24 +114,24 @@
             border-radius: 5px;
             max-width: 80%;
             word-wrap: break-word;
-            white-space: pre-wrap; /* Preserves newlines and whitespace */
+            white-space: pre-wrap;
         }
         .user-message {
-            background-color: #3a3a3a; /* Slightly lighter gray for user messages */
-            align-self: flex-end; /* Right-justified */
+            background-color: #3a3a3a;
+            align-self: flex-end;
             text-align: right;
         }
         .ai-message {
-            background-color: #2c3e50; /* Dark blue-gray for AI messages */
-            align-self: flex-start; /* Left-justified */
+            background-color: #2c3e50;
+            align-self: flex-start;
             text-align: left;
         }
-        .error-message { 
-            color: #e06a6a;  /* Light red for error messages */
+        .error-message {
+            color: #e06a6a;
             font-weight: bold;
         }
         .system-message {
-            background-color: #555555; /* Medium gray for system messages */
+            background-color: #555555;
             align-self: center;
             font-style: italic;
             text-align: center;
@@ -100,11 +143,11 @@
             #chat-box {
                 height: 80vh;
             }
-            #system-prompt, #user-input, #reset-chat {
+            #system-prompt, #user-input, #reset-chat, #toggle-memory, #save-memory {
                 font-size: 14px;
             }
             .message {
-                max-width: 100%; /* Allow messages to take full width on small screens */
+                max-width: 100%;
             }
         }
     </style>
@@ -112,6 +155,15 @@
 <body>
     <textarea id="system-prompt" placeholder="Enter system prompt here...">You are a helpful AI assistant named Llama. You are knowledgeable, friendly, and always strive to provide accurate information.</textarea>
     <button id="reset-chat">Reset Chat</button>
+
+    {% if logged_in %}
+    <button id="toggle-memory">Show/Hide Memory</button>
+    <div id="memory-container">
+        <textarea id="user-memory" placeholder="User memory here..."></textarea>
+        <button id="save-memory">Save Memory</button>
+    </div>
+    {% endif %}
+
     <div id="chat-box">
         <div id="chat-content"></div>
     </div>
@@ -119,21 +171,48 @@
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        // Generate a new session ID every time the page loads
-        var sessionId = Math.random().toString(36).substring(2, 15) + 
-                        Math.random().toString(36).substring(2, 15);
-
         function appendMessage(message, className) {
             const messageElement = document.createElement('div');
             messageElement.className = 'message ' + className;
             messageElement.innerHTML = message;
             const chatContent = document.getElementById('chat-content');
-            chatContent.appendChild(messageElement); // Appends at the end
-
-            // Automatically scroll to the bottom to show the latest message
+            chatContent.appendChild(messageElement); 
             const chatBox = document.getElementById('chat-box');
             chatBox.scrollTop = chatBox.scrollHeight;
         }
+
+        function escapeHTML(str) {
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
+        }
+
+        {% if logged_in %}
+        document.getElementById('toggle-memory').addEventListener('click', function() {
+            const memContainer = document.getElementById('memory-container');
+            memContainer.style.display = (memContainer.style.display === 'none' || memContainer.style.display === '') ? 'block' : 'none';
+        });
+
+        document.getElementById('save-memory').addEventListener('click', function() {
+            const memText = document.getElementById('user-memory').value;
+            fetch('/update_memory', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ memory: memText })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message');
+                } else {
+                    appendMessage('<strong>Error:</strong> Failed to save memory.', 'error-message');
+                }
+            })
+            .catch(error => {
+                appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
+            });
+        });
+        {% endif %}
 
         function sendMessage() {
             var userMessage = document.getElementById('user-input').value;
@@ -146,20 +225,15 @@
             var requestData = {
                 message: userMessage,
                 system_prompt: systemPrompt,
-                session_id: sessionId
+                session_id: "dummy"
             };
-
-            // Create a new AbortController for each request to handle cancellation if needed
-            const controller = new AbortController();
-            const signal = controller.signal;
 
             fetch('/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(requestData),
-                signal: signal
+                body: JSON.stringify(requestData)
             })
             .then(response => {
                 if (!response.ok) {
@@ -171,28 +245,22 @@
                 const decoder = new TextDecoder('utf-8');
                 let aiMessage = '';
 
-                // Append initial AI message placeholder
                 appendMessage('<strong>AI:</strong> ', 'ai-message');
                 const aiMessageElements = document.getElementsByClassName('ai-message');
                 const aiMessageElement = aiMessageElements[aiMessageElements.length - 1];
 
                 function readStream() {
                     reader.read().then(({ done, value }) => {
-                        if (done) {
-                            return;
-                        }
+                        if (done) return;
                         const chunk = decoder.decode(value, { stream: true });
                         aiMessage += chunk;
                         aiMessageElement.innerHTML = '<strong>AI:</strong> ' + escapeHTML(aiMessage);
-
                         readStream();
                     }).catch(error => {
                         console.error('Error reading stream:', error);
-                        aiMessageElement.innerHTML += 
-                            '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
+                        aiMessageElement.innerHTML += '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
                     });
                 }
-
                 readStream();
             })
             .catch(error => {
@@ -210,9 +278,8 @@
 
         document.getElementById('reset-chat').addEventListener('click', function() {
             var requestData = {
-                session_id: sessionId
+                session_id: "dummy"
             };
-
             fetch('/reset_chat', {
                 method: 'POST',
                 headers: {
@@ -234,12 +301,6 @@
                 appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
             });
         });
-
-        function escapeHTML(str) {
-            var div = document.createElement('div');
-            div.appendChild(document.createTextNode(str));
-            return div.innerHTML;
-        }
     });
     </script>
 </body>
