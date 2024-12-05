@@ -87,7 +87,15 @@ def login():
 def home():
     logger.info("Serving home page")
     logged_in = ("username" in session)
-    return render_template("chat.html", logged_in=logged_in)
+    user_memory = ""
+    if logged_in:
+        user_memory = sessions[session["username"]]["memory"]
+    return render_template("chat.html", logged_in=logged_in, user_memory=user_memory)
+
+@app.route("/logout")
+def logout():
+    session.pop("username", None)
+    return redirect(url_for("home"))
 
 @app.route("/update_memory", methods=["POST"])
 def update_memory():

@@ -153,13 +153,19 @@
     </style>
 </head>
 <body>
+    {% if logged_in %}
+    <a href="/logout" style="color:#d0d0d0; float:right; margin-bottom:10px;">Sign Out</a>
+    {% else %}
+    <a href="/login" style="color:#d0d0d0; float:right; margin-bottom:10px;">Login</a>
+    {% endif %}
+
     <textarea id="system-prompt" placeholder="Enter system prompt here...">You are a helpful AI assistant named Llama. You are knowledgeable, friendly, and always strive to provide accurate information.</textarea>
     <button id="reset-chat">Reset Chat</button>
 
     {% if logged_in %}
     <button id="toggle-memory">Show/Hide Memory</button>
     <div id="memory-container">
-        <textarea id="user-memory" placeholder="User memory here..."></textarea>
+        <textarea id="user-memory" placeholder="User memory here...">{{ user_memory }}</textarea>
         <button id="save-memory">Save Memory</button>
     </div>
     {% endif %}
