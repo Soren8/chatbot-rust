@@ -1,12 +1,13 @@
 import os
 import sys
 import logging
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
 import time
 import threading
 from collections import defaultdict
-import requests
 import json
+from user_manager import validate_user, create_user, load_user_memory, save_user_memory, load_user_system_prompt, save_user_system_prompt
+from chat_logic import generate_text_stream
 
 # Set up logging
 logging.basicConfig(
@@ -18,20 +19,36 @@ logger = logging.getLogger(__name__)
 # Ollama model name
 MODEL_NAME = "dolphin3.1-8b"
 
-# Create Flask app
 app = Flask(__name__)
+app.secret_key = "replace_with_a_secure_key"  # necessary for sessions
 
-# Session variables
 sessions = defaultdict(
     lambda: {
         "history": [],
         "system_prompt": "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries.",
         "last_used": time.time(),
+        "memory": "",
+        "system_prompt_saved": ""
     }
 )
 SESSION_TIMEOUT = 3600  # 1 hour in seconds
 
 response_lock = threading.Lock()
+
+# Basic rate limiting (very naive, for demonstration)
+requests_per_ip = {}
+MAX_REQUESTS_PER_MINUTE = 60
+
+@app.before_request
+def rate_limit():
+    ip = request.remote_addr
+    current_time = time.time()
+    requests_per_ip.setdefault(ip, [])
+    # Clean up old requests
+    requests_per_ip[ip] = [t for t in requests_per_ip[ip] if t > current_time - 60]
+    if len(requests_per_ip[ip]) >= MAX_REQUESTS_PER_MINUTE:
+        return "Too many requests, please slow down.", 429
+    requests_per_ip[ip].append(current_time)
 
 def clean_old_sessions():
     current_time = time.time()
@@ -39,57 +56,87 @@ def clean_old_sessions():
         if current_time - sessions[session_id]["last_used"] > SESSION_TIMEOUT:
             del sessions[session_id]
 
-def generate_text_stream(prompt, system_prompt, model_name, session_history):
-    url = "http://localhost:11434/api/generate"
-
-    # Prepare the conversation history with system prompt included
-    # Ensure the system prompt is only added once at the beginning
-    if not session_history:
-        history_text = f"### System: {system_prompt}\n\n"
-    else:
-        history_text = ""
-
-    for user_input, assistant_response in session_history:
-        history_text += f"### User:\n{user_input}\n\n### Assistant:\n{assistant_response}\n\n"
-    # Append the latest user prompt
-    history_text += f"### User:\n{prompt}\n\n### Assistant:\n"
-
-    data = {
-        "model": model_name,
-        "prompt": history_text,
-        "system": system_prompt,
-        "stream": True,
-    }
-
-    # Start the streaming request to Ollama
-    with requests.post(url, json=data, stream=True) as response:
-        if response.status_code == 200:
-            for line in response.iter_lines():
-                if line:
-                    json_response = json.loads(line)
-                    if 'response' in json_response:
-                        yield json_response['response']
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        if not username or not password:
+            return "Username and password required.", 400
+        if create_user(username, password):
+            return redirect(url_for("login"))
         else:
-            yield f"\n[Error] Error: {response.status_code}, {response.text}"
+            return "User already exists.", 400
+    return render_template("signup.html")
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        if validate_user(username, password):
+            session["username"] = username
+            # Load user memory and system prompt
+            user_memory = load_user_memory(username)
+            user_system_prompt = load_user_system_prompt(username)
+            sessions[username]["memory"] = user_memory
+            sessions[username]["system_prompt"] = user_system_prompt
+            sessions[username]["system_prompt_saved"] = user_system_prompt
+            return redirect(url_for("home"))
+        else:
+            return "Invalid credentials", 401
+    return render_template("login.html")
 
 @app.route("/")
 def home():
     logger.info("Serving home page")
-    return render_template("chat.html")
+    logged_in = ("username" in session)
+    user_memory = ""
+    user_system_prompt = ""
+    if logged_in:
+        username = session["username"]
+        user_memory = sessions[username]["memory"]
+        user_system_prompt = sessions[username]["system_prompt"]
+    return render_template("chat.html", logged_in=logged_in, user_memory=user_memory, user_system_prompt=user_system_prompt)
+
+@app.route("/logout")
+def logout():
+    session.pop("username", None)
+    return redirect(url_for("home"))
+
+@app.route("/update_memory", methods=["POST"])
+def update_memory():
+    if "username" not in session:
+        return jsonify({"error": "Not authenticated"}), 403
+
+    user_memory = request.json.get("memory", "")
+    username = session["username"]
+    sessions[username]["memory"] = user_memory
+    save_user_memory(username, user_memory)
+    return jsonify({"status": "success"})
+
+@app.route("/update_system_prompt", methods=["POST"])
+def update_system_prompt():
+    if "username" not in session:
+        return jsonify({"error": "Not authenticated"}), 403
+
+    system_prompt = request.json.get("system_prompt", "")
+    username = session["username"]
+    sessions[username]["system_prompt"] = system_prompt
+    save_user_system_prompt(username, system_prompt)
+    return jsonify({"status": "success"})
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    session_id = request.json.get("session_id")
-    if not session_id:
-        return jsonify({"error": "No session ID provided"}), 400
-
     clean_old_sessions()
 
-    session = sessions[session_id]
-    session["last_used"] = time.time()
+    user_message = request.json.get("message", "")
+    new_system_prompt = request.json.get("system_prompt", None)
 
-    user_message = request.json["message"]
-    new_system_prompt = request.json.get("system_prompt")
+    # If logged in, use their session; if not, use a temporary session_id
+    session_id = session.get("username", "guest_" + request.remote_addr)
+    user_session = sessions[session_id]
+    user_session["last_used"] = time.time()
 
     logger.info(
         f"Received chat request. Session: {session_id[:8]}... Message: {user_message[:50]}..."
@@ -97,7 +144,9 @@ def chat():
 
     if new_system_prompt is not None:
         logger.info(f"Updating system prompt to: {new_system_prompt[:50]}...")
-        session["system_prompt"] = new_system_prompt
+        user_session["system_prompt"] = new_system_prompt
+        if "username" in session:
+            save_user_system_prompt(session["username"], new_system_prompt)
 
     if response_lock.locked():
         return jsonify(
@@ -106,11 +155,18 @@ def chat():
             }
         ), 429
 
+    # If the user is logged in, use their saved system prompt; otherwise, use the default
+    memory_text = user_session["memory"] if "username" in session else ""
+    system_prompt = user_session["system_prompt"] if "username" in session else "You are a helpful AI assistant."
+
     def generate():
         with response_lock:
-            # Start streaming the response
             stream = generate_text_stream(
-                user_message, session["system_prompt"], MODEL_NAME, session["history"]
+                user_message,
+                system_prompt,
+                MODEL_NAME,
+                user_session["history"],
+                memory_text
             )
 
             response_text = ""
@@ -123,7 +179,7 @@ def chat():
                 yield "\n[Error] An error occurred during response generation."
 
             # Update conversation history after the full response is generated
-            session["history"].append((user_message, response_text))
+            user_session["history"].append((user_message, response_text))
             logger.info(
                 f"Chat response generated successfully. Length: {len(response_text)} characters"
             )
@@ -132,15 +188,12 @@ def chat():
 
 @app.route("/reset_chat", methods=["POST"])
 def reset_chat():
-    session_id = request.json.get("session_id")
-    if not session_id:
-        return jsonify({"error": "No session ID provided"}), 400
-
+    session_id = session.get("username", "guest_" + request.remote_addr)
     if session_id in sessions:
         sessions[session_id]["history"] = []
-        sessions[session_id][
-            "system_prompt"
-        ] = "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+        sessions[session_id]["system_prompt"] = "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+        if "username" in session:
+            save_user_system_prompt(session["username"], sessions[session_id]["system_prompt"])
         logger.info(f"Chat history has been reset for session {session_id[:8]}...")
 
     return jsonify({"status": "success", "message": "Chat history has been reset."})
