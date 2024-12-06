@@ -3,73 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <title>Sign Up</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #1a1a1a; /* Dark grey background */
-            color: #d0d0d0; /* Light grey text */
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh; /* Full viewport height */
-            margin: 0;
-        }
-        .container {
-            background-color: #1e2229; /* Dark gray with a hint of blue */
-            padding: 30px;
-            border: 1px solid #2c3e50;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.7);
-            width: 300px;
-        }
-        h1 {
-            text-align: center;
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 10px;
-        }
-        input[type="text"],
-        input[type="password"] {
-            width: 100%;
-            padding: 8px;
-            box-sizing: border-box;
-            background-color: #1e2229;
-            color: #d0d0d0;
-            border: 1px solid #2c3e50;
-            border-radius: 5px;
-        }
-        input[type="submit"] {
-            width: 100%;
-            padding: 10px;
-            background-color: #2c3e50;
-            color: #d0d0d0;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-            margin-top: 10px;
-        }
-        input[type="submit"]:hover {
-            background-color: #34495e;
-        }
-        .links {
-            text-align: center;
-            margin-top: 15px;
-        }
-        .links a {
-            color: #d0d0d0;
-            text-decoration: none;
-            font-size: 14px;
-        }
-        .links a:hover {
-            text-decoration: underline;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-    <div class="container">
+<body class="auth-body">
+    <div class="auth-container">
         <h1>Sign Up</h1>
         <form action="/signup" method="post">
             <label>
