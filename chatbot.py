@@ -8,6 +8,10 @@ from collections import defaultdict
 import json
 from user_manager import validate_user, create_user, load_user_memory, save_user_memory, load_user_system_prompt, save_user_system_prompt
 from chat_logic import generate_text_stream
+from dotenv import load_dotenv  # Import dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Set up logging
 logging.basicConfig(
@@ -20,7 +24,11 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "dolphin3.1-8b"
 
 app = Flask(__name__)
-app.secret_key = "replace_with_a_secure_key"  # necessary for sessions
+app.secret_key = os.getenv("SECRET_KEY")  # Load secret key from environment variable
+
+if not app.secret_key:
+    logger.error("SECRET_KEY not set in environment variables.")
+    sys.exit("SECRET_KEY not set in environment variables.")
 
 sessions = defaultdict(
     lambda: {
