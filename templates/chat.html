@@ -14,19 +14,6 @@
             background-color: #1a1a1a;  /* Dark grey background */
             color: #d0d0d0;  /* Light grey text */
         }
-        #system-prompt {
-            width: 100%;
-            height: 100px;
-            margin-bottom: 10px;
-            box-sizing: border-box;
-            background-color: #1e2229;
-            color: #d0d0d0;
-            border: 1px solid #2c3e50;
-            resize: none;
-            padding: 10px;
-            border-radius: 5px;
-            font-size: 16px;
-        }
         #reset-chat {
             display: block;
             width: 100%;
@@ -39,7 +26,7 @@
             font-size: 16px;
             border-radius: 5px;
         }
-        #toggle-memory {
+        #toggle-memory, #toggle-system-prompt {
             display: block;
             width: 100%;
             padding: 10px;
@@ -52,7 +39,7 @@
             border-radius: 5px;
             text-align: left;
         }
-        #memory-container {
+        #memory-container, #system-prompt-container {
             display: none;
             background-color: #1e2229;
             border: 1px solid #2c3e50;
@@ -60,7 +47,7 @@
             margin-bottom: 10px;
             padding: 10px;
         }
-        #user-memory {
+        #user-memory, #user-system-prompt {
             width: 100%;
             height: 100px;
             box-sizing: border-box;
@@ -70,7 +57,7 @@
             border-radius: 5px;
             font-size: 16px;
         }
-        #save-memory {
+        #save-memory, #save-system-prompt {
             display: block;
             width: 100%;
             padding: 10px;
@@ -143,7 +130,7 @@
             #chat-box {
                 height: 80vh;
             }
-            #system-prompt, #user-input, #reset-chat, #toggle-memory, #save-memory {
+            #user-input, #reset-chat, #toggle-memory, #toggle-system-prompt, #save-memory, #save-system-prompt {
                 font-size: 14px;
             }
             .message {
@@ -159,16 +146,19 @@
     <a href="/login" style="color:#d0d0d0; float:right; margin-bottom:10px;">Login</a>
     {% endif %}
 
-    <textarea id="system-prompt" placeholder="Enter system prompt here...">You are a helpful AI assistant named Llama. You are knowledgeable, friendly, and always strive to provide accurate information.</textarea>
-    <button id="reset-chat">Reset Chat</button>
+    <button id="toggle-system-prompt">Show/Hide System Prompt</button>
+    <div id="system-prompt-container">
+        <textarea id="user-system-prompt" placeholder="User system prompt here...">{{ user_system_prompt }}</textarea>
+        <button id="save-system-prompt">Save System Prompt</button>
+    </div>
 
-    {% if logged_in %}
     <button id="toggle-memory">Show/Hide Memory</button>
     <div id="memory-container">
         <textarea id="user-memory" placeholder="User memory here...">{{ user_memory }}</textarea>
         <button id="save-memory">Save Memory</button>
     </div>
-    {% endif %}
+
+    <button id="reset-chat">Reset Chat</button>
 
     <div id="chat-box">
         <div id="chat-content"></div>
@@ -194,11 +184,40 @@
         }
 
         {% if logged_in %}
+        // Toggle System Prompt View
+        document.getElementById('toggle-system-prompt').addEventListener('click', function() {
+            const sysPromptContainer = document.getElementById('system-prompt-container');
+            sysPromptContainer.style.display = (sysPromptContainer.style.display === 'none' || sysPromptContainer.style.display === '') ? 'block' : 'none';
+        });
+
+        // Save System Prompt
+        document.getElementById('save-system-prompt').addEventListener('click', function() {
+            const sysPromptText = document.getElementById('user-system-prompt').value;
+            fetch('/update_system_prompt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ system_prompt: sysPromptText })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message');
+                } else {
+                    appendMessage('<strong>Error:</strong> Failed to save system prompt.', 'error-message');
+                }
+            })
+            .catch(error => {
+                appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
+            });
+        });
+
+        // Toggle Memory View
         document.getElementById('toggle-memory').addEventListener('click', function() {
             const memContainer = document.getElementById('memory-container');
             memContainer.style.display = (memContainer.style.display === 'none' || memContainer.style.display === '') ? 'block' : 'none';
         });
 
+        // Save Memory
         document.getElementById('save-memory').addEventListener('click', function() {
             const memText = document.getElementById('user-memory').value;
             fetch('/update_memory', {
@@ -222,7 +241,16 @@
 
         function sendMessage() {
             var userMessage = document.getElementById('user-input').value;
-            var systemPrompt = document.getElementById('system-prompt').value;
+            var systemPrompt = "";
+
+            {% if logged_in %}
+                // If user has a saved system prompt, use it
+                systemPrompt = document.getElementById('user-system-prompt').value;
+            {% else %}
+                // Use default system prompt
+                systemPrompt = "You are a helpful AI assistant.";
+            {% endif %}
+
             if (userMessage.trim() === '') return;
 
             appendMessage('<strong>You:</strong> ' + escapeHTML(userMessage), 'user-message');
@@ -230,8 +258,7 @@
 
             var requestData = {
                 message: userMessage,
-                system_prompt: systemPrompt,
-                session_id: "dummy"
+                system_prompt: systemPrompt
             };
 
             fetch('/chat', {
@@ -283,9 +310,7 @@
         });
 
         document.getElementById('reset-chat').addEventListener('click', function() {
-            var requestData = {
-                session_id: "dummy"
-            };
+            var requestData = {};
             fetch('/reset_chat', {
                 method: 'POST',
                 headers: {

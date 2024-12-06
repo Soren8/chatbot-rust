@@ -6,7 +6,7 @@ import time
 import threading
 from collections import defaultdict
 import json
-from user_manager import validate_user, create_user, load_user_memory, save_user_memory
+from user_manager import validate_user, create_user, load_user_memory, save_user_memory, load_user_system_prompt, save_user_system_prompt
 from chat_logic import generate_text_stream
 
 # Set up logging
@@ -27,7 +27,8 @@ sessions = defaultdict(
         "history": [],
         "system_prompt": "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries.",
         "last_used": time.time(),
-        "memory": ""
+        "memory": "",
+        "system_prompt_saved": ""
     }
 )
 SESSION_TIMEOUT = 3600  # 1 hour in seconds
@@ -75,9 +76,12 @@ def login():
         password = request.form.get("password")
         if validate_user(username, password):
             session["username"] = username
-            # Load user memory
+            # Load user memory and system prompt
             user_memory = load_user_memory(username)
+            user_system_prompt = load_user_system_prompt(username)
             sessions[username]["memory"] = user_memory
+            sessions[username]["system_prompt"] = user_system_prompt
+            sessions[username]["system_prompt_saved"] = user_system_prompt
             return redirect(url_for("home"))
         else:
             return "Invalid credentials", 401
@@ -88,9 +92,12 @@ def home():
     logger.info("Serving home page")
     logged_in = ("username" in session)
     user_memory = ""
+    user_system_prompt = ""
     if logged_in:
-        user_memory = sessions[session["username"]]["memory"]
-    return render_template("chat.html", logged_in=logged_in, user_memory=user_memory)
+        username = session["username"]
+        user_memory = sessions[username]["memory"]
+        user_system_prompt = sessions[username]["system_prompt"]
+    return render_template("chat.html", logged_in=logged_in, user_memory=user_memory, user_system_prompt=user_system_prompt)
 
 @app.route("/logout")
 def logout():
@@ -103,16 +110,28 @@ def update_memory():
         return jsonify({"error": "Not authenticated"}), 403
 
     user_memory = request.json.get("memory", "")
-    sessions[session["username"]]["memory"] = user_memory
-    save_user_memory(session["username"], user_memory)
+    username = session["username"]
+    sessions[username]["memory"] = user_memory
+    save_user_memory(username, user_memory)
+    return jsonify({"status": "success"})
+
+@app.route("/update_system_prompt", methods=["POST"])
+def update_system_prompt():
+    if "username" not in session:
+        return jsonify({"error": "Not authenticated"}), 403
+
+    system_prompt = request.json.get("system_prompt", "")
+    username = session["username"]
+    sessions[username]["system_prompt"] = system_prompt
+    save_user_system_prompt(username, system_prompt)
     return jsonify({"status": "success"})
 
 @app.route("/chat", methods=["POST"])
 def chat():
     clean_old_sessions()
 
-    user_message = request.json["message"]
-    new_system_prompt = request.json.get("system_prompt")
+    user_message = request.json.get("message", "")
+    new_system_prompt = request.json.get("system_prompt", None)
 
     # If logged in, use their session; if not, use a temporary session_id
     session_id = session.get("username", "guest_" + request.remote_addr)
@@ -126,6 +145,8 @@ def chat():
     if new_system_prompt is not None:
         logger.info(f"Updating system prompt to: {new_system_prompt[:50]}...")
         user_session["system_prompt"] = new_system_prompt
+        if "username" in session:
+            save_user_system_prompt(session["username"], new_system_prompt)
 
     if response_lock.locked():
         return jsonify(
@@ -134,14 +155,15 @@ def chat():
             }
         ), 429
 
-    # If the user is not logged in, memory is empty
+    # If the user is logged in, use their saved system prompt; otherwise, use the default
     memory_text = user_session["memory"] if "username" in session else ""
+    system_prompt = user_session["system_prompt"] if "username" in session else "You are a helpful AI assistant."
 
     def generate():
         with response_lock:
             stream = generate_text_stream(
                 user_message,
-                user_session["system_prompt"],
+                system_prompt,
                 MODEL_NAME,
                 user_session["history"],
                 memory_text
@@ -156,6 +178,7 @@ def chat():
                 logger.error(f"Error during streaming: {str(e)}")
                 yield "\n[Error] An error occurred during response generation."
 
+            # Update conversation history after the full response is generated
             user_session["history"].append((user_message, response_text))
             logger.info(
                 f"Chat response generated successfully. Length: {len(response_text)} characters"
@@ -169,6 +192,8 @@ def reset_chat():
     if session_id in sessions:
         sessions[session_id]["history"] = []
         sessions[session_id]["system_prompt"] = "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+        if "username" in session:
+            save_user_system_prompt(session["username"], sessions[session_id]["system_prompt"])
         logger.info(f"Chat history has been reset for session {session_id[:8]}...")
 
     return jsonify({"status": "success", "message": "Chat history has been reset."})
