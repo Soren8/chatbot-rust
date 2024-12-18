@@ -88,6 +88,7 @@ def login():
         password = request.form.get("password")
         if validate_user(username, password):
             session["username"] = username
+            session["password"] = password  # Temporarily store for encryption
             # Load user memory and system prompt
             user_memory = load_user_memory(username)
             user_system_prompt = load_user_system_prompt(username)
@@ -111,9 +112,10 @@ def home():
         user_system_prompt = sessions[username]["system_prompt"]
     return render_template("chat.html", logged_in=logged_in, user_memory=user_memory, user_system_prompt=user_system_prompt)
 
-@app.route("/logout")
+@app.route("/logout") 
 def logout():
     session.pop("username", None)
+    session.pop("password", None)  # Clear cached password
     return redirect(url_for("home"))
 
 @app.route("/get_sets", methods=["GET"])

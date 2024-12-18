@@ -58,15 +58,15 @@ def validate_user(username: str, password: str) -> bool:
         return bcrypt.checkpw(password.encode('utf-8'), stored_hashed_password)
     return False
 
-def _get_encryption_key(password_hash: bytes) -> bytes:
-    """Generate encryption key from password hash"""
+def _get_encryption_key(password: str) -> bytes:
+    """Generate encryption key from password"""
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=b'static_salt',  # Using static salt since we're using the hash
+        salt=b'static_salt',
         iterations=100000,
     )
-    key = kdf.derive(password_hash)
+    key = kdf.derive(password.encode())
     return b64encode(key)
 
 def get_user_sets(username: str) -> dict:
@@ -92,11 +92,11 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
         sets = json.load(f)
     
     if set_name in sets and sets[set_name].get("encrypted", False):
-        # Get user's password hash to derive encryption key
-        with open(USERS_FILE, "r") as f:
-            users = json.load(f)
-        password_hash = users[username].encode('utf-8')
-        key = _get_encryption_key(password_hash)
+        # Get password from session to derive encryption key
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for decryption")
+        key = _get_encryption_key(session['password'])
         f = Fernet(key)
         with open(filepath, "rb") as file:
             encrypted_data = file.read()
@@ -133,11 +133,11 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     filepath = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
     
     if encrypted:
-        # Get user's password hash to derive encryption key
-        with open(USERS_FILE, "r") as f:
-            users = json.load(f)
-        password_hash = users[username].encode('utf-8')
-        key = _get_encryption_key(password_hash)
+        # Get password from session to derive encryption key
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for encryption") 
+        key = _get_encryption_key(session['password'])
         f = Fernet(key)
         encrypted_data = f.encrypt(memory_content.encode())
         with open(filepath, "wb") as f:
