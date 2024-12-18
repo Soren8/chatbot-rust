@@ -18,7 +18,10 @@
             <option value="default">Default Set</option>
         </select>
         <button id="new-set" style="margin-right: 10px;">New Set</button>
-        <button id="delete-set">Delete Set</button>
+        <button id="delete-set" style="margin-right: 10px;">Delete Set</button>
+        <label>
+            <input type="checkbox" id="encrypt-memory"> Encrypt this set
+        </label>
     </div>
 
     <button id="toggle-system-prompt" class="toggle-system-prompt">Show/Hide System Prompt</button>
@@ -31,9 +34,6 @@
     <div id="memory-container" class="memory-container">
         <textarea id="user-memory" class="user-memory" placeholder="User memory here...">{{ user_memory }}</textarea>
         <button id="save-memory" class="save-memory">Save Memory</button>
-        <label style="margin-left: 10px;">
-            <input type="checkbox" id="encrypt-memory"> Encrypt this set
-        </label>
     </div>
 
     <button id="reset-chat" class="reset-chat">Reset Chat</button>

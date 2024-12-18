@@ -181,7 +181,8 @@ def update_system_prompt():
     set_name = request.json.get("set_name", "default")
     username = session["username"]
     sessions[username]["system_prompt"] = system_prompt
-    save_user_system_prompt(username, system_prompt, set_name)
+    encrypted = request.json.get("encrypted", False)
+    save_user_system_prompt(username, system_prompt, set_name, encrypted)
     return jsonify({"status": "success"})
 
 @app.route("/chat", methods=["POST"])

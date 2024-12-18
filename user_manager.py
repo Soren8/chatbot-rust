@@ -148,13 +148,28 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
 
 def load_user_system_prompt(username: str, set_name: str = "default") -> str:
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
-    if os.path.exists(filepath):
+    if not os.path.exists(filepath):
+        return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+
+    # Check if set is encrypted
+    sets_file = os.path.join(SETS_DIR, username, "sets.json")
+    with open(sets_file, "r") as f:
+        sets = json.load(f)
+    
+    if set_name in sets and sets[set_name].get("encrypted", False):
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for decryption")
+        key = _get_encryption_key(session['password'])
+        f = Fernet(key)
+        with open(filepath, "rb") as file:
+            encrypted_data = file.read()
+        return f.decrypt(encrypted_data).decode()
+    else:
         with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
-    # Default system prompt if none is saved
-    return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
-def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default"):
+def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", encrypted: bool = False):
     max_size = 3000  # Maximum allowed system prompt size in characters
     system_prompt = system_prompt[:max_size]
     
@@ -170,15 +185,29 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     else:
         sets = {}
     
-    sets[set_name] = {"created": time.time()}
+    sets[set_name] = {
+        "created": time.time(),
+        "encrypted": encrypted
+    }
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
     
     # Save prompt content
     filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(system_prompt)
+    
+    if encrypted:
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for encryption")
+        key = _get_encryption_key(session['password'])
+        f = Fernet(key)
+        encrypted_data = f.encrypt(system_prompt.encode())
+        with open(filepath, "wb") as f:
+            f.write(encrypted_data)
+    else:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(system_prompt)
 
 def create_new_set(username: str, set_name: str) -> bool:
     """Create a new empty set for a user"""
