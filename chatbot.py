@@ -6,7 +6,11 @@ import time
 import threading
 from collections import defaultdict
 import json
-from user_manager import validate_user, create_user, load_user_memory, save_user_memory, load_user_system_prompt, save_user_system_prompt
+from user_manager import (
+    validate_user, create_user, load_user_memory, save_user_memory,
+    load_user_system_prompt, save_user_system_prompt, get_user_sets,
+    create_new_set, delete_set
+)
 from chat_logic import generate_text_stream
 from dotenv import load_dotenv  # Import dotenv
 
@@ -117,7 +121,7 @@ def get_sets():
     if "username" not in session:
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
-    sets = user_manager.get_user_sets(username)
+    sets = get_user_sets(username)
     return jsonify(sets)
 
 @app.route("/create_set", methods=["POST"])
@@ -126,7 +130,7 @@ def create_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
-    if user_manager.create_new_set(username, set_name):
+    if create_new_set(username, set_name):
         return jsonify({"status": "success"})
     return jsonify({"status": "error", "error": "Set already exists or invalid name"})
 
@@ -136,7 +140,7 @@ def delete_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
-    if user_manager.delete_set(username, set_name):
+    if delete_set(username, set_name):
         return jsonify({"status": "success"})
     return jsonify({"status": "error", "error": "Cannot delete set"})
 
@@ -146,8 +150,8 @@ def load_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
-    memory = user_manager.load_user_memory(username, set_name)
-    system_prompt = user_manager.load_user_system_prompt(username, set_name)
+    memory = load_user_memory(username, set_name)
+    system_prompt = load_user_system_prompt(username, set_name)
     return jsonify({
         "memory": memory,
         "system_prompt": system_prompt
