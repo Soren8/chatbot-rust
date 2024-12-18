@@ -13,6 +13,14 @@
     <a href="/login" style="color:#d0d0d0; float:right; margin-bottom:10px;">Login</a>
     {% endif %}
 
+    <div style="margin-bottom: 10px;">
+        <select id="set-selector" style="margin-right: 10px;">
+            <option value="default">Default Set</option>
+        </select>
+        <button id="new-set" style="margin-right: 10px;">New Set</button>
+        <button id="delete-set">Delete Set</button>
+    </div>
+
     <button id="toggle-system-prompt" class="toggle-system-prompt">Show/Hide System Prompt</button>
     <div id="system-prompt-container" class="system-prompt-container">
         <textarea id="user-system-prompt" class="user-system-prompt" placeholder="User system prompt here...">{{ user_system_prompt }}</textarea>
@@ -36,6 +44,84 @@
     // JavaScript remains unchanged, now referencing elements by ID for functionality,
     // while styling is handled by classes in CSS.
     document.addEventListener('DOMContentLoaded', function() {
+        // Load available sets
+        function loadSets() {
+            fetch('/get_sets')
+            .then(response => response.json())
+            .then(data => {
+                const selector = document.getElementById('set-selector');
+                selector.innerHTML = ''; // Clear existing options
+                Object.keys(data).forEach(setName => {
+                    const option = document.createElement('option');
+                    option.value = setName;
+                    option.textContent = setName;
+                    selector.appendChild(option);
+                });
+            });
+        }
+
+        // Load initial sets
+        loadSets();
+
+        // Handle set selection change
+        document.getElementById('set-selector').addEventListener('change', function() {
+            const setName = this.value;
+            fetch('/load_set', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ set_name: setName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('user-system-prompt').value = data.system_prompt;
+                document.getElementById('user-memory').value = data.memory;
+                appendMessage('<strong>System:</strong> Loaded set: ' + setName, 'system-message');
+            });
+        });
+
+        // Handle new set creation
+        document.getElementById('new-set').addEventListener('click', function() {
+            const setName = prompt('Enter name for new set:');
+            if (setName) {
+                fetch('/create_set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ set_name: setName })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        loadSets();
+                        appendMessage('<strong>System:</strong> Created new set: ' + setName, 'system-message');
+                    } else {
+                        appendMessage('<strong>Error:</strong> ' + data.error, 'error-message');
+                    }
+                });
+            }
+        });
+
+        // Handle set deletion
+        document.getElementById('delete-set').addEventListener('click', function() {
+            const setName = document.getElementById('set-selector').value;
+            if (setName === 'default') {
+                appendMessage('<strong>Error:</strong> Cannot delete default set', 'error-message');
+                return;
+            }
+            if (confirm('Are you sure you want to delete set: ' + setName + '?')) {
+                fetch('/delete_set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ set_name: setName })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        loadSets();
+                        appendMessage('<strong>System:</strong> Deleted set: ' + setName, 'system-message');
+                    }
+                });
+            }
+        });
         function appendMessage(message, className) {
             const messageElement = document.createElement('div');
             messageElement.className = 'message ' + className;
@@ -60,10 +146,14 @@
 
         document.getElementById('save-system-prompt').addEventListener('click', function() {
             const sysPromptText = document.getElementById('user-system-prompt').value;
+            const setName = document.getElementById('set-selector').value;
             fetch('/update_system_prompt', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ system_prompt: sysPromptText })
+                body: JSON.stringify({ 
+                    system_prompt: sysPromptText,
+                    set_name: setName
+                })
             })
             .then(response => response.json())
             .then(data => {
@@ -85,10 +175,14 @@
 
         document.getElementById('save-memory').addEventListener('click', function() {
             const memText = document.getElementById('user-memory').value;
+            const setName = document.getElementById('set-selector').value;
             fetch('/update_memory', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ memory: memText })
+                body: JSON.stringify({ 
+                    memory: memText,
+                    set_name: setName
+                })
             })
             .then(response => response.json())
             .then(data => {

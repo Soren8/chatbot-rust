@@ -112,15 +112,57 @@ def logout():
     session.pop("username", None)
     return redirect(url_for("home"))
 
+@app.route("/get_sets", methods=["GET"])
+def get_sets():
+    if "username" not in session:
+        return jsonify({"error": "Not authenticated"}), 403
+    username = session["username"]
+    sets = user_manager.get_user_sets(username)
+    return jsonify(sets)
+
+@app.route("/create_set", methods=["POST"])
+def create_set():
+    if "username" not in session:
+        return jsonify({"error": "Not authenticated"}), 403
+    username = session["username"]
+    set_name = request.json.get("set_name")
+    if user_manager.create_new_set(username, set_name):
+        return jsonify({"status": "success"})
+    return jsonify({"status": "error", "error": "Set already exists or invalid name"})
+
+@app.route("/delete_set", methods=["POST"])
+def delete_set():
+    if "username" not in session:
+        return jsonify({"error": "Not authenticated"}), 403
+    username = session["username"]
+    set_name = request.json.get("set_name")
+    if user_manager.delete_set(username, set_name):
+        return jsonify({"status": "success"})
+    return jsonify({"status": "error", "error": "Cannot delete set"})
+
+@app.route("/load_set", methods=["POST"])
+def load_set():
+    if "username" not in session:
+        return jsonify({"error": "Not authenticated"}), 403
+    username = session["username"]
+    set_name = request.json.get("set_name")
+    memory = user_manager.load_user_memory(username, set_name)
+    system_prompt = user_manager.load_user_system_prompt(username, set_name)
+    return jsonify({
+        "memory": memory,
+        "system_prompt": system_prompt
+    })
+
 @app.route("/update_memory", methods=["POST"])
 def update_memory():
     if "username" not in session:
         return jsonify({"error": "Not authenticated"}), 403
 
     user_memory = request.json.get("memory", "")
+    set_name = request.json.get("set_name", "default")
     username = session["username"]
     sessions[username]["memory"] = user_memory
-    save_user_memory(username, user_memory)
+    save_user_memory(username, user_memory, set_name)
     return jsonify({"status": "success"})
 
 @app.route("/update_system_prompt", methods=["POST"])
@@ -129,9 +171,10 @@ def update_system_prompt():
         return jsonify({"error": "Not authenticated"}), 403
 
     system_prompt = request.json.get("system_prompt", "")
+    set_name = request.json.get("set_name", "default")
     username = session["username"]
     sessions[username]["system_prompt"] = system_prompt
-    save_user_system_prompt(username, system_prompt)
+    save_user_system_prompt(username, system_prompt, set_name)
     return jsonify({"status": "success"})
 
 @app.route("/chat", methods=["POST"])
