@@ -117,7 +117,19 @@
                 .then(data => {
                     if (data.status === 'success') {
                         loadSets();
-                        appendMessage('<strong>System:</strong> Deleted set: ' + setName, 'system-message');
+                        // After deletion, load the default set
+                        fetch('/load_set', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ set_name: 'default' })
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            document.getElementById('user-system-prompt').value = data.system_prompt;
+                            document.getElementById('user-memory').value = data.memory;
+                            document.getElementById('set-selector').value = 'default';
+                            appendMessage('<strong>System:</strong> Deleted set: ' + setName + '. Loaded default set.', 'system-message');
+                        });
                     }
                 });
             }
