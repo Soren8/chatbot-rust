@@ -9,7 +9,7 @@ import json
 from user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
-    create_new_set, delete_set
+    create_new_set, delete_set as delete_user_set
 )
 from chat_logic import generate_text_stream
 from dotenv import load_dotenv  # Import dotenv
@@ -140,7 +140,7 @@ def delete_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
-    if delete_set(username, set_name):
+    if delete_user_set(username, set_name):
         return jsonify({"status": "success"})
     return jsonify({"status": "error", "error": "Cannot delete set"})
 
