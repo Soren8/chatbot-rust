@@ -31,6 +31,9 @@
     <div id="memory-container" class="memory-container">
         <textarea id="user-memory" class="user-memory" placeholder="User memory here...">{{ user_memory }}</textarea>
         <button id="save-memory" class="save-memory">Save Memory</button>
+        <label style="margin-left: 10px;">
+            <input type="checkbox" id="encrypt-memory"> Encrypt this set
+        </label>
     </div>
 
     <button id="reset-chat" class="reset-chat">Reset Chat</button>
@@ -193,7 +196,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     memory: memText,
-                    set_name: setName
+                    set_name: setName,
+                    encrypted: document.getElementById('encrypt-memory').checked
                 })
             })
             .then(response => response.json())

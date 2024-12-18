@@ -166,7 +166,8 @@ def update_memory():
     set_name = request.json.get("set_name", "default")
     username = session["username"]
     sessions[username]["memory"] = user_memory
-    save_user_memory(username, user_memory, set_name)
+    encrypted = request.json.get("encrypted", False)
+    save_user_memory(username, user_memory, set_name, encrypted)
     return jsonify({"status": "success"})
 
 @app.route("/update_system_prompt", methods=["POST"])
