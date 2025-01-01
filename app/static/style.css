@@ -126,14 +126,12 @@ body {
 }
 
 .regenerate-container {
-    position: relative;
-    height: 0;
+    text-align: right;
+    margin-top: 8px;
 }
 
 .regenerate-button {
-    position: absolute;
-    right: 8px;
-    bottom: 8px;
+    display: inline-block;
     background-color: #3a3a3a;
     color: #d0d0d0;
     border: none;
