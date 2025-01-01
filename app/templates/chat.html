@@ -60,7 +60,8 @@
                 },
                 body: JSON.stringify({
                     message: userMessage,
-                    system_prompt: document.getElementById('user-system-prompt').value
+                    system_prompt: document.getElementById('user-system-prompt').value,
+                    memory: document.getElementById('user-memory').value
                 })
             })
             .then(response => {
@@ -86,7 +87,14 @@
                         }
                         const chunk = decoder.decode(value, { stream: true });
                         aiMessage += chunk;
-                        aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
+                        // Only update if we got new content
+                        if (chunk.trim()) {
+                            aiMessage += chunk;
+                            aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
+                            // Scroll to bottom
+                            const chatBox = document.getElementById('chat-box');
+                            chatBox.scrollTop = chatBox.scrollHeight;
+                        }
                         return readStream();
                     });
                 }

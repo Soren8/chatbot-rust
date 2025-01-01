@@ -257,7 +257,7 @@ def regenerate():
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
-    logger.info(f"Received regenerate request. Session: {session_id[:8]}... Message: {user_message[:50]}...")
+    logger.info(f"Regenerate request details - Session: {session_id[:8]} | Message: {user_message[:50]}... | System Prompt: {system_prompt[:50]}... | Memory: {memory_text[:50]}...")
 
     # Remove the last response from history
     if user_session["history"] and user_session["history"][-1][0] == user_message:
@@ -289,14 +289,17 @@ def regenerate():
                 response_text = ""
                 for chunk in stream:
                     response_text += chunk
-                    logger.debug(f"Yielding chunk: {chunk[:50]}...")
+                    logger.debug(f"Yielding chunk: {chunk[:50]}... | Total response so far: {len(response_text)} chars")
+                    if not chunk.strip():
+                        logger.warning("Received empty chunk from stream")
                     yield chunk
 
                 user_session["history"].append((user_message, response_text))
                 logger.info(f"Successfully regenerated response. Length: {len(response_text)} characters")
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
-                yield f"\n[Error] Failed to generate response: {str(e)}"
+                logger.error(f"Regeneration failed: {str(e)}", exc_info=True)
+                yield f"\n[Error] Failed to generate response: {str(e)}\n\n<div class='regenerate-container'><button class='regenerate-button' onclick='regenerateMessage(this)'>⟳ Try Again</button></div>"
 
     return Response(generate(), mimetype="text/plain")
 
