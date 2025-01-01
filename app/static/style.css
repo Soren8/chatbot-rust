@@ -118,14 +118,13 @@ body {
 
 .regenerate-container {
     position: relative;
-    display: inline-block;
-    margin-left: 8px;
+    height: 0;
 }
 
 .regenerate-button {
     position: absolute;
-    right: 0;
-    bottom: 0;
+    right: 8px;
+    bottom: 8px;
     background-color: #3a3a3a;
     color: #d0d0d0;
     border: none;
@@ -134,6 +133,7 @@ body {
     cursor: pointer;
     font-size: 11px;
     line-height: 1.2;
+    z-index: 1;
 }
 
 .regenerate-button:hover {
