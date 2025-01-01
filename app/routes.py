@@ -8,6 +8,11 @@ from flask import (
 
 MODEL_NAME = "dolphin3.1-8b"
 import logging
+import sys
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
+
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
