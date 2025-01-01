@@ -3,8 +3,10 @@ import time
 import threading
 from collections import defaultdict
 from flask import (
-    Blueprint, request, jsonify, Response, session, redirect, url_for, render_template
+    Blueprint, request, jsonify, Response, session, redirect, url_for, render_template, current_app
 )
+
+MODEL_NAME = "dolphin3.1-8b"
 import logging
 
 from app.user_manager import (
@@ -207,8 +209,10 @@ def chat():
             stream = generate_text_stream(
                 user_message,
                 system_prompt,
+                MODEL_NAME,
                 user_session["history"],
-                memory_text
+                memory_text,
+                current_app.config
             )
 
             response_text = ""
