@@ -172,22 +172,45 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
 
     # Check if set is encrypted
     sets_file = os.path.join(SETS_DIR, username, "sets.json")
-    with open(sets_file, "r") as f:
-        sets = json.load(f)
+    try:
+        with open(sets_file, "r") as f:
+            sets = json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading sets.json for {username}: {str(e)}")
+        return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
     
     if set_name in sets and sets[set_name].get("encrypted", False):
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for decryption")
-        salt = get_user_salt(username)
-        key = _get_encryption_key(session['password'], salt)
-        f = Fernet(key)
-        with open(filepath, "rb") as file:
-            encrypted_data = file.read()
-        return f.decrypt(encrypted_data).decode()
+        try:
+            from flask import session
+            if 'password' not in session:
+                logger.error(f"Password not available for decryption for {username}")
+                return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+            
+            salt = get_user_salt(username)
+            key = _get_encryption_key(session['password'], salt)
+            f = Fernet(key)
+            
+            with open(filepath, "rb") as file:
+                encrypted_data = file.read()
+                
+            try:
+                return f.decrypt(encrypted_data).decode()
+            except Exception as e:
+                logger.error(f"Decryption failed for {username}/{set_name}: {str(e)}")
+                # Try reading as plaintext in case encryption flag was set incorrectly
+                with open(filepath, "r", encoding="utf-8") as f:
+                    return f.read()
+                    
+        except Exception as e:
+            logger.error(f"Error decrypting prompt for {username}/{set_name}: {str(e)}")
+            return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
     else:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return f.read()
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.error(f"Error reading plaintext prompt for {username}/{set_name}: {str(e)}")
+            return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
 def save_user_chat_history(username: str, history: list, set_name: str = "default", encrypted: bool = False):
     """Save chat history for a user's set"""
@@ -258,22 +281,45 @@ def load_user_chat_history(username: str, set_name: str = "default") -> list:
         
     # Check if set is encrypted
     sets_file = os.path.join(SETS_DIR, username, "sets.json")
-    with open(sets_file, "r") as f:
-        sets = json.load(f)
+    try:
+        with open(sets_file, "r") as f:
+            sets = json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading sets.json for {username}: {str(e)}")
+        return []
     
     if set_name in sets and sets[set_name].get("encrypted", False):
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for decryption")
-        salt = get_user_salt(username)
-        key = _get_encryption_key(session['password'], salt)
-        f = Fernet(key)
-        with open(filepath, "rb") as file:
-            encrypted_data = file.read()
-        return json.loads(f.decrypt(encrypted_data).decode())
+        try:
+            from flask import session
+            if 'password' not in session:
+                logger.error(f"Password not available for decryption for {username}")
+                return []
+            
+            salt = get_user_salt(username)
+            key = _get_encryption_key(session['password'], salt)
+            f = Fernet(key)
+            
+            with open(filepath, "rb") as file:
+                encrypted_data = file.read()
+                
+            try:
+                return json.loads(f.decrypt(encrypted_data).decode())
+            except Exception as e:
+                logger.error(f"Decryption failed for {username}/{set_name}: {str(e)}")
+                # Try reading as plaintext in case encryption flag was set incorrectly
+                with open(filepath, "r", encoding="utf-8") as f:
+                    return json.load(f)
+                    
+        except Exception as e:
+            logger.error(f"Error decrypting history for {username}/{set_name}: {str(e)}")
+            return []
     else:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading plaintext history for {username}/{set_name}: {str(e)}")
+            return []
 
 def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", encrypted: bool = False):
     max_size = 3000  # Maximum allowed system prompt size in characters
