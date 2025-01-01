@@ -1,39 +1,23 @@
-import json
-import requests
+from flask import current_app
+from app.llm.ollama_provider import OllamaProvider
+from app.llm.openai_provider import OpenAIProvider
 
-def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text):
-    # Truncate memory if too long
-    max_memory_length = 2000
-    memory_text = memory_text[:max_memory_length]
+def get_llm_provider():
+    """
+    Decide which LLM provider to use, based on environment config.
+    """
+    provider_name = current_app.config.get('LLM_PROVIDER', 'ollama')
+    model_name = current_app.config.get('MODEL_NAME', 'dolphin3.1-8b')
+    openai_key = current_app.config.get('OPENAI_API_KEY', '')
 
-    if not session_history:
-        history_text = f"### System: {system_prompt}\n\n"
+    if provider_name.lower() == 'openai':
+        return OpenAIProvider(api_key=openai_key, model=model_name)
     else:
-        history_text = ""
+        return OllamaProvider(model_name=model_name)
 
-    if memory_text.strip():
-        history_text += f"### Memory:\n{memory_text}\n\n"
-
-    for user_input, assistant_response in session_history:
-        history_text += f"### User:\n{user_input}\n\n### Assistant:\n{assistant_response}\n\n"
-
-    # Append the latest user prompt
-    history_text += f"### User:\n{prompt}\n\n### Assistant:\n"
-
-    data = {
-        "model": model_name,
-        "prompt": history_text,
-        "system": system_prompt,
-        "stream": True,
-    }
-
-    url = "http://localhost:11434/api/generate"
-    with requests.post(url, json=data, stream=True) as response:
-        if response.status_code == 200:
-            for line in response.iter_lines():
-                if line:
-                    json_response = json.loads(line)
-                    if 'response' in json_response:
-                        yield json_response['response']
-        else:
-            yield f"\n[Error] Error: {response.status_code}, {response.text}"
+def generate_text_stream(prompt, system_prompt, session_history, memory_text):
+    """
+    Get the appropriate LLM provider and stream the response.
+    """
+    llm = get_llm_provider()
+    return llm.generate_text_stream(prompt, system_prompt, session_history, memory_text)
