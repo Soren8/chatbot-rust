@@ -20,14 +20,24 @@ load_dotenv()
 # Set up logging for Docker and Gunicorn
 logging.basicConfig(
     level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    stream=sys.stdout,
     force=True  # Override any existing configuration
 )
-# Ensure all loggers propagate to root
-for name in logging.root.manager.loggerDict:
-    logging.getLogger(name).propagate = True
-    logging.getLogger(name).setLevel(logging.DEBUG)
+
 logger = logging.getLogger(__name__)
+# Add stdout handler if none exists
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+    logger.addHandler(handler)
+
+# Ensure all loggers propagate and have proper level
+for name in logging.root.manager.loggerDict:
+    log = logging.getLogger(name)
+    log.setLevel(logging.DEBUG)
+    if not log.handlers:
+        log.addHandler(handler)
 
 # Ollama model name
 MODEL_NAME = "dolphin3.1-8b"

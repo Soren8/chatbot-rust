@@ -8,6 +8,14 @@ from flask import (
 
 MODEL_NAME = "dolphin3.1-8b"
 import logging
+import sys
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    stream=sys.stdout
+)
 
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
@@ -19,8 +27,11 @@ from app.config import Config
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-# Ensure logs propagate up to the root logger
-logger.propagate = True
+# Add stdout handler if none exists
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+    logger.addHandler(handler)
 
 bp = Blueprint("main", __name__)
 
