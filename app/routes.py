@@ -164,11 +164,8 @@ def load_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
-    memory = load_user_memory(username, set_name)
-    system_prompt = load_user_system_prompt(username, set_name)
-    history = load_user_chat_history(username, set_name)
     
-    # Get encryption status from sets.json
+    # Get encryption status first
     sets_file = os.path.join(SETS_DIR, username, "sets.json")
     encrypted = False
     if os.path.exists(sets_file):
@@ -176,6 +173,11 @@ def load_set():
             sets = json.load(f)
             if set_name in sets:
                 encrypted = sets[set_name].get("encrypted", False)
+    
+    # Load data with encryption status
+    memory = load_user_memory(username, set_name)
+    system_prompt = load_user_system_prompt(username, set_name)
+    history = load_user_chat_history(username, set_name)
     
     # Update session with loaded data
     session_id = session.get("username")
@@ -188,7 +190,7 @@ def load_set():
         "memory": memory,
         "system_prompt": system_prompt,
         "history": history,
-        "encrypted": encrypted  # Add encryption status
+        "encrypted": encrypted  # Ensure this is included
     })
 
 @bp.route("/update_memory", methods=["POST"])
