@@ -147,6 +147,84 @@
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
+        function regenerateMessage(button) {
+            const aiMessageElement = button.closest('.message');
+            const previousUserMessage = aiMessageElement.previousElementSibling;
+            if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
+                const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
+                aiMessageElement.innerHTML = '<strong>AI:</strong> Thinking...';
+                sendMessage(userMessage, aiMessageElement);
+            }
+        }
+
+        function sendMessage(message, targetElement = null) {
+            var systemPrompt = "";
+
+            {% if logged_in %}
+                systemPrompt = document.getElementById('user-system-prompt').value;
+            {% else %}
+                systemPrompt = "You are a helpful AI assistant.";
+            {% endif %}
+
+            if (message.trim() === '') return;
+
+            if (!targetElement) {
+                appendMessage('<strong>You:</strong> ' + escapeHTML(message), 'user-message');
+            }
+
+            var requestData = {
+                message: message,
+                system_prompt: systemPrompt
+            };
+
+            fetch('/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestData)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => { 
+                        throw new Error(text || 'Network response was not ok'); 
+                    });
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let aiMessage = '';
+
+                if (!targetElement) {
+                    appendMessage('<strong>AI:</strong> ', 'ai-message');
+                    const aiMessageElements = document.getElementsByClassName('ai-message');
+                    targetElement = aiMessageElements[aiMessageElements.length - 1];
+                }
+
+                function readStream() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) return;
+                        const chunk = decoder.decode(value, { stream: true });
+                        aiMessage += chunk;
+                        targetElement.innerHTML = `
+                            <strong>AI:</strong> ${escapeHTML(aiMessage)}
+                            <div class="regenerate-container">
+                                <button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button>
+                            </div>
+                        `;
+                        readStream();
+                    }).catch(error => {
+                        console.error('Error reading stream:', error);
+                        targetElement.innerHTML += '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
+                    });
+                }
+                readStream();
+            })
+            .catch(error => {
+                console.error('Fetch error:', error);
+                appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
+            });
+        }
+
         function escapeHTML(str) {
             var div = document.createElement('div');
             div.appendChild(document.createTextNode(str));
@@ -260,7 +338,12 @@
                         if (done) return;
                         const chunk = decoder.decode(value, { stream: true });
                         aiMessage += chunk;
-                        aiMessageElement.innerHTML = '<strong>AI:</strong> ' + escapeHTML(aiMessage);
+                        aiMessageElement.innerHTML = `
+                            <strong>AI:</strong> ${escapeHTML(aiMessage)}
+                            <div class="regenerate-container">
+                                <button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button>
+                            </div>
+                        `;
                         readStream();
                     }).catch(error => {
                         console.error('Error reading stream:', error);

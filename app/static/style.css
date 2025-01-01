@@ -116,6 +116,28 @@ body {
     font-weight: bold;
 }
 
+.regenerate-container {
+    position: relative;
+    margin-top: 10px;
+}
+
+.regenerate-button {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    background-color: #3a3a3a;
+    color: #d0d0d0;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.regenerate-button:hover {
+    background-color: #4a4a4a;
+}
+
 .system-message {
     background-color: #555555;
     align-self: center;
