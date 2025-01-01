@@ -154,6 +154,8 @@
                     option.textContent = setName;
                     selector.appendChild(option);
                 });
+                // After loading sets, trigger a change event to load the default set
+                selector.dispatchEvent(new Event('change'));
             });
         }
 
@@ -258,6 +260,8 @@
             const previousUserMessage = aiMessageElement.previousElementSibling;
             if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
                 const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
+                const activeSet = document.getElementById('set-selector').value; // Get active set
+                
                 // Show thinking message but keep the regenerate button
                 aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
                 
@@ -269,7 +273,8 @@
                     },
                     body: JSON.stringify({
                         message: userMessage,
-                        system_prompt: document.getElementById('user-system-prompt').value
+                        system_prompt: document.getElementById('user-system-prompt').value,
+                        set_name: activeSet // Include active set
                     })
                 })
                 .then(response => {
@@ -439,6 +444,7 @@
         function sendMessage() {
             var userMessage = document.getElementById('user-input').value;
             var systemPrompt = "";
+            var activeSet = document.getElementById('set-selector').value; // Get active set
 
             {% if logged_in %}
                 systemPrompt = document.getElementById('user-system-prompt').value;
@@ -453,7 +459,8 @@
 
             var requestData = {
                 message: userMessage,
-                system_prompt: systemPrompt
+                system_prompt: systemPrompt,
+                set_name: activeSet // Include active set
             };
 
             fetch('/chat', {
