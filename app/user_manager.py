@@ -113,7 +113,8 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
         from flask import session
         if 'password' not in session:
             raise ValueError("Password not available for decryption")
-        key = _get_encryption_key(session['password'])
+        salt = get_user_salt(username)
+        key = _get_encryption_key(session['password'], salt)
         f = Fernet(key)
         with open(filepath, "rb") as file:
             encrypted_data = file.read()
@@ -154,7 +155,8 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         from flask import session
         if 'password' not in session:
             raise ValueError("Password not available for encryption") 
-        key = _get_encryption_key(session['password'])
+        salt = get_user_salt(username)
+        key = _get_encryption_key(session['password'], salt)
         f = Fernet(key)
         encrypted_data = f.encrypt(memory_content.encode())
         with open(filepath, "wb") as f:
@@ -177,7 +179,8 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
         from flask import session
         if 'password' not in session:
             raise ValueError("Password not available for decryption")
-        key = _get_encryption_key(session['password'])
+        salt = get_user_salt(username)
+        key = _get_encryption_key(session['password'], salt)
         f = Fernet(key)
         with open(filepath, "rb") as file:
             encrypted_data = file.read()
@@ -225,7 +228,8 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
             from flask import session
             if 'password' not in session:
                 raise ValueError("Password not available for encryption")
-            key = _get_encryption_key(session['password'])
+            salt = get_user_salt(username)
+            key = _get_encryption_key(session['password'], salt)
             f = Fernet(key)
             encrypted_data = f.encrypt(json.dumps(history).encode())
             with open(filepath, "wb") as f:
@@ -261,7 +265,8 @@ def load_user_chat_history(username: str, set_name: str = "default") -> list:
         from flask import session
         if 'password' not in session:
             raise ValueError("Password not available for decryption")
-        key = _get_encryption_key(session['password'])
+        salt = get_user_salt(username)
+        key = _get_encryption_key(session['password'], salt)
         f = Fernet(key)
         with open(filepath, "rb") as file:
             encrypted_data = file.read()
