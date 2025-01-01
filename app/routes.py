@@ -255,26 +255,26 @@ def regenerate():
 
     def generate():
         with response_lock:
-            stream = generate_text_stream(
-                user_message,
-                system_prompt,
-                MODEL_NAME,
-                user_session["history"],
-                memory_text,
-                bp.config
-            )
-
-            response_text = ""
             try:
+                stream = generate_text_stream(
+                    user_message,
+                    system_prompt,
+                    MODEL_NAME,
+                    user_session["history"],
+                    memory_text,
+                    bp.config
+                )
+
+                response_text = ""
                 for chunk in stream:
                     response_text += chunk
                     yield chunk
-            except Exception as e:
-                logger.error(f"Error during streaming: {str(e)}")
-                yield "\n[Error] An error occurred during response generation."
 
-            user_session["history"].append((user_message, response_text))
-            logger.info(f"Regenerated response. Length: {len(response_text)} characters")
+                user_session["history"].append((user_message, response_text))
+                logger.info(f"Regenerated response. Length: {len(response_text)} characters")
+            except Exception as e:
+                logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
+                yield f"\n[Error] Failed to generate response: {str(e)}"
 
     return Response(generate(), mimetype="text/plain")
 
