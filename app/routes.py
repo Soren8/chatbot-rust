@@ -2,7 +2,12 @@ import sys
 import time
 import logging
 import threading
+import os
+import json
 from collections import defaultdict
+
+# Define SETS_DIR constant
+SETS_DIR = "data/user_sets"
 from flask import (
     Blueprint, request, jsonify, Response, session, redirect, 
     url_for, render_template, current_app
