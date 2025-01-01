@@ -246,6 +246,16 @@ def chat():
             logger.info(
                 f"Chat response generated. Length: {len(response_text)} characters"
             )
+            
+            # Save chat history to the active set if logged in
+            if "username" in session:
+                active_set = request.json.get("set_name", "default")
+                save_user_chat_history(
+                    session["username"],
+                    user_session["history"],
+                    active_set,
+                    request.json.get("encrypted", False)
+                )
 
     return Response(generate(), mimetype="text/plain")
 
@@ -300,6 +310,16 @@ def regenerate():
 
                 user_session["history"].append((user_message, response_text))
                 logger.info(f"Regenerated response. Length: {len(response_text)} characters")
+                
+                # Save chat history to the active set if logged in
+                if "username" in session:
+                    active_set = request.json.get("set_name", "default")
+                    save_user_chat_history(
+                        session["username"],
+                        user_session["history"],
+                        active_set,
+                        request.json.get("encrypted", False)
+                    )
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
                 logger.error(f"Regeneration failed: {str(e)}", exc_info=True)
