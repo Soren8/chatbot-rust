@@ -256,10 +256,14 @@ def regenerate():
     memory_text = user_session["memory"] if "username" in session else ""
 
     def generate():
+        logger.info(f"[REGEN] Starting regeneration process for session {session_id}")
         with response_lock:
             try:
-                logger.info(f"Starting regeneration with: message='{user_message[:50]}...', system_prompt='{system_prompt[:50]}...', memory='{memory_text[:50]}...'")
-                logger.debug("Acquiring response lock for regeneration")
+                logger.info(f"[REGEN] Acquired lock, preparing to call LLM with:")
+                logger.info(f"[REGEN] - Message: '{user_message[:50]}...'")
+                logger.info(f"[REGEN] - System: '{system_prompt[:50]}...'")
+                logger.info(f"[REGEN] - Memory: '{memory_text[:50]}...'")
+                logger.info(f"[REGEN] - History length: {len(user_session['history'])} messages")
                 
                 stream = generate_text_stream(
                     user_message,
@@ -269,19 +273,31 @@ def regenerate():
                     memory_text,
                     bp.config
                 )
+                logger.info("[REGEN] LLM stream initialized, starting to process chunks")
 
                 response_text = ""
+                chunk_count = 0
+                empty_chunk_count = 0
+                
                 for chunk in stream:
-                    response_text += chunk
+                    chunk_count += 1
                     if chunk:
-                        logger.debug(f"Yielding chunk: {chunk[:50]}... (length: {len(chunk)} chars)")
+                        response_text += chunk
+                        logger.debug(f"[REGEN] Chunk #{chunk_count}: '{chunk[:50]}...' ({len(chunk)} chars)")
                         yield chunk
                     else:
-                        logger.warning("Empty chunk received from stream, skipping")
+                        empty_chunk_count += 1
+                        logger.warning(f"[REGEN] Empty chunk #{empty_chunk_count} received")
                         continue
 
-                user_session["history"].append((user_message, response_text))
-                logger.info(f"Successfully regenerated response. Length: {len(response_text)} characters")
+                logger.info(f"[REGEN] Stream complete: {chunk_count} total chunks ({empty_chunk_count} empty)")
+                logger.info(f"[REGEN] Final response length: {len(response_text)} characters")
+                
+                if response_text.strip():
+                    user_session["history"].append((user_message, response_text))
+                    logger.info("[REGEN] Response added to history")
+                else:
+                    logger.error("[REGEN] Generated empty response!")
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
                 yield f"\n[Error] Failed to generate response: {str(e)}"

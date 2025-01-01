@@ -87,7 +87,12 @@
                             return;
                         }
                         const chunk = decoder.decode(value, { stream: true });
-                        console.log('Received chunk:', chunk.length, 'chars:', chunk);
+                        console.log('[REGEN] Received chunk:', {
+                            length: chunk.length,
+                            content: chunk,
+                            isEmpty: !chunk,
+                            isWhitespace: chunk.trim().length === 0
+                        });
                         
                         // Always append non-null chunks, even if they're just whitespace
                         if (chunk) {
@@ -98,11 +103,18 @@
                             chatBox.scrollTop = chatBox.scrollHeight;
                             // Reset empty chunk counter if we got content
                             emptyChunkCount = 0;
+                            console.log('[REGEN] Updated message:', {
+                                totalLength: aiMessage.length,
+                                lastChunkLength: chunk.length
+                            });
                         } else {
-                            console.warn('Empty chunk received');
+                            console.warn('[REGEN] Empty chunk received', {
+                                emptyChunkCount: emptyChunkCount + 1,
+                                currentMessage: aiMessage.length
+                            });
                             emptyChunkCount++;
                             if (emptyChunkCount > 10) {
-                                console.error('Too many empty chunks, aborting');
+                                console.error('[REGEN] Too many empty chunks, aborting');
                                 throw new Error('Connection stalled - no data received');
                             }
                         }
