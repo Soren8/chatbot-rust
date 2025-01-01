@@ -273,10 +273,12 @@ def regenerate():
                 response_text = ""
                 for chunk in stream:
                     response_text += chunk
-                    logger.debug(f"Yielding chunk: {chunk[:50]}... (length: {len(chunk)} chars)")
-                    if not chunk.strip():
-                        logger.warning("Received empty chunk from stream")
-                    yield chunk
+                    if chunk:
+                        logger.debug(f"Yielding chunk: {chunk[:50]}... (length: {len(chunk)} chars)")
+                        yield chunk
+                    else:
+                        logger.warning("Empty chunk received from stream, skipping")
+                        continue
 
                 user_session["history"].append((user_message, response_text))
                 logger.info(f"Successfully regenerated response. Length: {len(response_text)} characters")

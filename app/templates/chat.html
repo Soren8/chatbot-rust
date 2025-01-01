@@ -87,18 +87,23 @@
                             return;
                         }
                         const chunk = decoder.decode(value, { stream: true });
-                        // Only process if we have content
-                        if (chunk.trim()) {
+                        console.log('Received chunk:', chunk.length, 'chars:', chunk);
+                        
+                        // Always append non-null chunks, even if they're just whitespace
+                        if (chunk) {
                             aiMessage += chunk;
                             aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
                             // Scroll to bottom
                             const chatBox = document.getElementById('chat-box');
                             chatBox.scrollTop = chatBox.scrollHeight;
+                            // Reset empty chunk counter if we got content
+                            emptyChunkCount = 0;
                         } else {
-                            // If we get empty chunks for too long, show error
+                            console.warn('Empty chunk received');
                             emptyChunkCount++;
-                            if (emptyChunkCount > 5) {
-                                throw new Error('No content received from server');
+                            if (emptyChunkCount > 10) {
+                                console.error('Too many empty chunks, aborting');
+                                throw new Error('Connection stalled - no data received');
                             }
                         }
                         return readStream();
