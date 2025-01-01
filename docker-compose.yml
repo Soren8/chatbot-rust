@@ -5,17 +5,4 @@ services:
     ports:
       - "5000:5000"
     env_file: .env
-    depends_on:
-      - ollama
     # volumes, networks, etc., can be defined here if needed
-
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    # Optional: Add environment variables if needed
-
-volumes:
-  ollama_data:
