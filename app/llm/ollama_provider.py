@@ -39,6 +39,9 @@ class OllamaProvider(BaseLLMProvider):
             "prompt": history_text,
             "system": system_prompt,
             "stream": True,
+            "options": {
+                "num_ctx": Config.MODEL_CONTEXT_SIZE
+            }
         }
 
         with requests.post(self.url, json=data, stream=True) as response:
