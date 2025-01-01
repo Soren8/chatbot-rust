@@ -170,14 +170,23 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ set_name: setName })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
             .then(data => {
-                document.getElementById('user-system-prompt').value = data.system_prompt;
-                document.getElementById('user-memory').value = data.memory;
+                document.getElementById('user-system-prompt').value = data.system_prompt || '';
+                document.getElementById('user-memory').value = data.memory || '';
                 
                 // Update encryption checkbox based on response
                 const encryptCheckbox = document.getElementById('encrypt-memory');
-                encryptCheckbox.checked = data.encrypted || false;
+                if (data.encrypted !== undefined) {
+                    encryptCheckbox.checked = Boolean(data.encrypted);
+                } else {
+                    encryptCheckbox.checked = false;
+                }
                 
                 // Clear existing chat
                 document.getElementById('chat-content').innerHTML = '';
@@ -194,6 +203,7 @@
             })
             .catch(error => {
                 console.error('Error loading set:', error);
+                appendMessage('<strong>Error:</strong> Failed to load set: ' + error.message, 'error-message');
             });
         });
 
