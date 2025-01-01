@@ -152,8 +152,48 @@
             const previousUserMessage = aiMessageElement.previousElementSibling;
             if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
                 const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
-                aiMessageElement.innerHTML = '<strong>AI:</strong> Thinking...';
-                sendMessage(userMessage, aiMessageElement);
+                // Show thinking message but keep the regenerate button
+                aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
+                
+                // Send regenerate request to backend
+                fetch('/regenerate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: userMessage,
+                        system_prompt: document.getElementById('user-system-prompt').value
+                    })
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.text().then(text => { 
+                            throw new Error(text || 'Network response was not ok'); 
+                        });
+                    }
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let aiMessage = '';
+
+                    function readStream() {
+                        reader.read().then(({ done, value }) => {
+                            if (done) return;
+                            const chunk = decoder.decode(value, { stream: true });
+                            aiMessage += chunk;
+                            aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
+                            readStream();
+                        }).catch(error => {
+                            console.error('Error reading stream:', error);
+                            aiMessageElement.innerHTML += '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
+                        });
+                    }
+                    readStream();
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                    aiMessageElement.innerHTML = `<strong>AI:</strong> <span class="error-message">Error: ${escapeHTML(error.message)}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
+                });
             }
         }
 
