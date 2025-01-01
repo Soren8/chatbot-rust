@@ -19,7 +19,7 @@ load_dotenv()
 
 # Set up logging for Docker and Gunicorn
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     stream=sys.stdout,
     force=True  # Override any existing configuration
