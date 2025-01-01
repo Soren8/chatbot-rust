@@ -5,4 +5,5 @@ services:
     ports:
       - "5000:5000"
     env_file: .env
-    # volumes, networks, etc., can be defined here if needed
+    volumes:
+      - ${HOST_DATA_DIR}:/app/data
