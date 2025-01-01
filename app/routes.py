@@ -227,6 +227,9 @@ def chat():
     memory_text = user_session["memory"] if "username" in session else ""
     system_prompt = user_session["system_prompt"] if "username" in session else "You are a helpful AI assistant."
 
+    # Get set_name before entering generator
+    set_name = request.json.get("set_name", "default")
+
     def generate():
         with response_lock:
             stream = generate_text_stream(
@@ -253,7 +256,6 @@ def chat():
             # Save history if user is logged in
             if session_id.startswith("guest_"):
                 return
-            set_name = request.json.get("set_name", "default")
             save_user_chat_history(session_id, user_session["history"], set_name)
 
     return Response(generate(), mimetype="text/plain")
