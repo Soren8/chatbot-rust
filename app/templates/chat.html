@@ -50,7 +50,12 @@
         if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
             const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
             // Show thinking message but keep the regenerate button
-            aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
+            aiMessageElement.innerHTML = `
+                <strong>AI:</strong> 
+                <span class="ai-message-text">Thinking...</span>
+                <div class="regenerate-container">
+                    <button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button>
+                </div>`;
             
             // Send regenerate request to backend
             fetch('/regenerate', {
@@ -97,7 +102,18 @@
                         // Always append non-null chunks, even if they're just whitespace
                         if (chunk) {
                             aiMessage += chunk;
-                            aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
+                            // Update only the AI message text, preserving the regenerate button
+                            const messageText = aiMessageElement.querySelector('.ai-message-text');
+                            if (messageText) {
+                                messageText.textContent = aiMessage;
+                            } else {
+                                aiMessageElement.innerHTML = `
+                                    <strong>AI:</strong> 
+                                    <span class="ai-message-text">${escapeHTML(aiMessage)}</span>
+                                    <div class="regenerate-container">
+                                        <button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button>
+                                    </div>`;
+                            }
                             // Scroll to bottom
                             const chatBox = document.getElementById('chat-box');
                             chatBox.scrollTop = chatBox.scrollHeight;

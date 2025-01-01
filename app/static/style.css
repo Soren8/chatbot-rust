@@ -111,6 +111,13 @@ body {
     text-align: left;
 }
 
+.ai-message-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    display: inline-block;
+    width: 100%;
+}
+
 .error-message {
     color: #e06a6a;
     font-weight: bold;
