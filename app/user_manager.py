@@ -352,7 +352,8 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
         from flask import session
         if 'password' not in session:
             raise ValueError("Password not available for encryption")
-        key = _get_encryption_key(session['password'])
+        salt = get_user_salt(username)
+        key = _get_encryption_key(session['password'], salt)
         f = Fernet(key)
         encrypted_data = f.encrypt(system_prompt.encode())
         with open(filepath, "wb") as f:
