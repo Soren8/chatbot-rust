@@ -342,6 +342,7 @@ def reset_chat():
             # Also save the empty history
             set_name = request.json.get("set_name", "default")
             save_user_chat_history(session["username"], [], set_name)
+            logger.info(f"Saved empty chat history for set '{set_name}'")
         logger.info(f"Chat history reset for session {session_id}")
 
     return jsonify({"status": "success", "message": "Chat history has been reset."})

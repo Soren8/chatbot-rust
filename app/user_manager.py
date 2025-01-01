@@ -188,6 +188,22 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
     
+    # Update sets.json
+    sets_file = os.path.join(user_sets_dir, "sets.json")
+    if os.path.exists(sets_file):
+        with open(sets_file, "r") as f:
+            sets = json.load(f)
+    else:
+        sets = {}
+    
+    sets[set_name] = {
+        "created": time.time(),
+        "encrypted": encrypted
+    }
+    
+    with open(sets_file, "w") as f:
+        json.dump(sets, f)
+    
     filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
     
     if encrypted:
