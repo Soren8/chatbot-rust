@@ -8,36 +8,6 @@ from flask import (
 
 MODEL_NAME = "dolphin3.1-8b"
 import logging
-import sys
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    stream=sys.stdout,
-    force=True
-)
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Add stdout handler if none exists
-if not logger.handlers:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
-    handler.setLevel(logging.INFO)
-    logger.addHandler(handler)
-
-# Ensure all loggers propagate and have proper level
-for name in logging.root.manager.loggerDict:
-    log = logging.getLogger(name)
-    log.setLevel(logging.INFO)
-    if not log.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
-        handler.setLevel(logging.INFO)
-        log.addHandler(handler)
-
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
@@ -47,12 +17,6 @@ from app.chat_logic import generate_text_stream
 from app.config import Config
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-# Add stdout handler if none exists
-if not logger.handlers:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
-    logger.addHandler(handler)
 
 bp = Blueprint("main", __name__)
 
