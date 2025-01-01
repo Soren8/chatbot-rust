@@ -251,9 +251,10 @@ def chat():
             logger.info(f"Chat response generated. Length: {len(response_text)} characters")
             
             # Save history if user is logged in
-            if "username" in session:
-                set_name = request.json.get("set_name", "default")
-                save_user_chat_history(session["username"], user_session["history"], set_name)
+            if session_id.startswith("guest_"):
+                return
+            set_name = request.json.get("set_name", "default")
+            save_user_chat_history(session_id, user_session["history"], set_name)
 
     return Response(generate(), mimetype="text/plain")
 
