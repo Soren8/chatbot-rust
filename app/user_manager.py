@@ -412,10 +412,13 @@ def delete_set(username: str, set_name: str) -> bool:
     # Delete associated files
     memory_file = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
     prompt_file = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
+    history_file = os.path.join(user_sets_dir, f"{set_name}_history.json")
     
     if os.path.exists(memory_file):
         os.remove(memory_file)
     if os.path.exists(prompt_file):
         os.remove(prompt_file)
+    if os.path.exists(history_file):
+        os.remove(history_file)
     
     return True
