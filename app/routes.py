@@ -18,7 +18,9 @@ from app.chat_logic import generate_text_stream
 from app.config import Config
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Set to DEBUG level
+logger.setLevel(logging.DEBUG)
+# Ensure logs propagate up to the root logger
+logger.propagate = True
 
 bp = Blueprint("main", __name__)
 
@@ -257,6 +259,7 @@ def regenerate():
         with response_lock:
             try:
                 logger.info(f"Starting regeneration with: message='{user_message[:50]}...', system_prompt='{system_prompt[:50]}...', memory='{memory_text[:50]}...'")
+                logger.debug("Acquiring response lock for regeneration")
                 
                 stream = generate_text_stream(
                     user_message,
@@ -270,7 +273,9 @@ def regenerate():
                 response_text = ""
                 for chunk in stream:
                     response_text += chunk
-                    logger.debug(f"Yielding chunk: {chunk[:50]}...")
+                    logger.debug(f"Yielding chunk: {chunk[:50]}... (length: {len(chunk)} chars)")
+                    if not chunk.strip():
+                        logger.warning("Received empty chunk from stream")
                     yield chunk
 
                 user_session["history"].append((user_message, response_text))

@@ -17,14 +17,16 @@ from dotenv import load_dotenv  # Import dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Set up logging for Docker
+# Set up logging for Docker and Gunicorn
 logging.basicConfig(
-    level=logging.DEBUG,  # Set to DEBUG level
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)  # Log to stdout for Docker
-    ]
+    force=True  # Override any existing configuration
 )
+# Ensure all loggers propagate to root
+for name in logging.root.manager.loggerDict:
+    logging.getLogger(name).propagate = True
+    logging.getLogger(name).setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Ollama model name
