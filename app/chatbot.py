@@ -26,17 +26,23 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 # Add stdout handler if none exists
 if not logger.handlers:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+    handler.setLevel(logging.INFO)
     logger.addHandler(handler)
 
 # Ensure all loggers propagate and have proper level
 for name in logging.root.manager.loggerDict:
     log = logging.getLogger(name)
-    log.setLevel(logging.DEBUG)
+    log.setLevel(logging.INFO)
     if not log.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+        handler.setLevel(logging.INFO)
         log.addHandler(handler)
 
 # Ollama model name
