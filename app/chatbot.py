@@ -312,7 +312,8 @@ def regenerate():
                 for chunk in stream:
                     response_text += chunk
                     if not chunk.strip():
-                        # Removed debug log for empty chunks
+                        # Skip empty chunks
+                        continue
                     yield chunk
 
                 user_session["history"].append((user_message, response_text))
