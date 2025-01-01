@@ -38,6 +38,8 @@ requests_per_ip = {}
 MAX_REQUESTS_PER_MINUTE = 60
 
 def register_routes(app):
+    # Store the config in the blueprint
+    bp.config = app.config
     app.register_blueprint(bp)
 
 @bp.before_app_request
@@ -212,7 +214,7 @@ def chat():
                 MODEL_NAME,
                 user_session["history"],
                 memory_text,
-                current_app.config
+                bp.config
             )
 
             response_text = ""
