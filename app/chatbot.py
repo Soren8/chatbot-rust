@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
-    create_new_set, delete_set as delete_user_set
+    create_new_set, delete_set as delete_user_set, save_user_chat_history
 )
 from chat_logic import generate_text_stream
 
