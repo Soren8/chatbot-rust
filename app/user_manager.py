@@ -12,12 +12,14 @@ MEMORY_DIR = "data/memory"
 SYSTEM_PROMPT_DIR = "data/system_prompts"
 USERS_FILE = "data/users.json"
 SETS_DIR = "data/user_sets"
+SALT_DIR = "data/salts"
 
 # Ensure necessary directories exist
+os.makedirs("data", exist_ok=True)
 os.makedirs(MEMORY_DIR, exist_ok=True)
 os.makedirs(SYSTEM_PROMPT_DIR, exist_ok=True)
 os.makedirs(SETS_DIR, exist_ok=True)
-os.makedirs("data", exist_ok=True)
+os.makedirs(SALT_DIR, exist_ok=True)
 
 # Initialize users file if it doesn't exist
 if not os.path.exists(USERS_FILE):
@@ -58,12 +60,24 @@ def validate_user(username: str, password: str) -> bool:
         return bcrypt.checkpw(password.encode('utf-8'), stored_hashed_password)
     return False
 
-def _get_encryption_key(password: str) -> bytes:
-    """Generate encryption key from password"""
+def get_user_salt(username: str) -> bytes:
+    """Retrieve or generate a per-user salt."""
+    filepath = os.path.join(SALT_DIR, f"{username}_salt")
+    if os.path.exists(filepath):
+        with open(filepath, "rb") as f:
+            return f.read()
+    # Generate a new salt
+    new_salt = os.urandom(16)
+    with open(filepath, "wb") as f:
+        f.write(new_salt)
+    return new_salt
+
+def _get_encryption_key(password: str, salt: bytes) -> bytes:
+    """Generate encryption key from password and salt."""
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=b'static_salt',
+        salt=salt,
         iterations=100000,
     )
     key = kdf.derive(password.encode())
