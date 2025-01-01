@@ -194,6 +194,7 @@ def chat():
 
     user_message = request.json.get("message", "")
     new_system_prompt = request.json.get("system_prompt", None)
+    active_set = request.json.get("set_name", "default")  # Get active set from request
 
     # If logged in, use their session; if not, use a temporary session_id
     session_id = session.get("username", "guest_" + request.remote_addr)
@@ -208,7 +209,12 @@ def chat():
         logger.info("Updating system prompt")
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
-            save_user_system_prompt(session["username"], new_system_prompt)
+            save_user_system_prompt(
+                session["username"], 
+                new_system_prompt,
+                active_set,  # Use active set instead of default
+                request.json.get("encrypted", False)
+            )
 
     if response_lock.locked():
         return jsonify(
@@ -249,7 +255,7 @@ def chat():
             
             # Save chat history to the active set if logged in
             if "username" in session:
-                active_set = request.json.get("set_name", "default")
+                active_set  # Use the active set we already extracted
                 save_user_chat_history(
                     session["username"],
                     user_session["history"],
@@ -265,6 +271,7 @@ def regenerate():
 
     user_message = request.json.get("message", "")
     system_prompt = request.json.get("system_prompt", "")
+    active_set = request.json.get("set_name", "default")  # Get active set from request
 
     session_id = session.get("username", "guest_" + request.remote_addr)
     user_session = sessions[session_id]
@@ -313,7 +320,7 @@ def regenerate():
                 
                 # Save chat history to the active set if logged in
                 if "username" in session:
-                    active_set = request.json.get("set_name", "default")
+                    active_set  # Use the active set we already extracted
                     save_user_chat_history(
                         session["username"],
                         user_session["history"],
