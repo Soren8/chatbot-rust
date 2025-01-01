@@ -18,7 +18,7 @@ from app.chat_logic import generate_text_stream
 from app.config import Config
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)  # Set to DEBUG level
 
 bp = Blueprint("main", __name__)
 

@@ -17,10 +17,13 @@ from dotenv import load_dotenv  # Import dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Set up logging
+# Set up logging for Docker
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Set to DEBUG level
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Log to stdout for Docker
+    ]
 )
 logger = logging.getLogger(__name__)
 
