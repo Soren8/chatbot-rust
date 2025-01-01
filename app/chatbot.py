@@ -246,6 +246,60 @@ def chat():
 
     return Response(generate(), mimetype="text/plain")
 
+@app.route("/regenerate", methods=["POST"])
+def regenerate():
+    clean_old_sessions()
+
+    user_message = request.json.get("message", "")
+    system_prompt = request.json.get("system_prompt", "")
+
+    session_id = session.get("username", "guest_" + request.remote_addr)
+    user_session = sessions[session_id]
+    user_session["last_used"] = time.time()
+
+    logger.info(f"Received regenerate request. Session: {session_id[:8]}... Message: {user_message[:50]}...")
+
+    # Remove the last response from history
+    if user_session["history"] and user_session["history"][-1][0] == user_message:
+        user_session["history"].pop()
+
+    if response_lock.locked():
+        return jsonify(
+            {
+                "error": "A response is currently being generated. Please wait and try again."
+            }
+        ), 429
+
+    memory_text = user_session["memory"] if "username" in session else ""
+
+    def generate():
+        with response_lock:
+            stream = generate_text_stream(
+                user_message,
+                system_prompt,
+                MODEL_NAME,
+                user_session["history"],
+                memory_text,
+                app.config
+            )
+
+            response_text = ""
+            try:
+                for chunk in stream:
+                    response_text += chunk
+                    yield chunk
+            except Exception as e:
+                logger.error(f"Error during streaming: {str(e)}")
+                yield "\n[Error] An error occurred during response generation."
+
+            # Update conversation history with the new response
+            user_session["history"].append((user_message, response_text))
+            logger.info(
+                f"Regenerated response successfully. Length: {len(response_text)} characters"
+            )
+
+    return Response(generate(), mimetype="text/plain")
+
 @app.route("/reset_chat", methods=["POST"])
 def reset_chat():
     session_id = session.get("username", "guest_" + request.remote_addr)
