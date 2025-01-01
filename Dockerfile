@@ -12,4 +12,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app/
 
 # Run the Flask app with Gunicorn in production with debug logging
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--log-level", "debug", "app:create_app()"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--log-level", "debug", "--capture-output", "app:create_app()"]

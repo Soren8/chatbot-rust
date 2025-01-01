@@ -16,7 +16,7 @@ from chat_logic import generate_text_stream
 
 # Configure logging first, before any other imports or code
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
