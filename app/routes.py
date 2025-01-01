@@ -10,8 +10,9 @@ MODEL_NAME = "dolphin3.1-8b"
 import logging
 import sys
 
-# Get logger for this module
+# Get logger for this module and ensure it propagates
 logger = logging.getLogger(__name__)
+logger.propagate = True
 
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,

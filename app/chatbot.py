@@ -17,7 +17,7 @@ from dotenv import load_dotenv  # Import dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure root logger
+# Configure root logger with INFO level
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
@@ -25,14 +25,15 @@ root_logger.setLevel(logging.INFO)
 for handler in root_logger.handlers[:]:
     root_logger.removeHandler(handler)
 
-# Add stdout handler to root logger
+# Add stdout handler to root logger with INFO level
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
 handler.setLevel(logging.INFO)
 root_logger.addHandler(handler)
 
-# Get logger for this module
+# Get logger for this module and ensure it propagates
 logger = logging.getLogger(__name__)
+logger.propagate = True
 
 # Ollama model name
 MODEL_NAME = "dolphin3.1-8b"
