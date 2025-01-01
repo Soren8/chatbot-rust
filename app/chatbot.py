@@ -257,6 +257,7 @@ def regenerate():
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
+    memory_text = user_session["memory"] if "username" in session else ""
     logger.info(f"Regenerate request details - Session: {session_id[:8]} | Message: {user_message[:50]}... | System Prompt: {system_prompt[:50]}... | Memory: {memory_text[:50]}...")
 
     # Remove the last response from history
