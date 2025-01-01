@@ -1,0 +1,7 @@
+Flask
+requests
+bcrypt
+cryptography
+python-dotenv
+gunicorn
+openai

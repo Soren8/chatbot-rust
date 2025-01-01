@@ -225,7 +225,8 @@ def chat():
                 system_prompt,
                 MODEL_NAME,
                 user_session["history"],
-                memory_text
+                memory_text,
+                app.config
             )
 
             response_text = ""

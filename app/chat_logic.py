@@ -1,0 +1,22 @@
+from app.llm.ollama_provider import OllamaProvider
+from app.llm.openai_provider import OpenAIProvider
+
+def get_llm_provider(config):
+    """
+    Decide which LLM provider to use, based on configuration.
+    """
+    provider_name = config.get('LLM_PROVIDER', 'ollama')
+    model_name = config.get('MODEL_NAME', 'dolphin3.1-8b')
+    openai_key = config.get('OPENAI_API_KEY', '')
+
+    if provider_name.lower() == 'openai':
+        return OpenAIProvider(api_key=openai_key, model=model_name)
+    else:
+        return OllamaProvider(model_name=model_name)
+
+def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text, config):
+    """
+    Get the appropriate LLM provider and stream the response.
+    """
+    llm = get_llm_provider(config)
+    return llm.generate_text_stream(prompt, system_prompt, session_history, memory_text)
