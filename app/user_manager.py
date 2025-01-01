@@ -1,6 +1,9 @@
 import os
 import json
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 import bcrypt
 from typing import Dict
 from base64 import b64encode, b64decode
@@ -187,14 +190,17 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     """Save chat history for a user's set"""
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
+    logger.debug(f"Ensured user sets directory exists: {user_sets_dir}")
     
     # Update sets.json
     sets_file = os.path.join(user_sets_dir, "sets.json")
     if os.path.exists(sets_file):
         with open(sets_file, "r") as f:
             sets = json.load(f)
+        logger.debug(f"Loaded existing sets.json for user {username}")
     else:
         sets = {}
+        logger.debug(f"Creating new sets.json for user {username}")
     
     sets[set_name] = {
         "created": time.time(),
@@ -203,8 +209,10 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
+    logger.debug(f"Updated sets.json for user {username} with set {set_name}")
     
     filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
+    logger.debug(f"Saving chat history to: {filepath}")
     
     if encrypted:
         from flask import session
@@ -215,9 +223,11 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
         encrypted_data = f.encrypt(json.dumps(history).encode())
         with open(filepath, "wb") as f:
             f.write(encrypted_data)
+        logger.debug(f"Saved encrypted chat history for user {username}, set {set_name}")
     else:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(history, f)
+        logger.debug(f"Saved plaintext chat history for user {username}, set {set_name}")
 
 def load_user_chat_history(username: str, set_name: str = "default") -> list:
     """Load chat history for a user's set"""
