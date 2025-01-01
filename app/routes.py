@@ -256,6 +256,8 @@ def regenerate():
     def generate():
         with response_lock:
             try:
+                logger.info(f"Starting regeneration with: message='{user_message[:50]}...', system_prompt='{system_prompt[:50]}...', memory='{memory_text[:50]}...'")
+                
                 stream = generate_text_stream(
                     user_message,
                     system_prompt,
@@ -268,10 +270,11 @@ def regenerate():
                 response_text = ""
                 for chunk in stream:
                     response_text += chunk
+                    logger.debug(f"Yielding chunk: {chunk[:50]}...")
                     yield chunk
 
                 user_session["history"].append((user_message, response_text))
-                logger.info(f"Regenerated response. Length: {len(response_text)} characters")
+                logger.info(f"Successfully regenerated response. Length: {len(response_text)} characters")
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
                 yield f"\n[Error] Failed to generate response: {str(e)}"
