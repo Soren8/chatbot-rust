@@ -303,7 +303,7 @@ def regenerate():
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
                 logger.error(f"Regeneration failed: {str(e)}", exc_info=True)
-                yield f"\n[Error] Failed to generate response: {str(e)}\n\n<div class='regenerate-container'><button class='regenerate-button' onclick='regenerateMessage(this)'>⟳ Try Again</button></div>"
+                yield f"\n[Error] Failed to generate response: {str(e)}\n\n<div class='regenerate-container'><button class='regenerate-button' onclick='regenerateMessage(this)'>⟳</button></div>"
 
     return Response(generate(), mimetype="text/plain")
 
