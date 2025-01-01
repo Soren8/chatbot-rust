@@ -82,7 +82,7 @@
                             const button = aiMessageElement.querySelector('.regenerate-button');
                             if (button) {
                                 button.disabled = false;
-                                button.textContent = "⟳ Regenerate";
+                                button.textContent = "⟳";
                             }
                             return;
                         }
@@ -130,7 +130,7 @@
                 
                 readStream().catch(error => {
                     console.error('Error reading stream:', error);
-                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
+                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
                 });
             })
             .catch(error => {
@@ -286,7 +286,7 @@
                 })
                 .catch(error => {
                     console.error('Fetch error:', error);
-                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">Error: ${escapeHTML(error.message)}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
+                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">Error: ${escapeHTML(error.message)}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
                     // Scroll to bottom
                     const chatBox = document.getElementById('chat-box');
                     chatBox.scrollTop = chatBox.scrollHeight;
