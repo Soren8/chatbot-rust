@@ -118,7 +118,7 @@ body {
 
 .regenerate-container {
     position: relative;
-    margin-top: 10px;
+    margin-top: 5px;
 }
 
 .regenerate-button {
@@ -128,14 +128,16 @@ body {
     background-color: #3a3a3a;
     color: #d0d0d0;
     border: none;
-    padding: 5px 10px;
+    padding: 3px 8px;
     border-radius: 3px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 11px;
+    line-height: 1.2;
 }
 
 .regenerate-button:hover {
     background-color: #4a4a4a;
+    transform: scale(1.05);
 }
 
 .system-message {
