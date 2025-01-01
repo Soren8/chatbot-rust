@@ -118,7 +118,8 @@ body {
 
 .regenerate-container {
     position: relative;
-    margin-top: 5px;
+    display: inline-block;
+    margin-left: 8px;
 }
 
 .regenerate-button {
