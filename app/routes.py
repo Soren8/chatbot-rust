@@ -183,9 +183,9 @@ def update_memory():
 
     user_memory = request.json.get("memory", "")
     set_name = request.json.get("set_name", "default")
+    encrypted = request.json.get("encrypted", False)
     username = session["username"]
     sessions[username]["memory"] = user_memory
-    encrypted = request.json.get("encrypted", False)
     save_user_memory(username, user_memory, set_name, encrypted)
     return jsonify({"status": "success"})
 
@@ -196,9 +196,9 @@ def update_system_prompt():
 
     system_prompt = request.json.get("system_prompt", "")
     set_name = request.json.get("set_name", "default")
+    encrypted = request.json.get("encrypted", False)
     username = session["username"]
     sessions[username]["system_prompt"] = system_prompt
-    encrypted = request.json.get("encrypted", False)
     save_user_system_prompt(username, system_prompt, set_name, encrypted)
     return jsonify({"status": "success"})
 
