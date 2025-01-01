@@ -1,39 +1,31 @@
 import os
 import sys
-import logging
-from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
+import json
 import time
+import logging
 import threading
 from collections import defaultdict
-import json
+from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
+from dotenv import load_dotenv
 from user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
     create_new_set, delete_set as delete_user_set
 )
 from chat_logic import generate_text_stream
-from dotenv import load_dotenv  # Import dotenv
+
+# Configure logging first, before any other imports or code
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
-
-# Configure root logger with INFO level
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
-
-# Remove any existing handlers to avoid duplicates
-for handler in root_logger.handlers[:]:
-    root_logger.removeHandler(handler)
-
-# Add stdout handler to root logger with INFO level
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
-handler.setLevel(logging.INFO)
-root_logger.addHandler(handler)
-
-# Get logger for this module and ensure it propagates
-logger = logging.getLogger(__name__)
-logger.propagate = True
 
 # Ollama model name
 MODEL_NAME = "dolphin3.1-8b"

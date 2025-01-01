@@ -1,18 +1,24 @@
 import sys
 import time
+import logging
 import threading
 from collections import defaultdict
 from flask import (
-    Blueprint, request, jsonify, Response, session, redirect, url_for, render_template, current_app
+    Blueprint, request, jsonify, Response, session, redirect, 
+    url_for, render_template, current_app
 )
 
-MODEL_NAME = "dolphin3.1-8b"
-import logging
-import sys
+# Configure logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
-# Get logger for this module and ensure it propagates
+# Get logger for this module
 logger = logging.getLogger(__name__)
-logger.propagate = True
+
+MODEL_NAME = "dolphin3.1-8b"
 
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
