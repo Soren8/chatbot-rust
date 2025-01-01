@@ -73,6 +73,7 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder('utf-8');
                 let aiMessage = '';
+                let emptyChunkCount = 0;
 
                 function readStream() {
                     return reader.read().then(({ done, value }) => {
@@ -86,13 +87,19 @@
                             return;
                         }
                         const chunk = decoder.decode(value, { stream: true });
-                        aiMessage += chunk;
-                        // Only update if we got new content
+                        // Only process if we have content
                         if (chunk.trim()) {
+                            aiMessage += chunk;
                             aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳ Regenerating...</button></div>`;
                             // Scroll to bottom
                             const chatBox = document.getElementById('chat-box');
                             chatBox.scrollTop = chatBox.scrollHeight;
+                        } else {
+                            // If we get empty chunks for too long, show error
+                            emptyChunkCount++;
+                            if (emptyChunkCount > 5) {
+                                throw new Error('No content received from server');
+                            }
                         }
                         return readStream();
                     });
@@ -256,7 +263,10 @@
                 })
                 .catch(error => {
                     console.error('Fetch error:', error);
-                    aiMessageElement.innerHTML = `<strong>AI:</strong> <span class="error-message">Error: ${escapeHTML(error.message)}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
+                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">Error: ${escapeHTML(error.message)}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
+                    // Scroll to bottom
+                    const chatBox = document.getElementById('chat-box');
+                    chatBox.scrollTop = chatBox.scrollHeight;
                 });
             }
         }
