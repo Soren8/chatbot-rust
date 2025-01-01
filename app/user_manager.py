@@ -212,7 +212,7 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     logger.debug(f"Updated sets.json for user {username} with set {set_name}")
     
     filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
-    logger.debug(f"Saving chat history to: {filepath}")
+    logger.debug(f"Saving chat history for user {username}, set {set_name} to file: {filepath}")
     
     if encrypted:
         from flask import session
