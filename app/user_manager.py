@@ -214,20 +214,37 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
     logger.debug(f"Saving chat history for user {username}, set {set_name} to file: {filepath}")
     
-    if encrypted:
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for encryption")
-        key = _get_encryption_key(session['password'])
-        f = Fernet(key)
-        encrypted_data = f.encrypt(json.dumps(history).encode())
-        with open(filepath, "wb") as f:
-            f.write(encrypted_data)
-        logger.debug(f"Saved encrypted chat history for user {username}, set {set_name}")
-    else:
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(history, f)
-        logger.debug(f"Saved plaintext chat history for user {username}, set {set_name}")
+    try:
+        # Log directory permissions
+        logger.debug(f"Directory permissions for {user_sets_dir}: {oct(os.stat(user_sets_dir).st_mode & 0o777)}")
+        
+        # Log file existence before write
+        logger.debug(f"File exists before write: {os.path.exists(filepath)}")
+        
+        if encrypted:
+            from flask import session
+            if 'password' not in session:
+                raise ValueError("Password not available for encryption")
+            key = _get_encryption_key(session['password'])
+            f = Fernet(key)
+            encrypted_data = f.encrypt(json.dumps(history).encode())
+            with open(filepath, "wb") as f:
+                f.write(encrypted_data)
+            logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
+        else:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(history, f)
+            logger.debug(f"Successfully saved plaintext chat history for user {username}, set {set_name}")
+            
+        # Verify file was written
+        if os.path.exists(filepath):
+            logger.debug(f"File successfully written. Size: {os.path.getsize(filepath)} bytes")
+        else:
+            logger.error("File was not created despite successful write operation!")
+            
+    except Exception as e:
+        logger.error(f"Failed to save chat history: {str(e)}", exc_info=True)
+        raise
 
 def load_user_chat_history(username: str, set_name: str = "default") -> list:
     """Load chat history for a user's set"""
