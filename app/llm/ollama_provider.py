@@ -13,8 +13,10 @@ class OllamaProvider(BaseLLMProvider):
         self.url = f"http://{Config.OLLAMA_HOST}:{Config.OLLAMA_PORT}/api/generate"
 
     def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
-        # Truncate memory if too long
-        max_memory_length = 2000
+        from app.config import Config
+        
+        # Truncate memory if too long relative to context size
+        max_memory_length = int(Config.MODEL_CONTEXT_SIZE * 0.2)  # 20% of context size
         memory_text = memory_text[:max_memory_length]
 
         # Build the prompt
