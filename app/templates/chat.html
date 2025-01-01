@@ -165,6 +165,8 @@
         // Handle set selection change
         document.getElementById('set-selector').addEventListener('change', function() {
             const setName = this.value;
+            console.log(`Loading set: ${setName}`);
+            
             fetch('/load_set', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -172,16 +174,20 @@
             })
             .then(response => {
                 if (!response.ok) {
+                    console.error('Network response not OK:', response.status);
                     throw new Error('Network response was not ok');
                 }
                 return response.json();
             })
             .then(data => {
+                console.log('Received set data:', data);
+                
                 document.getElementById('user-system-prompt').value = data.system_prompt || '';
                 document.getElementById('user-memory').value = data.memory || '';
                 
                 // Update encryption checkbox based on response
                 const encryptCheckbox = document.getElementById('encrypt-memory');
+                console.log(`Setting encryption checkbox to: ${data.encrypted}`);
                 if (data.encrypted !== undefined) {
                     encryptCheckbox.checked = Boolean(data.encrypted);
                 } else {
@@ -193,6 +199,7 @@
                 
                 // Load chat history
                 if (data.history && data.history.length > 0) {
+                    console.log(`Loading ${data.history.length} history items`);
                     data.history.forEach(([userMsg, aiMsg]) => {
                         appendMessage('<strong>You:</strong> ' + escapeHTML(userMsg), 'user-message');
                         appendMessage('<strong>AI:</strong> ' + escapeHTML(aiMsg), 'ai-message');

@@ -165,35 +165,50 @@ def load_set():
     username = session["username"]
     set_name = request.json.get("set_name")
     
+    logger.debug(f"Loading set '{set_name}' for user '{username}'")
+    
     # Get encryption status from sets.json
     sets_file = os.path.join(SETS_DIR, username, "sets.json")
     encrypted = False
     if os.path.exists(sets_file):
         try:
+            logger.debug(f"Reading sets file: {sets_file}")
             with open(sets_file, "r") as f:
                 sets = json.load(f)
+                logger.debug(f"Sets file contents: {sets}")
                 if set_name in sets:
                     encrypted = sets[set_name].get("encrypted", False)
+                    logger.debug(f"Set '{set_name}' encryption status: {encrypted}")
+                else:
+                    logger.debug(f"Set '{set_name}' not found in sets.json")
         except Exception as e:
             logger.error(f"Error reading sets.json: {str(e)}")
+            logger.debug("Traceback:", exc_info=True)
+    else:
+        logger.debug(f"Sets file does not exist: {sets_file}")
     
     # Load data
+    logger.debug("Loading memory...")
     memory = load_user_memory(username, set_name)
+    logger.debug("Loading system prompt...")
     system_prompt = load_user_system_prompt(username, set_name)
+    logger.debug("Loading chat history...")
     history = load_user_chat_history(username, set_name)
     
     # Update session with loaded data
     session_id = session.get("username")
     if session_id in sessions:
+        logger.debug("Updating session data...")
         sessions[session_id]["memory"] = memory
         sessions[session_id]["system_prompt"] = system_prompt
         sessions[session_id]["history"] = history
         
+    logger.debug(f"Returning data for set '{set_name}'")
     return jsonify({
         "memory": memory,
         "system_prompt": system_prompt,
         "history": history,
-        "encrypted": encrypted  # Ensure this is included
+        "encrypted": encrypted
     })
 
 @bp.route("/update_memory", methods=["POST"])
