@@ -10,7 +10,7 @@ class OllamaProvider(BaseLLMProvider):
     def __init__(self, model_name="dolphin3.1-8b"):
         self.model_name = model_name
         # Adjust URL if needed:
-        self.url = "http://localhost:11434/api/generate"
+        self.url = "http://ollama:11434/api/generate"
 
     def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
         # Truncate memory if too long
