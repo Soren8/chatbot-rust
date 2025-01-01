@@ -163,6 +163,15 @@ def load_set():
     system_prompt = load_user_system_prompt(username, set_name)
     history = load_user_chat_history(username, set_name)
     
+    # Get encryption status from sets.json
+    sets_file = os.path.join(SETS_DIR, username, "sets.json")
+    encrypted = False
+    if os.path.exists(sets_file):
+        with open(sets_file, "r") as f:
+            sets = json.load(f)
+            if set_name in sets:
+                encrypted = sets[set_name].get("encrypted", False)
+    
     # Update session with loaded data
     session_id = session.get("username")
     if session_id in sessions:
@@ -173,7 +182,8 @@ def load_set():
     return jsonify({
         "memory": memory,
         "system_prompt": system_prompt,
-        "history": history
+        "history": history,
+        "encrypted": encrypted  # Add encryption status
     })
 
 @bp.route("/update_memory", methods=["POST"])

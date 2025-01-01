@@ -175,6 +175,9 @@
                 document.getElementById('user-system-prompt').value = data.system_prompt;
                 document.getElementById('user-memory').value = data.memory;
                 
+                // Update encryption checkbox
+                document.getElementById('encrypt-memory').checked = data.encrypted || false;
+                
                 // Clear existing chat
                 document.getElementById('chat-content').innerHTML = '';
                 
