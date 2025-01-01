@@ -212,12 +212,12 @@ def chat():
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
-    logger.debug(
-        f"Received chat request. Session: {session_id[:8]}... Message: {user_message[:50]}..."
+    logger.info(
+        f"Received chat request. Session: {session_id[:8]}..."
     )
 
     if new_system_prompt is not None:
-        logger.debug(f"Updating system prompt to: {new_system_prompt[:50]}...")
+        logger.info("Updating system prompt")
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
             save_user_system_prompt(session["username"], new_system_prompt)
@@ -255,8 +255,8 @@ def chat():
 
             # Update conversation history after the full response is generated
             user_session["history"].append((user_message, response_text))
-            logger.debug(
-                f"Chat response generated successfully. Length: {len(response_text)} characters"
+            logger.info(
+                f"Chat response generated. Length: {len(response_text)} characters"
             )
 
     return Response(generate(), mimetype="text/plain")
@@ -273,7 +273,7 @@ def regenerate():
     user_session["last_used"] = time.time()
 
     memory_text = user_session["memory"] if "username" in session else ""
-    logger.debug(f"Regenerate request details - Session: {session_id[:8]} | Message: {user_message[:50]}... | System Prompt: {system_prompt[:50]}... | Memory: {memory_text[:50]}...")
+    logger.info(f"Regenerate request - Session: {session_id[:8]}")
 
     # Remove the last response from history
     if user_session["history"] and user_session["history"][-1][0] == user_message:
@@ -306,11 +306,11 @@ def regenerate():
                 for chunk in stream:
                     response_text += chunk
                     if not chunk.strip():
-                        logger.debug("Received empty chunk from stream")
+                        # Removed debug log for empty chunks
                     yield chunk
 
                 user_session["history"].append((user_message, response_text))
-                logger.debug(f"Successfully regenerated response. Length: {len(response_text)} characters")
+                logger.info(f"Regenerated response. Length: {len(response_text)} characters")
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
                 logger.error(f"Regeneration failed: {str(e)}", exc_info=True)

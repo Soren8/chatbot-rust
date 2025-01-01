@@ -205,10 +205,10 @@ def chat():
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
-    logger.debug(f"Received chat request. Session: {session_id} | Message: {user_message[:50]}...")
+    logger.info(f"Received chat request. Session: {session_id}")
 
     if new_system_prompt is not None:
-        logger.debug(f"Updating system prompt to: {new_system_prompt[:50]}...")
+        logger.info("Updating system prompt")
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
             save_user_system_prompt(session["username"], new_system_prompt)
@@ -240,7 +240,7 @@ def chat():
                 yield "\n[Error] An error occurred during response generation."
 
             user_session["history"].append((user_message, response_text))
-            logger.debug(f"Chat response generated. Length: {len(response_text)} characters")
+            logger.info(f"Chat response generated. Length: {len(response_text)} characters")
 
     return Response(generate(), mimetype="text/plain")
 
@@ -255,7 +255,7 @@ def regenerate():
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
-    logger.debug(f"Received regenerate request. Session: {session_id} | Message: {user_message[:50]}...")
+    logger.info(f"Received regenerate request. Session: {session_id}")
 
     # Remove the last response from history
     if user_session["history"] and user_session["history"][-1][0] == user_message:
@@ -267,14 +267,10 @@ def regenerate():
     memory_text = user_session["memory"] if "username" in session else ""
 
     def generate():
-        logger.debug(f"[REGEN] Starting regeneration process for session {session_id}")
+        logger.info(f"Starting regeneration for session {session_id}")
         with response_lock:
             try:
-                logger.debug(f"[REGEN] Acquired lock, preparing to call LLM with:")
-                logger.debug(f"[REGEN] - Message: '{user_message[:50]}...'")
-                logger.debug(f"[REGEN] - System: '{system_prompt[:50]}...'")
-                logger.debug(f"[REGEN] - Memory: '{memory_text[:50]}...'")
-                logger.debug(f"[REGEN] - History length: {len(user_session['history'])} messages")
+                logger.info("Preparing to call LLM for regeneration")
                 
                 stream = generate_text_stream(
                     user_message,
@@ -284,7 +280,7 @@ def regenerate():
                     memory_text,
                     bp.config
                 )
-                logger.debug("[REGEN] LLM stream initialized, starting to process chunks")
+                logger.info("LLM stream initialized")
 
                 response_text = ""
                 chunk_count = 0
@@ -297,17 +293,16 @@ def regenerate():
                         yield chunk
                     else:
                         empty_chunk_count += 1
-                        logger.debug(f"[REGEN] Empty chunk #{empty_chunk_count} received")
+                        # Removed debug log for empty chunks
                         continue
 
-                logger.debug(f"[REGEN] Stream complete: {chunk_count} total chunks ({empty_chunk_count} empty)")
-                logger.debug(f"[REGEN] Final response length: {len(response_text)} characters")
+                logger.info(f"Stream complete: {chunk_count} chunks")
                 
                 if response_text.strip():
                     user_session["history"].append((user_message, response_text))
-                    logger.debug("[REGEN] Response added to history")
+                    logger.info("Response added to history")
                 else:
-                    logger.warning("[REGEN] Generated empty response!")
+                    logger.warning("Generated empty response!")
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
                 yield f"\n[Error] Failed to generate response: {str(e)}"
