@@ -23,7 +23,8 @@ MODEL_NAME = "dolphin3.1-8b"
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
-    create_new_set, delete_set as delete_user_set
+    create_new_set, delete_set as delete_user_set,
+    load_user_chat_history, save_user_chat_history
 )
 from app.chat_logic import generate_text_stream
 from app.config import Config
