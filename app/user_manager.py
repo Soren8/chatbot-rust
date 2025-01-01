@@ -183,6 +183,50 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
         with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
 
+def save_user_chat_history(username: str, history: list, set_name: str = "default", encrypted: bool = False):
+    """Save chat history for a user's set"""
+    user_sets_dir = os.path.join(SETS_DIR, username)
+    os.makedirs(user_sets_dir, exist_ok=True)
+    
+    filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
+    
+    if encrypted:
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for encryption")
+        key = _get_encryption_key(session['password'])
+        f = Fernet(key)
+        encrypted_data = f.encrypt(json.dumps(history).encode())
+        with open(filepath, "wb") as f:
+            f.write(encrypted_data)
+    else:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(history, f)
+
+def load_user_chat_history(username: str, set_name: str = "default") -> list:
+    """Load chat history for a user's set"""
+    filepath = os.path.join(SETS_DIR, username, f"{set_name}_history.json")
+    if not os.path.exists(filepath):
+        return []
+        
+    # Check if set is encrypted
+    sets_file = os.path.join(SETS_DIR, username, "sets.json")
+    with open(sets_file, "r") as f:
+        sets = json.load(f)
+    
+    if set_name in sets and sets[set_name].get("encrypted", False):
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for decryption")
+        key = _get_encryption_key(session['password'])
+        f = Fernet(key)
+        with open(filepath, "rb") as file:
+            encrypted_data = file.read()
+        return json.loads(f.decrypt(encrypted_data).decode())
+    else:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+
 def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", encrypted: bool = False):
     max_size = 3000  # Maximum allowed system prompt size in characters
     system_prompt = system_prompt[:max_size]

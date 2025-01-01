@@ -160,9 +160,19 @@ def load_set():
     set_name = request.json.get("set_name")
     memory = load_user_memory(username, set_name)
     system_prompt = load_user_system_prompt(username, set_name)
+    history = load_user_chat_history(username, set_name)
+    
+    # Update session with loaded data
+    session_id = session.get("username")
+    if session_id in sessions:
+        sessions[session_id]["memory"] = memory
+        sessions[session_id]["system_prompt"] = system_prompt
+        sessions[session_id]["history"] = history
+        
     return jsonify({
         "memory": memory,
-        "system_prompt": system_prompt
+        "system_prompt": system_prompt,
+        "history": history
     })
 
 @bp.route("/update_memory", methods=["POST"])
@@ -238,6 +248,11 @@ def chat():
 
             user_session["history"].append((user_message, response_text))
             logger.info(f"Chat response generated. Length: {len(response_text)} characters")
+            
+            # Save history if user is logged in
+            if "username" in session:
+                set_name = request.json.get("set_name", "default")
+                save_user_chat_history(session["username"], user_session["history"], set_name)
 
     return Response(generate(), mimetype="text/plain")
 
@@ -320,6 +335,9 @@ def reset_chat():
                 session["username"],
                 sessions[session_id]["system_prompt"]
             )
+            # Also save the empty history
+            set_name = request.json.get("set_name", "default")
+            save_user_chat_history(session["username"], [], set_name)
         logger.info(f"Chat history reset for session {session_id}")
 
     return jsonify({"status": "success", "message": "Chat history has been reset."})

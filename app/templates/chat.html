@@ -172,6 +172,18 @@
             .then(data => {
                 document.getElementById('user-system-prompt').value = data.system_prompt;
                 document.getElementById('user-memory').value = data.memory;
+                
+                // Clear existing chat
+                document.getElementById('chat-content').innerHTML = '';
+                
+                // Load chat history
+                if (data.history && data.history.length > 0) {
+                    data.history.forEach(([userMsg, aiMsg]) => {
+                        appendMessage('<strong>You:</strong> ' + escapeHTML(userMsg), 'user-message');
+                        appendMessage('<strong>AI:</strong> ' + escapeHTML(aiMsg), 'ai-message');
+                    });
+                }
+                
                 appendMessage('<strong>System:</strong> Loaded set: ' + setName, 'system-message');
             });
         });
