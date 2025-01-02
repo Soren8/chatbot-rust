@@ -100,7 +100,7 @@ def get_user_sets(username: str) -> dict:
 
 def load_user_memory(username: str, set_name: str = "default") -> str:
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_memory.txt")
-    if not os.path.exists(filepath):
+    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return ""
         
     # Check if set is encrypted
@@ -109,6 +109,10 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
         sets = json.load(f)
     
     if set_name in sets and sets[set_name].get("encrypted", False):
+        # Skip decryption if file is empty
+        if os.path.getsize(filepath) == 0:
+            return ""
+            
         # Get password from session to derive encryption key
         from flask import session
         if 'password' not in session:
@@ -171,7 +175,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
 
 def load_user_system_prompt(username: str, set_name: str = "default") -> str:
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
-    if not os.path.exists(filepath):
+    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
     # Check if set is encrypted
@@ -184,6 +188,10 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
         return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
     
     if set_name in sets and sets[set_name].get("encrypted", False):
+        # Skip decryption if file is empty
+        if os.path.getsize(filepath) == 0:
+            return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+            
         try:
             from flask import session
             if 'password' not in session:
@@ -282,7 +290,7 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
 def load_user_chat_history(username: str, set_name: str = "default") -> list:
     """Load chat history for a user's set"""
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_history.json")
-    if not os.path.exists(filepath):
+    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return []
         
     # Check if set is encrypted
@@ -295,6 +303,10 @@ def load_user_chat_history(username: str, set_name: str = "default") -> list:
         return []
     
     if set_name in sets and sets[set_name].get("encrypted", False):
+        # Skip decryption if file is empty
+        if os.path.getsize(filepath) == 0:
+            return []
+            
         try:
             from flask import session
             if 'password' not in session:
