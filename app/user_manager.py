@@ -254,20 +254,28 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     
     try:
         if encrypted:
-            from flask import session
-            if 'password' not in session:
-                raise ValueError("Password not available for encryption")
-            salt = get_user_salt(username)
-            key = _get_encryption_key(session['password'], salt)
-            f = Fernet(key)
-            encrypted_data = f.encrypt(json.dumps(history).encode())
-            with open(filepath, "wb") as f:
-                f.write(encrypted_data)
-            logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
-        else:
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(history, f)
-            logger.debug(f"Successfully saved plaintext chat history for user {username}, set {set_name}")
+            try:
+                from flask import session
+                if 'password' not in session:
+                    logger.warning(f"Password not available for encryption, saving as plaintext")
+                    encrypted = False
+                else:
+                    salt = get_user_salt(username)
+                    key = _get_encryption_key(session['password'], salt)
+                    f = Fernet(key)
+                    encrypted_data = f.encrypt(json.dumps(history).encode())
+                    with open(filepath, "wb") as f:
+                        f.write(encrypted_data)
+                    logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
+                    return
+            except RuntimeError:  # Working outside of request context
+                logger.warning(f"Outside request context, saving as plaintext")
+                encrypted = False
+                
+        # Save as plaintext if not encrypted or if encryption failed
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(history, f)
+        logger.debug(f"Successfully saved plaintext chat history for user {username}, set {set_name}")
     except Exception as e:
         logger.error(f"Failed to save chat history: {str(e)}", exc_info=True)
         raise
