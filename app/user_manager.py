@@ -232,6 +232,7 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
         sets = {}
         logger.debug(f"Creating new sets.json for user {username}")
     
+    logger.debug(f"Setting encryption status for {username}/{set_name} to {encrypted}")
     sets[set_name] = {
         "created": time.time(),
         "encrypted": encrypted
@@ -239,7 +240,7 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
-    logger.debug(f"Updated sets.json for user {username} with set {set_name}")
+    logger.debug(f"Updated sets.json for user {username} with set {set_name} and encryption status {encrypted}")
     
     filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
     logger.debug(f"Saving chat history for user {username}, set {set_name} to file: {filepath}")
