@@ -262,8 +262,9 @@ def chat():
     memory_text = user_session["memory"] if "username" in session else ""
     system_prompt = user_session["system_prompt"] if "username" in session else "You are a helpful AI assistant."
 
-    # Get set_name before entering generator
+    # Get set_name and password before entering generator
     set_name = request.json.get("set_name", "default")
+    password = session.get("password") if "username" in session else None
 
     def generate():
         with response_lock:
@@ -292,8 +293,6 @@ def chat():
             if session_id.startswith("guest_"):
                 return
             try:
-                # Pass the password from session if available
-                password = session.get("password") if "username" in session else None
                 save_user_chat_history(session_id, user_session["history"], set_name, None, password)
             except ValueError as e:
                 logger.error(f"Failed to save chat history: {str(e)}")
