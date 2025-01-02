@@ -257,22 +257,22 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
             try:
                 from flask import session
                 if 'password' not in session:
-                    logger.warning(f"Password not available for encryption, saving as plaintext")
-                    encrypted = False
-                else:
-                    salt = get_user_salt(username)
-                    key = _get_encryption_key(session['password'], salt)
-                    f = Fernet(key)
-                    encrypted_data = f.encrypt(json.dumps(history).encode())
-                    with open(filepath, "wb") as f:
-                        f.write(encrypted_data)
-                    logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
-                    return
-            except RuntimeError:  # Working outside of request context
-                logger.warning(f"Outside request context, saving as plaintext")
-                encrypted = False
+                    logger.error(f"Password not available for encryption, cannot save encrypted data")
+                    raise ValueError("Password not available for encryption")
                 
-        # Save as plaintext if not encrypted or if encryption failed
+                salt = get_user_salt(username)
+                key = _get_encryption_key(session['password'], salt)
+                f = Fernet(key)
+                encrypted_data = f.encrypt(json.dumps(history).encode())
+                with open(filepath, "wb") as f:
+                    f.write(encrypted_data)
+                logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
+                return
+            except RuntimeError:  # Working outside of request context
+                logger.error(f"Outside request context, cannot save encrypted data")
+                raise ValueError("Cannot save encrypted data outside request context")
+                
+        # Save as plaintext if not encrypted
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(history, f)
         logger.debug(f"Successfully saved plaintext chat history for user {username}, set {set_name}")

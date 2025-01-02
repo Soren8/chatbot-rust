@@ -291,7 +291,11 @@ def chat():
             # Save history if user is logged in
             if session_id.startswith("guest_"):
                 return
-            save_user_chat_history(session_id, user_session["history"], set_name, None)
+            try:
+                save_user_chat_history(session_id, user_session["history"], set_name, None)
+            except ValueError as e:
+                logger.error(f"Failed to save chat history: {str(e)}")
+                yield f"\n[Error] Failed to save chat history: {str(e)}"
 
     return Response(generate(), mimetype="text/plain")
 
