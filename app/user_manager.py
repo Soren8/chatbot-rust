@@ -139,6 +139,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     else:
         sets = {}
     
+    logger.debug(f"Setting encryption status for {username}/{set_name} to {encrypted}")
     sets[set_name] = {
         "created": time.time(),
         "encrypted": encrypted
@@ -146,6 +147,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
+    logger.debug(f"Saved sets.json for {username} with encryption status {encrypted}")
     
     # Save memory content
     filepath = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
@@ -161,9 +163,11 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         encrypted_data = f.encrypt(memory_content.encode())
         with open(filepath, "wb") as f:
             f.write(encrypted_data)
+        logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
     else:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(memory_content)
+        logger.debug(f"Successfully saved plaintext memory for {username}/{set_name}")
 
 def load_user_system_prompt(username: str, set_name: str = "default") -> str:
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
@@ -337,6 +341,7 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     else:
         sets = {}
     
+    logger.debug(f"Setting encryption status for {username}/{set_name} to {encrypted}")
     sets[set_name] = {
         "created": time.time(),
         "encrypted": encrypted
@@ -344,6 +349,7 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
+    logger.debug(f"Saved sets.json for {username} with encryption status {encrypted}")
     
     # Save prompt content
     filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
@@ -358,9 +364,11 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
         encrypted_data = f.encrypt(system_prompt.encode())
         with open(filepath, "wb") as f:
             f.write(encrypted_data)
+        logger.debug(f"Successfully saved encrypted prompt for {username}/{set_name}")
     else:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(system_prompt)
+        logger.debug(f"Successfully saved plaintext prompt for {username}/{set_name}")
 
 def create_new_set(username: str, set_name: str) -> bool:
     """Create a new empty set for a user"""
