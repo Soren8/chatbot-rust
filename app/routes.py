@@ -254,7 +254,15 @@ def chat():
         logger.info("Updating system prompt")
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
-            save_user_system_prompt(session["username"], new_system_prompt)
+            set_name = request.json.get("set_name", "default")  # Get current set name
+            save_user_system_prompt(session["username"], new_system_prompt, set_name)  # Save to current set
+
+    # Update system prompt if it has changed
+    if user_session["system_prompt"] != system_prompt:
+        user_session["system_prompt"] = system_prompt
+        if "username" in session:
+            set_name = request.json.get("set_name", "default")  # Get current set name
+            save_user_system_prompt(session["username"], system_prompt, set_name)  # Save to current set
 
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
@@ -375,12 +383,13 @@ def reset_chat():
             "Provide clear and concise answers to user queries."
         )
         if "username" in session:
+            set_name = request.json.get("set_name", "default")  # Get current set name
             save_user_system_prompt(
                 session["username"],
-                sessions[session_id]["system_prompt"]
+                sessions[session_id]["system_prompt"],
+                set_name  # Save to current set
             )
             # Also save the empty history
-            set_name = request.json.get("set_name", "default")
             save_user_chat_history(session["username"], [], set_name)
             logger.info(f"Saved empty chat history for set '{set_name}'")
         logger.info(f"Chat history reset for session {session_id}")

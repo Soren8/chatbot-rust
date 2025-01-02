@@ -420,7 +420,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     system_prompt: sysPromptText,
-                    set_name: setName,
+                    set_name: setName, // Include current set name
                     encrypted: encrypt
                 })
             })
