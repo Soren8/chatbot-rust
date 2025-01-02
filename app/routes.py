@@ -291,7 +291,7 @@ def chat():
             # Save history if user is logged in
             if session_id.startswith("guest_"):
                 return
-            save_user_chat_history(session_id, user_session["history"], set_name)
+            save_user_chat_history(session_id, user_session["history"], set_name, None)
 
     return Response(generate(), mimetype="text/plain")
 

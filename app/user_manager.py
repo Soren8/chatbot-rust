@@ -216,7 +216,7 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
             logger.error(f"Error reading plaintext prompt for {username}/{set_name}: {str(e)}")
             return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
-def save_user_chat_history(username: str, history: list, set_name: str = "default", encrypted: bool = False):
+def save_user_chat_history(username: str, history: list, set_name: str = "default", encrypted: bool = None):
     """Save chat history for a user's set"""
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
@@ -232,7 +232,14 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
         sets = {}
         logger.debug(f"Creating new sets.json for user {username}")
     
-    logger.debug(f"Setting encryption status for {username}/{set_name} to {encrypted}")
+    # If encrypted parameter is None, use existing encryption status
+    if encrypted is None:
+        encrypted = sets.get(set_name, {}).get("encrypted", False)
+        logger.debug(f"Using existing encryption status for {username}/{set_name}: {encrypted}")
+    else:
+        logger.debug(f"Setting new encryption status for {username}/{set_name}: {encrypted}")
+    
+    # Update set info
     sets[set_name] = {
         "created": time.time(),
         "encrypted": encrypted
@@ -246,12 +253,6 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     logger.debug(f"Saving chat history for user {username}, set {set_name} to file: {filepath}")
     
     try:
-        # Log directory permissions
-        logger.debug(f"Directory permissions for {user_sets_dir}: {oct(os.stat(user_sets_dir).st_mode & 0o777)}")
-        
-        # Log file existence before write
-        logger.debug(f"File exists before write: {os.path.exists(filepath)}")
-        
         if encrypted:
             from flask import session
             if 'password' not in session:
@@ -267,13 +268,6 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(history, f)
             logger.debug(f"Successfully saved plaintext chat history for user {username}, set {set_name}")
-            
-        # Verify file was written
-        if os.path.exists(filepath):
-            logger.debug(f"File successfully written. Size: {os.path.getsize(filepath)} bytes")
-        else:
-            logger.error("File was not created despite successful write operation!")
-            
     except Exception as e:
         logger.error(f"Failed to save chat history: {str(e)}", exc_info=True)
         raise
