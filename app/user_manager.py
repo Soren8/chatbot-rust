@@ -216,7 +216,7 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
             logger.error(f"Error reading plaintext prompt for {username}/{set_name}: {str(e)}")
             return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
-def save_user_chat_history(username: str, history: list, set_name: str = "default", encrypted: bool = None):
+def save_user_chat_history(username: str, history: list, set_name: str = "default", encrypted: bool = None, password: str = None):
     """Save chat history for a user's set"""
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
@@ -255,13 +255,12 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     try:
         if encrypted:
             try:
-                from flask import session
-                if 'password' not in session:
-                    logger.error(f"Password not available for encryption, cannot save encrypted data")
-                    raise ValueError("Password not available for encryption")
+                if not password:
+                    logger.error(f"Password required for encryption")
+                    raise ValueError("Password required for encryption")
                 
                 salt = get_user_salt(username)
-                key = _get_encryption_key(session['password'], salt)
+                key = _get_encryption_key(password, salt)
                 f = Fernet(key)
                 encrypted_data = f.encrypt(json.dumps(history).encode())
                 with open(filepath, "wb") as f:
