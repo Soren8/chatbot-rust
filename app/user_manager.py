@@ -234,20 +234,19 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     # Update set info
     sets[set_name] = {
         "created": time.time(),
-        "encrypted": encrypted
+        "encrypted": True  # Always encrypt
     }
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
-    logger.debug(f"Updated sets.json for user {username} with set {set_name} and encryption status {encrypted}")
+    logger.debug(f"Updated sets.json for user {username} with set {set_name} and encryption status True")
     
     filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
     logger.debug(f"Saving chat history for user {username}, set {set_name} to file: {filepath}")
     
     try:
-        if encrypted:
-            try:
-                if not password:
+        try:
+            if not password:
                     logger.error(f"Password required for encryption")
                     raise ValueError("Password required for encryption")
                 
