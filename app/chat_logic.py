@@ -23,7 +23,10 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     # Ensure memory_text is not None
     if memory_text is None:
         memory_text = ""
-        
+    
+    # Debug log to verify memory is being passed
+    logger.debug(f"Generating text with memory: {memory_text[:50]}...")
+    
     return llm.generate_text_stream(
         prompt=prompt,
         system_prompt=system_prompt,

@@ -171,11 +171,15 @@ def update_memory():
     if not user_memory:
         return jsonify({"error": "Memory content is required"}), 400
 
+    # Create a consistent guest session ID (remove timestamp to maintain persistence)
+    session_id = session.get("username", f"guest_{request.remote_addr}")
+
     if "username" in session:
         # Logged-in user - save to disk
         username = session["username"]
         sessions[username]["memory"] = user_memory
         save_user_memory(username, user_memory, set_name, encrypted)
+        logger.debug(f"Saved memory for logged-in user {username}: {user_memory[:50]}...")
         return jsonify({
             "status": "success",
             "message": "Memory saved to disk",
@@ -183,8 +187,8 @@ def update_memory():
         })
     else:
         # Guest user - save to session
-        session_id = f"guest_{request.remote_addr}"
         sessions[session_id]["memory"] = user_memory
+        logger.debug(f"Saved memory for guest {session_id}: {user_memory[:50]}...")
         return jsonify({
             "status": "success",
             "message": "Memory saved to session memory",
@@ -210,16 +214,25 @@ def chat():
 
     user_message = request.json.get("message", "")
     new_system_prompt = request.json.get("system_prompt", None)
-    active_set = request.json.get("set_name", "default")  # Get active set from request
+    active_set = request.json.get("set_name", "default")
 
-    # If logged in, use their session; if not, use a temporary session_id
-    session_id = session.get("username", "guest_" + request.remote_addr)
+    # Create a consistent guest session ID (remove timestamp to maintain persistence)
+    session_id = session.get("username", f"guest_{request.remote_addr}")
+    
+    # Initialize session if it doesn't exist
+    if session_id not in sessions:
+        sessions[session_id] = {
+            "history": [],
+            "system_prompt": "You are a helpful AI assistant.",
+            "memory": "",
+            "last_used": time.time()
+        }
+    
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
-    logger.info(
-        f"Received chat request. Session: {session_id[:8]}..."
-    )
+    # Log the current state for debugging
+    logger.debug(f"Session {session_id} memory: {user_session.get('memory', '')[:50]}...")
 
     if new_system_prompt is not None:
         logger.info("Updating system prompt")
