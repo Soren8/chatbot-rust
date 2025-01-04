@@ -221,8 +221,14 @@ def update_memory():
     set_name = request.json.get("set_name", "default")
     encrypted = request.json.get("encrypted", False)
     username = session["username"]
+    
+    logger.debug(f"Updating memory for user {username}, set {set_name}. "
+                f"Encrypted: {encrypted}, Memory length: {len(user_memory)}")
+    
     sessions[username]["memory"] = user_memory
     save_user_memory(username, user_memory, set_name, encrypted)
+    
+    logger.debug(f"Successfully updated memory for user {username}, set {set_name}")
     return jsonify({"status": "success"})
 
 @bp.route("/update_system_prompt", methods=["POST"])
@@ -234,8 +240,14 @@ def update_system_prompt():
     set_name = request.json.get("set_name", "default")
     encrypted = request.json.get("encrypted", False)
     username = session["username"]
+    
+    logger.debug(f"Updating system prompt for user {username}, set {set_name}. "
+                f"Encrypted: {encrypted}, Prompt length: {len(system_prompt)}")
+    
     sessions[username]["system_prompt"] = system_prompt
     save_user_system_prompt(username, system_prompt, set_name, encrypted)
+    
+    logger.debug(f"Successfully updated system prompt for user {username}, set {set_name}")
     return jsonify({"status": "success"})
 
 @bp.route("/chat", methods=["POST"])
