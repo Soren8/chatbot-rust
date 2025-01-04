@@ -333,7 +333,7 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             logger.error(f"Error reading plaintext history for {username}/{set_name}: {str(e)}")
             return []
 
-def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default"):
+def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", password: str = None):
     max_size = 3000  # Maximum allowed system prompt size in characters
     system_prompt = system_prompt[:max_size]
     
@@ -351,27 +351,29 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     
     sets[set_name] = {
         "created": time.time(),
-        "encrypted": True  # Always mark as encrypted
+        "encrypted": True if password else False  # Only encrypt if password is provided
     }
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
     
-    # Always encrypt using session password
-    from flask import session
-    if 'password' not in session:
-        raise ValueError("Password not available for encryption")
-    
-    salt = get_user_salt(username)
-    key = _get_encryption_key(session['password'], salt)
-    f = Fernet(key)
-    encrypted_data = f.encrypt(system_prompt.encode())
-    
-    filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
-    with open(filepath, "wb") as f:
-        f.write(encrypted_data)
+    if password:
+        # Encrypt using provided password
+        salt = get_user_salt(username)
+        key = _get_encryption_key(password, salt)
+        f = Fernet(key)
+        encrypted_data = f.encrypt(system_prompt.encode())
         
-    logger.debug(f"Successfully saved encrypted prompt for {username}/{set_name}")
+        filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
+        with open(filepath, "wb") as f:
+            f.write(encrypted_data)
+    else:
+        # Save as plaintext
+        filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(system_prompt)
+        
+    logger.debug(f"Successfully saved prompt for {username}/{set_name}")
 
 def create_new_set(username: str, set_name: str) -> bool:
     """Create a new empty set for a user"""
