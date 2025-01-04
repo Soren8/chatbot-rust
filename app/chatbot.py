@@ -171,15 +171,25 @@ def update_memory():
     if not user_memory:
         return jsonify({"error": "Memory content is required"}), 400
 
-    # Create a consistent guest session ID (remove timestamp to maintain persistence)
+    # Create a consistent guest session ID
     session_id = session.get("username", f"guest_{request.remote_addr}")
+
+    # Initialize session if it doesn't exist
+    if session_id not in sessions:
+        sessions[session_id] = {
+            "history": [],
+            "system_prompt": "You are a helpful AI assistant.",
+            "memory": "",
+            "last_used": time.time()
+        }
+
+    # Update memory in session
+    sessions[session_id]["memory"] = user_memory
+    logger.debug(f"Updated memory for session {session_id}: {user_memory[:50]}...")
 
     if "username" in session:
         # Logged-in user - save to disk
-        username = session["username"]
-        sessions[username]["memory"] = user_memory
-        save_user_memory(username, user_memory, set_name, encrypted)
-        logger.debug(f"Saved memory for logged-in user {username}: {user_memory[:50]}...")
+        save_user_memory(session["username"], user_memory, set_name, encrypted)
         return jsonify({
             "status": "success",
             "message": "Memory saved to disk",
@@ -187,8 +197,6 @@ def update_memory():
         })
     else:
         # Guest user - save to session
-        sessions[session_id]["memory"] = user_memory
-        logger.debug(f"Saved memory for guest {session_id}: {user_memory[:50]}...")
         return jsonify({
             "status": "success",
             "message": "Memory saved to session memory",
@@ -216,7 +224,7 @@ def chat():
     new_system_prompt = request.json.get("system_prompt", None)
     active_set = request.json.get("set_name", "default")
 
-    # Create a consistent guest session ID (remove timestamp to maintain persistence)
+    # Create a consistent guest session ID
     session_id = session.get("username", f"guest_{request.remote_addr}")
     
     # Initialize session if it doesn't exist
@@ -241,7 +249,7 @@ def chat():
             save_user_system_prompt(
                 session["username"], 
                 new_system_prompt,
-                active_set,  # Use active set instead of default
+                active_set,
                 request.json.get("encrypted", False)
             )
 
@@ -252,9 +260,12 @@ def chat():
             }
         ), 429
 
-    # Get memory text from the session regardless of login status
+    # Get memory text from the session
     memory_text = user_session.get("memory", "")
     system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
+
+    # Log what we're sending to the LLM
+    logger.debug(f"Sending to LLM - Memory: {memory_text[:50]}...")
 
     def generate():
         with response_lock:
@@ -276,15 +287,10 @@ def chat():
                 logger.error(f"Error during streaming: {str(e)}")
                 yield "\n[Error] An error occurred during response generation."
 
-            # Update conversation history after the full response is generated
             user_session["history"].append((user_message, response_text))
-            logger.info(
-                f"Chat response generated. Length: {len(response_text)} characters"
-            )
+            logger.info(f"Chat response generated. Length: {len(response_text)} characters")
             
-            # Save chat history to the active set if logged in
             if "username" in session:
-                active_set  # Use the active set we already extracted
                 save_user_chat_history(
                     session["username"],
                     user_session["history"],
