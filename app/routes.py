@@ -251,6 +251,12 @@ def chat():
 
     logger.info(f"Received chat request. Session: {session_id}")
 
+    # Get password from session - needed for encryption
+    password = session.get("password")
+    if not password and not session_id.startswith("guest_"):
+        logger.error("No password available in session for logged-in user")
+        return jsonify({"error": "Session expired or invalid. Please log in again."}), 401
+
     if new_system_prompt is not None:
         logger.info("Updating system prompt")
         user_session["system_prompt"] = new_system_prompt
@@ -307,15 +313,8 @@ def chat():
             if session_id.startswith("guest_"):
                 return
             try:
-                if encrypted:
-                    if not password:
-                        logger.error("Encryption requested but no password available")
-                        yield "\n[Warning] Could not save encrypted history - no password available"
-                        return
-                    save_user_chat_history(session_id, user_session["history"], set_name, password)
-                else:
-                    # Save without encryption
-                    save_user_chat_history(session_id, user_session["history"], set_name, None)
+                # Always pass the password for encryption
+                save_user_chat_history(session_id, user_session["history"], set_name, password)
             except ValueError as e:
                 logger.error(f"Failed to save chat history: {str(e)}")
                 yield f"\n[Error] Failed to save chat history: {str(e)}"
