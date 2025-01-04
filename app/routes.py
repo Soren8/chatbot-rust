@@ -295,8 +295,8 @@ def chat():
     user_message = request.json.get("message", "")
     new_system_prompt = request.json.get("system_prompt", None)
 
-    # Create guest session ID with timestamp to make it more unique
-    session_id = session.get("username", f"guest_{request.remote_addr}_{int(time.time())}")
+    # Create consistent guest session ID without timestamp
+    session_id = session.get("username", f"guest_{request.remote_addr}")
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
@@ -310,6 +310,7 @@ def chat():
         })
 
     logger.info(f"Received chat request. Session: {session_id}")
+    logger.debug(f"Current memory: {user_session.get('memory', '')[:50]}...")
 
     # Initialize guest session if it doesn't exist
     if session_id.startswith("guest_") and not user_session.get("initialized", False):

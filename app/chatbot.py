@@ -171,7 +171,7 @@ def update_memory():
     if not user_memory:
         return jsonify({"error": "Memory content is required"}), 400
 
-    # Create a consistent guest session ID
+    # Create consistent guest session ID
     session_id = session.get("username", f"guest_{request.remote_addr}")
 
     # Initialize session if it doesn't exist
@@ -180,7 +180,8 @@ def update_memory():
             "history": [],
             "system_prompt": "You are a helpful AI assistant.",
             "memory": "",
-            "last_used": time.time()
+            "last_used": time.time(),
+            "initialized": True
         }
 
     # Update memory in session
