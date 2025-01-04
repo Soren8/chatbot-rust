@@ -247,20 +247,20 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     try:
         try:
             if not password:
-                    logger.error(f"Password required for encryption")
-                    raise ValueError("Password required for encryption")
-                
-                salt = get_user_salt(username)
-                key = _get_encryption_key(password, salt)
-                f = Fernet(key)
-                encrypted_data = f.encrypt(json.dumps(history).encode())
-                with open(filepath, "wb") as f:
-                    f.write(encrypted_data)
-                logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
-                return
-            except RuntimeError:  # Working outside of request context
-                logger.error(f"Outside request context, cannot save encrypted data")
-                raise ValueError("Cannot save encrypted data outside request context")
+                logger.error(f"Password required for encryption")
+                raise ValueError("Password required for encryption")
+            
+            salt = get_user_salt(username)
+            key = _get_encryption_key(password, salt)
+            f = Fernet(key)
+            encrypted_data = f.encrypt(json.dumps(history).encode())
+            with open(filepath, "wb") as f:
+                f.write(encrypted_data)
+            logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
+            return
+        except RuntimeError:  # Working outside of request context
+            logger.error(f"Outside request context, cannot save encrypted data")
+            raise ValueError("Cannot save encrypted data outside request context")
                 
         # Save as plaintext if not encrypted
         with open(filepath, "w", encoding="utf-8") as f:
