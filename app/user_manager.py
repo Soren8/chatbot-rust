@@ -273,7 +273,7 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
         logger.error(f"Failed to save chat history: {str(e)}", exc_info=True)
         raise
 
-def load_user_chat_history(username: str, set_name: str = "default") -> list:
+def load_user_chat_history(username: str, set_name: str = "default", password: str = None) -> list:
     """Load chat history for a user's set"""
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_history.json")
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -294,13 +294,16 @@ def load_user_chat_history(username: str, set_name: str = "default") -> list:
             return []
             
         try:
-            from flask import session
-            if 'password' not in session:
-                logger.error(f"Password not available for decryption for {username}")
-                return []
+            if not password:
+                # Try to get password from session if not provided
+                from flask import session
+                if 'password' not in session:
+                    logger.error(f"Password not available for decryption for {username}")
+                    return []
+                password = session['password']
             
             salt = get_user_salt(username)
-            key = _get_encryption_key(session['password'], salt)
+            key = _get_encryption_key(password, salt)
             f = Fernet(key)
             
             with open(filepath, "rb") as file:
