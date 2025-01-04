@@ -5,3 +5,4 @@ app/llm/__pycache__/*
 data/*
 .env
 .aider*
+.DS_Store
