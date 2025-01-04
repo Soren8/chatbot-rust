@@ -164,6 +164,7 @@ def load_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
+    password = session.get("password")  # Get the stored password
     
     logger.debug(f"Loading set '{set_name}' for user '{username}'")
     
@@ -191,9 +192,9 @@ def load_set():
     logger.debug("Loading memory...")
     memory = load_user_memory(username, set_name)
     logger.debug("Loading system prompt...")
-    system_prompt = load_user_system_prompt(username, set_name)
+    system_prompt = load_user_system_prompt(username, set_name, password if encrypted else None)
     logger.debug("Loading chat history...")
-    history = load_user_chat_history(username, set_name)
+    history = load_user_chat_history(username, set_name, password if encrypted else None)
     
     # Update session with loaded data
     session_id = session.get("username")
