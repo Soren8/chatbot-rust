@@ -255,11 +255,21 @@ def chat():
     user_message = request.json.get("message", "")
     new_system_prompt = request.json.get("system_prompt", None)
 
-    session_id = session.get("username", "guest_" + request.remote_addr)
+    # Create guest session ID with timestamp to make it more unique
+    session_id = session.get("username", f"guest_{request.remote_addr}_{int(time.time())}")
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
     logger.info(f"Received chat request. Session: {session_id}")
+
+    # Initialize guest session if it doesn't exist
+    if session_id.startswith("guest_") and not user_session.get("initialized", False):
+        user_session.update({
+            "history": [],
+            "system_prompt": "You are a helpful AI assistant.",
+            "memory": "",
+            "initialized": True
+        })
 
     # Get password from session - needed for encryption
     password = session.get("password")
