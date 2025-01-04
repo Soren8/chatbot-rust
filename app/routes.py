@@ -238,14 +238,13 @@ def update_system_prompt():
 
     system_prompt = request.json.get("system_prompt", "")
     set_name = request.json.get("set_name", "default")
-    encrypted = request.json.get("encrypted", False)
     username = session["username"]
     
     logger.debug(f"Updating system prompt for user {username}, set {set_name}. "
-                f"Encrypted: {encrypted}, Prompt length: {len(system_prompt)}")
+                f"Prompt length: {len(system_prompt)}")
     
     sessions[username]["system_prompt"] = system_prompt
-    save_user_system_prompt(username, system_prompt, set_name, encrypted)
+    save_user_system_prompt(username, system_prompt, set_name)
     
     logger.debug(f"Successfully updated system prompt for user {username}, set {set_name}")
     return jsonify({"status": "success"})
