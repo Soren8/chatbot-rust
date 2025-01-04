@@ -345,8 +345,11 @@
 
         document.getElementById('save-system-prompt').addEventListener('click', function() {
             const sysPromptText = document.getElementById('user-system-prompt').value;
-            const setName = document.getElementById('set-selector').value;
-            
+            const setSelectorElement = document.getElementById('set-selector');
+
+            // If the set selector doesn't exist, use 'default' as the set name
+            const setName = setSelectorElement ? setSelectorElement.value : 'default';
+
             fetch('/update_system_prompt', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
