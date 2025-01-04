@@ -48,6 +48,8 @@
         const previousUserMessage = aiMessageElement.previousElementSibling;
         if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
             const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
+            const activeSet = document.getElementById('set-selector').value;
+            
             // Show thinking message but keep the regenerate button
             aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button></div>`;
             
@@ -60,7 +62,7 @@
                 body: JSON.stringify({
                     message: userMessage,
                     system_prompt: document.getElementById('user-system-prompt').value,
-                    memory: document.getElementById('user-memory').value
+                    set_name: activeSet
                 })
             })
             .then(response => {
@@ -401,24 +403,32 @@
             });
         });
 
-        function sendMessage(message) {
+        function sendMessage() {
+            // Get required elements
             const systemPromptElement = document.getElementById('user-system-prompt');
             const setSelectorElement = document.getElementById('set-selector');
             const userInputElement = document.getElementById('user-input');
 
+            // Validate elements exist
             if (!systemPromptElement || !setSelectorElement || !userInputElement) {
                 console.error("One or more required elements are missing in the DOM!");
                 appendMessage('<strong>Error:</strong> System configuration error. Please refresh the page.', 'error-message');
                 return;
             }
 
+            // Get values
             const systemPrompt = systemPromptElement.value || "You are a helpful AI assistant.";
             const activeSet = setSelectorElement.value;
-            
-            if (message.trim() === '') {
+            const message = userInputElement.value.trim();
+
+            // Validate message
+            if (message === '') {
                 console.error("Message cannot be empty!");
                 return;
             }
+
+            // Clear input
+            userInputElement.value = '';
 
             // Add user message to chat
             appendMessage('<strong>You:</strong> ' + escapeHTML(message), 'user-message');
