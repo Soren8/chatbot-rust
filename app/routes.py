@@ -255,15 +255,17 @@ def chat():
         logger.info("Updating system prompt")
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
-            set_name = request.json.get("set_name", "default")  # Get current set name
-            save_user_system_prompt(session["username"], new_system_prompt, set_name)  # Save to current set
+            set_name = request.json.get("set_name", "default")
+            encrypted = request.json.get("encrypted", False)
+            save_user_system_prompt(session["username"], new_system_prompt, set_name, encrypted)
 
     # Update system prompt if it has changed
     current_system_prompt = user_session["system_prompt"]
     if new_system_prompt is not None and current_system_prompt != new_system_prompt:
         if "username" in session:
-            set_name = request.json.get("set_name", "default")  # Get current set name
-            save_user_system_prompt(session["username"], new_system_prompt, set_name)  # Save to current set
+            set_name = request.json.get("set_name", "default")
+            encrypted = request.json.get("encrypted", False)
+            save_user_system_prompt(session["username"], new_system_prompt, set_name, encrypted)
 
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
@@ -273,6 +275,7 @@ def chat():
 
     # Get set_name and password before entering generator
     set_name = request.json.get("set_name", "default")
+    encrypted = request.json.get("encrypted", False)
     password = session.get("password") if "username" in session else None
 
     def generate():
@@ -302,7 +305,9 @@ def chat():
             if session_id.startswith("guest_"):
                 return
             try:
-                save_user_chat_history(session_id, user_session["history"], set_name)
+                if encrypted and not password:
+                    raise ValueError("Password required for encryption")
+                save_user_chat_history(session_id, user_session["history"], set_name, password if encrypted else None)
             except ValueError as e:
                 logger.error(f"Failed to save chat history: {str(e)}")
                 yield f"\n[Error] Failed to save chat history: {str(e)}"
