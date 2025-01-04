@@ -332,11 +332,7 @@
         function sendMessage(message, targetElement = null) {
             var systemPrompt = "";
 
-            {% if logged_in %}
-                systemPrompt = document.getElementById('user-system-prompt').value;
-            {% else %}
-                systemPrompt = "You are a helpful AI assistant.";
-            {% endif %}
+            systemPrompt = document.getElementById('user-system-prompt').value || "You are a helpful AI assistant.";
 
             if (message.trim() === '') return;
 
@@ -398,7 +394,6 @@
             return div.innerHTML;
         }
 
-        {% if logged_in %}
         document.getElementById('toggle-system-prompt').addEventListener('click', function() {
             const sysPromptContainer = document.getElementById('system-prompt-container');
             sysPromptContainer.style.display = (sysPromptContainer.style.display === 'none' || sysPromptContainer.style.display === '') ? 'block' : 'none';
@@ -444,13 +439,11 @@
 
         document.getElementById('save-memory').addEventListener('click', function() {
             const memText = document.getElementById('user-memory').value;
-            const setName = document.getElementById('set-selector').value;
             fetch('/update_memory', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    memory: memText,
-                    set_name: setName
+                    memory: memText
                 })
             })
             .then(response => response.json())
@@ -465,7 +458,6 @@
                 appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
             });
         });
-        {% endif %}
 
         function sendMessage() {
             var userMessage = document.getElementById('user-input').value;
