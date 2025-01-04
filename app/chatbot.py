@@ -164,16 +164,32 @@ def load_set():
 
 @app.route("/update_memory", methods=["POST"])
 def update_memory():
-    if "username" not in session:
-        return jsonify({"error": "Not authenticated"}), 403
-
     user_memory = request.json.get("memory", "")
     set_name = request.json.get("set_name", "default")
-    username = session["username"]
-    sessions[username]["memory"] = user_memory
     encrypted = request.json.get("encrypted", False)
-    save_user_memory(username, user_memory, set_name, encrypted)
-    return jsonify({"status": "success"})
+
+    if not user_memory:
+        return jsonify({"error": "Memory content is required"}), 400
+
+    if "username" in session:
+        # Logged-in user - save to disk
+        username = session["username"]
+        sessions[username]["memory"] = user_memory
+        save_user_memory(username, user_memory, set_name, encrypted)
+        return jsonify({
+            "status": "success",
+            "message": "Memory saved to disk",
+            "storage": "disk"
+        })
+    else:
+        # Guest user - save to session
+        session_id = f"guest_{request.remote_addr}"
+        sessions[session_id]["memory"] = user_memory
+        return jsonify({
+            "status": "success",
+            "message": "Memory saved to session memory",
+            "storage": "session"
+        })
 
 @app.route("/update_system_prompt", methods=["POST"])
 def update_system_prompt():

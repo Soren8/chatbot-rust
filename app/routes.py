@@ -214,21 +214,41 @@ def load_set():
 
 @bp.route("/update_memory", methods=["POST"])
 def update_memory():
-    if "username" not in session:
-        return jsonify({"error": "Not authenticated"}), 403
-
     user_memory = request.json.get("memory", "")
     set_name = request.json.get("set_name", "default")
-    username = session["username"]
-    
-    logger.debug(f"Updating memory for user {username}, set {set_name}. "
-                f"Memory length: {len(user_memory)}")
-    
-    sessions[username]["memory"] = user_memory
-    save_user_memory(username, user_memory, set_name)
-    
-    logger.debug(f"Successfully updated memory for user {username}, set {set_name}")
-    return jsonify({"status": "success"})
+    encrypted = request.json.get("encrypted", False)
+
+    if not user_memory:
+        return jsonify({"error": "Memory content is required"}), 400
+
+    if "username" in session:
+        # Logged-in user - save to disk
+        username = session["username"]
+        password = session.get("password") if encrypted else None
+        
+        logger.debug(f"Updating memory for user {username}, set {set_name}. "
+                    f"Memory length: {len(user_memory)}")
+        
+        sessions[username]["memory"] = user_memory
+        save_user_memory(username, user_memory, set_name, password)
+        
+        logger.debug(f"Successfully updated memory for user {username}, set {set_name}")
+        return jsonify({
+            "status": "success",
+            "message": "Memory saved to disk",
+            "storage": "disk"
+        })
+    else:
+        # Guest user - save to session
+        session_id = f"guest_{request.remote_addr}"
+        sessions[session_id]["memory"] = user_memory
+        
+        logger.debug(f"Updated memory in session for guest user {session_id}")
+        return jsonify({
+            "status": "success",
+            "message": "Memory saved to session memory",
+            "storage": "session"
+        })
 
 @bp.route("/update_system_prompt", methods=["POST"])
 def update_system_prompt():
