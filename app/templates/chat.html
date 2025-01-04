@@ -48,7 +48,9 @@
         const previousUserMessage = aiMessageElement.previousElementSibling;
         if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
             const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
-            const activeSet = document.getElementById('set-selector').value;
+            
+            // Handle logged out state - use 'default' set
+            const activeSet = document.getElementById('set-selector')?.value || 'default';
             
             // Show thinking message but keep the regenerate button
             aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button></div>`;
