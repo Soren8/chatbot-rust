@@ -418,16 +418,17 @@
                 return;
             }
 
+            const message = userInputElement.value.trim();
+            
+            // Validate message
+            if (!message) {
+                console.warn("Message cannot be empty!");
+                return;
+            }
+
             // Get values - handle logged out state
             const systemPrompt = systemPromptElement.value || "You are a helpful AI assistant.";
             const activeSet = 'default'; // Use default set when logged out
-            const message = userInputElement.value.trim();
-
-            // Validate message
-            if (message === '') {
-                console.error("Message cannot be empty!");
-                return;
-            }
 
             // Clear input
             userInputElement.value = '';
@@ -488,14 +489,7 @@
         document.getElementById('user-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                // Get the message from input
-                const message = this.value.trim();
-                if (message) {
-                    // Clear input
-                    this.value = '';
-                    // Send message
-                    sendMessage(message);
-                }
+                sendMessage();
             }
         });
 
