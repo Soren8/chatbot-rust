@@ -19,4 +19,14 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     Get the appropriate LLM provider and stream the response.
     """
     llm = get_llm_provider(config)
-    return llm.generate_text_stream(prompt, system_prompt, session_history, memory_text)
+    
+    # Ensure memory_text is not None
+    if memory_text is None:
+        memory_text = ""
+        
+    return llm.generate_text_stream(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        session_history=session_history,
+        memory_text=memory_text
+    )
