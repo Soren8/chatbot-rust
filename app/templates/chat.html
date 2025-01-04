@@ -409,19 +409,18 @@
         function sendMessage() {
             // Get required elements
             const systemPromptElement = document.getElementById('user-system-prompt');
-            const setSelectorElement = document.getElementById('set-selector');
             const userInputElement = document.getElementById('user-input');
-
-            // Validate elements exist
-            if (!systemPromptElement || !setSelectorElement || !userInputElement) {
-                console.error("One or more required elements are missing in the DOM!");
-                appendMessage('<strong>Error:</strong> System configuration error. Please refresh the page.', 'error-message');
+            
+            // Basic validation - these elements should always exist
+            if (!systemPromptElement || !userInputElement) {
+                console.error("Critical chat elements missing!");
+                appendMessage('<strong>Error:</strong> Chat system not properly initialized. Please refresh the page.', 'error-message');
                 return;
             }
 
-            // Get values
+            // Get values - handle logged out state
             const systemPrompt = systemPromptElement.value || "You are a helpful AI assistant.";
-            const activeSet = setSelectorElement.value;
+            const activeSet = 'default'; // Use default set when logged out
             const message = userInputElement.value.trim();
 
             // Validate message
