@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 import bcrypt
@@ -23,6 +24,9 @@ os.makedirs(MEMORY_DIR, exist_ok=True)
 os.makedirs(SYSTEM_PROMPT_DIR, exist_ok=True)
 os.makedirs(SETS_DIR, exist_ok=True)
 os.makedirs(SALT_DIR, exist_ok=True)
+
+# Temporary storage for non-logged-in users
+TEMPORARY_STORAGE = defaultdict(dict)
 
 # Initialize users file if it doesn't exist
 if not os.path.exists(USERS_FILE):
@@ -99,9 +103,12 @@ def get_user_sets(username: str) -> dict:
         return json.load(f)
 
 def load_user_memory(username: str, set_name: str = "default") -> str:
-    # Add check for logged-in status
+    # Check if user is logged in
     from flask import session
     if 'username' not in session or session['username'] != username:
+        # Return temporary memory if available
+        if username in TEMPORARY_STORAGE and 'memory' in TEMPORARY_STORAGE[username]:
+            return TEMPORARY_STORAGE[username]['memory']
         return ""
     
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_memory.txt")
@@ -136,6 +143,13 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     max_size = 5000  # Maximum allowed memory size in characters
     memory_content = memory_content[:max_size]
     
+    # Check if user is logged in
+    from flask import session
+    if 'username' not in session or session['username'] != username:
+        # Store in temporary memory
+        TEMPORARY_STORAGE[username]['memory'] = memory_content
+        return
+        
     # Ensure user directory exists
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
@@ -174,9 +188,12 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
 def load_user_system_prompt(username: str, set_name: str = "default", password: str = None) -> str:
-    # Add check for logged-in status
+    # Check if user is logged in
     from flask import session
     if 'username' not in session or session['username'] != username:
+        # Return temporary prompt if available
+        if username in TEMPORARY_STORAGE and 'prompt' in TEMPORARY_STORAGE[username]:
+            return TEMPORARY_STORAGE[username]['prompt']
         return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
     
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
@@ -352,6 +369,13 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     max_size = 3000  # Maximum allowed system prompt size in characters
     system_prompt = system_prompt[:max_size]
     
+    # Check if user is logged in
+    from flask import session
+    if 'username' not in session or session['username'] != username:
+        # Store in temporary memory
+        TEMPORARY_STORAGE[username]['prompt'] = system_prompt
+        return
+        
     # Ensure user directory exists
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
