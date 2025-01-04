@@ -158,6 +158,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     key = _get_encryption_key(session['password'], salt)
     f = Fernet(key)
     encrypted_data = f.encrypt(memory_content.encode())
+    filepath = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
     with open(filepath, "wb") as f:
         f.write(encrypted_data)
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
@@ -229,12 +230,6 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
         sets = {}
         logger.debug(f"Creating new sets.json for user {username}")
     
-    # If encrypted parameter is None, use existing encryption status
-    if encrypted is None:
-        encrypted = sets.get(set_name, {}).get("encrypted", False)
-        logger.debug(f"Using existing encryption status for {username}/{set_name}: {encrypted}")
-    else:
-        logger.debug(f"Setting new encryption status for {username}/{set_name}: {encrypted}")
     
     # Update set info
     sets[set_name] = {
@@ -359,6 +354,7 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     key = _get_encryption_key(session['password'], salt)
     f = Fernet(key)
     encrypted_data = f.encrypt(system_prompt.encode())
+    filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
     with open(filepath, "wb") as f:
         f.write(encrypted_data)
     logger.debug(f"Successfully saved encrypted prompt for {username}/{set_name}")
