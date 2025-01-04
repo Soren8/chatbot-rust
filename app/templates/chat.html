@@ -459,28 +459,23 @@
             });
         });
 
-        function sendMessage() {
-            var userMessage = document.getElementById('user-input').value;
-            var systemPrompt = "";
-            var activeSet = document.getElementById('set-selector').value; // Get active set
+        function sendMessage(message) {
+            const systemPrompt = document.getElementById('user-system-prompt').value || "You are a helpful AI assistant.";
+            const activeSet = document.getElementById('set-selector').value; // Get active set
+            
+            if (message.trim() === '') return;
 
-            {% if logged_in %}
-                systemPrompt = document.getElementById('user-system-prompt').value;
-            {% else %}
-                systemPrompt = "You are a helpful AI assistant.";
-            {% endif %}
+            // Add user message to chat
+            appendMessage('<strong>You:</strong> ' + escapeHTML(message), 'user-message');
 
-            if (userMessage.trim() === '') return;
-
-            appendMessage('<strong>You:</strong> ' + escapeHTML(userMessage), 'user-message');
-            document.getElementById('user-input').value = '';
-
-            var requestData = {
-                message: userMessage,
+            // Prepare request data
+            const requestData = {
+                message: message,
                 system_prompt: systemPrompt,
-                set_name: activeSet // Include active set
+                set_name: activeSet
             };
 
+            // Send to backend
             fetch('/chat', {
                 method: 'POST',
                 headers: {
@@ -498,20 +493,21 @@
                 const decoder = new TextDecoder('utf-8');
                 let aiMessage = '';
 
+                // Add AI message placeholder
                 appendMessage('<strong>AI:</strong> ', 'ai-message');
                 const aiMessageElements = document.getElementsByClassName('ai-message');
-                const aiMessageElement = aiMessageElements[aiMessageElements.length - 1];
+                const targetElement = aiMessageElements[aiMessageElements.length - 1];
 
                 function readStream() {
-                    reader.read().then(({ done, value }) => {
+                    return reader.read().then(({ done, value }) => {
                         if (done) return;
                         const chunk = decoder.decode(value, { stream: true });
                         aiMessage += chunk;
-                        aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
+                        targetElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
                         readStream();
                     }).catch(error => {
                         console.error('Error reading stream:', error);
-                        aiMessageElement.innerHTML += '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
+                        targetElement.innerHTML += '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
                     });
                 }
                 readStream();
@@ -525,7 +521,14 @@
         document.getElementById('user-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                sendMessage();
+                // Get the message from input
+                const message = this.value.trim();
+                if (message) {
+                    // Clear input
+                    this.value = '';
+                    // Send message
+                    sendMessage(message);
+                }
             }
         });
 
