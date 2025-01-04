@@ -24,6 +24,11 @@
     <button id="toggle-system-prompt" class="toggle-system-prompt">Show/Hide System Prompt</button>
     <div id="system-prompt-container" class="system-prompt-container">
         <textarea id="user-system-prompt" class="user-system-prompt" placeholder="User system prompt here...">{{ user_system_prompt }}</textarea>
+        <div style="margin: 5px 0;">
+            <label>
+                <input type="checkbox" id="encrypt-memory"> Encrypt
+            </label>
+        </div>
         <button id="save-system-prompt" class="save-system-prompt">Save System Prompt</button>
     </div>
 
@@ -412,25 +417,35 @@
             const setName = document.getElementById('set-selector').value;
             const encrypt = document.getElementById('encrypt-memory').checked;
             
+            console.debug(`Saving system prompt for set ${setName}, encrypted: ${encrypt}`);
+            
             fetch('/update_system_prompt', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     system_prompt: sysPromptText,
-                    set_name: setName, // Include current set name
+                    set_name: setName,
                     encrypted: encrypt
                 })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.status === 'success') {
                     appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message');
+                    console.debug('System prompt saved successfully');
                 } else {
                     appendMessage('<strong>Error:</strong> Failed to save system prompt.', 'error-message');
+                    console.error('Failed to save system prompt');
                 }
             })
             .catch(error => {
                 appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
+                console.error('Error saving system prompt:', error);
             });
         });
 
