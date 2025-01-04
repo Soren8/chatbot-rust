@@ -99,6 +99,11 @@ def get_user_sets(username: str) -> dict:
         return json.load(f)
 
 def load_user_memory(username: str, set_name: str = "default") -> str:
+    # Add check for logged-in status
+    from flask import session
+    if 'username' not in session or session['username'] != username:
+        return ""
+    
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_memory.txt")
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return ""
@@ -169,6 +174,11 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
 def load_user_system_prompt(username: str, set_name: str = "default", password: str = None) -> str:
+    # Add check for logged-in status
+    from flask import session
+    if 'username' not in session or session['username'] != username:
+        return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+    
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
