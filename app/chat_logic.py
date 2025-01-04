@@ -1,5 +1,8 @@
+import logging
 from app.llm.ollama_provider import OllamaProvider
 from app.llm.openai_provider import OpenAIProvider
+
+logger = logging.getLogger(__name__)
 
 def get_llm_provider(config):
     """
