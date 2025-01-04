@@ -290,6 +290,11 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
 
 def load_user_chat_history(username: str, set_name: str = "default", password: str = None) -> list:
     """Load chat history for a user's set"""
+    # Add check for logged-in status
+    from flask import session
+    if 'username' not in session or session['username'] != username:
+        return []
+    
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_history.json")
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return []
