@@ -139,7 +139,7 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
         with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
 
-def save_user_memory(username: str, memory_content: str, set_name: str = "default"):
+def save_user_memory(username: str, memory_content: str, set_name: str = "default", password: str = None):
     max_size = 5000  # Maximum allowed memory size in characters
     memory_content = memory_content[:max_size]
     
@@ -177,7 +177,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         raise ValueError("Password not available for encryption")
     
     salt = get_user_salt(username)
-    key = _get_encryption_key(session['password'], salt)
+    key = _get_encryption_key(password or session['password'], salt)
     f = Fernet(key)
     encrypted_data = f.encrypt(memory_content.encode())
     
