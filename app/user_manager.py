@@ -127,7 +127,7 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
         with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
 
-def save_user_memory(username: str, memory_content: str, set_name: str = "default", encrypted: bool = False):
+def save_user_memory(username: str, memory_content: str, set_name: str = "default"):
     max_size = 5000  # Maximum allowed memory size in characters
     memory_content = memory_content[:max_size]
     
@@ -143,35 +143,24 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     else:
         sets = {}
     
-    logger.debug(f"Setting encryption status for {username}/{set_name} to {encrypted}")
     sets[set_name] = {
-        "created": time.time(),
-        "encrypted": encrypted
+        "created": time.time()
     }
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
-    logger.debug(f"Saved sets.json for {username} with encryption status {encrypted}")
     
-    # Save memory content
-    filepath = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
-    
-    if encrypted:
-        # Get password from session to derive encryption key
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for encryption") 
-        salt = get_user_salt(username)
-        key = _get_encryption_key(session['password'], salt)
-        f = Fernet(key)
-        encrypted_data = f.encrypt(memory_content.encode())
-        with open(filepath, "wb") as f:
-            f.write(encrypted_data)
-        logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
-    else:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(memory_content)
-        logger.debug(f"Successfully saved plaintext memory for {username}/{set_name}")
+    # Always encrypt
+    from flask import session
+    if 'password' not in session:
+        raise ValueError("Password not available for encryption")
+    salt = get_user_salt(username)
+    key = _get_encryption_key(session['password'], salt)
+    f = Fernet(key)
+    encrypted_data = f.encrypt(memory_content.encode())
+    with open(filepath, "wb") as f:
+        f.write(encrypted_data)
+    logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
 def load_user_system_prompt(username: str, set_name: str = "default") -> str:
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
@@ -224,7 +213,7 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
             logger.error(f"Error reading plaintext prompt for {username}/{set_name}: {str(e)}")
             return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
-def save_user_chat_history(username: str, history: list, set_name: str = "default", encrypted: bool = None, password: str = None):
+def save_user_chat_history(username: str, history: list, set_name: str = "default", password: str = None):
     """Save chat history for a user's set"""
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
@@ -339,7 +328,7 @@ def load_user_chat_history(username: str, set_name: str = "default") -> list:
             logger.error(f"Error reading plaintext history for {username}/{set_name}: {str(e)}")
             return []
 
-def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", encrypted: bool = False):
+def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default"):
     max_size = 3000  # Maximum allowed system prompt size in characters
     system_prompt = system_prompt[:max_size]
     
@@ -355,34 +344,24 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     else:
         sets = {}
     
-    logger.debug(f"Setting encryption status for {username}/{set_name} to {encrypted}")
     sets[set_name] = {
-        "created": time.time(),
-        "encrypted": encrypted
+        "created": time.time()
     }
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
-    logger.debug(f"Saved sets.json for {username} with encryption status {encrypted}")
     
-    # Save prompt content
-    filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
-    
-    if encrypted:
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for encryption")
-        salt = get_user_salt(username)
-        key = _get_encryption_key(session['password'], salt)
-        f = Fernet(key)
-        encrypted_data = f.encrypt(system_prompt.encode())
-        with open(filepath, "wb") as f:
-            f.write(encrypted_data)
-        logger.debug(f"Successfully saved encrypted prompt for {username}/{set_name}")
-    else:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(system_prompt)
-        logger.debug(f"Successfully saved plaintext prompt for {username}/{set_name}")
+    # Always encrypt
+    from flask import session
+    if 'password' not in session:
+        raise ValueError("Password not available for encryption")
+    salt = get_user_salt(username)
+    key = _get_encryption_key(session['password'], salt)
+    f = Fernet(key)
+    encrypted_data = f.encrypt(system_prompt.encode())
+    with open(filepath, "wb") as f:
+        f.write(encrypted_data)
+    logger.debug(f"Successfully saved encrypted prompt for {username}/{set_name}")
 
 def create_new_set(username: str, set_name: str) -> bool:
     """Create a new empty set for a user"""
