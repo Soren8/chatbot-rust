@@ -410,14 +410,18 @@ def reset_chat():
         )
         if "username" in session:
             set_name = request.json.get("set_name", "default")
+            password = session.get("password")  # Get the stored password
+            
+            # Save system prompt with password
             save_user_system_prompt(
                 session["username"],
                 sessions[session_id]["system_prompt"],
                 set_name,
-                None  # No password for reset
+                password
             )
-            # Save empty chat history
-            save_user_chat_history(session["username"], [], set_name)
+            
+            # Save empty chat history with password
+            save_user_chat_history(session["username"], [], set_name, password)
             logger.info(f"Saved empty chat history for set '{set_name}'")
         logger.info(f"Chat history reset for session {session_id}")
 
