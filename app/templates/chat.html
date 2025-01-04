@@ -182,15 +182,6 @@
                 document.getElementById('user-system-prompt').value = data.system_prompt || '';
                 document.getElementById('user-memory').value = data.memory || '';
                 
-                // Update encryption checkbox based on response
-                const encryptCheckbox = document.getElementById('encrypt-memory');
-                console.log(`Setting encryption checkbox to: ${data.encrypted}`);
-                if (data.encrypted !== undefined) {
-                    encryptCheckbox.checked = Boolean(data.encrypted);
-                } else {
-                    encryptCheckbox.checked = false;
-                }
-                
                 // Clear existing chat
                 document.getElementById('chat-content').innerHTML = '';
                 
@@ -448,15 +439,12 @@
         document.getElementById('save-memory').addEventListener('click', function() {
             const memText = document.getElementById('user-memory').value;
             const setName = document.getElementById('set-selector').value;
-            const encrypt = document.getElementById('encrypt-memory').checked;
-            
             fetch('/update_memory', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     memory: memText,
-                    set_name: setName,
-                    encrypted: encrypt
+                    set_name: setName
                 })
             })
             .then(response => response.json())
