@@ -239,9 +239,9 @@ def chat():
             }
         ), 429
 
-    # If the user is logged in, use their saved system prompt; otherwise, use the default
-    memory_text = user_session["memory"] if "username" in session else ""
-    system_prompt = user_session["system_prompt"] if "username" in session else "You are a helpful AI assistant."
+    # Get memory text from the session regardless of login status
+    memory_text = user_session.get("memory", "")
+    system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
 
     def generate():
         with response_lock:

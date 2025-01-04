@@ -300,6 +300,15 @@ def chat():
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
+    # Initialize guest session if it doesn't exist
+    if session_id.startswith("guest_") and not user_session.get("initialized", False):
+        user_session.update({
+            "history": [],
+            "system_prompt": "You are a helpful AI assistant.",
+            "memory": "",
+            "initialized": True
+        })
+
     logger.info(f"Received chat request. Session: {session_id}")
 
     # Initialize guest session if it doesn't exist
@@ -338,8 +347,8 @@ def chat():
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
 
-    memory_text = user_session["memory"] if "username" in session else ""
-    system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
+    # Get memory text from the session regardless of login status
+    memory_text = user_session.get("memory", "")
     system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
 
     # Get set_name and password before entering generator
