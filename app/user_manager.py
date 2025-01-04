@@ -163,7 +163,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         f.write(encrypted_data)
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
-def load_user_system_prompt(username: str, set_name: str = "default") -> str:
+def load_user_system_prompt(username: str, set_name: str = "default", password: str = None) -> str:
     filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
@@ -183,13 +183,16 @@ def load_user_system_prompt(username: str, set_name: str = "default") -> str:
             return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
             
         try:
-            from flask import session
-            if 'password' not in session:
-                logger.error(f"Password not available for decryption for {username}")
-                return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+            if not password:
+                # Try to get password from session if not provided
+                from flask import session
+                if 'password' not in session:
+                    logger.error(f"Password not available for decryption for {username}")
+                    return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+                password = session['password']
             
             salt = get_user_salt(username)
-            key = _get_encryption_key(session['password'], salt)
+            key = _get_encryption_key(password, salt)
             f = Fernet(key)
             
             with open(filepath, "rb") as file:
