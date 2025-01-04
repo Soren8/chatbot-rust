@@ -232,21 +232,41 @@ def update_memory():
 
 @bp.route("/update_system_prompt", methods=["POST"])
 def update_system_prompt():
-    if "username" not in session:
-        return jsonify({"error": "Not authenticated"}), 403
-
     system_prompt = request.json.get("system_prompt", "")
     set_name = request.json.get("set_name", "default")
-    username = session["username"]
+    encrypted = request.json.get("encrypted", False)
     
-    logger.debug(f"Updating system prompt for user {username}, set {set_name}. "
-                f"Prompt length: {len(system_prompt)}")
-    
-    sessions[username]["system_prompt"] = system_prompt
-    save_user_system_prompt(username, system_prompt, set_name)
-    
-    logger.debug(f"Successfully updated system prompt for user {username}, set {set_name}")
-    return jsonify({"status": "success"})
+    if not system_prompt:
+        return jsonify({"error": "System prompt is required"}), 400
+
+    if "username" in session:
+        # Logged-in user - save to disk
+        username = session["username"]
+        password = session.get("password") if encrypted else None
+        
+        logger.debug(f"Updating system prompt for user {username}, set {set_name}. "
+                    f"Prompt length: {len(system_prompt)}")
+        
+        sessions[username]["system_prompt"] = system_prompt
+        save_user_system_prompt(username, system_prompt, set_name, password)
+        
+        logger.debug(f"Successfully updated system prompt for user {username}, set {set_name}")
+        return jsonify({
+            "status": "success",
+            "message": "System prompt saved to disk",
+            "storage": "disk"
+        })
+    else:
+        # Guest user - save to session
+        session_id = f"guest_{request.remote_addr}"
+        sessions[session_id]["system_prompt"] = system_prompt
+        
+        logger.debug(f"Updated system prompt in session memory for guest user {session_id}")
+        return jsonify({
+            "status": "success", 
+            "message": "System prompt saved to session memory",
+            "storage": "session"
+        })
 
 @bp.route("/chat", methods=["POST"])
 def chat():
@@ -299,7 +319,8 @@ def chat():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
 
     memory_text = user_session["memory"] if "username" in session else ""
-    system_prompt = user_session["system_prompt"] if "username" in session else "You are a helpful AI assistant."
+    system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
+    system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
 
     # Get set_name and password before entering generator
     set_name = request.json.get("set_name", "default")
