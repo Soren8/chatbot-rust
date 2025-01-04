@@ -307,12 +307,21 @@ def chat():
             if session_id.startswith("guest_"):
                 return
             try:
-                if encrypted and not password:
-                    raise ValueError("Password required for encryption")
-                save_user_chat_history(session_id, user_session["history"], set_name, password if encrypted else None)
+                if encrypted:
+                    if not password:
+                        logger.error("Encryption requested but no password available")
+                        yield "\n[Warning] Could not save encrypted history - no password available"
+                        return
+                    save_user_chat_history(session_id, user_session["history"], set_name, password)
+                else:
+                    # Save without encryption
+                    save_user_chat_history(session_id, user_session["history"], set_name, None)
             except ValueError as e:
                 logger.error(f"Failed to save chat history: {str(e)}")
                 yield f"\n[Error] Failed to save chat history: {str(e)}"
+            except Exception as e:
+                logger.error(f"Unexpected error saving chat history: {str(e)}")
+                yield f"\n[Error] Unexpected error saving chat history"
 
     return Response(generate(), mimetype="text/plain")
 
