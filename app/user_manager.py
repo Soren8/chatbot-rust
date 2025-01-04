@@ -143,24 +143,29 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     else:
         sets = {}
     
+    # Always mark as encrypted for logged-in users
     sets[set_name] = {
-        "created": time.time()
+        "created": time.time(),
+        "encrypted": True
     }
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
     
-    # Always encrypt
+    # Always encrypt using session password
     from flask import session
     if 'password' not in session:
         raise ValueError("Password not available for encryption")
+    
     salt = get_user_salt(username)
     key = _get_encryption_key(session['password'], salt)
     f = Fernet(key)
     encrypted_data = f.encrypt(memory_content.encode())
+    
     filepath = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
     with open(filepath, "wb") as f:
         f.write(encrypted_data)
+        
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
 def load_user_system_prompt(username: str, set_name: str = "default", password: str = None) -> str:

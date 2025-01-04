@@ -219,14 +219,13 @@ def update_memory():
 
     user_memory = request.json.get("memory", "")
     set_name = request.json.get("set_name", "default")
-    encrypted = request.json.get("encrypted", False)
     username = session["username"]
     
     logger.debug(f"Updating memory for user {username}, set {set_name}. "
-                f"Encrypted: {encrypted}, Memory length: {len(user_memory)}")
+                f"Memory length: {len(user_memory)}")
     
     sessions[username]["memory"] = user_memory
-    save_user_memory(username, user_memory, set_name, encrypted)
+    save_user_memory(username, user_memory, set_name)
     
     logger.debug(f"Successfully updated memory for user {username}, set {set_name}")
     return jsonify({"status": "success"})
