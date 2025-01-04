@@ -301,7 +301,7 @@ def chat():
             if session_id.startswith("guest_"):
                 return
             try:
-                save_user_chat_history(session_id, user_session["history"], set_name, None, password)
+                save_user_chat_history(session_id, user_session["history"], set_name)
             except ValueError as e:
                 logger.error(f"Failed to save chat history: {str(e)}")
                 yield f"\n[Error] Failed to save chat history: {str(e)}"
@@ -384,17 +384,13 @@ def reset_chat():
         )
         if "username" in session:
             set_name = request.json.get("set_name", "default")
-            password = session.get("password")  # Get the stored password
-            if not password:
-                return jsonify({"status": "error", "message": "Password required for encryption"}), 400
-                
             save_user_system_prompt(
                 session["username"],
                 sessions[session_id]["system_prompt"],
                 set_name
             )
-            # Pass the password to save_user_chat_history
-            save_user_chat_history(session["username"], [], set_name, password)
+            # Save empty chat history
+            save_user_chat_history(session["username"], [], set_name)
             logger.info(f"Saved empty chat history for set '{set_name}'")
         logger.info(f"Chat history reset for session {session_id}")
 
