@@ -140,17 +140,15 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
             return f.read()
 
 def save_user_memory(username: str, memory_content: str, set_name: str = "default", password: str = None):
-    max_size = 5000  # Maximum allowed memory size in characters
+    max_size = 5000
     memory_content = memory_content[:max_size]
     
     # Check if user is logged in
     from flask import session
     if 'username' not in session or session['username'] != username:
-        # Store in temporary memory
         TEMPORARY_STORAGE[username]['memory'] = memory_content
         return
         
-    # Ensure user directory exists
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
     
@@ -162,7 +160,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     else:
         sets = {}
     
-    # Always mark as encrypted for logged-in users
+    # Always mark as encrypted
     sets[set_name] = {
         "created": time.time(),
         "encrypted": True
@@ -171,13 +169,16 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     with open(sets_file, "w") as f:
         json.dump(sets, f)
     
-    # Always encrypt using session password
-    from flask import session
-    if 'password' not in session:
-        raise ValueError("Password not available for encryption")
+    # Get password from session if not provided
+    if not password:
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for encryption")
+        password = session['password']
     
+    # Always encrypt using password
     salt = get_user_salt(username)
-    key = _get_encryption_key(password or session['password'], salt)
+    key = _get_encryption_key(password, salt)
     f = Fernet(key)
     encrypted_data = f.encrypt(memory_content.encode())
     
@@ -253,57 +254,40 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     """Save chat history for a user's set"""
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
-    logger.debug(f"Ensured user sets directory exists: {user_sets_dir}")
     
     # Update sets.json
     sets_file = os.path.join(user_sets_dir, "sets.json")
     if os.path.exists(sets_file):
         with open(sets_file, "r") as f:
             sets = json.load(f)
-        logger.debug(f"Loaded existing sets.json for user {username}")
     else:
         sets = {}
-        logger.debug(f"Creating new sets.json for user {username}")
     
-    
-    # Update set info
+    # Always mark as encrypted
     sets[set_name] = {
         "created": time.time(),
-        "encrypted": True  # Always encrypt
+        "encrypted": True
     }
     
     with open(sets_file, "w") as f:
         json.dump(sets, f)
-    logger.debug(f"Updated sets.json for user {username} with set {set_name} and encryption status True")
+    
+    if not password:
+        from flask import session
+        if 'password' not in session:
+            raise ValueError("Password not available for encryption")
+        password = session['password']
+    
+    salt = get_user_salt(username)
+    key = _get_encryption_key(password, salt)
+    f = Fernet(key)
+    encrypted_data = f.encrypt(json.dumps(history).encode())
     
     filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
-    logger.debug(f"Saving chat history for user {username}, set {set_name} to file: {filepath}")
+    with open(filepath, "wb") as f:
+        f.write(encrypted_data)
     
-    try:
-        try:
-            if not password:
-                logger.error(f"Password required for encryption")
-                raise ValueError("Password required for encryption")
-            
-            salt = get_user_salt(username)
-            key = _get_encryption_key(password, salt)
-            f = Fernet(key)
-            encrypted_data = f.encrypt(json.dumps(history).encode())
-            with open(filepath, "wb") as f:
-                f.write(encrypted_data)
-            logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
-            return
-        except RuntimeError:  # Working outside of request context
-            logger.error(f"Outside request context, cannot save encrypted data")
-            raise ValueError("Cannot save encrypted data outside request context")
-                
-        # Save as plaintext if not encrypted
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(history, f)
-        logger.debug(f"Successfully saved plaintext chat history for user {username}, set {set_name}")
-    except Exception as e:
-        logger.error(f"Failed to save chat history: {str(e)}", exc_info=True)
-        raise
+    logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
 
 def load_user_chat_history(username: str, set_name: str = "default", password: str = None) -> list:
     """Load chat history for a user's set"""
@@ -366,21 +350,17 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             return []
 
 def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", password: str = None):
-    max_size = 3000  # Maximum allowed system prompt size in characters
+    max_size = 3000
     system_prompt = system_prompt[:max_size]
     
-    # Check if user is logged in
     from flask import session
     if 'username' not in session or session['username'] != username:
-        # Store in temporary memory
         TEMPORARY_STORAGE[username]['prompt'] = system_prompt
         return
         
-    # Ensure user directory exists
     user_sets_dir = os.path.join(SETS_DIR, username)
     os.makedirs(user_sets_dir, exist_ok=True)
     
-    # Update sets.json
     sets_file = os.path.join(user_sets_dir, "sets.json")
     if os.path.exists(sets_file):
         with open(sets_file, "r") as f:
@@ -397,14 +377,12 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     with open(sets_file, "w") as f:
         json.dump(sets, f)
     
-    # Get password from session if not provided
     if not password:
         from flask import session
         if 'password' not in session:
             raise ValueError("Password not available for encryption")
         password = session['password']
     
-    # Always encrypt using password
     salt = get_user_salt(username)
     key = _get_encryption_key(password, salt)
     f = Fernet(key)

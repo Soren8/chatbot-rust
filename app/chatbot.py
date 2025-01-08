@@ -190,7 +190,7 @@ def update_memory():
 
     if "username" in session:
         # Logged-in user - save to disk
-        save_user_memory(session["username"], user_memory, set_name, encrypted)
+        save_user_memory(session["username"], user_memory, set_name, True)  # Always encrypt
         return jsonify({
             "status": "success",
             "message": "Memory saved to disk",
@@ -214,7 +214,7 @@ def update_system_prompt():
     username = session["username"]
     sessions[username]["system_prompt"] = system_prompt
     encrypted = request.json.get("encrypted", False)
-    save_user_system_prompt(username, system_prompt, set_name, encrypted)
+    save_user_system_prompt(username, system_prompt, set_name, True)  # Always encrypt
     return jsonify({"status": "success"})
 
 @app.route("/chat", methods=["POST"])
@@ -296,7 +296,7 @@ def chat():
                     session["username"],
                     user_session["history"],
                     active_set,
-                    request.json.get("encrypted", False)
+                    True  # Always encrypt
                 )
 
     return Response(generate(), mimetype="text/plain")
@@ -361,7 +361,7 @@ def regenerate():
                         session["username"],
                         user_session["history"],
                         active_set,
-                        request.json.get("encrypted", False)
+                        True  # Always encrypt
                     )
             except Exception as e:
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
