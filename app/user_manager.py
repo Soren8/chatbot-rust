@@ -152,13 +152,14 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         TEMPORARY_STORAGE[username]['memory'] = memory_content
         return
         
-    user_sets_dir = SETS_DIR / username
+    user_sets_dir = Path(SETS_DIR) / username
     user_sets_dir.mkdir(parents=True, exist_ok=True)
     
     # Update sets.json
     sets_file = user_sets_dir / "sets.json"
     if sets_file.exists():
-        sets = json.loads(sets_file.read_text(encoding='utf-8'))
+        with sets_file.open("r", encoding='utf-8') as f:
+            sets = json.load(f)
     else:
         sets = {}
     
@@ -169,6 +170,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     }
     
     sets_file.write_text(json.dumps(sets), encoding='utf-8')
+    logger.debug(f"Updated sets.json for {username}/{set_name}")
     
     # Get password from session if not provided
     if not password:
@@ -252,7 +254,7 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
 
 def save_user_chat_history(username: str, history: list, set_name: str = "default", password: str = None):
     """Save chat history for a user's set"""
-    user_sets_dir = SETS_DIR / username
+    user_sets_dir = Path(SETS_DIR) / username
     user_sets_dir.mkdir(parents=True, exist_ok=True)
     
     # Update sets.json
@@ -269,8 +271,8 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
         "encrypted": True
     }
     
-    with sets_file.open("w", encoding='utf-8') as f:
-        json.dump(sets, f)
+    sets_file.write_text(json.dumps(sets), encoding='utf-8')
+    logger.debug(f"Updated sets.json for {username}/{set_name}")
     
     if not password:
         from flask import session
@@ -284,8 +286,9 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     encrypted_data = f.encrypt(json.dumps(history).encode())
     
     filepath = user_sets_dir / f"{set_name}_history.json"
-    with filepath.open("wb") as f:
-        f.write(encrypted_data)
+    logger.debug(f"Writing history file to: {filepath}")
+    filepath.write_bytes(encrypted_data)
+    logger.debug(f"Successfully wrote {len(encrypted_data)} bytes to history file")
     
     logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
 
@@ -296,12 +299,12 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
     if 'username' not in session or session['username'] != username:
         return []
     
-    filepath = os.path.join(SETS_DIR, username, f"{set_name}_history.json")
-    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+    filepath = Path(SETS_DIR) / username / f"{set_name}_history.json"
+    if not filepath.exists() or filepath.stat().st_size == 0:
         return []
         
     # Check if set is encrypted
-    sets_file = os.path.join(SETS_DIR, username, "sets.json")
+    sets_file = Path(SETS_DIR) / username / "sets.json"
     try:
         with open(sets_file, "r") as f:
             sets = json.load(f)
