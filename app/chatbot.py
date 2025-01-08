@@ -165,7 +165,7 @@ def load_set():
 @app.route("/update_memory", methods=["POST"])
 def update_memory():
     user_memory = request.json.get("memory", "")
-    set_name = request.json.get("set_name", "default")
+    set_name = request.json.get("set_name", "default")  # Get active set from request
 
     if not user_memory:
         return jsonify({"error": "Memory content is required"}), 400
@@ -193,7 +193,7 @@ def update_memory():
             save_user_memory(session["username"], user_memory, set_name, session.get("password"))
             return jsonify({
                 "status": "success",
-                "message": "Memory saved to disk",
+                "message": f"Memory saved to disk in set {set_name}",
                 "storage": "disk"
             })
         except Exception as e:
@@ -229,6 +229,7 @@ def chat():
 
     user_message = request.json.get("message", "")
     new_system_prompt = request.json.get("system_prompt", None)
+    active_set = request.json.get("set_name", "default")  # Get active set from request
     active_set = request.json.get("set_name", "default")
 
     # Create a consistent guest session ID
