@@ -166,7 +166,6 @@ def load_set():
 def update_memory():
     user_memory = request.json.get("memory", "")
     set_name = request.json.get("set_name", "default")
-    encrypted = request.json.get("encrypted", False)
 
     if not user_memory:
         return jsonify({"error": "Memory content is required"}), 400
@@ -188,14 +187,21 @@ def update_memory():
     sessions[session_id]["memory"] = user_memory
     logger.debug(f"Updated memory for session {session_id}: {user_memory[:50]}...")
 
+    # Save to disk for logged-in users
     if "username" in session:
-        # Logged-in user - save to disk
-        save_user_memory(session["username"], user_memory, set_name, True)  # Always encrypt
-        return jsonify({
-            "status": "success",
-            "message": "Memory saved to disk",
-            "storage": "disk"
-        })
+        try:
+            save_user_memory(session["username"], user_memory, set_name, session.get("password"))
+            return jsonify({
+                "status": "success",
+                "message": "Memory saved to disk",
+                "storage": "disk"
+            })
+        except Exception as e:
+            logger.error(f"Error saving memory: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to save memory: {str(e)}"
+            }), 500
     else:
         # Guest user - save to session
         return jsonify({
