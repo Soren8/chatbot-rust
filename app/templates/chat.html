@@ -416,7 +416,7 @@
             // Get required elements
             const systemPromptElement = document.getElementById('user-system-prompt');
             const userInputElement = document.getElementById('user-input');
-            
+    
             // Basic validation - these elements should always exist
             if (!systemPromptElement || !userInputElement) {
                 console.error("Critical chat elements missing!");
@@ -425,16 +425,17 @@
             }
 
             const message = userInputElement.value.trim();
-            
+    
             // Validate message
             if (!message) {
                 console.warn("Message cannot be empty!");
                 return;
             }
 
-            // Get values - handle logged out state
+            // Get values
             const systemPrompt = systemPromptElement.value || "You are a helpful AI assistant.";
-            const activeSet = 'default'; // Use default set when logged out
+            const setSelector = document.getElementById('set-selector');
+            const activeSet = setSelector ? setSelector.value : 'default';
 
             // Clear input
             userInputElement.value = '';
