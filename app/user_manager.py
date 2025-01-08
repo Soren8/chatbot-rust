@@ -12,16 +12,12 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-MEMORY_DIR = "data/memory"
-SYSTEM_PROMPT_DIR = "data/system_prompts"
 USERS_FILE = "data/users.json"
 SETS_DIR = "data/user_sets"
 SALT_DIR = "data/salts"
 
 # Ensure necessary directories exist
 os.makedirs("data", exist_ok=True)
-os.makedirs(MEMORY_DIR, exist_ok=True)
-os.makedirs(SYSTEM_PROMPT_DIR, exist_ok=True)
 os.makedirs(SETS_DIR, exist_ok=True)
 os.makedirs(SALT_DIR, exist_ok=True)
 
