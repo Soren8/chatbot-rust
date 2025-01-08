@@ -3,8 +3,17 @@ import json
 import time
 import logging
 from collections import defaultdict
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Get base data directory from environment or use default
+BASE_DATA_DIR = Path(os.getenv('HOST_DATA_DIR', 'data'))
+
+# Update path constants to use the base data directory
+USERS_FILE = BASE_DATA_DIR / "users.json"
+SETS_DIR = BASE_DATA_DIR / "user_sets"
+SALT_DIR = BASE_DATA_DIR / "salts"
 import bcrypt
 from typing import Dict
 from base64 import b64encode, b64decode
@@ -17,9 +26,9 @@ SETS_DIR = "data/user_sets"
 SALT_DIR = "data/salts"
 
 # Ensure necessary directories exist
-os.makedirs("data", exist_ok=True)
-os.makedirs(SETS_DIR, exist_ok=True)
-os.makedirs(SALT_DIR, exist_ok=True)
+BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+SETS_DIR.mkdir(parents=True, exist_ok=True)
+SALT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Temporary storage for non-logged-in users
 TEMPORARY_STORAGE = defaultdict(dict)
@@ -145,14 +154,13 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         TEMPORARY_STORAGE[username]['memory'] = memory_content
         return
         
-    user_sets_dir = os.path.join(SETS_DIR, username)
-    os.makedirs(user_sets_dir, exist_ok=True)
+    user_sets_dir = SETS_DIR / username
+    user_sets_dir.mkdir(parents=True, exist_ok=True)
     
     # Update sets.json
-    sets_file = os.path.join(user_sets_dir, "sets.json")
-    if os.path.exists(sets_file):
-        with open(sets_file, "r") as f:
-            sets = json.load(f)
+    sets_file = user_sets_dir / "sets.json"
+    if sets_file.exists():
+        sets = json.loads(sets_file.read_text())
     else:
         sets = {}
     
@@ -162,8 +170,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         "encrypted": True
     }
     
-    with open(sets_file, "w") as f:
-        json.dump(sets, f)
+    sets_file.write_text(json.dumps(sets))
     
     # Get password from session if not provided
     if not password:
@@ -178,9 +185,8 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     f = Fernet(key)
     encrypted_data = f.encrypt(memory_content.encode())
     
-    filepath = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
-    with open(filepath, "wb") as f:
-        f.write(encrypted_data)
+    filepath = user_sets_dir / f"{set_name}_memory.txt"
+    filepath.write_bytes(encrypted_data)
         
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
