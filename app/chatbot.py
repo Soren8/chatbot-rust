@@ -302,7 +302,7 @@ def chat():
                 save_user_chat_history(
                     session["username"],
                     user_session["history"],
-                    active_set,
+                    active_set,  # Pass the active set
                     True  # Always encrypt
                 )
 
@@ -363,11 +363,10 @@ def regenerate():
                 
                 # Save chat history to the active set if logged in
                 if "username" in session:
-                    active_set  # Use the active set we already extracted
                     save_user_chat_history(
                         session["username"],
                         user_session["history"],
-                        active_set,
+                        active_set,  # Pass the active set
                         True  # Always encrypt
                     )
             except Exception as e:
