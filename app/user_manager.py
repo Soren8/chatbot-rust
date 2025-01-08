@@ -10,25 +10,22 @@ logger = logging.getLogger(__name__)
 # Get base data directory from environment or use default
 BASE_DATA_DIR = Path(os.getenv('HOST_DATA_DIR', 'data'))
 
-# Update path constants to use the base data directory
+# Update path constants to use Path objects
 USERS_FILE = BASE_DATA_DIR / "users.json"
 SETS_DIR = BASE_DATA_DIR / "user_sets"
 SALT_DIR = BASE_DATA_DIR / "salts"
+
+# Ensure necessary directories exist using Path objects
+BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+SETS_DIR.mkdir(parents=True, exist_ok=True)
+SALT_DIR.mkdir(parents=True, exist_ok=True)
+
 import bcrypt
 from typing import Dict
 from base64 import b64encode, b64decode
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-
-USERS_FILE = "data/users.json"
-SETS_DIR = "data/user_sets"
-SALT_DIR = "data/salts"
-
-# Ensure necessary directories exist
-BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
-SETS_DIR.mkdir(parents=True, exist_ok=True)
-SALT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Temporary storage for non-logged-in users
 TEMPORARY_STORAGE = defaultdict(dict)
@@ -74,13 +71,13 @@ def validate_user(username: str, password: str) -> bool:
 
 def get_user_salt(username: str) -> bytes:
     """Retrieve or generate a per-user salt."""
-    filepath = os.path.join(SALT_DIR, f"{username}_salt")
-    if os.path.exists(filepath):
-        with open(filepath, "rb") as f:
+    filepath = SALT_DIR / f"{username}_salt"
+    if filepath.exists():
+        with filepath.open("rb") as f:
             return f.read()
     # Generate a new salt
     new_salt = os.urandom(16)
-    with open(filepath, "wb") as f:
+    with filepath.open("wb") as f:
         f.write(new_salt)
     return new_salt
 
@@ -97,14 +94,15 @@ def _get_encryption_key(password: str, salt: bytes) -> bytes:
 
 def get_user_sets(username: str) -> dict:
     """Get list of saved memory/prompt sets for a user"""
-    user_sets_dir = os.path.join(SETS_DIR, username)
-    os.makedirs(user_sets_dir, exist_ok=True)
+    user_sets_dir = SETS_DIR / username
+    user_sets_dir.mkdir(parents=True, exist_ok=True)
     
-    if not os.path.exists(os.path.join(user_sets_dir, "sets.json")):
-        with open(os.path.join(user_sets_dir, "sets.json"), "w") as f:
+    sets_file = user_sets_dir / "sets.json"
+    if not sets_file.exists():
+        with sets_file.open("w") as f:
             json.dump({"default": {"created": time.time()}}, f)
     
-    with open(os.path.join(user_sets_dir, "sets.json"), "r") as f:
+    with sets_file.open("r") as f:
         return json.load(f)
 
 def load_user_memory(username: str, set_name: str = "default") -> str:
@@ -116,13 +114,13 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
             return TEMPORARY_STORAGE[username]['memory']
         return ""
     
-    filepath = os.path.join(SETS_DIR, username, f"{set_name}_memory.txt")
-    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+    filepath = SETS_DIR / username / f"{set_name}_memory.txt"
+    if not filepath.exists() or filepath.stat().st_size == 0:
         return ""
         
     # Check if set is encrypted
-    sets_file = os.path.join(SETS_DIR, username, "sets.json")
-    with open(sets_file, "r") as f:
+    sets_file = SETS_DIR / username / "sets.json"
+    with sets_file.open("r") as f:
         sets = json.load(f)
     
     if set_name in sets and sets[set_name].get("encrypted", False):
@@ -160,7 +158,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     # Update sets.json
     sets_file = user_sets_dir / "sets.json"
     if sets_file.exists():
-        sets = json.loads(sets_file.read_text())
+        sets = json.loads(sets_file.read_text(encoding='utf-8'))
     else:
         sets = {}
     
@@ -170,7 +168,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         "encrypted": True
     }
     
-    sets_file.write_text(json.dumps(sets))
+    sets_file.write_text(json.dumps(sets), encoding='utf-8')
     
     # Get password from session if not provided
     if not password:
@@ -199,14 +197,14 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             return TEMPORARY_STORAGE[username]['prompt']
         return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
     
-    filepath = os.path.join(SETS_DIR, username, f"{set_name}_prompt.txt")
-    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+    filepath = SETS_DIR / username / f"{set_name}_prompt.txt"
+    if not filepath.exists() or filepath.stat().st_size == 0:
         return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
     # Check if set is encrypted
-    sets_file = os.path.join(SETS_DIR, username, "sets.json")
+    sets_file = SETS_DIR / username / "sets.json"
     try:
-        with open(sets_file, "r") as f:
+        with sets_file.open("r", encoding='utf-8') as f:
             sets = json.load(f)
     except Exception as e:
         logger.error(f"Error loading sets.json for {username}: {str(e)}")
@@ -254,13 +252,13 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
 
 def save_user_chat_history(username: str, history: list, set_name: str = "default", password: str = None):
     """Save chat history for a user's set"""
-    user_sets_dir = os.path.join(SETS_DIR, username)
-    os.makedirs(user_sets_dir, exist_ok=True)
+    user_sets_dir = SETS_DIR / username
+    user_sets_dir.mkdir(parents=True, exist_ok=True)
     
     # Update sets.json
-    sets_file = os.path.join(user_sets_dir, "sets.json")
-    if os.path.exists(sets_file):
-        with open(sets_file, "r") as f:
+    sets_file = user_sets_dir / "sets.json"
+    if sets_file.exists():
+        with sets_file.open("r", encoding='utf-8') as f:
             sets = json.load(f)
     else:
         sets = {}
@@ -271,7 +269,7 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
         "encrypted": True
     }
     
-    with open(sets_file, "w") as f:
+    with sets_file.open("w", encoding='utf-8') as f:
         json.dump(sets, f)
     
     if not password:
@@ -285,8 +283,8 @@ def save_user_chat_history(username: str, history: list, set_name: str = "defaul
     f = Fernet(key)
     encrypted_data = f.encrypt(json.dumps(history).encode())
     
-    filepath = os.path.join(user_sets_dir, f"{set_name}_history.json")
-    with open(filepath, "wb") as f:
+    filepath = user_sets_dir / f"{set_name}_history.json"
+    with filepath.open("wb") as f:
         f.write(encrypted_data)
     
     logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
@@ -360,12 +358,12 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
         TEMPORARY_STORAGE[username]['prompt'] = system_prompt
         return
         
-    user_sets_dir = os.path.join(SETS_DIR, username)
-    os.makedirs(user_sets_dir, exist_ok=True)
+    user_sets_dir = SETS_DIR / username
+    user_sets_dir.mkdir(parents=True, exist_ok=True)
     
-    sets_file = os.path.join(user_sets_dir, "sets.json")
-    if os.path.exists(sets_file):
-        with open(sets_file, "r") as f:
+    sets_file = user_sets_dir / "sets.json"
+    if sets_file.exists():
+        with sets_file.open("r", encoding='utf-8') as f:
             sets = json.load(f)
     else:
         sets = {}
@@ -376,7 +374,7 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
         "encrypted": True
     }
     
-    with open(sets_file, "w") as f:
+    with sets_file.open("w", encoding='utf-8') as f:
         json.dump(sets, f)
     
     if not password:
@@ -390,8 +388,8 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     f = Fernet(key)
     encrypted_data = f.encrypt(system_prompt.encode())
     
-    filepath = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
-    with open(filepath, "wb") as f:
+    filepath = user_sets_dir / f"{set_name}_prompt.txt"
+    with filepath.open("wb") as f:
         f.write(encrypted_data)
         
     logger.debug(f"Successfully saved encrypted prompt for {username}/{set_name}")
@@ -401,12 +399,12 @@ def create_new_set(username: str, set_name: str) -> bool:
     if not set_name or set_name.isspace():
         return False
         
-    user_sets_dir = os.path.join(SETS_DIR, username)
-    os.makedirs(user_sets_dir, exist_ok=True)
+    user_sets_dir = SETS_DIR / username
+    user_sets_dir.mkdir(parents=True, exist_ok=True)
     
-    sets_file = os.path.join(user_sets_dir, "sets.json")
-    if os.path.exists(sets_file):
-        with open(sets_file, "r") as f:
+    sets_file = user_sets_dir / "sets.json"
+    if sets_file.exists():
+        with sets_file.open("r", encoding='utf-8') as f:
             sets = json.load(f)
     else:
         sets = {}
@@ -426,13 +424,13 @@ def delete_set(username: str, set_name: str) -> bool:
     if set_name == "default":
         return False
         
-    user_sets_dir = os.path.join(SETS_DIR, username)
-    sets_file = os.path.join(user_sets_dir, "sets.json")
+    user_sets_dir = SETS_DIR / username
+    sets_file = user_sets_dir / "sets.json"
     
-    if not os.path.exists(sets_file):
+    if not sets_file.exists():
         return False
         
-    with open(sets_file, "r") as f:
+    with sets_file.open("r", encoding='utf-8') as f:
         sets = json.load(f)
     
     if set_name not in sets:
@@ -440,19 +438,19 @@ def delete_set(username: str, set_name: str) -> bool:
         
     # Remove from sets.json
     del sets[set_name]
-    with open(sets_file, "w") as f:
+    with sets_file.open("w", encoding='utf-8') as f:
         json.dump(sets, f)
     
     # Delete associated files
-    memory_file = os.path.join(user_sets_dir, f"{set_name}_memory.txt")
-    prompt_file = os.path.join(user_sets_dir, f"{set_name}_prompt.txt")
-    history_file = os.path.join(user_sets_dir, f"{set_name}_history.json")
+    memory_file = user_sets_dir / f"{set_name}_memory.txt"
+    prompt_file = user_sets_dir / f"{set_name}_prompt.txt"
+    history_file = user_sets_dir / f"{set_name}_history.json"
     
-    if os.path.exists(memory_file):
-        os.remove(memory_file)
-    if os.path.exists(prompt_file):
-        os.remove(prompt_file)
-    if os.path.exists(history_file):
-        os.remove(history_file)
+    if memory_file.exists():
+        memory_file.unlink()
+    if prompt_file.exists():
+        prompt_file.unlink()
+    if history_file.exists():
+        history_file.unlink()
     
     return True
