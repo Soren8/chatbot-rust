@@ -388,11 +388,15 @@
 
         document.getElementById('save-memory').addEventListener('click', function() {
             const memText = document.getElementById('user-memory').value;
+            const setSelector = document.getElementById('set-selector');
+            const activeSet = setSelector ? setSelector.value : 'default';
+            
             fetch('/update_memory', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    memory: memText
+                    memory: memText,
+                    set_name: activeSet
                 })
             })
             .then(response => response.json())
