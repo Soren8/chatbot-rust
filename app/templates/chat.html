@@ -516,18 +516,25 @@
                 },
                 body: JSON.stringify(requestData)
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => {
+                        throw new Error(err.message || 'Failed to reset chat');
+                    });
+                }
+                return response.json();
+            })
             .then(response => {
                 if (response.status === 'success') {
                     document.getElementById('chat-content').innerHTML = '';
-                    appendMessage('<strong>System:</strong> Chat history has been reset.', 'system-message');
+                    appendMessage(`<strong>System:</strong> Chat history has been reset for set '${response.set_name}'.`, 'system-message');
                 } else {
-                    appendMessage('<strong>Error:</strong> ' + escapeHTML(response.error), 'error-message');
+                    appendMessage(`<strong>Error:</strong> ${escapeHTML(response.message)}`, 'error-message');
                 }
             })
             .catch(error => {
                 console.error('Fetch error:', error);
-                appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
+                appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message');
             });
         });
     });

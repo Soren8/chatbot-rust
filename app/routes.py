@@ -478,21 +478,38 @@ def reset_chat():
         if "username" in session:
             password = session.get("password")  # Get the stored password
             
-            # Save the now-empty chat history
-            save_user_chat_history(session["username"], sessions[session_id]["history"], set_name, password)
-            logger.info(f"Saved empty chat history after reset for set '{set_name}'")
-            
-            # Save system prompt with password
-            save_user_system_prompt(
-                session["username"],
-                sessions[session_id]["system_prompt"],
-                set_name,
-                password
-            )
+            try:
+                # Save the now-empty chat history
+                save_user_chat_history(session["username"], sessions[session_id]["history"], set_name, password)
+                logger.info(f"Saved empty chat history after reset for set '{set_name}'")
+                
+                # Save system prompt with password
+                save_user_system_prompt(
+                    session["username"],
+                    sessions[session_id]["system_prompt"],
+                    set_name,
+                    password
+                )
+                logger.info(f"Saved system prompt after reset for set '{set_name}'")
+                
+            except Exception as e:
+                logger.error(f"Error saving after reset: {str(e)}")
+                return jsonify({
+                    "status": "error",
+                    "message": f"Failed to save after reset: {str(e)}"
+                }), 500
             
         logger.info(f"Chat history reset for session {session_id}")
+        return jsonify({
+            "status": "success", 
+            "message": "Chat history has been reset.",
+            "set_name": set_name
+        })
 
-    return jsonify({"status": "success", "message": "Chat history has been reset."})
+    return jsonify({
+        "status": "error",
+        "message": "Session not found"
+    }), 404
 
 @bp.route("/health")
 def health_check():
