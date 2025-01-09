@@ -467,10 +467,8 @@ def reset_chat():
         # Get set name from request
         set_name = request.json.get("set_name", "default")
         
-        # Save current history before resetting
-        current_history = sessions[session_id]["history"]
-        
-        # Reset session data
+        # Reset session data first
+        current_history = sessions[session_id]["history"]  # Save current history before reset
         sessions[session_id]["history"] = []
         sessions[session_id]["system_prompt"] = (
             "You are a helpful AI assistant based on the Dolphin 3 8B model. "
@@ -480,9 +478,9 @@ def reset_chat():
         if "username" in session:
             password = session.get("password")  # Get the stored password
             
-            # Save chat history with password before resetting
-            save_user_chat_history(session["username"], current_history, set_name, password)
-            logger.info(f"Saved chat history before reset for set '{set_name}'")
+            # Save the now-empty chat history
+            save_user_chat_history(session["username"], sessions[session_id]["history"], set_name, password)
+            logger.info(f"Saved empty chat history after reset for set '{set_name}'")
             
             # Save system prompt with password
             save_user_system_prompt(
