@@ -464,14 +464,25 @@ def regenerate():
 def reset_chat():
     session_id = session.get("username", "guest_" + request.remote_addr)
     if session_id in sessions:
+        # Get set name from request
+        set_name = request.json.get("set_name", "default")
+        
+        # Save current history before resetting
+        current_history = sessions[session_id]["history"]
+        
+        # Reset session data
         sessions[session_id]["history"] = []
         sessions[session_id]["system_prompt"] = (
             "You are a helpful AI assistant based on the Dolphin 3 8B model. "
             "Provide clear and concise answers to user queries."
         )
+        
         if "username" in session:
-            set_name = request.json.get("set_name", "default")
             password = session.get("password")  # Get the stored password
+            
+            # Save chat history with password before resetting
+            save_user_chat_history(session["username"], current_history, set_name, password)
+            logger.info(f"Saved chat history before reset for set '{set_name}'")
             
             # Save system prompt with password
             save_user_system_prompt(
@@ -481,9 +492,6 @@ def reset_chat():
                 password
             )
             
-            # Save empty chat history with password
-            save_user_chat_history(session["username"], [], set_name, password)
-            logger.info(f"Saved empty chat history for set '{set_name}'")
         logger.info(f"Chat history reset for session {session_id}")
 
     return jsonify({"status": "success", "message": "Chat history has been reset."})

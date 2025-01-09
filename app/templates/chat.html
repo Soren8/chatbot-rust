@@ -501,7 +501,14 @@
         });
 
         document.getElementById('reset-chat').addEventListener('click', function() {
-            var requestData = {};
+            // Get active set
+            const setSelector = document.getElementById('set-selector');
+            const activeSet = setSelector ? setSelector.value : 'default';
+            
+            var requestData = {
+                set_name: activeSet  // Include active set in request
+            };
+            
             fetch('/reset_chat', {
                 method: 'POST',
                 headers: {
