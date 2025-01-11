@@ -144,6 +144,13 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        // Add event delegation for play buttons
+        document.addEventListener('click', function(event) {
+            if (event.target.classList.contains('play-button')) {
+                console.debug("[TTS] Play button click detected via event delegation");
+                playTTS(event.target);
+            }
+        });
         {% if logged_in %}
         // Load available sets
         function loadSets() {
@@ -314,7 +321,11 @@
                             if (done) return;
                             const chunk = decoder.decode(value, { stream: true });
                             aiMessage += chunk;
-                            aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button><button class="play-button" onclick="playTTS(this)">▶️</button></div>`;
+                            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
+<div class="regenerate-container">
+    <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
+    <button class="play-button" onclick="playTTS(this)">▶️</button>
+</div>`;
                             readStream();
                         }).catch(error => {
                             console.error('Error reading stream:', error);
@@ -335,17 +346,24 @@
 
 
         function playTTS(button) {
+            console.debug("[TTS] Play button clicked");
+            console.debug("[TTS] Button element:", button);
+            
             const messageElement = button.closest('.message');
+            console.debug("[TTS] Message element:", messageElement);
+            
             const messageText = messageElement.querySelector('.ai-message-text')?.textContent || '';
+            console.debug("[TTS] Message text extracted:", messageText);
             
             if (!messageText) {
-                console.error('No text found to play');
+                console.error("[TTS] No text found to play");
                 return;
             }
 
             // Disable button while processing
             button.disabled = true;
             button.textContent = "⏳";
+            console.debug("[TTS] Button disabled and loading state set");
 
             fetch('/tts', {
                 method: 'POST',
@@ -357,24 +375,29 @@
                 })
             })
             .then(response => {
+                console.debug("[TTS] Response received, status:", response.status);
                 if (!response.ok) {
+                    console.error("[TTS] Network response not OK:", response.statusText);
                     throw new Error('Network response was not ok');
                 }
                 return response.blob();
             })
             .then(blob => {
+                console.debug("[TTS] Audio blob received");
                 const audioUrl = URL.createObjectURL(blob);
                 const audio = new Audio(audioUrl);
+                console.debug("[TTS] Audio element created, playing...");
                 audio.play();
                 
                 // Re-enable button after playback ends
                 audio.addEventListener('ended', () => {
+                    console.debug("[TTS] Audio playback ended");
                     button.disabled = false;
                     button.textContent = "▶️";
                 });
             })
             .catch(error => {
-                console.error('Error:', error);
+                console.error("[TTS] Error:", error);
                 button.disabled = false;
                 button.textContent = "▶️";
                 alert('Error playing audio: ' + error.message);
@@ -525,7 +548,11 @@
                         if (done) return;
                         const chunk = decoder.decode(value, { stream: true });
                         aiMessage += chunk;
-                        targetElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button><button class="play-button" onclick="playTTS(this)">▶️</button></div>`;
+                        targetElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
+<div class="regenerate-container">
+    <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
+    <button class="play-button" onclick="playTTS(this)">▶️</button>
+</div>`;
                         readStream();
                     }).catch(error => {
                         console.error('Error reading stream:', error);
