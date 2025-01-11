@@ -53,7 +53,7 @@
             const activeSet = document.getElementById('set-selector')?.value || 'default';
             
             // Show thinking message but keep the regenerate button
-            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶️</button></div>`;
+            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶️</button></div>`;
             
             // Send regenerate request to backend
             fetch('/regenerate', {
@@ -81,12 +81,14 @@
                 function readStream() {
                     return reader.read().then(({ done, value }) => {
                         if (done) {
-                            // Enable the regenerate button when done
-                            const button = aiMessageElement.querySelector('.regenerate-button');
-                            if (button) {
+                            // Enable both buttons when done
+                            const buttons = aiMessageElement.querySelectorAll('.regenerate-button, .play-button');
+                            buttons.forEach(button => {
                                 button.disabled = false;
-                                button.textContent = "⟳";
-                            }
+                                if (button.classList.contains('regenerate-button')) {
+                                    button.textContent = "⟳";
+                                }
+                            });
                             return;
                         }
                         const chunk = decoder.decode(value, { stream: true });
@@ -134,6 +136,9 @@
                 readStream().catch(error => {
                     console.error('Error reading stream:', error);
                     aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button><button class="play-button" onclick="playTTS(this)">▶️</button></div>`;
+                    // Enable buttons in case they were disabled
+                    const buttons = aiMessageElement.querySelectorAll('.regenerate-button, .play-button');
+                    buttons.forEach(button => button.disabled = false);
                 });
             })
             .catch(error => {
