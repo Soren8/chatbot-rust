@@ -1,19 +1,58 @@
 from flask import jsonify, request, Response
 import logging
 from io import BytesIO
+import requests
+import numpy as np
+import wave
+from typing import Optional
 from app.config import Config
 
 logger = logging.getLogger(__name__)
 
 def generate_tts_audio(text: str) -> BytesIO:
     """
-    Generate TTS audio from text.
-    Returns a BytesIO object containing the audio data.
+    Generate TTS audio from text using the external API.
+    Returns a BytesIO object containing the audio data in WAV format.
     """
-    # Implementation will go here
-    # This should handle the actual TTS generation logic
-    # For now, return empty bytes
-    return BytesIO(b"")
+    # Clean and validate input text
+    text = text.strip()
+    if not text:
+        raise ValueError("Empty text provided")
+    
+    # Prepare API request
+    api_url = "http://localhost:5000/api/tts"
+    payload = {
+        "text": text,
+        "voice_file": "voices/default.wav"
+    }
+    
+    try:
+        # Make API request
+        response = requests.post(
+            api_url,
+            json=payload,
+            timeout=30  # 30 second timeout
+        )
+        
+        # Handle API errors
+        if response.status_code != 200:
+            error_msg = response.json().get("error", "Unknown error")
+            raise RuntimeError(f"TTS API error: {error_msg}")
+        
+        # Convert response to WAV format in memory
+        audio_data = BytesIO()
+        with wave.open(audio_data, 'wb') as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(22050)  # 22.05 kHz
+            wav_file.writeframes(response.content)
+        
+        # Reset buffer position for reading
+        audio_data.seek(0)
+        return audio_data
+        
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"TTS API connection failed: {str(e)}")
 
 def register_tts_routes(bp):
     @bp.route("/tts", methods=["POST"])
