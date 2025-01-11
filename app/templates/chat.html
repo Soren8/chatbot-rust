@@ -53,7 +53,7 @@
             const activeSet = document.getElementById('set-selector')?.value || 'default';
             
             // Show thinking message but keep the regenerate button
-            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button></div>`;
+            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶️</button></div>`;
             
             // Send regenerate request to backend
             fetch('/regenerate', {
@@ -105,7 +105,7 @@
                             if (messageText) {
                                 messageText.textContent = aiMessage;
                             } else {
-                                aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button></div>`;
+                                aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶️</button></div>`;
                             }
                             // Scroll to bottom
                             const chatBox = document.getElementById('chat-box');
@@ -133,7 +133,7 @@
                 
                 readStream().catch(error => {
                     console.error('Error reading stream:', error);
-                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
+                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button><button class="play-button" onclick="playTTS(this)">▶️</button></div>`;
                 });
             })
             .catch(error => {
@@ -333,6 +333,53 @@
             }
         }
 
+
+        function playTTS(button) {
+            const messageElement = button.closest('.message');
+            const messageText = messageElement.querySelector('.ai-message-text')?.textContent || '';
+            
+            if (!messageText) {
+                console.error('No text found to play');
+                return;
+            }
+
+            // Disable button while processing
+            button.disabled = true;
+            button.textContent = "⏳";
+
+            fetch('/tts', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    text: messageText
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                const audioUrl = URL.createObjectURL(blob);
+                const audio = new Audio(audioUrl);
+                audio.play();
+                
+                // Re-enable button after playback ends
+                audio.addEventListener('ended', () => {
+                    button.disabled = false;
+                    button.textContent = "▶️";
+                });
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                button.disabled = false;
+                button.textContent = "▶️";
+                alert('Error playing audio: ' + error.message);
+            });
+        }
 
         function escapeHTML(str) {
             var div = document.createElement('div');

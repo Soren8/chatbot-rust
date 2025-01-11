@@ -148,6 +148,25 @@ body {
     transform: scale(1.05);
 }
 
+.play-button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    margin-left: 5px;
+    font-size: 1em;
+    color: #666;
+}
+
+.play-button:hover {
+    color: #d0d0d0;
+}
+
+.play-button:disabled {
+    color: #444;
+    cursor: not-allowed;
+}
+
 .system-message {
     background-color: #555555;
     align-self: center;
