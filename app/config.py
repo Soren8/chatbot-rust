@@ -14,4 +14,7 @@ class Config:
     OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
     SESSION_TIMEOUT = 3600  # 1 hour in seconds
 
-    # Additional configuration can go here.
+    # TTS Configuration
+    TTS_HOST = os.getenv("TTS_HOST", "localhost")
+    TTS_PORT = os.getenv("TTS_PORT", "5000")
+    TTS_BASE_URL = f"http://{TTS_HOST}:{TTS_PORT}"

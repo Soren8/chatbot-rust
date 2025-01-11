@@ -19,8 +19,8 @@ def generate_tts_audio(text: str) -> BytesIO:
     if not text:
         raise ValueError("Empty text provided")
     
-    # Prepare API request
-    api_url = "http://localhost:5000/api/tts"
+    # Prepare API request using config values
+    api_url = f"{Config.TTS_BASE_URL}/api/tts"
     payload = {
         "text": text,
         "voice_file": "voices/default.wav"
