@@ -107,7 +107,7 @@
                             if (messageText) {
                                 messageText.textContent = aiMessage;
                             } else {
-                                aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶️</button></div>`;
+                                aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶</button></div>`;
                             }
                             // Scroll to bottom
                             const chatBox = document.getElementById('chat-box');
@@ -398,7 +398,7 @@
                 audio.addEventListener('ended', () => {
                     console.debug("[TTS] Audio playback ended");
                     button.disabled = false;
-                    button.textContent = "▶️";
+                    button.textContent = "▶";
                 });
             })
             .catch(error => {
