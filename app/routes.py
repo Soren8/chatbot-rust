@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_NAME = "dolphin3.1-8b"
 
+from app.tts import register_tts_routes
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
@@ -56,6 +57,7 @@ MAX_REQUESTS_PER_MINUTE = 60
 def register_routes(app):
     # Store the config in the blueprint
     bp.config = app.config
+    register_tts_routes(bp)
     app.register_blueprint(bp)
 
 @bp.before_app_request

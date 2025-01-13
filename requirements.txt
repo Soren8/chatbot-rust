@@ -5,3 +5,5 @@ cryptography
 python-dotenv
 gunicorn
 openai
+numpy
+wave

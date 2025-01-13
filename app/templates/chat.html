@@ -53,7 +53,7 @@
             const activeSet = document.getElementById('set-selector')?.value || 'default';
             
             // Show thinking message but keep the regenerate button
-            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button></div>`;
+            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶</button></div>`;
             
             // Send regenerate request to backend
             fetch('/regenerate', {
@@ -81,12 +81,14 @@
                 function readStream() {
                     return reader.read().then(({ done, value }) => {
                         if (done) {
-                            // Enable the regenerate button when done
-                            const button = aiMessageElement.querySelector('.regenerate-button');
-                            if (button) {
+                            // Enable both buttons when done
+                            const buttons = aiMessageElement.querySelectorAll('.regenerate-button, .play-button');
+                            buttons.forEach(button => {
                                 button.disabled = false;
-                                button.textContent = "⟳";
-                            }
+                                if (button.classList.contains('regenerate-button')) {
+                                    button.textContent = "⟳";
+                                }
+                            });
                             return;
                         }
                         const chunk = decoder.decode(value, { stream: true });
@@ -105,7 +107,7 @@
                             if (messageText) {
                                 messageText.textContent = aiMessage;
                             } else {
-                                aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button></div>`;
+                                aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶</button></div>`;
                             }
                             // Scroll to bottom
                             const chatBox = document.getElementById('chat-box');
@@ -133,7 +135,10 @@
                 
                 readStream().catch(error => {
                     console.error('Error reading stream:', error);
-                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
+                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button><button class="play-button" onclick="playTTS(this)">▶</button></div>`;
+                    // Enable buttons in case they were disabled
+                    const buttons = aiMessageElement.querySelectorAll('.regenerate-button, .play-button');
+                    buttons.forEach(button => button.disabled = false);
                 });
             })
             .catch(error => {
@@ -144,6 +149,13 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        // Add event delegation for play buttons
+        document.addEventListener('click', function(event) {
+            if (event.target.classList.contains('play-button')) {
+                console.debug("[TTS] Play button click detected via event delegation");
+                playTTS(event.target);
+            }
+        });
         {% if logged_in %}
         // Load available sets
         function loadSets() {
@@ -285,7 +297,7 @@
                 const activeSet = document.getElementById('set-selector').value; // Get active set
                 
                 // Show thinking message but keep the regenerate button
-                aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button></div>`;
+                aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶</button></div>`;
                 
                 // Send regenerate request to backend
                 fetch('/regenerate', {
@@ -314,7 +326,11 @@
                             if (done) return;
                             const chunk = decoder.decode(value, { stream: true });
                             aiMessage += chunk;
-                            aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
+                            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
+<div class="regenerate-container">
+    <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
+    <button class="play-button" onclick="playTTS(this)">▶</button>
+</div>`;
                             readStream();
                         }).catch(error => {
                             console.error('Error reading stream:', error);
@@ -333,6 +349,65 @@
             }
         }
 
+
+        function playTTS(button) {
+            console.debug("[TTS] Play button clicked");
+            console.debug("[TTS] Button element:", button);
+            
+            const messageElement = button.closest('.message');
+            console.debug("[TTS] Message element:", messageElement);
+            
+            const messageText = messageElement.querySelector('.ai-message-text')?.textContent || '';
+            console.debug("[TTS] Message text extracted:", messageText);
+            
+            if (!messageText) {
+                console.error("[TTS] No text found to play");
+                return;
+            }
+
+            // Disable button while processing
+            button.disabled = true;
+            button.textContent = "...";
+            console.debug("[TTS] Button disabled and loading state set");
+
+            fetch('/tts', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    text: messageText
+                })
+            })
+            .then(response => {
+                console.debug("[TTS] Response received, status:", response.status);
+                if (!response.ok) {
+                    console.error("[TTS] Network response not OK:", response.statusText);
+                    throw new Error('Network response was not ok');
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                console.debug("[TTS] Audio blob received");
+                const audioUrl = URL.createObjectURL(blob);
+                const audio = new Audio(audioUrl);
+                console.debug("[TTS] Audio element created, playing...");
+                audio.play();
+                
+                // Re-enable button after playback ends
+                audio.addEventListener('ended', () => {
+                    console.debug("[TTS] Audio playback ended");
+                    button.disabled = false;
+                    button.textContent = "▶";
+                });
+            })
+            .catch(error => {
+                console.error("[TTS] Error:", error);
+                button.disabled = false;
+                button.textContent = "▶";
+                alert('Error playing audio: ' + error.message);
+            });
+        }
 
         function escapeHTML(str) {
             var div = document.createElement('div');
@@ -478,7 +553,11 @@
                         if (done) return;
                         const chunk = decoder.decode(value, { stream: true });
                         aiMessage += chunk;
-                        targetElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
+                        targetElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
+<div class="regenerate-container">
+    <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
+    <button class="play-button" onclick="playTTS(this)">▶</button>
+</div>`;
                         readStream();
                     }).catch(error => {
                         console.error('Error reading stream:', error);
