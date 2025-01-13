@@ -211,7 +211,14 @@
                     console.log(`Loading ${data.history.length} history items`);
                     data.history.forEach(([userMsg, aiMsg]) => {
                         appendMessage('<strong>You:</strong> ' + escapeHTML(userMsg), 'user-message');
-                        appendMessage('<strong>AI:</strong> ' + escapeHTML(aiMsg), 'ai-message');
+                        appendMessage(
+                            `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMsg)}</span>
+                            <div class="regenerate-container">
+                                <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
+                                <button class="play-button" onclick="playTTS(this)">▶</button>
+                            </div>`,
+                            'ai-message'
+                        );
                     });
                 }
                 
