@@ -329,7 +329,7 @@
                             aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
 <div class="regenerate-container">
     <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
-    <button class="play-button" onclick="playTTS(this)">▶️</button>
+    <button class="play-button" onclick="playTTS(this)">▶</button>
 </div>`;
                             readStream();
                         }).catch(error => {
@@ -367,7 +367,7 @@
 
             // Disable button while processing
             button.disabled = true;
-            button.textContent = "⏳";
+            button.textContent = "...";
             console.debug("[TTS] Button disabled and loading state set");
 
             fetch('/tts', {
@@ -404,7 +404,7 @@
             .catch(error => {
                 console.error("[TTS] Error:", error);
                 button.disabled = false;
-                button.textContent = "▶️";
+                button.textContent = "▶";
                 alert('Error playing audio: ' + error.message);
             });
         }
@@ -556,7 +556,7 @@
                         targetElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
 <div class="regenerate-container">
     <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
-    <button class="play-button" onclick="playTTS(this)">▶️</button>
+    <button class="play-button" onclick="playTTS(this)">▶</button>
 </div>`;
                         readStream();
                     }).catch(error => {
