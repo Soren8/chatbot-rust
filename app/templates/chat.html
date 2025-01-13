@@ -297,7 +297,7 @@
                 const activeSet = document.getElementById('set-selector').value; // Get active set
                 
                 // Show thinking message but keep the regenerate button
-                aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶️</button></div>`;
+                aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶</button></div>`;
                 
                 // Send regenerate request to backend
                 fetch('/regenerate', {
