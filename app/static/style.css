@@ -178,23 +178,6 @@ body {
     text-align: center;
 }
 
-/* Responsive adjustments */
-@media (max-width: 600px) {
-    .chat-box {
-        height: 80vh;
-    }
-    .user-input,
-    .reset-chat,
-    .toggle-memory,
-    .toggle-system-prompt,
-    .save-memory,
-    .save-system-prompt {
-        font-size: 14px;
-    }
-    .message {
-        max-width: 100%;
-    }
-}
 
 /* Signup and Login pages */
 .auth-body {
@@ -265,4 +248,28 @@ body {
 
 .links a:hover {
     text-decoration: underline;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+    .auth-container {
+        width: 95% !important;
+        padding: 20px !important;
+        box-sizing: border-box;
+    }
+    
+    .chat-box {
+        height: 80vh;
+    }
+    .user-input,
+    .reset-chat,
+    .toggle-memory,
+    .toggle-system-prompt,
+    .save-memory,
+    .save-system-prompt {
+        font-size: 14px;
+    }
+    .message {
+        max-width: 100%;
+    }
 }
