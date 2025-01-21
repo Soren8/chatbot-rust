@@ -15,4 +15,4 @@ COPY . /app/
 RUN mkdir -p /app/data
 
 # Run the Flask app with Gunicorn in production with debug logging
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--log-level", "debug", "--capture-output", "app:create_app()"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--log-level", "debug", "--capture-output", "--timeout", "300", "--keep-alive", "300", "app:create_app()"]
