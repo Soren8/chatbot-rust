@@ -377,10 +377,12 @@ def chat():
             try:
                 for chunk in stream:
                     response_text += chunk
-                    yield chunk
+                    # Encode the chunk to bytes before yielding
+                    yield chunk.encode('utf-8')
             except Exception as e:
                 logger.error(f"Error during streaming: {str(e)}")
-                yield "\n[Error] An error occurred during response generation."
+                error_msg = "\n[Error] An error occurred during response generation."
+                yield error_msg.encode('utf-8')
 
             user_session["history"].append((user_message, response_text))
             logger.info(f"Chat response generated. Length: {len(response_text)} characters")
@@ -456,7 +458,8 @@ def regenerate():
                     chunk_count += 1
                     if chunk:
                         response_text += chunk
-                        yield chunk
+                        # Encode the chunk to bytes before yielding
+                        yield chunk.encode('utf-8')
                     else:
                         empty_chunk_count += 1
                         # Removed debug log for empty chunks
