@@ -5,9 +5,12 @@ import threading
 import os
 import json
 from collections import defaultdict
+from werkzeug.serving import WSGIRequestHandler
+WSGIRequestHandler.protocol_version = "HTTP/1.1"  # Enable keep-alive connections
 
-# Define SETS_DIR constant
+# Define constants
 SETS_DIR = "data/user_sets"
+STREAM_TIMEOUT = 300  # 5 minutes in seconds
 from flask import (
     Blueprint, request, jsonify, Response, session, redirect, 
     url_for, render_template, current_app
@@ -395,7 +398,17 @@ def chat():
                 logger.error(f"Unexpected error saving chat history: {str(e)}")
                 yield f"\n[Error] Unexpected error saving chat history"
 
-    return Response(generate(), mimetype="text/plain")
+    return Response(
+        generate(),
+        mimetype="text/plain",
+        headers={
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Transfer-Encoding": "chunked",
+        },
+        direct_passthrough=True
+    )
 
 @bp.route("/regenerate", methods=["POST"])
 def regenerate():
@@ -460,7 +473,17 @@ def regenerate():
                 logger.error(f"Error during regeneration: {str(e)}", exc_info=True)
                 yield f"\n[Error] Failed to generate response: {str(e)}"
 
-    return Response(generate(), mimetype="text/plain")
+    return Response(
+        generate(),
+        mimetype="text/plain",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Transfer-Encoding": "chunked",
+        },
+        direct_passthrough=True
+    )
 
 @bp.route("/reset_chat", methods=["POST"])
 def reset_chat():

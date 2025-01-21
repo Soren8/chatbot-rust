@@ -306,7 +306,17 @@ def chat():
                     True  # Always encrypt
                 )
 
-    return Response(generate(), mimetype="text/plain")
+    return Response(
+        generate(),
+        mimetype="text/plain",
+        headers={
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Transfer-Encoding": "chunked",
+        },
+        direct_passthrough=True
+    )
 
 @app.route("/regenerate", methods=["POST"])
 def regenerate():
@@ -374,7 +384,17 @@ def regenerate():
                 logger.error(f"Regeneration failed: {str(e)}", exc_info=True)
                 yield f"\n[Error] Failed to generate response: {str(e)}\n\n<div class='regenerate-container'><button class='regenerate-button' onclick='regenerateMessage(this)'>⟳</button></div>"
 
-    return Response(generate(), mimetype="text/plain")
+    return Response(
+        generate(),
+        mimetype="text/plain",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Transfer-Encoding": "chunked",
+        },
+        direct_passthrough=True
+    )
 
 @app.route("/reset_chat", methods=["POST"])
 def reset_chat():
