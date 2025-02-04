@@ -6,3 +6,4 @@ data/*
 .env
 .aider*
 .DS_Store
+provider-test.yml
