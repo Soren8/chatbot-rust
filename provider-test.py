@@ -20,6 +20,10 @@ def main():
     if not config:
         exit(f"Missing configuration for {args.provider} provider")
 
+    # Additional check for OpenAI provider
+    if args.provider == 'openai' and 'openai_api_key' not in config:
+        exit("Error: 'openai_api_key' is required in provider-test.yml for OpenAI provider")
+
     # Initialize provider
     if args.provider == 'openai':
         provider = OpenAIProvider(config)

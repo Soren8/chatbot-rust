@@ -7,9 +7,13 @@ class OpenAIProvider(BaseLLMProvider):
     """
 
     def __init__(self, config):
+        # Validate that the API key is present in the config
+        if 'openai_api_key' not in config:
+            raise ValueError("Missing 'openai_api_key' in provider-test.yml for OpenAI provider")
+
+        # Initialize the client with the config
         self.client = OpenAI(
-            api_key=config['openai_api_key'],
-            organization=config.get('openai_organization'),
+            api_key=config['openai_api_key'],  # Use ONLY the key from provider-test.yml
             base_url=config.get('openai_base_url', 'https://api.openai.com/v1'),
             timeout=config.get('request_timeout', 30.0)
         )
