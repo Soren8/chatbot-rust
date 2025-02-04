@@ -16,19 +16,25 @@ def main():
     parser.add_argument('--prompt', type=str, help='Test prompt to send')
     args = parser.parse_args()
 
-    config = load_config().get(args.provider)
+    # Load the full config from provider-test.yml
+    config = load_config()
     if not config:
+        exit("Error: provider-test.yml is empty or invalid")
+
+    # Get the specific provider config
+    provider_config = config.get(args.provider)
+    if not provider_config:
         exit(f"Missing configuration for {args.provider} provider")
 
     # Additional check for OpenAI provider
-    if args.provider == 'openai' and 'api_key' not in config:
+    if args.provider == 'openai' and 'api_key' not in provider_config:
         exit("Error: 'api_key' is required under 'openai' section in provider-test.yml")
 
     # Initialize provider
     if args.provider == 'openai':
-        provider = OpenAIProvider(config)
+        provider = OpenAIProvider(provider_config)
     else:  # ollama
-        provider = OllamaProvider(config)
+        provider = OllamaProvider(provider_config)
 
     # Run test
     prompt = args.prompt or "Write a short poem about AI assistants"

@@ -7,17 +7,19 @@ class OpenAIProvider(BaseLLMProvider):
     """
 
     def __init__(self, config):
-        # Validate that the API key is present in the config
-        if 'api_key' not in config:
-            raise ValueError("Missing 'api_key' under 'openai' section in provider-test.yml")
+        # Validate required fields
+        required_keys = ['api_key']
+        missing = [key for key in required_keys if key not in config]
+        if missing:
+            raise ValueError(f"Missing required keys in provider-test.yml: {missing}")
 
         # Initialize the client with the config
         self.client = OpenAI(
-            api_key=config['api_key'],  # Use the nested 'api_key' field
-            base_url=config.get('base_url', 'https://api.openai.com/v1'),
-            timeout=config.get('request_timeout', 30.0)
+            api_key=config['api_key'],  # From provider-test.yml
+            base_url=config.get('base_url', 'https://api.openai.com/v1'),  # From provider-test.yml
+            timeout=config.get('request_timeout', 30.0)  # From provider-test.yml
         )
-        self.model = config.get('model_name', 'gpt-4')
+        self.model = config.get('model', 'gpt-4')  # From provider-test.yml
 
     def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
         messages = [{"role": "system", "content": system_prompt}]
