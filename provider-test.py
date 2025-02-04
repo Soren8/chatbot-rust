@@ -17,6 +17,15 @@ def load_config():
     except FileNotFoundError:
         exit("Error: provider-test.yml not found")
 
+def get_user_prompt():
+    """Prompt the user to enter a prompt interactively."""
+    print("\nEnter your prompt (or press Ctrl+C to quit):")
+    try:
+        return input("> ")
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        exit(0)
+
 def main():
     parser = argparse.ArgumentParser(description='Test LLM Providers')
     parser.add_argument('--provider', choices=['openai', 'ollama'], required=True)
@@ -43,19 +52,28 @@ def main():
     else:  # ollama
         provider = OllamaProvider(provider_config)
 
-    # Run test
-    prompt = args.prompt or "Write a short poem about AI assistants"
-    response = provider.generate_text_stream(
-        prompt=prompt,
-        system_prompt="You are a helpful assistant",
-        session_history=[],
-        memory_text=""
-    )
+    # Main loop
+    while True:
+        # Get the prompt
+        prompt = args.prompt or get_user_prompt()
+        if not prompt:
+            print("Prompt cannot be empty. Please try again.")
+            continue
 
-    print(f"\n{'-'*10} RESPONSE {'-'*10}")
-    for chunk in response:
-        print(chunk, end="", flush=True)
-    print("\n" + "-"*30)
+        # Generate and display the response
+        print(f"\n{'-'*10} RESPONSE {'-'*10}")
+        response = provider.generate_text_stream(
+            prompt=prompt,
+            system_prompt="You are a helpful assistant",
+            session_history=[],
+            memory_text=""
+        )
+        for chunk in response:
+            print(chunk, end="", flush=True)
+        print("\n" + "-"*30)
+
+        # Reset the prompt argument to allow interactive input in the next loop
+        args.prompt = None
 
 if __name__ == "__main__":
     main()
