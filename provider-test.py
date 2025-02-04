@@ -1,7 +1,11 @@
+import logging
 import argparse
 import yaml
 from app.llm.openai_provider import OpenAIProvider
 from app.llm.ollama_provider import OllamaProvider
+
+# Configure logging to suppress debug output
+logging.basicConfig(level=logging.WARNING)
 
 def load_config():
     try:
