@@ -6,8 +6,9 @@ from app.llm.ollama_provider import OllamaProvider
 
 # Set global logging level and configure specific modules
 logging.basicConfig(level=logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)  # Add this line
-logging.getLogger("httpx").setLevel(logging.WARNING)     # Add this line
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai._base_client").setLevel(logging.WARNING)  # Add this line
 
 def load_config():
     try:
