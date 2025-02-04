@@ -1,4 +1,4 @@
-import openai
+from openai import OpenAI
 from app.llm.base_provider import BaseLLMProvider
 
 class OpenAIProvider(BaseLLMProvider):
@@ -6,43 +6,40 @@ class OpenAIProvider(BaseLLMProvider):
     Provider for OpenAI or OpenAI-compatible endpoints.
     """
 
-    def __init__(self, api_key, model="gpt-3.5-turbo"):
-        openai.api_key = api_key
-        self.model = model
+    def __init__(self, config):
+        self.client = OpenAI(
+            api_key=config['openai_api_key'],
+            organization=config.get('openai_organization'),
+            base_url=config.get('openai_base_url', 'https://api.openai.com/v1'),
+            timeout=config.get('request_timeout', 30.0)
+        )
+        self.model = config.get('model_name', 'gpt-4')
 
     def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
-        # Truncate memory if too long
-        max_memory_length = 2000
-        memory_text = memory_text[:max_memory_length]
+        messages = [{"role": "system", "content": system_prompt}]
 
-        messages = []
-        # System message
-        messages.append({"role": "system", "content": system_prompt})
-
-        # Optionally add memory/context
         if memory_text.strip():
-            messages.append({"role": "system", "content": f"Memory:\n{memory_text}"})
+            messages.append({"role": "system", "content": f"Memory:\n{memory_text[:2000]}"})
 
-        # Add conversation history
         for user_in, assistant_res in session_history:
             messages.append({"role": "user", "content": user_in})
-            messages.append({"role": "assistant", "content": assistant_res})
+            if assistant_res:  # Allow empty responses in history
+                messages.append({"role": "assistant", "content": assistant_res})
 
-        # Add final user prompt
         messages.append({"role": "user", "content": prompt})
 
-        # Stream from OpenAI
         try:
-            completion = openai.ChatCompletion.create(
+            stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
                 stream=True
             )
-            for chunk in completion:
-                if "choices" in chunk and len(chunk.choices) > 0:
-                    delta = chunk.choices[0].delta
-                    if "content" in delta:
-                        yield delta["content"]
+            
+            for chunk in stream:
+                content = chunk.choices[0].delta.content
+                if content is not None:
+                    yield content
+
         except Exception as e:
-            yield f"\n[Error] {str(e)}"
+            yield f"\n[Error]: {str(e)}"
