@@ -7,14 +7,32 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="chat-page-body">
-    {% if logged_in %}
-    <a href="/logout" style="color:#d0d0d0; float:right; margin-bottom:10px;">Sign Out</a>
-    {% else %}
-    <a href="/login" style="color:#d0d0d0; float:right; margin-bottom:10px;">Login</a>
-    {% endif %}
+    <div style="float:right; margin-bottom:10px;">
+        <div class="tier-status" style="display:inline-block; margin-right:15px;">
+            Account Status: 
+            <span class="tier-badge">{{ 'Premium' if user_tier == 'premium' else 'Free' }}</span>
+            {% if user_tier != 'premium' %}
+            <button onclick="showUpgradeModal()" class="upgrade-btn">Upgrade</button>
+            {% endif %}
+        </div>
+        {% if logged_in %}
+        <a href="/logout" style="color:#d0d0d0;">Sign Out</a>
+        {% else %}
+        <a href="/login" style="color:#d0d0d0;">Login</a>
+        {% endif %}
+    </div>
 
     <div style="margin-bottom: 10px;">
         {% if logged_in %}
+        <select id="modelSelect" onchange="validateModelTier()" style="margin-right: 10px;">
+            {% for llm in available_llms %}
+            <option value="{{ llm.name }}" 
+                    data-tier="{{ llm.tier }}"
+                    {% if llm.tier == 'premium' and user_tier != 'premium' %}disabled{% endif %}>
+                {{ llm.name }} {{ "(Premium)" if llm.tier == 'premium' }}
+            </option>
+            {% endfor %}
+        </select>
         <select id="set-selector" style="margin-right: 10px;">
             <option value="default">Default Set</option>
         </select>
