@@ -61,6 +61,22 @@
     <input type="text" id="user-input" class="user-input" placeholder="Type your message here...">
 
     <script>
+    let previousModel = 'default';
+    
+    function validateModelTier() {
+        const selected = document.querySelector('#modelSelect option:checked');
+        if(selected.dataset.tier === 'premium' && !{{ 'true' if user_tier == 'premium' else 'false' }}) {
+            showUpgradeModal();
+            // Reset to last valid selection
+            document.getElementById('modelSelect').value = previousModel;
+        }
+    }
+    
+    function showUpgradeModal() {
+        alert('Please upgrade to Premium to access this model');
+        // TODO: Implement proper upgrade modal
+    }
+
     function regenerateMessage(button) {
         const aiMessageElement = button.closest('.message');
         const previousUserMessage = aiMessageElement.previousElementSibling;
