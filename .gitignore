@@ -7,4 +7,5 @@ data/*
 .aider*
 .DS_Store
 provider-test.yml
+.config.yml
 
