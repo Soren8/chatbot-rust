@@ -28,7 +28,7 @@
             {% for llm in available_llms %}
             <option value="{{ llm.name }}" 
                     data-tier="{{ llm.tier }}"
-                    {% if llm.tier == 'premium' and (user_tier|default('free')) != 'premium' %}disabled{% endif %}>
+                    {% if llm.tier == 'premium' and user_tier|default('free') != 'premium' %}disabled{% endif %}>
                 {{ llm.name }} {{ "(Premium)" if llm.tier == 'premium' }}
             </option>
             {% endfor %}
