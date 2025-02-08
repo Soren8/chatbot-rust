@@ -11,9 +11,6 @@
         <div class="tier-status">
             Account Status: 
             <span class="tier-badge">{{ 'Premium' if user_tier == 'premium' else 'Free' }}</span>
-            {% if user_tier != 'premium' %}
-            <button onclick="showUpgradeModal()" class="upgrade-btn">Upgrade</button>
-            {% endif %}
         </div>
         {% if logged_in %}
         <a href="/logout" style="color:#d0d0d0;">Sign Out</a>
@@ -66,16 +63,11 @@
     function validateModelTier() {
         const selected = document.querySelector('#modelSelect option:checked');
         if(selected.dataset.tier === 'premium' && !{{ 'true' if user_tier == 'premium' else 'false' }}) {
-            showUpgradeModal();
-            // Reset to last valid selection
+            // Simply reset to last valid selection without showing a modal
             document.getElementById('modelSelect').value = previousModel;
         }
     }
     
-    function showUpgradeModal() {
-        alert('Please upgrade to Premium to access this model');
-        // TODO: Implement proper upgrade modal
-    }
 
     function regenerateMessage(button) {
         const aiMessageElement = button.closest('.message');
