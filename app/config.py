@@ -18,3 +18,6 @@ class Config:
     TTS_HOST = os.getenv("TTS_HOST", "localhost")
     TTS_PORT = os.getenv("TTS_PORT", "5000")
     TTS_BASE_URL = f"http://{TTS_HOST}:{TTS_PORT}"
+    
+    # Premium features
+    PREMIUM_GLOBAL_API_KEY = os.getenv("PREMIUM_GLOBAL_API_KEY", "default_premium_key_here")
