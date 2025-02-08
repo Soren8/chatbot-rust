@@ -306,6 +306,11 @@ body {
     cursor: pointer;
 }
 
+/* Model controls container */
+.model-controls {
+    margin-bottom: 10px;
+}
+
 /* Responsive adjustments */
 @media (max-width: 600px) {
     .auth-container {

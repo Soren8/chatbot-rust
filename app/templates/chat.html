@@ -22,7 +22,7 @@
         {% endif %}
     </div>
 
-    <div style="margin-bottom: 10px;">
+    <div class="model-controls">
         {% if logged_in %}
         <select id="modelSelect" class="model-selector" onchange="validateModelTier()">
             {% for llm in available_llms %}
