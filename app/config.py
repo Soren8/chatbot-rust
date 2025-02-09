@@ -65,12 +65,19 @@ class Config:
         """Process LLM configuration from YAML"""
         cls.LLM_PROVIDERS = []
         
+        required_fields = ["name", "type", "model_name"]
+        
         for llm in config.get("llms", []):
+            # Validate required fields
+            for field in required_fields:
+                if field not in llm:
+                    raise ValueError(f"Missing required field '{field}' in LLM configuration")
+                    
             provider = {
                 "name": llm["name"],
                 "type": llm["type"],
                 "tier": llm.get("tier", "free"),
-                "model_name": llm.get("model_name", cls.MODEL_NAME),
+                "model_name": llm["model_name"],  # Required field, will raise KeyError if missing
                 "context_size": llm.get("context_size", cls.MODEL_CONTEXT_SIZE),
                 "base_url": llm.get("base_url", ""),
                 "api_key": llm.get("api_key", ""),
