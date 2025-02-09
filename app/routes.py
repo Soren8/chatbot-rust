@@ -380,7 +380,7 @@ def chat():
             stream = generate_text_stream(
                 prompt=user_message,
                 system_prompt=system_prompt,
-                model_name=Config.DEFAULT_LLM["model_name"],  # Use actual model identifier
+                model_name=Config.DEFAULT_LLM["provider_name"],  # Use provider name for lookup
                 session_history=user_session["history"],
                 memory_text=memory_text
             )
