@@ -44,9 +44,12 @@ def load_users() -> Dict:
         if isinstance(data, str):  # Old format
             users[username] = {
                 "password": data,
-                "tier": "free"
+                "tier": "free"  # Explicit tier field
             }
-    return users
+        elif "tier" not in users[username]:  # New format migration
+            users[username]["tier"] = "free"
+    
+    return users  # The 'tier' field will remain plaintext
 
 def save_users(users: Dict):
     with open(USERS_FILE, "w") as f:
@@ -74,10 +77,11 @@ def create_user(username: str, password: str) -> bool:
     if username in users:
         return False
 
+    # Store password hashed for security
     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
     users[username] = {
-        "password": hashed_password.decode('utf-8'),
-        "tier": "free"  # Add tier information
+        "password": hashed_password.decode('utf-8'),  # Hashed
+        "tier": "free"  # Plaintext
     }
     save_users(users)
     return True
