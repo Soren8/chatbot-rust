@@ -50,13 +50,13 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
             final_prompt = Template(provider.template).render(
                 system_prompt=system_prompt,
                 prompt=prompt,
-                memory=memory_text,
+                memory_text=memory_text,
                 history=session_history
             )
             logger.debug(
                 "Applying template:\n"
                 f"Template Content:\n{provider.template[:500]}...\n"
-                f"Rendered Prompt:\n{final_prompt[:500]}..."
+                f"Rendered Prompt:\n{final_prompt}"
             )
         except Exception as e:
             logger.error(f"Template rendering failed: {str(e)}")
