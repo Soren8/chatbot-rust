@@ -1,6 +1,6 @@
 llms:
-  - name: "Local Ollama (Free Tier)"
-    type: "ollama"
+  - provider_name: "Local Ollama (Free Tier)"
+    type: "ollama" 
     base_url: "http://${OLLAMA_HOST}:${OLLAMA_PORT}"
     model_name: "dolphin3.1-8b"
     context_size: 8192
@@ -27,8 +27,8 @@ llms:
       {{ prompt }}
       ### Assistant:
 
-  - name: "GPT-4 (Premium)"
-    type: "openai" 
+  - provider_name: "GPT-4 (Premium)"
+    type: "openai"
     api_key: "${OPENAI_API_KEY}"
     model_name: "gpt-4-turbo"
     tier: "premium"

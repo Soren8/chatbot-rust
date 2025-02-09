@@ -74,7 +74,7 @@ class Config:
                     raise ValueError(f"Missing required field '{field}' in LLM configuration")
                     
             provider = {
-                "name": llm["name"],
+                "provider_name": llm.get("provider_name", llm.get("name")),  # Backwards compatibility
                 "type": llm["type"],
                 "tier": llm.get("tier", "free"),
                 "model_name": llm["model_name"],  # Required field, will raise KeyError if missing
@@ -89,7 +89,7 @@ class Config:
         default_name = config.get("default_llm", "")
         if default_name:
             for llm in cls.LLM_PROVIDERS:
-                if llm["name"] == default_name:
+                if llm["provider_name"] == default_name:
                     cls.DEFAULT_LLM = llm
                     break
         else:

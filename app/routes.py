@@ -453,7 +453,7 @@ def regenerate():
                 stream = generate_text_stream(
                     prompt=user_message,
                     system_prompt=system_prompt,
-                    model_name=Config.DEFAULT_LLM["name"],
+                    model_name=Config.DEFAULT_LLM["provider_name"],
                     session_history=user_session["history"],
                     memory_text=memory_text
                 )

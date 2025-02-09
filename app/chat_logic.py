@@ -13,7 +13,7 @@ def get_llm_provider(model_name=None):
     
     # Find provider configuration
     provider_config = next(
-        (llm for llm in Config.LLM_PROVIDERS if llm["name"] == model_name),
+        (llm for llm in Config.LLM_PROVIDERS if llm["provider_name"] == model_name),
         None
     )
     
