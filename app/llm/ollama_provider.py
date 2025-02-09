@@ -9,6 +9,12 @@ class OllamaProvider(BaseLLMProvider):
     """Provider for Ollama endpoint configured via YAML"""
 
     def __init__(self, provider_config):
+        # Test logging configuration
+        logger.debug(f"OllamaProvider debug test - current level: {logger.getEffectiveLevel()}")
+        logger.info(f"OllamaProvider info test - should appear if logging works")
+        print("TEST OLLAMA PROVIDER INIT")  # Force output to console
+        logging.getLogger().critical("CRITICAL TEST MESSAGE")  # Bypass config
+
         # Use model_name from config directly
         self.model_name = provider_config["model_name"]
         
