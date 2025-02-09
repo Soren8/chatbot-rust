@@ -1,21 +1,21 @@
-# LLM Configuration
 llms:
-  - name: "Local Ollama"
+  - name: "Local Ollama (Free Tier)"
     type: "ollama"
-    base_url: "http://localhost:11434"
-    api_key: ""  # Ollama typically doesn't require an API key
+    base_url: "http://${OLLAMA_HOST}:${OLLAMA_PORT}"
     model_name: "dolphin3.1-8b"
+    context_size: 8192
     tier: "free"
-  
-  - name: "OpenAI Cloud"
-    type: "openai"
-    base_url: "https://api.openai.com/v1"
-    api_key: "${OPENAI_API_KEY}"  # Environment variable reference
+    template: |
+      {% if system_prompt %}
+      <|im_start|>system
+      {{ system_prompt }}<|im_end|>
+      {% endif %}
+
+  - name: "GPT-4 (Premium)"
+    type: "openai" 
+    api_key: "${OPENAI_API_KEY}"
     model_name: "gpt-4-turbo"
     tier: "premium"
 
-# Default LLM to use (name must match one from above)
-default_llm: "Local Ollama"
-
-# Session configuration
+default_llm: "Local Ollama (Free Tier)"
 session_timeout: 3600

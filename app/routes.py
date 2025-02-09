@@ -124,7 +124,8 @@ def home():
         logged_in=logged_in,
         user_memory=user_memory,
         user_system_prompt=user_system_prompt,
-        user_tier=get_user_tier(username) if logged_in else "free"
+        user_tier=get_user_tier(username) if logged_in else "free",
+        available_llms=Config.LLM_PROVIDERS
     )
 
 @bp.route("/logout") 
