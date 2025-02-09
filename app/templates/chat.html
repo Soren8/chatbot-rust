@@ -59,7 +59,7 @@
     // App configuration data
     const APP_DATA = {
         userTier: "{{ user_tier }}",
-        availableModels: {{ available_llms|tojson }}
+        availableModels: {{ available_llms|default([])|tojson }}
     };
 
     function disablePremiumModels() {
