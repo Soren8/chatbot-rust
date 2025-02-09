@@ -33,22 +33,56 @@ class OllamaProvider(BaseLLMProvider):
             }
         }
 
-        logger.debug(f"Sending to Ollama at {self.url}: {data}")
+        logger.debug(
+            "Starting Ollama request:\n"
+            f"URL: {self.url}\n"
+            f"Model: {self.model_name}\n"
+            f"Context window: {self.context_size} tokens\n"
+            f"Prompt length: {len(final_prompt)} characters"
+        )
         
         try:
+            logger.debug(f"Sending request to Ollama: {json.dumps(data, indent=2)}")
             with requests.post(self.url, json=data, stream=True, timeout=30) as response:
+                logger.debug(f"Received response from Ollama: HTTP {response.status_code}")
                 response.raise_for_status()
-                for line in response.iter_lines():
+                
+                response_text = ""
+                for line_number, line in enumerate(response.iter_lines()):
                     if line:
+                        logger.debug(f"Processing line {line_number}: {line.decode()}")
                         try:
                             chunk = json.loads(line)
-                            # Ollama's response format verification
                             if "response" not in chunk:
-                                logger.warning(f"Unexpected Ollama response: {chunk}")
-                            yield chunk.get("response", "")
+                                logger.warning(
+                                    "Unexpected Ollama response format:\n"
+                                    f"{json.dumps(chunk, indent=2)}"
+                                )
+                            else:
+                                logger.debug(f"Received valid response chunk: {chunk['response']}")
+                                
+                            response_part = chunk.get("response", "")
+                            response_text += response_part
+                            yield response_part
+                            
                         except json.JSONDecodeError:
-                            logger.error("Failed to parse Ollama response line")
+                            logger.error(
+                                "Failed to parse JSON from line:\n"
+                                f"Raw line content: {line.decode()}"
+                            )
                             yield ""
+                            
+                logger.debug(
+                    f"Ollama request completed\n"
+                    f"Total response length: {len(response_text)} characters\n"
+                    f"First 200 chars: {response_text[:200]}"
+                )
+                
         except requests.exceptions.RequestException as e:
-            logger.error(f"Ollama connection failed: {e}")
+            logger.error(
+                "Ollama connection failed\n"
+                f"URL: {self.url}\n"
+                f"Error: {str(e)}\n"
+                f"Request data: {json.dumps(data, indent=2)}"
+            )
             yield f"\n⚠️ Connection error: {str(e)}"
