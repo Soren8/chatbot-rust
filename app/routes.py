@@ -292,6 +292,11 @@ def update_system_prompt():
 
 @bp.route("/chat", methods=["POST"])
 def chat():
+    logger.debug(
+        "Incoming chat request headers:\n"
+        f"{json.dumps({k: v for k, v in request.headers.items()}, indent=2)}"
+    )
+    
     clean_old_sessions()
 
     user_message = request.json.get("message", "")
@@ -361,6 +366,17 @@ def chat():
 
     def generate():
         with response_lock:
+            logger.debug(
+                "LLM Request Details:\n"
+                f"Model: {Config.DEFAULT_LLM['name']}\n"
+                f"Type: {Config.DEFAULT_LLM['type']}\n"
+                f"Context Size: {Config.DEFAULT_LLM.get('context_size', 'default')}\n"
+                f"Base URL: {Config.DEFAULT_LLM.get('base_url', 'default')}\n"
+                f"System Prompt: {system_prompt[:200]}...\n"
+                f"Session History Length: {len(user_session['history'])}\n"
+                f"Memory Text Length: {len(memory_text)}"
+            )
+            
             stream = generate_text_stream(
                 prompt=user_message,
                 system_prompt=system_prompt,
@@ -378,6 +394,16 @@ def chat():
                 logger.error(f"Error during streaming: {str(e)}")
                 yield "\n[Error] An error occurred during response generation."
 
+            logger.debug(
+                "Full Response Analysis:\n"
+                f"Total Characters: {len(response_text)}\n"
+                "Response Preview:\n"
+                f"{response_text[:500]}\n"
+                "Response Metadata:\n"
+                f"Memory Used: {len(memory_text)} chars\n"
+                f"History Items: {len(user_session['history'])}"
+            )
+            
             user_session["history"].append((user_message, response_text))
             logger.info(f"Chat response generated. Length: {len(response_text)} characters")
             

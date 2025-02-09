@@ -31,6 +31,15 @@ def get_llm_provider(model_name=None):
 
 def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text):
     """Generate streaming response from LLM"""
+    logger.debug(
+        "Starting text generation with parameters:\n"
+        f"- Model: {model_name}\n"
+        f"- System Prompt: {system_prompt[:200]}...\n" 
+        f"- User Prompt: {prompt[:200]}...\n"
+        f"- Memory Length: {len(memory_text)} chars\n"
+        f"- History Length: {len(session_history)} exchanges"
+    )
+    
     # Get configured provider
     provider = get_llm_provider(model_name)
     
@@ -44,9 +53,16 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
                 memory=memory_text,
                 history=session_history
             )
+            logger.debug(
+                "Applying template:\n"
+                f"Template Content:\n{provider.template[:500]}...\n"
+                f"Rendered Prompt:\n{final_prompt[:500]}..."
+            )
         except Exception as e:
             logger.error(f"Template rendering failed: {str(e)}")
             final_prompt = f"{system_prompt}\n{prompt}"  # Fallback format
+    else:
+        logger.debug("No template configured - using raw prompt")
 
     # Generate the response stream
     try:

@@ -24,6 +24,14 @@ class OllamaProvider(BaseLLMProvider):
         self.url = f"{self.base_url}/api/generate"
 
     def generate_text_stream(self, final_prompt):
+        logger.debug(
+            "Ollama Provider Configuration:\n"
+            f"Model Name: {self.model_name}\n"
+            f"Base URL: {self.base_url}\n"
+            f"Context Size: {self.context_size}\n"
+            f"Template Enabled: {bool(self.template)}"
+        )
+        
         data = {
             "model": self.model_name,
             "prompt": final_prompt,
@@ -34,11 +42,10 @@ class OllamaProvider(BaseLLMProvider):
         }
 
         logger.debug(
-            "Starting Ollama request:\n"
+            "Full Ollama Request Payload:\n"
             f"URL: {self.url}\n"
-            f"Model: {self.model_name}\n"
-            f"Context window: {self.context_size} tokens\n"
-            f"Prompt length: {len(final_prompt)} characters"
+            f"Headers: {json.dumps(getattr(self, 'headers', {}), indent=2)}\n"
+            f"Body: {json.dumps({**data, 'prompt': data['prompt'][:200] + '...'}, indent=2)}"
         )
         
         try:
