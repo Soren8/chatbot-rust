@@ -364,11 +364,11 @@ def chat():
     def generate():
         with response_lock:
             stream = generate_text_stream(
-                user_message,
-                system_prompt,
-                MODEL_NAME,
-                user_session["history"],
-                memory_text
+                prompt=user_message,
+                system_prompt=system_prompt,
+                model_name=MODEL_NAME,
+                session_history=user_session["history"],
+                memory_text=memory_text
             )
 
             response_text = ""
@@ -427,11 +427,11 @@ def regenerate():
                 logger.info("Preparing to call LLM for regeneration")
                 
                 stream = generate_text_stream(
-                    user_message,
-                    system_prompt,
-                    MODEL_NAME,
-                    user_session["history"],
-                    memory_text
+                    prompt=user_message,
+                    system_prompt=system_prompt,
+                    model_name=MODEL_NAME,
+                    session_history=user_session["history"],
+                    memory_text=memory_text
                 )
                 logger.info("LLM stream initialized")
 

@@ -1,38 +1,56 @@
 import logging
-from app.llm.ollama_provider import OllamaProvider
-from app.llm.openai_provider import OpenAIProvider
+from importlib import import_module
+from jinja2 import Template
+from app.config import Config
 
 logger = logging.getLogger(__name__)
 
-def get_llm_provider(config):
-    """
-    Decide which LLM provider to use, based on configuration.
-    """
-    provider_name = config.get('LLM_PROVIDER', 'ollama')
-    model_name = config.get('MODEL_NAME', 'dolphin3.1-8b')
-    openai_key = config.get('OPENAI_API_KEY', '')
-
-    if provider_name.lower() == 'openai':
-        return OpenAIProvider(api_key=openai_key, model=model_name)
-    else:
-        return OllamaProvider(model_name=model_name)
-
-def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text, config):
-    """
-    Get the appropriate LLM provider and stream the response.
-    """
-    llm = get_llm_provider(config)
+def get_llm_provider(model_name=None):
+    """Get the configured LLM provider based on model name"""
+    # Use default model if none specified
+    if not model_name and Config.DEFAULT_LLM:
+        model_name = Config.DEFAULT_LLM["name"]
     
-    # Ensure memory_text is not None
-    if memory_text is None:
-        memory_text = ""
-    
-    # Debug log to verify memory is being passed
-    logger.debug(f"Generating text with memory: {memory_text[:50]}...")
-    
-    return llm.generate_text_stream(
-        prompt=prompt,
-        system_prompt=system_prompt,
-        session_history=session_history,
-        memory_text=memory_text
+    # Find provider configuration
+    provider_config = next(
+        (llm for llm in Config.LLM_PROVIDERS if llm["name"] == model_name),
+        None
     )
+    
+    if not provider_config:
+        raise ValueError(f"No provider found for model: {model_name}")
+    
+    # Dynamically import provider class
+    try:
+        module = import_module(f"app.llm.{provider_config['type']}_provider")
+        provider_class = getattr(module, f"{provider_config['type'].title()}Provider")
+    except (ImportError, AttributeError) as e:
+        raise RuntimeError(f"Failed to load provider {provider_config['type']}: {str(e)}")
+
+    return provider_class(provider_config)
+
+def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text):
+    """Generate streaming response from LLM"""
+    # Get configured provider
+    provider = get_llm_provider(model_name)
+    
+    # Apply template if configured
+    final_prompt = prompt
+    if provider.template:
+        try:
+            final_prompt = Template(provider.template).render(
+                system_prompt=system_prompt,
+                prompt=prompt,
+                memory=memory_text,
+                history=session_history
+            )
+        except Exception as e:
+            logger.error(f"Template rendering failed: {str(e)}")
+            final_prompt = f"{system_prompt}\n{prompt}"  # Fallback format
+
+    # Generate the response stream
+    try:
+        return provider.generate_text_stream(final_prompt)
+    except Exception as e:
+        logger.error(f"Generation failed: {str(e)}")
+        yield f"\n[Error] Response generation failed: {str(e)}"
