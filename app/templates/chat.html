@@ -23,10 +23,8 @@
         {% if logged_in %}
         <select id="modelSelect" class="model-selector" onchange="validateModelTier()">
             {% for llm in available_llms %}
-            <option value="{{ llm.name }}"
-                    data-tier="{{ llm.tier }}"
-                    {% if llm.tier == 'premium' and user_tier != 'premium' %}disabled{% endif %}>
-                {{ llm.name }}{% if llm.tier == 'premium' %} (Premium){% endif %}
+            <option value="{{ llm.name }}" data-tier="{{ llm.tier }}">
+                {{ llm.name }}
             </option>
             {% endfor %}
         </select>
@@ -58,12 +56,27 @@
     <input type="text" id="user-input" class="user-input" placeholder="Type your message here...">
 
     <script>
+    // App configuration data
+    const APP_DATA = {
+        userTier: "{{ user_tier }}",
+        availableModels: {{ available_llms|tojson }}
+    };
+
+    function disablePremiumModels() {
+        const selector = document.getElementById('modelSelect');
+        if (!selector) return;
+        
+        Array.from(selector.options).forEach(option => {
+            const isPremium = option.dataset.tier === 'premium';
+            option.disabled = isPremium && APP_DATA.userTier !== 'premium';
+        });
+    }
+
     let previousModel = 'default';
     
     function validateModelTier() {
         const selected = document.querySelector('#modelSelect option:checked');
-        if(selected.dataset.tier === 'premium' && !{{ 'true' if user_tier == 'premium' else 'false' }}) {
-            // Simply reset to last valid selection without showing a modal
+        if(selected.dataset.tier === 'premium' && APP_DATA.userTier !== 'premium') {
             document.getElementById('modelSelect').value = previousModel;
         }
     }
@@ -175,6 +188,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        disablePremiumModels(); // Initialize model disabling
         // Add event delegation for play buttons
         document.addEventListener('click', function(event) {
             if (event.target.classList.contains('play-button')) {
