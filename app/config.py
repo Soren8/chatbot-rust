@@ -1,5 +1,6 @@
 import os
 import yaml
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -9,6 +10,16 @@ class Config:
     # Core application settings
     SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_key")
     HOST_DATA_DIR = os.getenv("HOST_DATA_DIR", "./data")
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    
+    @classmethod
+    def configure_logging(cls):
+        """Configure logging for the application"""
+        logging.basicConfig(
+            level=cls.LOG_LEVEL,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
     
     # TTS configuration
     TTS_BASE_URL = f"http://{os.getenv('TTS_HOST', 'localhost')}:{os.getenv('TTS_PORT', '5000')}"
