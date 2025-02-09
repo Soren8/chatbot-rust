@@ -6,16 +6,16 @@ llms:
     context_size: 8192
     tier: "free"
     template: |
-      {% if not session_history %}
+      {% if not history %}
         ### System: {{ system_prompt }}
       {% endif %}
 
       {% if memory_text %}
       ### Memory:
-      {{ memory_text }}
+      {{ memory_text.strip() }}
       {% endif %}
 
-      {% for user_input, assistant_response in session_history %}
+      {% for user_input, assistant_response in history %}
       ### User:
       {{ user_input }}
 
