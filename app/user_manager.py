@@ -35,26 +35,50 @@ if not os.path.exists(USERS_FILE):
     with open(USERS_FILE, "w") as f:
         json.dump({}, f)
 
-def load_users() -> Dict[str, str]:
+def load_users() -> Dict:
     with open(USERS_FILE, "r") as f:
-        return json.load(f)
+        users = json.load(f)
+    
+    # Migrate old format to new format
+    for username, data in users.items():
+        if isinstance(data, str):  # Old format
+            users[username] = {
+                "password": data,
+                "tier": "free"
+            }
+    return users
 
-def save_users(users: Dict[str, str]):
+def save_users(users: Dict):
     with open(USERS_FILE, "w") as f:
-        json.dump(users, f)
+        json.dump(users, f, indent=2)
+
+def get_user_tier(username: str) -> str:
+    """Get the user's account tier"""
+    users = load_users()
+    return users.get(username, {}).get("tier", "free")
+
+def set_user_tier(username: str, tier: str):
+    """Update a user's account tier"""
+    users = load_users()
+    if username in users:
+        users[username]["tier"] = tier
+        save_users(users)
+        return True
+    return False
 
 def create_user(username: str, password: str) -> bool:
     """
-    Create a new user with a hashed password.
+    Create a new user with Free tier by default
     """
     users = load_users()
     if username in users:
         return False
 
-    # Generate a hashed password using bcrypt
     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-    users[username] = hashed_password.decode('utf-8')  # Store as a string
-
+    users[username] = {
+        "password": hashed_password.decode('utf-8'),
+        "tier": "free"  # Add tier information
+    }
     save_users(users)
     return True
 
@@ -64,9 +88,8 @@ def validate_user(username: str, password: str) -> bool:
     """
     users = load_users()
     if username in users:
-        stored_hashed_password = users[username].encode('utf-8')
-        # Check if the provided password matches the stored hash
-        return bcrypt.checkpw(password.encode('utf-8'), stored_hashed_password)
+        stored_pass = users[username].get("password", "")
+        return bcrypt.checkpw(password.encode('utf-8'), stored_pass.encode('utf-8'))
     return False
 
 def get_user_salt(username: str) -> bytes:

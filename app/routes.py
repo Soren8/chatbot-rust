@@ -123,7 +123,8 @@ def home():
         "chat.html",
         logged_in=logged_in,
         user_memory=user_memory,
-        user_system_prompt=user_system_prompt
+        user_system_prompt=user_system_prompt,
+        user_tier=get_user_tier(username) if logged_in else "free"
     )
 
 @bp.route("/logout") 
