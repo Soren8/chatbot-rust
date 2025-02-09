@@ -24,7 +24,7 @@ class Config:
     @classmethod
     def load_config(cls):
         """Load YAML configuration and process environment variables"""
-        config_path = Path("config.yml")
+        config_path = Path(".config.yml")
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file {config_path} not found")
             
