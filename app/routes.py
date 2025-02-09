@@ -23,8 +23,6 @@ logging.basicConfig(
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "dolphin3.1-8b"
-
 from app.tts import register_tts_routes
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
@@ -366,7 +364,7 @@ def chat():
             stream = generate_text_stream(
                 prompt=user_message,
                 system_prompt=system_prompt,
-                model_name=MODEL_NAME,
+                model_name=Config.DEFAULT_LLM["name"],
                 session_history=user_session["history"],
                 memory_text=memory_text
             )
@@ -429,7 +427,7 @@ def regenerate():
                 stream = generate_text_stream(
                     prompt=user_message,
                     system_prompt=system_prompt,
-                    model_name=MODEL_NAME,
+                    model_name=Config.DEFAULT_LLM["name"],
                     session_history=user_session["history"],
                     memory_text=memory_text
                 )
