@@ -22,6 +22,10 @@ llms:
       ### Assistant:
       {{ assistant_response }}
       {% endfor %}
+      
+      ### User:
+      {{ prompt }}
+      ### Assistant:
 
   - name: "GPT-4 (Premium)"
     type: "openai" 
