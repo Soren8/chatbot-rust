@@ -368,8 +368,7 @@ def chat():
                 system_prompt,
                 MODEL_NAME,
                 user_session["history"],
-                memory_text,
-                bp.config
+                memory_text
             )
 
             response_text = ""
@@ -432,8 +431,7 @@ def regenerate():
                     system_prompt,
                     MODEL_NAME,
                     user_session["history"],
-                    memory_text,
-                    bp.config
+                    memory_text
                 )
                 logger.info("LLM stream initialized")
 
