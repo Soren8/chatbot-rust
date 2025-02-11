@@ -368,8 +368,9 @@ def chat():
         with response_lock:
             logger.debug(
                 "LLM Request Details:\n"
-                f"Model: {Config.DEFAULT_LLM['name']}\n"
+                f"Provider: {Config.DEFAULT_LLM['provider_name']}\n"
                 f"Type: {Config.DEFAULT_LLM['type']}\n"
+                f"Model: {Config.DEFAULT_LLM['model_name']}\n"
                 f"Context Size: {Config.DEFAULT_LLM.get('context_size', 'default')}\n"
                 f"Base URL: {Config.DEFAULT_LLM.get('base_url', 'default')}\n"
                 f"System Prompt: {system_prompt[:200]}...\n"
@@ -453,7 +454,7 @@ def regenerate():
                 stream = generate_text_stream(
                     prompt=user_message,
                     system_prompt=system_prompt,
-                    model_name=Config.DEFAULT_LLM["provider_name"],
+                    model_name=Config.DEFAULT_LLM["provider_name"],  # Pass provider_name to lookup
                     session_history=user_session["history"],
                     memory_text=memory_text
                 )

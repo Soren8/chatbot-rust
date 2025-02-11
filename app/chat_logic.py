@@ -9,7 +9,7 @@ def get_llm_provider(model_name=None):
     """Get the configured LLM provider based on model name"""
     # Use default model if none specified
     if not model_name and Config.DEFAULT_LLM:
-        model_name = Config.DEFAULT_LLM["name"]
+        model_name = Config.DEFAULT_LLM["provider_name"]  # Use provider name for lookup
     
     # Find provider configuration
     provider_config = next(
@@ -23,7 +23,7 @@ def get_llm_provider(model_name=None):
     # Dynamically import provider class
     try:
         module = import_module(f"app.llm.{provider_config['type']}_provider")
-        provider_class = getattr(module, f"{provider_config['type'].title()}Provider")
+        provider_class = getattr(module, f"{provider_config['type'].title()}Provider")  # e.g. "OllamaProvider"
     except (ImportError, AttributeError) as e:
         raise RuntimeError(f"Failed to load provider {provider_config['type']}: {str(e)}")
 
