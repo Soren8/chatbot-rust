@@ -26,7 +26,7 @@ class OllamaProvider(BaseLLMProvider):
         # Use standard generate endpoint
         self.url = f"{self.base_url}/api/generate"
 
-    def generate_text_stream(self, final_prompt):
+    def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
         logger.debug(
             "Ollama Provider Configuration:\n"
             f"Model Name: {self.model_name}\n"
@@ -37,7 +37,7 @@ class OllamaProvider(BaseLLMProvider):
         
         data = {
             "model": self.model_name,
-            "prompt": final_prompt,
+            "prompt": prompt,
             "stream": True,
             "options": {
                 "num_ctx": self.context_size
