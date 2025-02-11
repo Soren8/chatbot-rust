@@ -20,7 +20,7 @@ def create_app():
         "Initializing application with configuration:\n"
         f"Log Level: {Config.LOG_LEVEL}\n"
         f"LLM Providers: {len(Config.LLM_PROVIDERS)} configured\n"
-        f"Default LLM: {Config.DEFAULT_LLM['name'] if Config.DEFAULT_LLM else 'None'}"
+        f"Default LLM: {Config.DEFAULT_LLM['provider_name'] if Config.DEFAULT_LLM else 'None'}"
     )
     
     app = Flask(__name__)
