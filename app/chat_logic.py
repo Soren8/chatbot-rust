@@ -1,6 +1,5 @@
 import logging
 from importlib import import_module
-from jinja2 import Template
 from app.config import Config
 
 logger = logging.getLogger(__name__)
@@ -43,32 +42,11 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
         f"- Memory Length: {len(memory_text)} chars\n"
         f"- History Length: {len(session_history)} exchanges"
     )
-    
-    # Apply template if configured
-    final_prompt = prompt
-    if provider.template:
-        try:
-            final_prompt = Template(provider.template).render(
-                system_prompt=system_prompt,
-                prompt=prompt,
-                memory_text=memory_text,
-                history=session_history
-            )
-            logger.debug(
-                "Applying template:\n"
-                f"Template Content:\n{provider.template[:500]}...\n"
-                f"Rendered Prompt:\n{final_prompt}"
-            )
-        except Exception as e:
-            logger.error(f"Template rendering failed: {str(e)}")
-            final_prompt = f"{system_prompt}\n{prompt}"  # Fallback format
-    else:
-        logger.debug("No template configured - using raw prompt")
 
-    # Generate the response stream
+    # Generate the response stream using raw prompt
     try:
         return provider.generate_text_stream(
-            prompt=final_prompt,
+            prompt=prompt,
             system_prompt=system_prompt,
             session_history=session_history,
             memory_text=memory_text
