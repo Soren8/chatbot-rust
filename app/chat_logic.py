@@ -67,7 +67,12 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
 
     # Generate the response stream
     try:
-        return provider.generate_text_stream(final_prompt)
+        return provider.generate_text_stream(
+            prompt=final_prompt,
+            system_prompt=system_prompt,
+            session_history=session_history,
+            memory_text=memory_text
+        )
     except Exception as e:
         logger.error(f"Generation failed: {str(e)}")
         yield f"\n[Error] Response generation failed: {str(e)}"
