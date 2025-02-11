@@ -31,6 +31,9 @@ def get_llm_provider(model_name=None):
 
 def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text):
     """Generate streaming response from LLM"""
+    # Get configured provider
+    provider = get_llm_provider(model_name)
+    
     logger.debug(
         "Starting text generation with parameters:\n"
         f"- Provider: {provider.provider_config['provider_name']}\n"
@@ -40,9 +43,6 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
         f"- Memory Length: {len(memory_text)} chars\n"
         f"- History Length: {len(session_history)} exchanges"
     )
-    
-    # Get configured provider
-    provider = get_llm_provider(model_name)
     
     # Apply template if configured
     final_prompt = prompt
