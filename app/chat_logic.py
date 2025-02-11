@@ -33,7 +33,8 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     """Generate streaming response from LLM"""
     logger.debug(
         "Starting text generation with parameters:\n"
-        f"- Model: {model_name}\n"
+        f"- Provider: {provider.provider_config['provider_name']}\n"
+        f"- Model: {provider.provider_config['model_name']}\n"
         f"- System Prompt: {system_prompt[:200]}...\n" 
         f"- User Prompt: {prompt[:200]}...\n"
         f"- Memory Length: {len(memory_text)} chars\n"
