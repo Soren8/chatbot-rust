@@ -1,56 +1,50 @@
 import logging
-from importlib import import_module
 from app.config import Config
 
 logger = logging.getLogger(__name__)
 
-def get_llm_provider(model_name=None):
-    """Get the configured LLM provider based on model name"""
-    # Use default model if none specified
-    if not model_name and Config.DEFAULT_LLM:
-        model_name = Config.DEFAULT_LLM["provider_name"]  # Use provider name for lookup
-    
-    # Find provider configuration
-    provider_config = next(
-        (llm for llm in Config.LLM_PROVIDERS if llm["provider_name"] == model_name),
-        None
-    )
-    
-    if not provider_config:
-        raise ValueError(f"No provider found for model: {model_name}")
-    
-    # Dynamically import provider class
-    try:
-        module = import_module(f"app.llm.{provider_config['type']}_provider")
-        provider_class = getattr(module, f"{provider_config['type'].title()}Provider")  # e.g. "OllamaProvider"
-    except (ImportError, AttributeError) as e:
-        raise RuntimeError(f"Failed to load provider {provider_config['type']}: {str(e)}")
-
-    return provider_class(provider_config)
-
 def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text):
-    """Generate streaming response from LLM"""
-    # Get configured provider
-    provider = get_llm_provider(model_name)
-    
-    logger.debug(
-        "Starting text generation with parameters:\n"
-        f"- Provider: {provider.provider_config['provider_name']}\n"
-        f"- Model: {provider.provider_config['model_name']}\n"
-        f"- System Prompt: {system_prompt[:200]}...\n" 
-        f"- User Prompt: {prompt[:200]}...\n"
-        f"- Memory Length: {len(memory_text)} chars\n"
-        f"- History Length: {len(session_history)} exchanges"
-    )
+    logger.debug("Entered chat_logic.generate_text_stream()")
+    logger.debug("Parameters received: prompt: %s, system_prompt: %s, model_name: %s",
+                 prompt, system_prompt, model_name)
 
-    # Generate the response stream using raw prompt
+    # Look up the LLM configuration based on provider_name (which is derived from YAML's name or provider_name)
+    llm_config = next((llm for llm in Config.LLM_PROVIDERS if llm["provider_name"] == model_name), None)
+    if not llm_config:
+        logger.error("No LLM configuration found for model name: %s", model_name)
+        return
+
+    provider_type = llm_config["type"].lower()
+    logger.debug("LLM configuration found: %s", llm_config)
+
+    # Instantiate the appropriate provider based on the configuration type.
+    if provider_type == "ollama":
+        from app.llm.ollama_provider import OllamaProvider
+        provider = OllamaProvider(llm_config)  # Pass the llm_config so the provider knows its base_url, etc.
+        logger.debug("Instantiated OllamaProvider (type 'ollama') as per configuration.")
+    elif provider_type == "openai":
+        from app.llm.openai_provider import OpenaiProvider
+        provider = OpenaiProvider(llm_config)  # Pass the llm_config similarly.
+        logger.debug("Instantiated OpenaiProvider (type 'openai') as per configuration.")
+    else:
+        logger.error("Unsupported provider type in configuration: %s. Must be 'ollama' or 'openai'.", provider_type)
+        return
+
     try:
-        return provider.generate_text_stream(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            session_history=session_history,
-            memory_text=memory_text
-        )
+        # Invoke the provider's generate_text_stream to get a generator.
+        provider_generator = provider.generate_text_stream(prompt, system_prompt, session_history, memory_text)
+        logger.debug("Provider generator successfully obtained.")
     except Exception as e:
-        logger.error(f"Generation failed: {str(e)}")
-        yield f"\n[Error] Response generation failed: {str(e)}"
+        logger.exception("Exception occurred while invoking provider.generate_text_stream():")
+        return
+
+    try:
+        # Immediately iterate over the generator and yield each chunk.
+        for chunk in provider_generator:
+            logger.debug("Yielding chunk: %s", chunk)
+            yield chunk
+    except Exception as e:
+        logger.exception("Exception encountered during provider generator iteration:")
+        yield f"\n[Error] Exception during streaming: {str(e)}"
+
+    logger.debug("Exiting chat_logic.generate_text_stream() after provider generator iteration.")
