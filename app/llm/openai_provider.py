@@ -19,7 +19,7 @@ class OpenaiProvider(BaseLLMProvider):
         # Store masked API key for logging purposes
         self.masked_api_key = config['api_key'][:8] + "..." if config['api_key'] else ""
         self.base_url = config.get('base_url', 'https://api.openai.com/v1')
-        self.timeout = config.get('request_timeout', 30.0)
+        self.timeout = config.get('request_timeout', 300.0)
         
         # Log configuration with masked API key
         logger.debug(

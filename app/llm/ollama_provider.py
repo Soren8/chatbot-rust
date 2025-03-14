@@ -57,7 +57,7 @@ class OllamaProvider(BaseLLMProvider):
         )
         
         try:
-            with requests.post(self.url, json=data, stream=True, timeout=30) as response:
+            with requests.post(self.url, json=data, stream=True, timeout=300) as response:
                 logger.debug(f"Received response from Ollama: HTTP {response.status_code}")
                 response.raise_for_status()
                 
