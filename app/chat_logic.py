@@ -15,7 +15,13 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
         return
 
     provider_type = llm_config["type"].lower()
-    logger.debug("LLM configuration found: %s", llm_config)
+    
+    # Create a copy of the config with sensitive fields truncated for logging
+    safe_config = llm_config.copy()
+    if "api_key" in safe_config and safe_config["api_key"]:
+        safe_config["api_key"] = safe_config["api_key"][:8] + "..." if safe_config["api_key"] else ""
+    
+    logger.debug("LLM configuration found: %s", safe_config)
 
     # Instantiate the appropriate provider based on the configuration type.
     if provider_type == "ollama":

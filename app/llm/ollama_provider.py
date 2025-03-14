@@ -44,15 +44,19 @@ class OllamaProvider(BaseLLMProvider):
             }
         }
 
+        # Log request details with sensitive fields truncated or removed
+        safe_data = {
+            **data,
+            'prompt': data['prompt'][:50] + '...' if len(data['prompt']) > 50 else data['prompt']
+        }
+        
         logger.debug(
-            "Full Ollama Request Payload:\n"
+            "Ollama Request Details:\n"
             f"URL: {self.url}\n"
-            f"Headers: {json.dumps(getattr(self, 'headers', {}), indent=2)}\n"
-            f"Body: {json.dumps({**data, 'prompt': data['prompt'][:200] + '...'}, indent=2)}"
+            f"Body preview: {json.dumps(safe_data, indent=2)}"
         )
         
         try:
-            logger.debug(f"Sending request to Ollama: {json.dumps(data, indent=2)}")
             with requests.post(self.url, json=data, stream=True, timeout=30) as response:
                 logger.debug(f"Received response from Ollama: HTTP {response.status_code}")
                 response.raise_for_status()
@@ -89,10 +93,11 @@ class OllamaProvider(BaseLLMProvider):
                 )
                 
         except requests.exceptions.RequestException as e:
+            # Use the safe_data variable we created earlier to avoid logging sensitive information
             logger.error(
                 "Ollama connection failed\n"
                 f"URL: {self.url}\n"
                 f"Error: {str(e)}\n"
-                f"Request data: {json.dumps(data, indent=2)}"
+                f"Request data: {json.dumps(safe_data, indent=2)}"
             )
             yield f"\n⚠️ Connection error: {str(e)}"

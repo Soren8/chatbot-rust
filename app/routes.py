@@ -364,11 +364,15 @@ def chat():
     encrypted = request.json.get("encrypted", False)
     password = session.get("password") if "username" in session else None
 
+    # Get the selected model name from the request before entering the generator function
+    selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
+    logger.debug(f"Using selected model: {selected_model}")
+    
     def generate():
         with response_lock:
             logger.debug(
                 "LLM Request Details:\n"
-                f"Provider: {Config.DEFAULT_LLM['provider_name']}\n"
+                f"Provider: {selected_model}\n"
                 f"Type: {Config.DEFAULT_LLM['type']}\n"
                 f"Model: {Config.DEFAULT_LLM['model_name']}\n"
                 f"Context Size: {Config.DEFAULT_LLM.get('context_size', 'default')}\n"
@@ -381,7 +385,7 @@ def chat():
             stream = generate_text_stream(
                 prompt=user_message,
                 system_prompt=system_prompt,
-                model_name=Config.DEFAULT_LLM["provider_name"],  # Use provider name for lookup
+                model_name=selected_model,  # Use the selected model
                 session_history=user_session["history"],
                 memory_text=memory_text
             )
@@ -445,6 +449,10 @@ def regenerate():
 
     memory_text = user_session["memory"] if "username" in session else ""
 
+    # Get the selected model name from the request before entering the generator function
+    selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
+    logger.debug(f"Regenerating with selected model: {selected_model}")
+    
     def generate():
         logger.info(f"Starting regeneration for session {session_id}")
         with response_lock:
@@ -454,7 +462,7 @@ def regenerate():
                 stream = generate_text_stream(
                     prompt=user_message,
                     system_prompt=system_prompt,
-                    model_name=Config.DEFAULT_LLM["provider_name"],  # Pass provider_name to lookup
+                    model_name=selected_model,  # Use the selected model
                     session_history=user_session["history"],
                     memory_text=memory_text
                 )

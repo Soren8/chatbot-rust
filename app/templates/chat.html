@@ -103,7 +103,8 @@
                 body: JSON.stringify({
                     message: userMessage,
                     system_prompt: document.getElementById('user-system-prompt').value,
-                    set_name: activeSet
+                    set_name: activeSet,
+                    model_name: document.getElementById('modelSelect').value
                 })
             })
             .then(response => {
@@ -510,7 +511,8 @@
             const requestData = {
                 message: message,
                 system_prompt: systemPrompt,
-                set_name: activeSet
+                set_name: activeSet,
+                model_name: document.getElementById('modelSelect').value
             };
 
             // Send to backend
