@@ -11,6 +11,7 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OLLAMA_HOST=${OLLAMA_HOST}
       - OLLAMA_PORT=${OLLAMA_PORT}
+      - GUNICORN_TIMEOUT=600
     volumes:
       - ./data:/app/data
       - ./.config.yml:/app/.config.yml

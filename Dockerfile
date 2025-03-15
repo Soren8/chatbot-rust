@@ -14,5 +14,5 @@ COPY app /app/app
 # Create data directory
 RUN mkdir -p /app/data
 
-# Run the Flask app with Gunicorn in production with debug logging
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--log-level", "debug", "--capture-output", "app:create_app()"]
+# Run the Flask app with Gunicorn in production with debug logging and extended timeout
+CMD gunicorn --bind 0.0.0.0:5000 --log-level debug --capture-output --timeout ${GUNICORN_TIMEOUT:-600} "app:create_app()"
