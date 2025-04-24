@@ -2,6 +2,13 @@
 
 ## Potential Improvements
 
+### Top Priority Improvements
+
+- **UI Improvements**
+  - Lower friction for new chats with temporary then automatic naming.
+  - Ability to delete chats from history.
+
+
 - **Project Structure & Packaging**
   - Add a proper Python package layout (e.g., `pyproject.toml` or `setup.py`) so consumers can install via pip.
   - Include a `.config.yml.example` at the repo root to illustrate required settings.
