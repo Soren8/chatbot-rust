@@ -8,6 +8,10 @@
   - Lower friction for new chats with temporary then automatic naming.
   - Ability to delete chats from history.
 
+- **Authentication & Security**
+  - Outsource authentication to Keycloak or Authentik.
+  - Add proper email verification and CAPTCHA workflows to prepare for production.
+
 
 - **Project Structure & Packaging**
   - Add a proper Python package layout (e.g., `pyproject.toml` or `setup.py`) so consumers can install via pip.
