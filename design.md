@@ -32,6 +32,7 @@
   - Require a non-default `SECRET_KEY` via environment; remove hardcoded fallbacks.
   - Store all API keys and sensitive settings in environment variables only; avoid checking secrets into Git.
   - Validate `.config.yml` against a schema (using Pydantic or Cerberus) to catch missing or invalid fields early.
+  - Implement hybrid chat-history encryption: derive a per-user data key from a user-supplied passphrase, and allow optional registration of multiple hardware authenticators (Touch ID, YubiKey, WebAuthn) for seamless unlock on trusted devices with fallback to the passphrase on new or unregistered devices.
 
 - **Security & Session Management**
   - Avoid storing raw passwords in the session; use tokens or derive keys post-login.
