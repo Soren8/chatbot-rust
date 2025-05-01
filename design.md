@@ -17,6 +17,7 @@
   - Add a proper Python package layout (e.g., `pyproject.toml` or `setup.py`) so consumers can install via pip.
   - Include a `.config.yml.example` at the repo root to illustrate required settings.
   - Provide a top-level `README.md` with quickstart instructions and project overview.
+  - Refactor `routes.py` into domain-specific Flask Blueprints (e.g., auth, chat, sets, tts) under `app/<domain>/routes.py` and introduce an application factory (`create_app()`) to register them. This separates HTTP routing from core business logic in `services/` and keeps each module focused and maintainable.
 
 - **Dependency Management & CI**
   - Pin all dependencies (use exact versions in `requirements.txt` or switch to Poetry with a lock file).
