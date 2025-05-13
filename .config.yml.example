@@ -1,0 +1,37 @@
+llms:
+  - provider_name: "Local Ollama (Free Tier)"
+    type: "ollama" 
+    base_url: "http://${OLLAMA_HOST}:${OLLAMA_PORT}"
+    model_name: "dolphin3.1-8b"
+    context_size: 8192
+    tier: "free"
+    template: |
+      {% if not history %}
+        ### System: {{ system_prompt }}
+      {% endif %}
+
+      {% if memory_text %}
+      ### Memory:
+      {{ memory_text.strip() }}
+      {% endif %}
+
+      {% for user_input, assistant_response in history %}
+      ### User:
+      {{ user_input }}
+
+      ### Assistant:
+      {{ assistant_response }}
+      {% endfor %}
+      
+      ### User:
+      {{ prompt }}
+      ### Assistant:
+
+  - provider_name: "GPT-4 (Premium)"
+    type: "openai"
+    api_key: "${OPENAI_API_KEY}"
+    model_name: "gpt-4-turbo"
+    tier: "premium"
+
+default_llm: "Local Ollama (Free Tier)"
+session_timeout: 3600

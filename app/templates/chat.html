@@ -7,19 +7,32 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="chat-page-body">
-    {% if logged_in %}
-    <a href="/logout" style="color:#d0d0d0; float:right; margin-bottom:10px;">Sign Out</a>
-    {% else %}
-    <a href="/login" style="color:#d0d0d0; float:right; margin-bottom:10px;">Login</a>
-    {% endif %}
-
-    <div style="margin-bottom: 10px;">
+    <div class="chat-header-controls">
+        <div class="tier-status">
+            Account Status: 
+            <span class="tier-badge">{{ 'Premium' if user_tier == 'premium' else 'Free' }}</span>
+        </div>
         {% if logged_in %}
-        <select id="set-selector" style="margin-right: 10px;">
+        <a href="/logout" style="color:#d0d0d0;">Sign Out</a>
+        {% else %}
+        <a href="/login" style="color:#d0d0d0;">Login</a>
+        {% endif %}
+    </div>
+
+    <div class="model-controls">
+        {% if logged_in %}
+        <select id="modelSelect" class="model-selector" onchange="validateModelTier()">
+            {% for llm in available_llms %}
+            <option value="{{ llm.provider_name }}" data-tier="{{ llm.tier }}">
+                {{ llm.provider_name }}
+            </option>
+            {% endfor %}
+        </select>
+        <select id="set-selector" class="model-selector">
             <option value="default">Default Set</option>
         </select>
-        <button id="new-set" style="margin-right: 10px;">New Set</button>
-        <button id="delete-set" style="margin-right: 10px;">Delete Set</button>
+        <button id="new-set" class="set-management-button">New Set</button>
+        <button id="delete-set" class="set-management-button">Delete Set</button>
         {% endif %}
     </div>
 
@@ -43,6 +56,32 @@
     <input type="text" id="user-input" class="user-input" placeholder="Type your message here...">
 
     <script>
+    // App configuration data
+    const APP_DATA = {
+        userTier: "{{ user_tier }}",
+        availableModels: {{ available_llms|default([])|tojson }}
+    };
+
+    function disablePremiumModels() {
+        const selector = document.getElementById('modelSelect');
+        if (!selector) return;
+        
+        Array.from(selector.options).forEach(option => {
+            const isPremium = option.dataset.tier === 'premium';
+            option.disabled = isPremium && APP_DATA.userTier !== 'premium';
+        });
+    }
+
+    let previousModel = 'default';
+    
+    function validateModelTier() {
+        const selected = document.querySelector('#modelSelect option:checked');
+        if(selected.dataset.tier === 'premium' && APP_DATA.userTier !== 'premium') {
+            document.getElementById('modelSelect').value = previousModel;
+        }
+    }
+    
+
     function regenerateMessage(button) {
         const aiMessageElement = button.closest('.message');
         const previousUserMessage = aiMessageElement.previousElementSibling;
@@ -64,7 +103,8 @@
                 body: JSON.stringify({
                     message: userMessage,
                     system_prompt: document.getElementById('user-system-prompt').value,
-                    set_name: activeSet
+                    set_name: activeSet,
+                    model_name: document.getElementById('modelSelect').value
                 })
             })
             .then(response => {
@@ -149,6 +189,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        disablePremiumModels(); // Initialize model disabling
         // Add event delegation for play buttons
         document.addEventListener('click', function(event) {
             if (event.target.classList.contains('play-button')) {
@@ -296,65 +337,6 @@
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
-        function regenerateMessage(button) {
-            const aiMessageElement = button.closest('.message');
-            const previousUserMessage = aiMessageElement.previousElementSibling;
-            if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
-                const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
-                const activeSet = document.getElementById('set-selector').value; // Get active set
-                
-                // Show thinking message but keep the regenerate button
-                aiMessageElement.innerHTML = `<strong>AI:</strong> Thinking...\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶</button></div>`;
-                
-                // Send regenerate request to backend
-                fetch('/regenerate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        message: userMessage,
-                        system_prompt: document.getElementById('user-system-prompt').value,
-                        set_name: activeSet // Include active set
-                    })
-                })
-                .then(response => {
-                    if (!response.ok) {
-                        return response.text().then(text => { 
-                            throw new Error(text || 'Network response was not ok'); 
-                        });
-                    }
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder('utf-8');
-                    let aiMessage = '';
-
-                    function readStream() {
-                        reader.read().then(({ done, value }) => {
-                            if (done) return;
-                            const chunk = decoder.decode(value, { stream: true });
-                            aiMessage += chunk;
-                            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
-<div class="regenerate-container">
-    <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
-    <button class="play-button" onclick="playTTS(this)">▶</button>
-</div>`;
-                            readStream();
-                        }).catch(error => {
-                            console.error('Error reading stream:', error);
-                            aiMessageElement.innerHTML += '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
-                        });
-                    }
-                    readStream();
-                })
-                .catch(error => {
-                    console.error('Fetch error:', error);
-                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">Error: ${escapeHTML(error.message)}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button></div>`;
-                    // Scroll to bottom
-                    const chatBox = document.getElementById('chat-box');
-                    chatBox.scrollTop = chatBox.scrollHeight;
-                });
-            }
-        }
 
 
         function playTTS(button) {
@@ -529,7 +511,8 @@
             const requestData = {
                 message: message,
                 system_prompt: systemPrompt,
-                set_name: activeSet
+                set_name: activeSet,
+                model_name: document.getElementById('modelSelect').value
             };
 
             // Send to backend

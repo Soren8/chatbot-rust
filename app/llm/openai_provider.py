@@ -1,48 +1,89 @@
-import openai
+import logging
+from openai import OpenAI
 from app.llm.base_provider import BaseLLMProvider
 
-class OpenAIProvider(BaseLLMProvider):
+logger = logging.getLogger(__name__)
+
+class OpenaiProvider(BaseLLMProvider):
     """
     Provider for OpenAI or OpenAI-compatible endpoints.
     """
 
-    def __init__(self, api_key, model="gpt-3.5-turbo"):
-        openai.api_key = api_key
-        self.model = model
+    def __init__(self, config):
+        # Validate required fields
+        required_keys = ['api_key']
+        missing = [key for key in required_keys if key not in config]
+        if missing:
+            raise ValueError(f"Missing required keys in provider config: {missing}")
+
+        # Store masked API key for logging purposes
+        self.masked_api_key = config['api_key'][:8] + "..." if config['api_key'] else ""
+        self.base_url = config.get('base_url', 'https://api.openai.com/v1')
+        self.timeout = config.get('request_timeout', 300.0)
+        
+        # Log configuration with masked API key
+        logger.debug(
+            "OpenAI Provider Configuration:\n"
+            f"Base URL: {self.base_url}\n"
+            f"API Key: {self.masked_api_key}\n"
+            f"Timeout: {self.timeout}s"
+        )
+
+        # Initialize the client with the config
+        self.client = OpenAI(
+            api_key=config['api_key'],
+            base_url=self.base_url,
+            timeout=self.timeout
+        )
+        self.model = config.get('model_name', config.get('model', 'gpt-4'))
 
     def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
-        # Truncate memory if too long
-        max_memory_length = 2000
-        memory_text = memory_text[:max_memory_length]
+        # Log request details
+        logger.debug(
+            f"OpenAI request initiated:\n"
+            f"Model: {self.model}\n"
+            f"Base URL: {self.base_url}\n"
+            f"System prompt length: {len(system_prompt)} chars\n"
+            f"User prompt: {prompt[:50]}...\n"
+            f"Memory text length: {len(memory_text)} chars\n"
+            f"Session history items: {len(session_history)}"
+        )
+        
+        messages = [{"role": "system", "content": system_prompt}]
 
-        messages = []
-        # System message
-        messages.append({"role": "system", "content": system_prompt})
-
-        # Optionally add memory/context
         if memory_text.strip():
-            messages.append({"role": "system", "content": f"Memory:\n{memory_text}"})
+            messages.append({"role": "system", "content": f"Memory:\n{memory_text[:2000]}"})
 
-        # Add conversation history
         for user_in, assistant_res in session_history:
             messages.append({"role": "user", "content": user_in})
-            messages.append({"role": "assistant", "content": assistant_res})
+            if assistant_res:  # Allow empty responses in history
+                messages.append({"role": "assistant", "content": assistant_res})
 
-        # Add final user prompt
         messages.append({"role": "user", "content": prompt})
 
-        # Stream from OpenAI
         try:
-            completion = openai.ChatCompletion.create(
+            logger.debug(f"Sending request to OpenAI API, message count: {len(messages)}")
+            
+            stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
                 stream=True
             )
-            for chunk in completion:
-                if "choices" in chunk and len(chunk.choices) > 0:
-                    delta = chunk.choices[0].delta
-                    if "content" in delta:
-                        yield delta["content"]
+            
+            response_text = ""
+            for chunk in stream:
+                content = chunk.choices[0].delta.content
+                if content is not None:
+                    response_text += content
+                    yield content
+            
+            logger.debug(f"OpenAI request completed, total response length: {len(response_text)} chars")
+
         except Exception as e:
-            yield f"\n[Error] {str(e)}"
+            logger.error(
+                f"OpenAI API error: {str(e)}\n"
+                f"Model: {self.model}\n"
+                f"Base URL: {self.base_url}"
+            )
+            yield f"\n[Error]: {str(e)}"

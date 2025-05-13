@@ -7,3 +7,5 @@ gunicorn
 openai
 numpy
 wave
+PyYAML==6.0.1
+redis  # For rate limiting

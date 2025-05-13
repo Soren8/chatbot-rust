@@ -1,55 +1,103 @@
 import json
+import logging
 import requests
 from app.llm.base_provider import BaseLLMProvider
 
-class OllamaProvider(BaseLLMProvider):
-    """
-    Provider for Ollama endpoint (e.g., running locally on port 11434).
-    """
+logger = logging.getLogger(__name__)
 
-    def __init__(self, model_name="dolphin3.1-8b"):
-        self.model_name = model_name
-        from app.config import Config
-        self.url = f"http://{Config.OLLAMA_HOST}:{Config.OLLAMA_PORT}/api/generate"
+class OllamaProvider(BaseLLMProvider):
+    """Provider for Ollama endpoint configured via YAML"""
+
+    def __init__(self, provider_config):
+        # Store full config for logging
+        self.provider_config = provider_config
+        
+        # Use model_name from config directly
+        self.model_name = provider_config["model_name"]
+        
+        # Ensure base_url handling works with existing configs
+        self.base_url = provider_config.get("base_url", "http://localhost:11434").rstrip("/")
+        
+        # Keep existing behavior for templates if needed 
+        self.template = provider_config.get("template", "")
+        
+        self.context_size = provider_config.get("context_size", 4096)
+        
+        # Use standard generate endpoint
+        self.url = f"{self.base_url}/api/generate"
 
     def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
-        from app.config import Config
+        logger.debug(
+            "Ollama Provider Configuration:\n"
+            f"Model Name: {self.model_name}\n"
+            f"Base URL: {self.base_url}\n"
+            f"Context Size: {self.context_size}\n"
+            f"Template Enabled: {bool(self.template)}"
+        )
         
-        # Truncate memory if too long relative to context size
-        max_memory_length = int(Config.MODEL_CONTEXT_SIZE * 0.2)  # 20% of context size
-        memory_text = memory_text[:max_memory_length]
-
-        # Build the prompt
-        if not session_history:
-            history_text = f"### System: {system_prompt}\n\n"
-        else:
-            history_text = ""
-
-        if memory_text.strip():
-            history_text += f"### Memory:\n{memory_text}\n\n"
-
-        for user_input, assistant_response in session_history:
-            history_text += f"### User:\n{user_input}\n\n### Assistant:\n{assistant_response}\n\n"
-
-        # Append latest user prompt
-        history_text += f"### User:\n{prompt}\n\n### Assistant:\n"
-
         data = {
             "model": self.model_name,
-            "prompt": history_text,
-            "system": system_prompt,
+            "prompt": prompt,
             "stream": True,
             "options": {
-                "num_ctx": Config.MODEL_CONTEXT_SIZE
+                "num_ctx": self.context_size
             }
         }
 
-        with requests.post(self.url, json=data, stream=True) as response:
-            if response.status_code == 200:
-                for line in response.iter_lines():
+        # Log request details with sensitive fields truncated or removed
+        safe_data = {
+            **data,
+            'prompt': data['prompt'][:50] + '...' if len(data['prompt']) > 50 else data['prompt']
+        }
+        
+        logger.debug(
+            "Ollama Request Details:\n"
+            f"URL: {self.url}\n"
+            f"Body preview: {json.dumps(safe_data, indent=2)}"
+        )
+        
+        try:
+            with requests.post(self.url, json=data, stream=True, timeout=300) as response:
+                logger.debug(f"Received response from Ollama: HTTP {response.status_code}")
+                response.raise_for_status()
+                
+                response_text = ""
+                for line_number, line in enumerate(response.iter_lines()):
                     if line:
-                        json_response = json.loads(line)
-                        if 'response' in json_response:
-                            yield json_response['response']
-            else:
-                yield f"\n[Error] Error: {response.status_code}, {response.text}"
+                        logger.debug(f"Processing line {line_number}: {line.decode()}")
+                        try:
+                            chunk = json.loads(line)
+                            if "response" not in chunk:
+                                logger.warning(
+                                    "Unexpected Ollama response format:\n"
+                                    f"{json.dumps(chunk, indent=2)}"
+                                )
+                            else:
+                                logger.debug(f"Received valid response chunk: {chunk['response']}")
+                                
+                            response_part = chunk.get("response", "")
+                            response_text += response_part
+                            yield response_part
+                            
+                        except json.JSONDecodeError:
+                            logger.error(
+                                "Failed to parse JSON from line:\n"
+                                f"Raw line content: {line.decode()}"
+                            )
+                            yield ""
+                            
+                logger.debug(
+                    f"Ollama request completed\n"
+                    f"Total response length: {len(response_text)} characters\n"
+                    f"First 200 chars: {response_text[:200]}"
+                )
+                
+        except requests.exceptions.RequestException as e:
+            # Use the safe_data variable we created earlier to avoid logging sensitive information
+            logger.error(
+                "Ollama connection failed\n"
+                f"URL: {self.url}\n"
+                f"Error: {str(e)}\n"
+                f"Request data: {json.dumps(safe_data, indent=2)}"
+            )
+            yield f"\n⚠️ Connection error: {str(e)}"

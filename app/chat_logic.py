@@ -1,38 +1,56 @@
 import logging
-from app.llm.ollama_provider import OllamaProvider
-from app.llm.openai_provider import OpenAIProvider
+from app.config import Config
 
 logger = logging.getLogger(__name__)
 
-def get_llm_provider(config):
-    """
-    Decide which LLM provider to use, based on configuration.
-    """
-    provider_name = config.get('LLM_PROVIDER', 'ollama')
-    model_name = config.get('MODEL_NAME', 'dolphin3.1-8b')
-    openai_key = config.get('OPENAI_API_KEY', '')
+def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text):
+    logger.debug("Entered chat_logic.generate_text_stream()")
+    logger.debug("Parameters received: prompt: %s, system_prompt: %s, model_name: %s",
+                 prompt, system_prompt, model_name)
 
-    if provider_name.lower() == 'openai':
-        return OpenAIProvider(api_key=openai_key, model=model_name)
+    # Look up the LLM configuration based on provider_name (which is derived from YAML's name or provider_name)
+    llm_config = next((llm for llm in Config.LLM_PROVIDERS if llm["provider_name"] == model_name), None)
+    if not llm_config:
+        logger.error("No LLM configuration found for model name: %s", model_name)
+        return
+
+    provider_type = llm_config["type"].lower()
+    
+    # Create a copy of the config with sensitive fields truncated for logging
+    safe_config = llm_config.copy()
+    if "api_key" in safe_config and safe_config["api_key"]:
+        safe_config["api_key"] = safe_config["api_key"][:8] + "..." if safe_config["api_key"] else ""
+    
+    logger.debug("LLM configuration found: %s", safe_config)
+
+    # Instantiate the appropriate provider based on the configuration type.
+    if provider_type == "ollama":
+        from app.llm.ollama_provider import OllamaProvider
+        provider = OllamaProvider(llm_config)  # Pass the llm_config so the provider knows its base_url, etc.
+        logger.debug("Instantiated OllamaProvider (type 'ollama') as per configuration.")
+    elif provider_type == "openai":
+        from app.llm.openai_provider import OpenaiProvider
+        provider = OpenaiProvider(llm_config)  # Pass the llm_config similarly.
+        logger.debug("Instantiated OpenaiProvider (type 'openai') as per configuration.")
     else:
-        return OllamaProvider(model_name=model_name)
+        logger.error("Unsupported provider type in configuration: %s. Must be 'ollama' or 'openai'.", provider_type)
+        return
 
-def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text, config):
-    """
-    Get the appropriate LLM provider and stream the response.
-    """
-    llm = get_llm_provider(config)
-    
-    # Ensure memory_text is not None
-    if memory_text is None:
-        memory_text = ""
-    
-    # Debug log to verify memory is being passed
-    logger.debug(f"Generating text with memory: {memory_text[:50]}...")
-    
-    return llm.generate_text_stream(
-        prompt=prompt,
-        system_prompt=system_prompt,
-        session_history=session_history,
-        memory_text=memory_text
-    )
+    try:
+        # Invoke the provider's generate_text_stream to get a generator.
+        provider_generator = provider.generate_text_stream(prompt, system_prompt, session_history, memory_text)
+        logger.debug("Provider generator successfully obtained.")
+    except Exception as e:
+        logger.exception("Exception occurred while invoking provider.generate_text_stream():")
+        return
+
+    try:
+        # Immediately iterate over the generator and yield each chunk.
+        for chunk in provider_generator:
+            logger.debug("Yielding chunk: %s", chunk)
+            yield chunk
+    except Exception as e:
+        logger.exception("Exception encountered during provider generator iteration:")
+        yield f"\n[Error] Exception during streaming: {str(e)}"
+
+    logger.debug("Exiting chat_logic.generate_text_stream() after provider generator iteration.")

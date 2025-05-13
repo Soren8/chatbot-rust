@@ -250,6 +250,67 @@ body {
     text-decoration: underline;
 }
 
+/* Chat header controls */
+.chat-header-controls {
+    float: right;
+    margin-bottom: 10px;
+}
+
+.tier-status {
+    display: inline-block;
+    margin-right: 15px;
+}
+
+/* Model/set selection controls */
+.model-selector {
+    margin-right: 10px;
+    background-color: #2c3e50;
+    color: #d0d0d0;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+/* New set buttons */
+.set-management-button {
+    margin-right: 10px;
+    padding: 6px 12px;
+    background-color: #2c3e50;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    color: #d0d0d0;
+    cursor: pointer;
+}
+
+/* Tier badge styling */
+.tier-badge {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.9em;
+}
+.tier-badge.premium {
+    background-color: #2c5e50;
+}
+.tier-badge.free {
+    background-color: #4a4a4a;
+}
+
+/* Upgrade button */
+.upgrade-btn {
+    margin-left: 8px;
+    padding: 4px 12px;
+    background-color: #3a5e50;
+    border: none;
+    border-radius: 4px;
+    color: #d0d0d0;
+    cursor: pointer;
+}
+
+/* Model controls container */
+.model-controls {
+    margin-bottom: 10px;
+}
+
 /* Responsive adjustments */
 @media (max-width: 600px) {
     .auth-container {
