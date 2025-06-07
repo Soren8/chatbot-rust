@@ -53,10 +53,11 @@
   - Enforce consistent formatting and lint rules via pre-commit (Black, Flake8, isort).
   - Remove unused imports and dead code to reduce noise.
 
-- **Data Storage**
-  - Maintain current encrypted file storage for user sets and history. Each user's data is encrypted with a unique key derived from their passphrase (never saved to disk), providing maximum privacy since even service operators cannot access user data.
-  - Add file-level locking around reads/writes to prevent data corruption while maintaining our strong privacy guarantees.
-  - Note: Databases would require storing encryption keys on server, reducing privacy benefits - our current approach ensures zero-knowledge user data protection.
+- **Privacy Tiers**:
+  1. **Standard**: Server-managed encryption with full account recovery
+  2. **Private**: Client-derived keys for zero-knowledge storage (on-prem LLMs only)
+  3. **Ephemeral**: Memory-only sessions with no persistent data (free/on-prem LLMs)
+  See [design-privacy.md](design-privacy.md) for details
 
 - **Docker & Deployment**
   - Optimize the `Dockerfile` with a multi-stage build: install dependencies separately and ship only artifacts in the final image.
