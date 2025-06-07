@@ -69,5 +69,5 @@
   - Break out LLM providers into a git submodule so they can be shared and consumed by other projects or front ends.
 
 - **Documentation**
-  - Create an OpenAPI/Swagger spec or at least a Markdown API reference for all HTTP routes.`
+  - Create an OpenAPI/Swagger spec or at least a Markdown API reference for all HTTP routes.
   - Host a `/docs` page or integrate with tools like Redoc to expose interactive API docs.
