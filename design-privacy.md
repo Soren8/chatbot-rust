@@ -1,5 +1,15 @@
 # Privacy Design Specification
 
+## Design Rationale
+Our privacy tiers were created to offer users progressive security options without sacrificing usability. This balanced approach emerged from several key considerations:
+
+- **True security compensations**: Server-side encryption (Standard) protects against external threats but not admin access
+- **The password reset dilemma**: Password-derived encryption (Private) provides isolation at the cost of unrecoverable data
+- **LLM logging risks**: Private tier restricts providers to prevent opaque cloud logging
+- **Tempest use cases**: Ephemeral mode meets journalist/whistleblower needs for digital vapor trails
+- **Hybrid reality**: Local GPU availability allows Private tier without actual system hosting
+- **User experience focus**: Tiers map to clear mental models rather than abstract security classes
+
 ## Privacy Tiers
 
 1. **Standard Tier**
