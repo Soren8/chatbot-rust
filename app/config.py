@@ -79,9 +79,13 @@ class Config:
         
         for llm in config.get("llms", []):
             # Validate required fields
-            for field in required_fields:
-                if field not in llm:
-                    raise ValueError(f"Missing required field '{field}' in LLM configuration")
+            # Validate required fields with more helpful error messages
+            missing_fields = [field for field in required_fields if field not in llm]
+            if missing_fields:
+                raise ValueError(
+                    f"LLM configuration entry {idx+1} is missing required fields: {', '.join(missing_fields)}. "
+                    f"Found fields: {', '.join(llm.keys())}"
+                )
                     
             provider = {
                 "provider_name": llm.get("provider_name", llm.get("name")),  # Backwards compatibility
