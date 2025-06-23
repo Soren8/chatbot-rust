@@ -40,28 +40,46 @@ class Config:
         """Load YAML configuration and process environment variables"""
         config_path = Path(".config.yml")
         
-        # Verify config path is a file
-        if not config_path.exists():
-            logging.warning(f"Configuration file {config_path.absolute()} not found - using default configuration")
-            return
-        if not config_path.is_file():
-            logging.warning(f"Configuration path {config_path.absolute()} is a directory - using default configuration")
-            return
+        # Only try to load if file exists and is a file
+        if config_path.exists() and config_path.is_file():
+            try:
+                with open(config_path) as f:
+                    raw_config = yaml.safe_load(f) or {}
 
-        try:
-            with open(config_path) as f:
-                raw_config = yaml.safe_load(f) or {}
+                # Process environment variable substitution
+                processed_config = cls._replace_env_vars(raw_config)
+                
+                # Load LLM configurations
+                cls._load_llm_config(processed_config)
 
-            # Process environment variable substitution
-            processed_config = cls._replace_env_vars(raw_config)
-            
-            # Load LLM configurations
-            cls._load_llm_config(processed_config)
+            except yaml.YAMLError as e:
+                logging.error(f"Invalid YAML syntax in {config_path}: {str(e)} - using default configuration")
+            except Exception as e:
+                logging.error(f"Error processing {config_path}: {str(e)} - using default configuration")
+        else:
+            if not config_path.exists():
+                logging.warning(f"Configuration file {config_path.absolute()} not found - using default configuration")
+            else:
+                logging.warning(f"Configuration path {config_path.absolute()} is a directory - using default configuration")
 
-        except yaml.YAMLError as e:
-            logging.error(f"Invalid YAML syntax in {config_path}: {str(e)} - using default configuration")
-        except Exception as e:
-            logging.error(f"Error processing {config_path}: {str(e)} - using default configuration")
+        # Ensure we have at least one LLM provider
+        if not cls.LLM_PROVIDERS:
+            logging.warning("No LLM providers configured. Using fallback default provider.")
+            fallback_provider = {
+                "provider_name": "default",
+                "type": "ollama",
+                "tier": "free",
+                "model_name": "dolphin3.1-8b",
+                "context_size": 8192,
+                "base_url": "",
+                "api_key": "",
+                "template": None
+            }
+            cls.LLM_PROVIDERS = [fallback_provider]
+            cls.DEFAULT_LLM = fallback_provider
+        # Ensure DEFAULT_LLM is set to first provider if not configured
+        elif cls.DEFAULT_LLM is None:
+            cls.DEFAULT_LLM = cls.LLM_PROVIDERS[0]
 
     @staticmethod
     def _replace_env_vars(config):
