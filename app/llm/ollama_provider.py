@@ -38,6 +38,7 @@ class OllamaProvider(BaseLLMProvider):
         data = {
             "model": self.model_name,
             "prompt": prompt,
+            "system": system_prompt,
             "stream": True,
             "options": {
                 "num_ctx": self.context_size
