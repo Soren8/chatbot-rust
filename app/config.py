@@ -21,6 +21,8 @@ class Config:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+        # Specifically mute the Ollama provider debug logs
+        logging.getLogger('app.llm.ollama_provider').setLevel(logging.WARNING)
     
     # TTS configuration
     TTS_BASE_URL = f"http://{os.getenv('TTS_HOST', 'localhost')}:{os.getenv('TTS_PORT', '5000')}"

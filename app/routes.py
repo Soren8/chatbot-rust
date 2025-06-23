@@ -4,6 +4,7 @@ import logging
 import threading
 import os
 import json
+import re
 from collections import defaultdict
 from werkzeug.serving import WSGIRequestHandler
 WSGIRequestHandler.protocol_version = "HTTP/1.1"  # Enable keep-alive connections
@@ -414,7 +415,9 @@ def chat():
                 f"History Items: {len(user_session['history'])}"
             )
             
-            user_session["history"].append((user_message, response_text))
+            # Remove thinking text from final response before storing in history
+            clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
+            user_session["history"].append((user_message, clean_response))
             logger.info(f"Chat response generated. Length: {len(response_text)} characters")
             
             # Save history if user is logged in

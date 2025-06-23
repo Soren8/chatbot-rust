@@ -39,16 +39,12 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     try:
         # Invoke the provider's generate_text_stream to get a generator.
         provider_generator = provider.generate_text_stream(prompt, system_prompt, session_history, memory_text)
-        logger.debug("Provider generator successfully obtained.")
-    except Exception as e:
-        logger.exception("Exception occurred while invoking provider.generate_text_stream():")
-        return
-
-    try:
-        # Immediately iterate over the generator and yield each chunk.
+        logger.debug("Provider generator successfully obtained. Passing through chunks.")
+        
+        # Simply yield from the provider's generator. The frontend will handle parsing.
         for chunk in provider_generator:
-            logger.debug("Yielding chunk: %s", chunk)
             yield chunk
+            
     except Exception as e:
         logger.exception("Exception encountered during provider generator iteration:")
         yield f"\n[Error] Exception during streaming: {str(e)}"

@@ -56,6 +56,12 @@
     <input type="text" id="user-input" class="user-input" placeholder="Type your message here...">
 
     <script>
+    function escapeHTML(str) {
+        var div = document.createElement('div');
+        div.appendChild(document.createTextNode(str));
+        return div.innerHTML;
+    }
+
     // App configuration data
     const APP_DATA = {
         userTier: "{{ user_tier }}",
@@ -88,13 +94,11 @@
         if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
             const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
             
-            // Handle logged out state - use 'default' set
             const activeSet = document.getElementById('set-selector')?.value || 'default';
             
-            // Show thinking message but keep the regenerate button
-            aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶</button></div>`;
+            // Reset the AI message area for regeneration
+            aiMessageElement.innerHTML = `<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" onclick="toggleThinking(this)">▶ Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶</button></div>`;
             
-            // Send regenerate request to backend
             fetch('/regenerate', {
                 method: 'POST',
                 headers: {
@@ -115,70 +119,118 @@
                 }
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder('utf-8');
-                let aiMessage = '';
-                let emptyChunkCount = 0;
+
+                const messageTextElement = aiMessageElement.querySelector('.ai-message-text');
+                const thinkingContainerWrapper = aiMessageElement.querySelector('.thinking-container');
+                const thinkingContentElement = aiMessageElement.querySelector('.thinking-content');
+                
+                let buffer = '';
+                let state = 'visible'; // 'visible' or 'thinking'
+                let hasWrittenToDOM = false;
+
+                function processChunk(chunk) {
+                    buffer += chunk;
+                    console.debug(`[CHUNK] Received: ${JSON.stringify(chunk)}, Buffer: ${JSON.stringify(buffer)}`);
+
+                    while (buffer.length > 0) {
+                        if (state === 'visible') {
+                            const tagStart = buffer.indexOf('<think>');
+                            if (tagStart !== -1) {
+                                const visiblePart = buffer.substring(0, tagStart);
+                                appendVisible(visiblePart);
+                                buffer = buffer.substring(tagStart + '<think>'.length);
+                                state = 'thinking';
+                                continue; // Re-run loop with new state and buffer
+                            } else {
+                                // No complete start tag. Check for a partial tag at the end.
+                                let flushableEnd = buffer.length;
+                                for (let i = 1; i <= buffer.length && i <= '<think>'.length; i++) {
+                                    const suffix = buffer.substring(buffer.length - i);
+                                    if ('<think>'.startsWith(suffix)) {
+                                        flushableEnd = buffer.length - i;
+                                        break;
+                                    }
+                                }
+                                const visiblePart = buffer.substring(0, flushableEnd);
+                                appendVisible(visiblePart);
+                                buffer = buffer.substring(flushableEnd);
+                                break; // Wait for more chunks
+                            }
+                        } else if (state === 'thinking') {
+                            const tagEnd = buffer.indexOf('</think>');
+                            if (tagEnd !== -1) {
+                                const thinkingPart = buffer.substring(0, tagEnd);
+                                appendThinking(thinkingPart);
+                                buffer = buffer.substring(tagEnd + '</think>'.length);
+                                state = 'visible';
+                                continue; // Re-run loop
+                            } else {
+                                // No end tag. Check for partial end tag.
+                                let flushableEnd = buffer.length;
+                                for (let i = 1; i <= buffer.length && i <= '</think>'.length; i++) {
+                                    const suffix = buffer.substring(buffer.length - i);
+                                    if ('</think>'.startsWith(suffix)) {
+                                        flushableEnd = buffer.length - i;
+                                        break;
+                                    }
+                                }
+                                const thinkingPart = buffer.substring(0, flushableEnd);
+                                appendThinking(thinkingPart);
+                                buffer = buffer.substring(flushableEnd);
+                                break; // Wait for more chunks
+                            }
+                        }
+                    }
+                }
+
+                function appendVisible(content) {
+                    if (!content) return;
+                    console.debug(`[VISIBLE] Appending: ${JSON.stringify(content)}`);
+                    if (!hasWrittenToDOM) {
+                        messageTextElement.innerHTML = escapeHTML(content);
+                        hasWrittenToDOM = true;
+                    } else {
+                        messageTextElement.innerHTML += escapeHTML(content);
+                    }
+                }
+
+                function appendThinking(content) {
+                    if (!content) return;
+                    console.debug(`[THINKING] Appending: ${JSON.stringify(content)}`);
+                    if (!hasWrittenToDOM) {
+                        messageTextElement.innerHTML = ''; // Clear "Thinking..."
+                        hasWrittenToDOM = true;
+                    }
+                    thinkingContainerWrapper.style.display = 'block';
+                    thinkingContentElement.innerHTML += escapeHTML(content);
+                }
 
                 function readStream() {
                     return reader.read().then(({ done, value }) => {
                         if (done) {
-                            // Enable both buttons when done
+                            // If the stream ends, process any remaining buffer content.
+                            if (buffer) {
+                                if (state === 'thinking') appendThinking(buffer);
+                                else appendVisible(buffer);
+                                buffer = '';
+                            }
                             const buttons = aiMessageElement.querySelectorAll('.regenerate-button, .play-button');
-                            buttons.forEach(button => {
-                                button.disabled = false;
-                                if (button.classList.contains('regenerate-button')) {
-                                    button.textContent = "⟳";
-                                }
-                            });
+                            buttons.forEach(b => { b.disabled = false; });
                             return;
                         }
                         const chunk = decoder.decode(value, { stream: true });
-                        console.log('[REGEN] Received chunk:', {
-                            length: chunk.length,
-                            content: chunk,
-                            isEmpty: !chunk,
-                            isWhitespace: chunk.trim().length === 0
-                        });
+                        processChunk(chunk);
                         
-                        // Always append non-null chunks, even if they're just whitespace
-                        if (chunk) {
-                            aiMessage += chunk;
-                            // Update only the AI message text, preserving the regenerate button
-                            const messageText = aiMessageElement.querySelector('.ai-message-text');
-                            if (messageText) {
-                                messageText.textContent = aiMessage;
-                            } else {
-                                aiMessageElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)">▶</button></div>`;
-                            }
-                            // Scroll to bottom
-                            const chatBox = document.getElementById('chat-box');
-                            chatBox.scrollTop = chatBox.scrollHeight;
-                            // Reset empty chunk counter if we got content
-                            emptyChunkCount = 0;
-                            console.log('[REGEN] Updated message:', {
-                                totalLength: aiMessage.length,
-                                lastChunkLength: chunk.length
-                            });
-                        } else {
-                            console.warn('[REGEN] Empty chunk received', {
-                                emptyChunkCount: emptyChunkCount + 1,
-                                currentMessage: aiMessage.length
-                            });
-                            emptyChunkCount++;
-                            if (emptyChunkCount > 10) {
-                                console.error('[REGEN] Too many empty chunks, aborting');
-                                throw new Error('Connection stalled - no data received');
-                            }
-                        }
+                        const chatBox = document.getElementById('chat-box');
+                        chatBox.scrollTop = chatBox.scrollHeight;
+
                         return readStream();
                     });
                 }
                 
                 readStream().catch(error => {
                     console.error('Error reading stream:', error);
-                    aiMessageElement.innerHTML = `<strong>AI:</strong> ${escapeHTML(aiMessage)}<br/><span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button><button class="play-button" onclick="playTTS(this)">▶</button></div>`;
-                    // Enable buttons in case they were disabled
-                    const buttons = aiMessageElement.querySelectorAll('.regenerate-button, .play-button');
-                    buttons.forEach(button => button.disabled = false);
+                    aiMessageElement.innerHTML = `<strong>AI:</strong> <span class="error-message">[Error] ${error.message}</span>\n\n<div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)">⟳ Regenerate</button></div>`;
                 });
             })
             .catch(error => {
@@ -328,11 +380,11 @@
         });
         {% endif %}
         function appendMessage(message, className) {
+            const chatContent = document.getElementById('chat-content');
             const messageElement = document.createElement('div');
             messageElement.className = 'message ' + className;
             messageElement.innerHTML = message;
-            const chatContent = document.getElementById('chat-content');
-            chatContent.appendChild(messageElement); 
+            chatContent.appendChild(messageElement);
             const chatBox = document.getElementById('chat-box');
             chatBox.scrollTop = chatBox.scrollHeight;
         }
@@ -531,24 +583,119 @@
                 }
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder('utf-8');
-                let aiMessage = '';
 
-                // Add AI message placeholder
-                appendMessage('<strong>AI:</strong> ', 'ai-message');
-                const aiMessageElements = document.getElementsByClassName('ai-message');
-                const targetElement = aiMessageElements[aiMessageElements.length - 1];
+                // Add AI message placeholder with thinking container
+                appendMessage(
+                    `<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" onclick="toggleThinking(this)">▶ Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled>⟳</button><button class="play-button" onclick="playTTS(this)" disabled>▶</button></div>`, 
+                    'ai-message'
+                );
+                const targetElement = document.querySelector('.ai-message:last-child');
+                const messageTextElement = targetElement.querySelector('.ai-message-text');
+                const thinkingContainerWrapper = targetElement.querySelector('.thinking-container');
+                const thinkingContentElement = targetElement.querySelector('.thinking-content');
+
+                let buffer = '';
+                let state = 'visible'; // 'visible' or 'thinking'
+                let hasWrittenToDOM = false;
+
+                function processChunk(chunk) {
+                    buffer += chunk;
+                    console.debug(`[CHUNK] Received: ${JSON.stringify(chunk)}, Buffer: ${JSON.stringify(buffer)}`);
+
+                    while (buffer.length > 0) {
+                        if (state === 'visible') {
+                            const tagStart = buffer.indexOf('<think>');
+                            if (tagStart !== -1) {
+                                const visiblePart = buffer.substring(0, tagStart);
+                                appendVisible(visiblePart);
+                                buffer = buffer.substring(tagStart + '<think>'.length);
+                                state = 'thinking';
+                                continue; // Re-run loop with new state and buffer
+                            } else {
+                                // No complete start tag. Check for a partial tag at the end.
+                                let flushableEnd = buffer.length;
+                                for (let i = 1; i <= buffer.length && i <= '<think>'.length; i++) {
+                                    const suffix = buffer.substring(buffer.length - i);
+                                    if ('<think>'.startsWith(suffix)) {
+                                        flushableEnd = buffer.length - i;
+                                        break;
+                                    }
+                                }
+                                const visiblePart = buffer.substring(0, flushableEnd);
+                                appendVisible(visiblePart);
+                                buffer = buffer.substring(flushableEnd);
+                                break; // Wait for more chunks
+                            }
+                        } else if (state === 'thinking') {
+                            const tagEnd = buffer.indexOf('</think>');
+                            if (tagEnd !== -1) {
+                                const thinkingPart = buffer.substring(0, tagEnd);
+                                appendThinking(thinkingPart);
+                                buffer = buffer.substring(tagEnd + '</think>'.length);
+                                state = 'visible';
+                                continue; // Re-run loop
+                            } else {
+                                // No end tag. Check for partial end tag.
+                                let flushableEnd = buffer.length;
+                                for (let i = 1; i <= buffer.length && i <= '</think>'.length; i++) {
+                                    const suffix = buffer.substring(buffer.length - i);
+                                    if ('</think>'.startsWith(suffix)) {
+                                        flushableEnd = buffer.length - i;
+                                        break;
+                                    }
+                                }
+                                const thinkingPart = buffer.substring(0, flushableEnd);
+                                appendThinking(thinkingPart);
+                                buffer = buffer.substring(flushableEnd);
+                                break; // Wait for more chunks
+                            }
+                        }
+                    }
+                }
+
+                function appendVisible(content) {
+                    if (!content) return;
+                    console.debug(`[VISIBLE] Appending: ${JSON.stringify(content)}`);
+                    if (!hasWrittenToDOM) {
+                        messageTextElement.innerHTML = escapeHTML(content);
+                        hasWrittenToDOM = true;
+                    } else {
+                        messageTextElement.innerHTML += escapeHTML(content);
+                    }
+                }
+
+                function appendThinking(content) {
+                    if (!content) return;
+                    console.debug(`[THINKING] Appending: ${JSON.stringify(content)}`);
+                    if (!hasWrittenToDOM) {
+                        messageTextElement.innerHTML = ''; // Clear "Thinking..."
+                        hasWrittenToDOM = true;
+                    }
+                    thinkingContainerWrapper.style.display = 'block';
+                    thinkingContentElement.innerHTML += escapeHTML(content);
+                }
 
                 function readStream() {
                     return reader.read().then(({ done, value }) => {
-                        if (done) return;
+                        if (done) {
+                            // If the stream ends, process any remaining buffer content.
+                            if (buffer) {
+                                if (state === 'thinking') appendThinking(buffer);
+                                else appendVisible(buffer);
+                                buffer = '';
+                            }
+                            const buttons = targetElement.querySelectorAll('.regenerate-button, .play-button');
+                            buttons.forEach(button => button.disabled = false);
+                            return;
+                        }
                         const chunk = decoder.decode(value, { stream: true });
-                        aiMessage += chunk;
-                        targetElement.innerHTML = `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMessage)}</span>
-<div class="regenerate-container">
-    <button class="regenerate-button" onclick="regenerateMessage(this)">⟳</button>
-    <button class="play-button" onclick="playTTS(this)">▶</button>
-</div>`;
-                        readStream();
+                        processChunk(chunk);
+
+                        // Scroll to bottom
+                        const chatBox = document.getElementById('chat-box');
+                        chatBox.scrollTop = chatBox.scrollHeight;
+
+                        return readStream();
                     }).catch(error => {
                         console.error('Error reading stream:', error);
                         targetElement.innerHTML += '<br/><span class="error-message">[Error] An error occurred while fetching the response.</span>';
@@ -607,6 +754,15 @@
             });
         });
     });
+        function toggleThinking(button) {
+            const contentDiv = button.nextElementSibling;
+            if (contentDiv.style.display === 'none') {
+                contentDiv.style.display = 'block';
+                button.textContent = '▼ Hide Thinking';
+            } else {
+                contentDiv.style.display = 'none';
+                button.textContent = '▶ Show Thinking';
+            }
+        }
     </script>
-</body>
 </html>
