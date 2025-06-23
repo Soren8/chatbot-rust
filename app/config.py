@@ -75,11 +75,14 @@ class Config:
         """Process LLM configuration from YAML"""
         cls.LLM_PROVIDERS = []
         
-        required_fields = ["name", "type", "model_name"]
+        required_fields = ["provider_name", "type", "model_name"]
         
         for idx, llm in enumerate(config.get("llms", [])):
             # Validate required fields
             # Validate required fields with more helpful error messages
+            # Allow legacy 'name' field as alias for 'provider_name'
+            if "name" in llm and "provider_name" not in llm:
+                llm["provider_name"] = llm["name"]
             missing_fields = [field for field in required_fields if field not in llm]
             if missing_fields:
                 raise ValueError(
