@@ -1,4 +1,5 @@
 import os
+import re
 import yaml
 import logging
 from pathlib import Path
@@ -65,9 +66,8 @@ class Config:
             return {k: Config._replace_env_vars(v) for k, v in config.items()}
         elif isinstance(config, list):
             return [Config._replace_env_vars(elem) for elem in config]
-        elif isinstance(config, str) and config.startswith("${") and config.endswith("}"):
-            env_var = config[2:-1]
-            return os.getenv(env_var, "")
+        elif isinstance(config, str):
+            return re.sub(r'\$\{([^}]+)\}', lambda m: os.getenv(m.group(1), ''), config)
         return config
 
     @classmethod

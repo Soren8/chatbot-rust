@@ -4,14 +4,8 @@ services:
     ports:
       - "8000:5000"
     env_file: .env
-    environment:
-      - HOST_DATA_DIR=/app/data
-      - SECRET_KEY=${SECRET_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - OLLAMA_HOST=${OLLAMA_HOST}
-      - OLLAMA_PORT=${OLLAMA_PORT}
-      - GUNICORN_TIMEOUT=600
+    env_file: 
+      - .env
     volumes:
       - ./data:/app/data
       - ./.config.yml:/app/.config.yml
-      - ./.env:/app/.env
