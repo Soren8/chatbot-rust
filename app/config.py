@@ -36,17 +36,27 @@ class Config:
     def load_config(cls):
         """Load YAML configuration and process environment variables"""
         config_path = Path(".config.yml")
-        if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file {config_path} not found")
-            
-        with open(config_path) as f:
-            raw_config = yaml.safe_load(f)
-
-        # Process environment variable substitution
-        processed_config = cls._replace_env_vars(raw_config)
         
-        # Load LLM configurations
-        cls._load_llm_config(processed_config)
+        # Verify config path is a file
+        if not config_path.exists():
+            raise FileNotFoundError(f"Configuration file {config_path.absolute()} not found")
+        if not config_path.is_file():
+            raise IsADirectoryError(f"Configuration path {config_path.absolute()} is a directory - must be a file")
+
+        try:
+            with open(config_path) as f:
+                raw_config = yaml.safe_load(f) or {}
+
+            # Process environment variable substitution
+            processed_config = cls._replace_env_vars(raw_config)
+            
+            # Load LLM configurations
+            cls._load_llm_config(processed_config)
+
+        except yaml.YAMLError as e:
+            raise RuntimeError(f"Invalid YAML syntax in {config_path}: {str(e)}")
+        except Exception as e:
+            raise RuntimeError(f"Error processing {config_path}: {str(e)}")
 
     @staticmethod
     def _replace_env_vars(config):
