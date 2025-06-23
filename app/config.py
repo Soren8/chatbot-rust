@@ -77,7 +77,7 @@ class Config:
         
         required_fields = ["name", "type", "model_name"]
         
-        for llm in config.get("llms", []):
+        for idx, llm in enumerate(config.get("llms", [])):
             # Validate required fields
             # Validate required fields with more helpful error messages
             missing_fields = [field for field in required_fields if field not in llm]
