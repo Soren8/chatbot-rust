@@ -7,4 +7,4 @@ services:
       - .env
     volumes:
       - ./data:/app/data
-      - ./.config.yml:/app/.config.yml
+      - ./.config.yml:/app/.config.yml:ro

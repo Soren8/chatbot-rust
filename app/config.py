@@ -42,9 +42,11 @@ class Config:
         
         # Verify config path is a file
         if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file {config_path.absolute()} not found")
+            logging.warning(f"Configuration file {config_path.absolute()} not found - using default configuration")
+            return
         if not config_path.is_file():
-            raise IsADirectoryError(f"Configuration path {config_path.absolute()} is a directory - must be a file")
+            logging.warning(f"Configuration path {config_path.absolute()} is a directory - using default configuration")
+            return
 
         try:
             with open(config_path) as f:
@@ -57,9 +59,9 @@ class Config:
             cls._load_llm_config(processed_config)
 
         except yaml.YAMLError as e:
-            raise RuntimeError(f"Invalid YAML syntax in {config_path}: {str(e)}")
+            logging.error(f"Invalid YAML syntax in {config_path}: {str(e)} - using default configuration")
         except Exception as e:
-            raise RuntimeError(f"Error processing {config_path}: {str(e)}")
+            logging.error(f"Error processing {config_path}: {str(e)} - using default configuration")
 
     @staticmethod
     def _replace_env_vars(config):
@@ -118,7 +120,4 @@ class Config:
         cls.SESSION_TIMEOUT = config.get("session_timeout", 3600)
 
 # Initialize configuration when module loads
-try:
-    Config.load_config()
-except Exception as e:
-    raise RuntimeError(f"Failed to load configuration: {str(e)}")
+Config.load_config()
