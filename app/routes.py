@@ -483,7 +483,7 @@ def regenerate():
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
 
-    memory_text = user_session["memory"] if "username" in session else ""
+    memory_text = user_session.get("memory", "")
 
     # Get the selected model name from the request before entering the generator function
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
@@ -526,7 +526,7 @@ def regenerate():
                 
                 if response_text.strip():
                     # Remove thinking text from final response before storing in history
-                    clean_response = re.sub(r'.*?', '', response_text, flags=re.DOTALL)
+                    clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
                     user_session["history"].append((user_message, clean_response))
                     logger.info("Response added to history")
                     
