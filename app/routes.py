@@ -489,6 +489,9 @@ def regenerate():
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
     logger.debug(f"Regenerating with selected model: {selected_model}")
     
+    # Capture logged-in state before entering generator context
+    is_logged_in = "username" in session
+
     def generate():
         logger.info(f"Starting regeneration for session {session_id}")
         with response_lock:
@@ -528,7 +531,7 @@ def regenerate():
                     logger.info("Response added to history")
                     
                     # Save history if user is logged in
-                    if "username" in session:
+                    if is_logged_in:
                         try:
                             save_user_chat_history(session_id, user_session["history"], set_name, password)
                             logger.info("Saved regenerated history to disk")
