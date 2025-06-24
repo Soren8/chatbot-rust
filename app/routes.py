@@ -202,20 +202,30 @@ def load_set():
     logger.debug("Loading chat history...")
     history = load_user_chat_history(username, set_name, password if encrypted else None)
     
+    # Ensure history is in correct format (list of tuples)
+    formatted_history = []
+    for item in history:
+        if isinstance(item, tuple) and len(item) == 2:
+            formatted_history.append(item)
+        elif isinstance(item, list) and len(item) == 2:
+            formatted_history.append(tuple(item))
+        else:
+            logger.warning(f"Skipping invalid history item: {item}")
+    
     # Update session with loaded data
     session_id = session.get("username")
     if session_id in sessions:
         logger.debug("Updating session data...")
         sessions[session_id]["memory"] = memory
         sessions[session_id]["system_prompt"] = system_prompt
-        sessions[session_id]["history"] = history
+        sessions[session_id]["history"] = formatted_history
         
     logger.debug(f"Returning data for set '{set_name}'")
-    logger.debug(f"Loaded history: {len(history)} items")
+    logger.debug(f"Loaded history: {len(formatted_history)} valid items")
     return jsonify({
         "memory": memory,
         "system_prompt": system_prompt,
-        "history": history,
+        "history": formatted_history,
         "encrypted": encrypted
     })
 
