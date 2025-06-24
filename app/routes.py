@@ -466,6 +466,9 @@ def regenerate():
 
     user_message = request.json.get("message", "")
     system_prompt = request.json.get("system_prompt", "")
+    set_name = request.json.get("set_name", "default")
+    encrypted = request.json.get("encrypted", False)
+    password = session.get("password") if "username" in session else None
 
     session_id = session.get("username", "guest_" + request.remote_addr)
     user_session = sessions[session_id]
@@ -519,8 +522,22 @@ def regenerate():
                 logger.info(f"Stream complete: {chunk_count} chunks")
                 
                 if response_text.strip():
-                    user_session["history"].append((user_message, response_text))
+                    # Remove thinking text from final response before storing in history
+                    clean_response = re.sub(r'.*?', '', response_text, flags=re.DOTALL)
+                    user_session["history"].append((user_message, clean_response))
                     logger.info("Response added to history")
+                    
+                    # Save history if user is logged in
+                    if "username" in session:
+                        try:
+                            save_user_chat_history(session_id, user_session["history"], set_name, password)
+                            logger.info("Saved regenerated history to disk")
+                        except ValueError as e:
+                            logger.error(f"Failed to save chat history: {str(e)}")
+                            yield f"\n[Error] Failed to save chat history: {str(e)}"
+                        except Exception as e:
+                            logger.error(f"Unexpected error saving chat history: {str(e)}")
+                            yield f"\n[Error] Unexpected error saving chat history"
                 else:
                     logger.warning("Generated empty response!")
             except Exception as e:
