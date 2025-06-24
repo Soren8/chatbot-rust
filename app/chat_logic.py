@@ -7,6 +7,9 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     logger.debug("Entered chat_logic.generate_text_stream()")
     logger.debug("Parameters received: prompt: %s, system_prompt: %s, model_name: %s",
                  prompt, system_prompt, model_name)
+    logger.debug("Session history length: %d", len(session_history))
+    if session_history:
+        logger.debug("Last history item: %s", session_history[-1])
 
     # Look up the LLM configuration based on provider_name (which is derived from YAML's name or provider_name)
     llm_config = next((llm for llm in Config.LLM_PROVIDERS if llm["provider_name"] == model_name), None)

@@ -211,6 +211,7 @@ def load_set():
         sessions[session_id]["history"] = history
         
     logger.debug(f"Returning data for set '{set_name}'")
+    logger.debug(f"Loaded history: {len(history)} items")
     return jsonify({
         "memory": memory,
         "system_prompt": system_prompt,
@@ -372,6 +373,10 @@ def chat():
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
     logger.debug(f"Using selected model: {selected_model}")
     
+    # Get current history from session
+    current_history = user_session["history"]
+    logger.debug(f"Using history for generation: {len(current_history)} items")
+    
     def generate():
         with response_lock:
             logger.debug(
@@ -382,7 +387,7 @@ def chat():
                 f"Context Size: {Config.DEFAULT_LLM.get('context_size', 'default')}\n"
                 f"Base URL: {Config.DEFAULT_LLM.get('base_url', 'default')}\n"
                 f"System Prompt: {system_prompt[:200]}...\n"
-                f"Session History Length: {len(user_session['history'])}\n"
+                f"Session History Length: {len(current_history)}\n"
                 f"Memory Text Length: {len(memory_text)}"
             )
             
@@ -390,7 +395,7 @@ def chat():
                 prompt=user_message,
                 system_prompt=system_prompt,
                 model_name=selected_model,  # Use the selected model
-                session_history=user_session["history"],
+                session_history=current_history,
                 memory_text=memory_text
             )
 
