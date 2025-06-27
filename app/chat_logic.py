@@ -7,6 +7,11 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     logger.debug("Entered chat_logic.generate_text_stream()")
     logger.debug("Parameters received: prompt: %s, system_prompt: %s, model_name: %s",
                  prompt, system_prompt, model_name)
+    logger.debug("Session history length: %d", len(session_history))
+    if session_history:
+        logger.debug("First history item: %s", session_history[0])
+        logger.debug("Last history item: %s", session_history[-1])
+        logger.debug("History items: %s", [f"{len(user)}/{len(assistant)}" for user, assistant in session_history])
 
     # Look up the LLM configuration based on provider_name (which is derived from YAML's name or provider_name)
     llm_config = next((llm for llm in Config.LLM_PROVIDERS if llm["provider_name"] == model_name), None)
@@ -39,16 +44,12 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     try:
         # Invoke the provider's generate_text_stream to get a generator.
         provider_generator = provider.generate_text_stream(prompt, system_prompt, session_history, memory_text)
-        logger.debug("Provider generator successfully obtained.")
-    except Exception as e:
-        logger.exception("Exception occurred while invoking provider.generate_text_stream():")
-        return
-
-    try:
-        # Immediately iterate over the generator and yield each chunk.
+        logger.debug("Provider generator successfully obtained. Passing through chunks.")
+        
+        # Simply yield from the provider's generator. The frontend will handle parsing.
         for chunk in provider_generator:
-            logger.debug("Yielding chunk: %s", chunk)
             yield chunk
+            
     except Exception as e:
         logger.exception("Exception encountered during provider generator iteration:")
         yield f"\n[Error] Exception during streaming: {str(e)}"

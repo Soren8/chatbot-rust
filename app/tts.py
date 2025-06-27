@@ -1,4 +1,5 @@
 from flask import jsonify, request, Response
+import re
 import logging
 from io import BytesIO
 import requests
@@ -16,7 +17,8 @@ def generate_tts_audio(text: str) -> BytesIO:
     """
     logger.debug("Starting TTS audio generation")
     # Clean and validate input text
-    text = text.strip()
+    # Remove thinking tags and content
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
     if not text:
         logger.debug("Empty text provided to generate_tts_audio")
         raise ValueError("Empty text provided")

@@ -35,9 +35,24 @@ class OllamaProvider(BaseLLMProvider):
             f"Template Enabled: {bool(self.template)}"
         )
         
+        # Build the full prompt including system, memory, history, and current prompt
+        full_prompt = system_prompt + "\n\n"
+        
+        if memory_text.strip():
+            full_prompt += f"### Memory:\n{memory_text.strip()}\n\n"
+        
+        for user_input, assistant_response in session_history:
+            full_prompt += f"### User:\n{user_input}\n\n### Assistant:\n{assistant_response}\n\n"
+        
+        full_prompt += f"### User:\n{prompt}\n\n### Assistant:\n"
+        
+        logger.debug(f"Full prompt length: {len(full_prompt)} characters")
+        logger.debug(f"Full prompt preview:\n{full_prompt[:500]}...")
+        
         data = {
             "model": self.model_name,
-            "prompt": prompt,
+            "prompt": full_prompt,
+            "system": system_prompt,
             "stream": True,
             "options": {
                 "num_ctx": self.context_size

@@ -1,4 +1,5 @@
 import os
+import re
 import yaml
 import logging
 from pathlib import Path
@@ -20,6 +21,8 @@ class Config:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+        # Specifically mute the Ollama provider debug logs
+        logging.getLogger('app.llm.ollama_provider').setLevel(logging.WARNING)
     
     # TTS configuration
     TTS_BASE_URL = f"http://{os.getenv('TTS_HOST', 'localhost')}:{os.getenv('TTS_PORT', '5000')}"
@@ -36,17 +39,47 @@ class Config:
     def load_config(cls):
         """Load YAML configuration and process environment variables"""
         config_path = Path(".config.yml")
-        if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file {config_path} not found")
-            
-        with open(config_path) as f:
-            raw_config = yaml.safe_load(f)
-
-        # Process environment variable substitution
-        processed_config = cls._replace_env_vars(raw_config)
         
-        # Load LLM configurations
-        cls._load_llm_config(processed_config)
+        # Only try to load if file exists and is a file
+        if config_path.exists() and config_path.is_file():
+            try:
+                with open(config_path) as f:
+                    raw_config = yaml.safe_load(f) or {}
+
+                # Process environment variable substitution
+                processed_config = cls._replace_env_vars(raw_config)
+                
+                # Load LLM configurations
+                cls._load_llm_config(processed_config)
+
+            except yaml.YAMLError as e:
+                logging.error(f"Invalid YAML syntax in {config_path}: {str(e)} - using default configuration")
+            except Exception as e:
+                logging.error(f"Error processing {config_path}: {str(e)} - using default configuration")
+        else:
+            if not config_path.exists():
+                logging.warning(f"Configuration file {config_path.absolute()} not found - using default configuration")
+            else:
+                logging.warning(f"Configuration path {config_path.absolute()} is a directory - using default configuration")
+
+        # Ensure we have at least one LLM provider
+        if not cls.LLM_PROVIDERS:
+            logging.warning("No LLM providers configured. Using fallback default provider.")
+            fallback_provider = {
+                "provider_name": "default",
+                "type": "ollama",
+                "tier": "free",
+                "model_name": "dolphin3.1-8b",
+                "context_size": 8192,
+                "base_url": "",
+                "api_key": "",
+                "template": None
+            }
+            cls.LLM_PROVIDERS = [fallback_provider]
+            cls.DEFAULT_LLM = fallback_provider
+        # Ensure DEFAULT_LLM is set to first provider if not configured
+        elif cls.DEFAULT_LLM is None:
+            cls.DEFAULT_LLM = cls.LLM_PROVIDERS[0]
 
     @staticmethod
     def _replace_env_vars(config):
@@ -55,9 +88,8 @@ class Config:
             return {k: Config._replace_env_vars(v) for k, v in config.items()}
         elif isinstance(config, list):
             return [Config._replace_env_vars(elem) for elem in config]
-        elif isinstance(config, str) and config.startswith("${") and config.endswith("}"):
-            env_var = config[2:-1]
-            return os.getenv(env_var, "")
+        elif isinstance(config, str):
+            return re.sub(r'\$\{([^}]+)\}', lambda m: os.getenv(m.group(1), ''), config)
         return config
 
     @classmethod
@@ -65,13 +97,20 @@ class Config:
         """Process LLM configuration from YAML"""
         cls.LLM_PROVIDERS = []
         
-        required_fields = ["name", "type", "model_name"]
+        required_fields = ["provider_name", "type", "model_name"]
         
-        for llm in config.get("llms", []):
+        for idx, llm in enumerate(config.get("llms", [])):
             # Validate required fields
-            for field in required_fields:
-                if field not in llm:
-                    raise ValueError(f"Missing required field '{field}' in LLM configuration")
+            # Validate required fields with more helpful error messages
+            # Allow legacy 'name' field as alias for 'provider_name'
+            if "name" in llm and "provider_name" not in llm:
+                llm["provider_name"] = llm["name"]
+            missing_fields = [field for field in required_fields if field not in llm]
+            if missing_fields:
+                raise ValueError(
+                    f"LLM configuration entry {idx+1} is missing required fields: {', '.join(missing_fields)}. "
+                    f"Found fields: {', '.join(llm.keys())}"
+                )
                     
             provider = {
                 "provider_name": llm.get("provider_name", llm.get("name")),  # Backwards compatibility
@@ -99,7 +138,4 @@ class Config:
         cls.SESSION_TIMEOUT = config.get("session_timeout", 3600)
 
 # Initialize configuration when module loads
-try:
-    Config.load_config()
-except Exception as e:
-    raise RuntimeError(f"Failed to load configuration: {str(e)}")
+Config.load_config()

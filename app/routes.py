@@ -4,6 +4,7 @@ import logging
 import threading
 import os
 import json
+import re
 from collections import defaultdict
 from werkzeug.serving import WSGIRequestHandler
 WSGIRequestHandler.protocol_version = "HTTP/1.1"  # Enable keep-alive connections
@@ -201,19 +202,30 @@ def load_set():
     logger.debug("Loading chat history...")
     history = load_user_chat_history(username, set_name, password if encrypted else None)
     
+    # Ensure history is in correct format (list of tuples)
+    formatted_history = []
+    for item in history:
+        if isinstance(item, tuple) and len(item) == 2:
+            formatted_history.append(item)
+        elif isinstance(item, list) and len(item) == 2:
+            formatted_history.append(tuple(item))
+        else:
+            logger.warning(f"Skipping invalid history item: {item}")
+    
     # Update session with loaded data
     session_id = session.get("username")
     if session_id in sessions:
         logger.debug("Updating session data...")
         sessions[session_id]["memory"] = memory
         sessions[session_id]["system_prompt"] = system_prompt
-        sessions[session_id]["history"] = history
+        sessions[session_id]["history"] = formatted_history
         
     logger.debug(f"Returning data for set '{set_name}'")
+    logger.debug(f"Loaded history: {len(formatted_history)} valid items")
     return jsonify({
         "memory": memory,
         "system_prompt": system_prompt,
-        "history": history,
+        "history": formatted_history,
         "encrypted": encrypted
     })
 
@@ -371,6 +383,10 @@ def chat():
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
     logger.debug(f"Using selected model: {selected_model}")
     
+    # Get current history from session
+    current_history = user_session["history"]
+    logger.debug(f"Using history for generation: {len(current_history)} items")
+    
     def generate():
         with response_lock:
             logger.debug(
@@ -381,7 +397,7 @@ def chat():
                 f"Context Size: {Config.DEFAULT_LLM.get('context_size', 'default')}\n"
                 f"Base URL: {Config.DEFAULT_LLM.get('base_url', 'default')}\n"
                 f"System Prompt: {system_prompt[:200]}...\n"
-                f"Session History Length: {len(user_session['history'])}\n"
+                f"Session History Length: {len(current_history)}\n"
                 f"Memory Text Length: {len(memory_text)}"
             )
             
@@ -389,7 +405,7 @@ def chat():
                 prompt=user_message,
                 system_prompt=system_prompt,
                 model_name=selected_model,  # Use the selected model
-                session_history=user_session["history"],
+                session_history=current_history,
                 memory_text=memory_text
             )
 
@@ -414,7 +430,9 @@ def chat():
                 f"History Items: {len(user_session['history'])}"
             )
             
-            user_session["history"].append((user_message, response_text))
+            # Remove thinking text from final response before storing in history
+            clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
+            user_session["history"].append((user_message, clean_response))
             logger.info(f"Chat response generated. Length: {len(response_text)} characters")
             
             # Save history if user is logged in
@@ -448,6 +466,9 @@ def regenerate():
 
     user_message = request.json.get("message", "")
     system_prompt = request.json.get("system_prompt", "")
+    set_name = request.json.get("set_name", "default")
+    encrypted = request.json.get("encrypted", False)
+    password = session.get("password") if "username" in session else None
 
     session_id = session.get("username", "guest_" + request.remote_addr)
     user_session = sessions[session_id]
@@ -462,12 +483,15 @@ def regenerate():
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
 
-    memory_text = user_session["memory"] if "username" in session else ""
+    memory_text = user_session.get("memory", "")
 
     # Get the selected model name from the request before entering the generator function
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
     logger.debug(f"Regenerating with selected model: {selected_model}")
     
+    # Capture logged-in state before entering generator context
+    is_logged_in = "username" in session
+
     def generate():
         logger.info(f"Starting regeneration for session {session_id}")
         with response_lock:
@@ -501,8 +525,22 @@ def regenerate():
                 logger.info(f"Stream complete: {chunk_count} chunks")
                 
                 if response_text.strip():
-                    user_session["history"].append((user_message, response_text))
+                    # Remove thinking text from final response before storing in history
+                    clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
+                    user_session["history"].append((user_message, clean_response))
                     logger.info("Response added to history")
+                    
+                    # Save history if user is logged in
+                    if is_logged_in:
+                        try:
+                            save_user_chat_history(session_id, user_session["history"], set_name, password)
+                            logger.info("Saved regenerated history to disk")
+                        except ValueError as e:
+                            logger.error(f"Failed to save chat history: {str(e)}")
+                            yield f"\n[Error] Failed to save chat history: {str(e)}"
+                        except Exception as e:
+                            logger.error(f"Unexpected error saving chat history: {str(e)}")
+                            yield f"\n[Error] Unexpected error saving chat history"
                 else:
                     logger.warning("Generated empty response!")
             except Exception as e:

@@ -1,4 +1,5 @@
 import logging
+import json
 from openai import OpenAI
 from app.llm.base_provider import BaseLLMProvider
 
@@ -60,6 +61,17 @@ class OpenaiProvider(BaseLLMProvider):
                 messages.append({"role": "assistant", "content": assistant_res})
 
         messages.append({"role": "user", "content": prompt})
+
+        # Log the messages being sent (truncate long content)
+        truncated_messages = []
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            if len(content) > 200:
+                truncated_messages.append({"role": role, "content": content[:200] + "..."})
+            else:
+                truncated_messages.append(msg)
+        logger.debug(f"Sending messages to OpenAI API: {json.dumps(truncated_messages, indent=2)}")
 
         try:
             logger.debug(f"Sending request to OpenAI API, message count: {len(messages)}")
