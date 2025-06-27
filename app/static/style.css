@@ -7,12 +7,12 @@ body {
 .chat-page-body {
     max-width: 800px;
     margin: 0 auto;
-    padding: 20px 20px 10px 20px;
+    padding: 20px 20px 0 20px;
     box-sizing: border-box;
     background-color: #1a1a1a;
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    height: 100vh;
 }
 
 /* Buttons and containers on chat page */
@@ -71,8 +71,8 @@ body {
     box-sizing: border-box;
     background-color: #1e2229;
     border-radius: 5px;
-    position: relative;
-    min-height: 0; /* Allows flex item to shrink below content size */
+    min-height: 0;
+    height: calc(100% - 20px); /* Account for margin */
 }
 
 .chat-content {
