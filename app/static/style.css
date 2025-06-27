@@ -7,12 +7,12 @@ body {
 .chat-page-body {
     max-width: 800px;
     margin: 0 auto;
-    padding: 20px;
+    padding: 20px 20px 10px 20px;
     box-sizing: border-box;
-    background-color: #1a1a1a;  /* Dark grey background */
+    background-color: #1a1a1a;
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    min-height: 100vh;
 }
 
 /* Buttons and containers on chat page */
@@ -381,9 +381,6 @@ body {
         box-sizing: border-box;
     }
     
-    .chat-box {
-        height: 80vh;
-    }
     .user-input,
     .reset-chat,
     .toggle-memory,
