@@ -50,10 +50,12 @@
 
     <button id="reset-chat" class="reset-chat">Reset Chat</button>
 
-    <div id="chat-box" class="chat-box">
-        <div id="chat-content" class="chat-content"></div>
+    <div class="chat-container">
+        <div id="chat-box" class="chat-box">
+            <div id="chat-content" class="chat-content"></div>
+        </div>
+        <input type="text" id="user-input" class="user-input" placeholder="Type your message here...">
     </div>
-    <input type="text" id="user-input" class="user-input" placeholder="Type your message here...">
 
     <script>
     function escapeHTML(str) {

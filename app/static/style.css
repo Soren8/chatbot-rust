@@ -10,6 +10,9 @@ body {
     padding: 20px;
     box-sizing: border-box;
     background-color: #1a1a1a;  /* Dark grey background */
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
 }
 
 /* Buttons and containers on chat page */
@@ -60,16 +63,16 @@ body {
 
 /* Chat box area */
 .chat-box {
-    height: calc(80vh);
+    flex: 1;
     border: 1px solid #2c3e50;
     overflow-y: auto;
     padding: 10px;
     margin-bottom: 10px;
     box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
     background-color: #1e2229;
     border-radius: 5px;
+    position: relative;
+    min-height: 0; /* Allows flex item to shrink below content size */
 }
 
 .chat-content {
@@ -87,6 +90,7 @@ body {
     border: 1px solid #2c3e50;
     border-radius: 5px;
     font-size: 16px;
+    flex-shrink: 0;
 }
 
 /* Message styling */
