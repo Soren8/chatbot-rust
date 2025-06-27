@@ -256,10 +256,11 @@ def update_memory():
             "storage": "disk"
         })
     else:
-        # Guest user - save to session
+        # Guest user - save to session memory and preserve it for first chat
         session_id = f"guest_{request.remote_addr}"
         sessions[session_id]["memory"] = user_memory
-        
+        sessions[session_id]["initialized"] = True
+
         logger.debug(f"Updated memory in session for guest user {session_id}")
         return jsonify({
             "status": "success",
@@ -327,7 +328,6 @@ def chat():
         user_session.update({
             "history": [],
             "system_prompt": "You are a helpful AI assistant.",
-            "memory": "",
             "initialized": True
         })
 
@@ -339,7 +339,6 @@ def chat():
         user_session.update({
             "history": [],
             "system_prompt": "You are a helpful AI assistant.",
-            "memory": "",
             "initialized": True
         })
 
