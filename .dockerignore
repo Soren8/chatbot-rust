@@ -1,0 +1,4 @@
+# Add these lines
+.env
+.config.yml
+*.example
