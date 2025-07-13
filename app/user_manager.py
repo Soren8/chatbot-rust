@@ -260,14 +260,17 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             
             with open(filepath, "rb") as file:
                 encrypted_data = file.read()
+                logger.debug(f"Read {len(encrypted_data)} bytes from {filepath}")
                 
             try:
-                return f.decrypt(encrypted_data).decode()
+                decrypted = f.decrypt(encrypted_data).decode()
+                logger.debug(f"Successfully decrypted {len(decrypted)} character prompt")
+                return decrypted
             except Exception as e:
                 logger.error(f"Decryption failed for {username}/{set_name}: {str(e)}")
-                # Try reading as plaintext in case encryption flag was set incorrectly
-                with open(filepath, "r", encoding="utf-8") as f:
-                    return f.read()
+                # Try decoding raw bytes instead of re-reading
+                logger.debug("Attempting to decode raw bytes as fallback")
+                return encrypted_data.decode('utf-8', errors='replace')
                     
         except Exception as e:
             logger.error(f"Error decrypting prompt for {username}/{set_name}: {str(e)}")
