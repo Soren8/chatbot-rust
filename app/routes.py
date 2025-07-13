@@ -115,12 +115,18 @@ def login():
 def home():
     logger.info("Serving home page")
     logged_in = ("username" in session)
-    user_memory = ""
-    user_system_prompt = ""
+    username = session.get("username")
+
     if logged_in:
-        username = session["username"]
-        user_memory = sessions[username]["memory"]
-        user_system_prompt = sessions[username]["system_prompt"]
+        user_session = sessions[username]
+        user_memory = user_session["memory"]
+        user_system_prompt = user_session["system_prompt"]
+    else:
+        session_id = f"guest_{request.remote_addr}"
+        user_session = sessions[session_id]
+        user_memory = user_session["memory"]
+        user_system_prompt = user_session["system_prompt"]
+
     return render_template(
         "chat.html",
         logged_in=logged_in,
@@ -327,7 +333,6 @@ def chat():
     if session_id.startswith("guest_") and not user_session.get("initialized", False):
         user_session.update({
             "history": [],
-            "system_prompt": "You are a helpful AI assistant.",
             "initialized": True
         })
 
