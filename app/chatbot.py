@@ -40,7 +40,7 @@ if not app.secret_key:
 sessions = defaultdict(
     lambda: {
         "history": [],
-        "system_prompt": "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries.",
+        "system_prompt": Config.DEFAULT_SYSTEM_PROMPT,
         "last_used": time.time(),
         "memory": "",
         "system_prompt_saved": ""
