@@ -13,6 +13,7 @@ from user_manager import (
     create_new_set, delete_set as delete_user_set, save_user_chat_history
 )
 from chat_logic import generate_text_stream
+from app.config import Config
 
 # Configure logging first, before any other imports or code
 logging.basicConfig(
