@@ -114,16 +114,28 @@ class Config:
                     f"Found fields: {', '.join(llm.keys())}"
                 )
                     
+            # Mask API key for logging
+            masked_key = llm.get("api_key", "")[:5] + "..." if llm.get("api_key") else "<empty>"
+            
             provider = {
-                "provider_name": llm.get("provider_name", llm.get("name")),  # Backwards compatibility
+                "provider_name": llm.get("provider_name", llm.get("name")),
                 "type": llm["type"],
                 "tier": llm.get("tier", "free"),
-                "model_name": llm["model_name"],  # Required field, will raise KeyError if missing
+                "model_name": llm["model_name"],
                 "context_size": llm.get("context_size", cls.MODEL_CONTEXT_SIZE),
                 "base_url": llm.get("base_url", ""),
                 "api_key": llm.get("api_key", ""),
                 "template": llm.get("template")
             }
+            
+            logger.debug(
+                f"Loading LLM provider {provider['provider_name']}:\n"
+                f"Type: {provider['type']}\n"
+                f"Model: {provider['model_name']}\n"
+                f"Base URL: {provider['base_url']}\n"
+                f"API Key: {masked_key}\n"
+                f"Context Size: {provider['context_size']}"
+            )
             cls.LLM_PROVIDERS.append(provider)
         
         # Set default model if configured

@@ -18,7 +18,8 @@ class OpenaiProvider(BaseLLMProvider):
             raise ValueError(f"Missing required keys in provider config: {missing}")
 
         # Store masked API key for logging purposes
-        self.masked_api_key = config['api_key'][:8] + "..." if config['api_key'] else ""
+        self.masked_api_key = config['api_key'][:5] + "..." if config['api_key'] else "<empty>"
+        logger.debug(f"Initializing OpenAI provider with API key: {self.masked_api_key}")
         self.base_url = config.get('base_url', 'https://api.openai.com/v1')
         self.timeout = config.get('request_timeout', 300.0)
         
@@ -74,7 +75,15 @@ class OpenaiProvider(BaseLLMProvider):
         logger.debug(f"Sending messages to OpenAI API: {json.dumps(truncated_messages, indent=2)}")
 
         try:
-            logger.debug(f"Sending request to OpenAI API, message count: {len(messages)}")
+            logger.debug(
+                f"Sending request to OpenAI API\n"
+                f"Using API key: {self.masked_api_key}\n"
+                f"Base URL: {self.base_url}\n"
+                f"Model: {self.model}\n"
+                f"Message count: {len(messages)}"
+            )
+            if "openrouter.ai" in self.base_url:
+                logger.debug("Using OpenRouter endpoint, expecting OPENROUTER_API_KEY to be set")
             
             stream = self.client.chat.completions.create(
                 model=self.model,
