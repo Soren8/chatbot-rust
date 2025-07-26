@@ -79,7 +79,8 @@
         
         Array.from(selector.options).forEach(option => {
             const isPremium = option.dataset.tier === 'premium';
-            option.disabled = isPremium && APP_DATA.userTier !== 'premium';
+            // Remove disabled property to allow selection while maintaining visual styling
+            option.style.opacity = isPremium && APP_DATA.userTier !== 'premium' ? '0.6' : '1';
         });
     }
 
@@ -93,8 +94,14 @@
             premiumAlert.style.display = 'block';
             setTimeout(() => premiumAlert.style.display = 'none', 3000);
             document.getElementById('modelSelect').value = previousModel;
+            // Add visual feedback by temporarily highlighting the dropdown
+            document.getElementById('modelSelect').style.backgroundColor = '#3a1a1a';
+            setTimeout(() => {
+                document.getElementById('modelSelect').style.backgroundColor = '#2c3e50';
+            }, 500);
         } else {
             premiumAlert.style.display = 'none';
+            document.getElementById('modelSelect').style.backgroundColor = '#2c3e50';
         }
         previousModel = document.getElementById('modelSelect').value;
     }
