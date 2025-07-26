@@ -18,13 +18,13 @@ class Config:
         """Configure logging for the application"""
         logging.basicConfig(
             level=cls.LOG_LEVEL,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            format='%(asctime)s [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        # Set Flask and Werkzeug loggers to respect our log level
+        # Set all loggers to use configured level
+        logging.getLogger('gunicorn').setLevel(cls.LOG_LEVEL)
         logging.getLogger('werkzeug').setLevel(cls.LOG_LEVEL)
-        # Mute specific chatty loggers
-        logging.getLogger('app.llm.ollama_provider').setLevel(logging.WARNING)
+        logging.getLogger('app').setLevel(cls.LOG_LEVEL)
     
     # TTS configuration
     TTS_BASE_URL = f"http://{os.getenv('TTS_HOST', 'localhost')}:{os.getenv('TTS_PORT', '5000')}"
