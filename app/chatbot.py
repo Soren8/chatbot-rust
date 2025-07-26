@@ -405,7 +405,7 @@ def reset_chat():
     session_id = session.get("username", "guest_" + request.remote_addr)
     if session_id in sessions:
         sessions[session_id]["history"] = []
-        sessions[session_id]["system_prompt"] = "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+        sessions[session_id]["system_prompt"] = Config.DEFAULT_SYSTEM_PROMPT
         if "username" in session:
             save_user_system_prompt(session["username"], sessions[session_id]["system_prompt"])
         logger.info(f"Chat history has been reset for session {session_id[:8]}...")
