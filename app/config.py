@@ -128,7 +128,7 @@ class Config:
                 "template": llm.get("template")
             }
             
-            logger.debug(
+            logging.debug(
                 f"Loading LLM provider {provider['provider_name']}:\n"
                 f"Type: {provider['type']}\n"
                 f"Model: {provider['model_name']}\n"
