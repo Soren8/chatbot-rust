@@ -41,13 +41,13 @@
 
     <button id="toggle-system-prompt" class="toggle-system-prompt">Show/Hide System Prompt</button>
     <div id="system-prompt-container" class="system-prompt-container">
-        <textarea id="user-system-prompt" class="user-system-prompt" placeholder="User system prompt here...">{{ user_system_prompt }}</textarea>
+        <textarea id="user-system-prompt" class="user-system-prompt" placeholder="User system prompt here..."></textarea>
         <button id="save-system-prompt" class="save-system-prompt">Save System Prompt</button>
     </div>
 
     <button id="toggle-memory" class="toggle-memory">Show/Hide Memory</button>
     <div id="memory-container" class="memory-container">
-        <textarea id="user-memory" class="user-memory" placeholder="User memory here...">{{ user_memory }}</textarea>
+        <textarea id="user-memory" class="user-memory" placeholder="User memory here..."></textarea>
         <button id="save-memory" class="save-memory">Save Memory</button>
     </div>
 
@@ -783,5 +783,12 @@
                 button.textContent = '▶ Show Thinking';
             }
         }
+        {% if not logged_in %}
+        // Initialize text areas for guest session
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('user-system-prompt').value = "{{ Config.DEFAULT_SYSTEM_PROMPT }}";
+            document.getElementById('user-memory').value = "";
+        });
+        {% endif %}
     </script>
 </html>
