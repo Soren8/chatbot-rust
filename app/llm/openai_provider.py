@@ -23,6 +23,9 @@ class OpenaiProvider(BaseLLMProvider):
         self.base_url = config.get('base_url', 'https://api.openai.com/v1')
         self.timeout = config.get('request_timeout', 300.0)
         self.allowed_providers = config.get('allowed_providers', [])  # New: List of allowed OpenRouter providers, e.g., ["anthropic", "openai"]
+        if not isinstance(self.allowed_providers, list):
+            logger.warning(f"Allowed providers should be a list, received {type(self.allowed_providers)}. Converting to list.")
+            self.allowed_providers = [self.allowed_providers] if self.allowed_providers else []
         
         # Log configuration with masked API key
         logger.debug(
@@ -90,7 +93,7 @@ class OpenaiProvider(BaseLLMProvider):
             
             extra_body = {}
             if "openrouter.ai" in self.base_url and self.allowed_providers:
-                extra_body = {"provider": {"only": self.allowed_providers}}  # Restrict to allowed providers
+                extra_body = {"providers": {"only": self.allowed_providers}}  # Restrict to allowed providers
             
             stream = self.client.chat.completions.create(
                 model=self.model,
