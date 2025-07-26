@@ -18,11 +18,13 @@ class Config:
         """Configure logging for the application"""
         logging.basicConfig(
             level=cls.LOG_LEVEL,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            format='%(asctime)s [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        # Specifically mute the Ollama provider debug logs
-        logging.getLogger('app.llm.ollama_provider').setLevel(logging.WARNING)
+        # Set all loggers to use configured level
+        logging.getLogger('gunicorn').setLevel(cls.LOG_LEVEL)
+        logging.getLogger('werkzeug').setLevel(cls.LOG_LEVEL)
+        logging.getLogger('app').setLevel(cls.LOG_LEVEL)
     
     # TTS configuration
     TTS_BASE_URL = f"http://{os.getenv('TTS_HOST', 'localhost')}:{os.getenv('TTS_PORT', '5000')}"
@@ -31,7 +33,7 @@ class Config:
     LLM_PROVIDERS = []
     MODEL_NAME = "dolphin3.1-8b"
     MODEL_CONTEXT_SIZE = 8192
-    CONTEXT_SLIDE_SIZE = 6144  # 75% of 8192
+    SYSTEM_PROMPT_BUFFER = 0.2  # Reserve 20% of context for system prompt
     SESSION_TIMEOUT = 3600
     DEFAULT_LLM = None
 

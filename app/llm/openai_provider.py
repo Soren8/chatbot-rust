@@ -38,7 +38,7 @@ class OpenaiProvider(BaseLLMProvider):
         )
         self.model = config.get('model_name', config.get('model', 'gpt-4'))
 
-    def generate_text_stream(self, prompt, system_prompt, session_history, memory_text):
+    def generate_text_stream(self, prompt, system_prompt, session_history, memory_text, _context_size):
         # Log request details
         logger.debug(
             f"OpenAI request initiated:\n"

@@ -113,7 +113,7 @@ def login():
 
 @bp.route("/")
 def home():
-    logger.info("Serving home page")
+    logger.debug("Serving home page")
     logged_in = ("username" in session)
     username = session.get("username")
 
@@ -314,10 +314,6 @@ def update_system_prompt():
 
 @bp.route("/chat", methods=["POST"])
 def chat():
-    logger.debug(
-        "Incoming chat request headers:\n"
-        f"{json.dumps({k: v for k, v in request.headers.items()}, indent=2)}"
-    )
     
     clean_old_sessions()
 
@@ -337,7 +333,6 @@ def chat():
         })
 
     logger.info(f"Received chat request. Session: {session_id}")
-    logger.debug(f"Current memory: {user_session.get('memory', '')[:50]}...")
 
     # Initialize guest session if it doesn't exist
     if session_id.startswith("guest_") and not user_session.get("initialized", False):
@@ -424,15 +419,6 @@ def chat():
                 error_msg = "\n[Error] An error occurred during response generation."
                 yield error_msg.encode('utf-8')
 
-            logger.debug(
-                "Full Response Analysis:\n"
-                f"Total Characters: {len(response_text)}\n"
-                "Response Preview:\n"
-                f"{response_text[:500]}\n"
-                "Response Metadata:\n"
-                f"Memory Used: {len(memory_text)} chars\n"
-                f"History Items: {len(user_session['history'])}"
-            )
             
             # Remove thinking text from final response before storing in history
             clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
