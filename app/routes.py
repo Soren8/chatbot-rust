@@ -339,7 +339,7 @@ def chat():
     if session_id.startswith("guest_") and not user_session.get("initialized", False):
         user_session.update({
             "history": [],
-            "system_prompt": "You are a helpful AI assistant.",
+            "system_prompt": Config.DEFAULT_SYSTEM_PROMPT,
             "initialized": True
         })
 
