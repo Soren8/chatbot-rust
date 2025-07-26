@@ -22,13 +22,15 @@ class OpenaiProvider(BaseLLMProvider):
         logger.debug(f"Initializing OpenAI provider with API key: {self.masked_api_key}")
         self.base_url = config.get('base_url', 'https://api.openai.com/v1')
         self.timeout = config.get('request_timeout', 300.0)
+        self.allowed_providers = config.get('allowed_providers', [])  # New: List of allowed OpenRouter providers, e.g., ["anthropic", "openai"]
         
         # Log configuration with masked API key
         logger.debug(
             "OpenAI Provider Configuration:\n"
             f"Base URL: {self.base_url}\n"
             f"API Key: {self.masked_api_key}\n"
-            f"Timeout: {self.timeout}s"
+            f"Timeout: {self.timeout}s\n"
+            f"Allowed Providers: {self.allowed_providers}"
         )
 
         # Initialize the client with the config
@@ -48,7 +50,8 @@ class OpenaiProvider(BaseLLMProvider):
             f"System prompt length: {len(system_prompt)} chars\n"
             f"User prompt: {prompt[:50]}...\n"
             f"Memory text length: {len(memory_text)} chars\n"
-            f"Session history items: {len(session_history)}"
+            f"Session history items: {len(session_history)}\n"
+            f"Allowed Providers: {self.allowed_providers}"
         )
         
         messages = [{"role": "system", "content": system_prompt}]
@@ -85,11 +88,16 @@ class OpenaiProvider(BaseLLMProvider):
             if "openrouter.ai" in self.base_url:
                 logger.debug("Using OpenRouter endpoint, expecting OPENROUTER_API_KEY to be set")
             
+            extra_body = {}
+            if "openrouter.ai" in self.base_url and self.allowed_providers:
+                extra_body = {"provider": {"only": self.allowed_providers}}  # Restrict to allowed providers
+            
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                stream=True
+                stream=True,
+                extra_body=extra_body  # New: Pass provider restrictions if applicable
             )
             
             response_text = ""
