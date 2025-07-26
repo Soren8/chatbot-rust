@@ -271,7 +271,7 @@ def chat():
 
     # Get memory text from the session
     memory_text = user_session.get("memory", "")
-    system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
+    system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
 
     # Log what we're sending to the LLM
     logger.debug(f"Sending to LLM - Memory: {memory_text[:50]}...")

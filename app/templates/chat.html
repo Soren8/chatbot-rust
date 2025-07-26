@@ -568,7 +568,7 @@
             }
 
             // Get values
-            const systemPrompt = systemPromptElement.value || "You are a helpful AI assistant.";
+            const systemPrompt = systemPromptElement.value || {{ Config.DEFAULT_SYSTEM_PROMPT | tojson }};
             const setSelector = document.getElementById('set-selector');
             const activeSet = setSelector ? setSelector.value : 'default';
 

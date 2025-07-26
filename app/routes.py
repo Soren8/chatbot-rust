@@ -372,7 +372,7 @@ def chat():
 
     # Get memory text from the session regardless of login status
     memory_text = user_session.get("memory", "")
-    system_prompt = user_session.get("system_prompt", "You are a helpful AI assistant.")
+    system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
 
     # Get set_name and password before entering generator
     set_name = request.json.get("set_name", "default")
