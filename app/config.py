@@ -125,7 +125,8 @@ class Config:
                 "context_size": llm.get("context_size", cls.MODEL_CONTEXT_SIZE),
                 "base_url": llm.get("base_url", ""),
                 "api_key": os.getenv("OPENROUTER_API_KEY") if "openrouter.ai" in llm.get("base_url", "") else llm.get("api_key", ""),
-                "template": llm.get("template")
+                "template": llm.get("template"),
+                "allowed_providers": llm.get("allowed_providers", [])
             }
             
             logging.debug(
