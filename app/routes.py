@@ -497,7 +497,7 @@ def regenerate():
                     prompt=user_message,
                     system_prompt=system_prompt,
                     model_name=selected_model,  # Use the selected model
-                    session_history=user_session["history"],
+                    full_history=user_session["history"],
                     memory_text=memory_text
                 )
                 logger.info("LLM stream initialized")
