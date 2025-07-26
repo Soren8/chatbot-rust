@@ -34,4 +34,5 @@ llms:
     tier: "premium"
 
 default_llm: "Local Ollama (Free Tier)"
+default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
 session_timeout: 3600

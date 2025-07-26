@@ -35,6 +35,7 @@ class Config:
     MODEL_CONTEXT_SIZE = 8192
     SYSTEM_PROMPT_BUFFER = 0.2  # Reserve 20% of context for system prompt
     SESSION_TIMEOUT = 3600
+    DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant. Provide clear and concise answers to user queries."
     DEFAULT_LLM = None
 
     @classmethod
@@ -149,6 +150,9 @@ class Config:
         else:
             cls.DEFAULT_LLM = cls.LLM_PROVIDERS[0] if cls.LLM_PROVIDERS else None
 
+        # Load default system prompt
+        cls.DEFAULT_SYSTEM_PROMPT = config.get("default_system_prompt", cls.DEFAULT_SYSTEM_PROMPT)
+        
         # Override session timeout if specified
         cls.SESSION_TIMEOUT = config.get("session_timeout", 3600)
 
