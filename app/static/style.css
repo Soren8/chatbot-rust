@@ -283,6 +283,48 @@ body {
     padding: 4px 8px;
 }
 
+/* Disabled premium options */
+.provider-option[disabled] {
+    opacity: 0.6;
+    background: repeating-linear-gradient(
+        45deg,
+        #f8f8f8,
+        #f8f8f8 10px,
+        #e8e8e8 10px,
+        #e8e8e8 20px
+    );
+    position: relative;
+    cursor: not-allowed;
+}
+
+.provider-option[disabled]::after {
+    content: "Premium Feature";
+    position: absolute;
+    right: 15px;
+    color: #d32f2f;
+    font-size: 0.9em;
+    font-weight: bold;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.premium-alert-banner {
+    background: #fff3e0;
+    border: 1px solid #ffb74d;
+    padding: 10px;
+    margin: 10px 0;
+    border-radius: 4px;
+    color: #ef6c00;
+    text-align: center;
+}
+
+.premium-alert-banner a {
+    color: #d32f2f;
+    font-weight: bold;
+    text-decoration: underline;
+}
+
 /* New set buttons */
 .set-management-button {
     margin-right: 10px;

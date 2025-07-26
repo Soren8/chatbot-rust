@@ -12,6 +12,9 @@
             Account Status: 
             <span class="tier-badge">{{ 'Premium' if user_tier == 'premium' else 'Free' }}</span>
         </div>
+        <div id="premium-alert" class="premium-alert-banner" style="display: none;">
+            🔒 This model requires a <a href="/upgrade">Premium Account</a>
+        </div>
         {% if logged_in %}
         <a href="/logout" style="color:#d0d0d0;">Sign Out</a>
         {% else %}
@@ -84,9 +87,16 @@
     
     function validateModelTier() {
         const selected = document.querySelector('#modelSelect option:checked');
+        const premiumAlert = document.getElementById('premium-alert');
+        
         if(selected.dataset.tier === 'premium' && APP_DATA.userTier !== 'premium') {
+            premiumAlert.style.display = 'block';
+            setTimeout(() => premiumAlert.style.display = 'none', 3000);
             document.getElementById('modelSelect').value = previousModel;
+        } else {
+            premiumAlert.style.display = 'none';
         }
+        previousModel = document.getElementById('modelSelect').value;
     }
     
 
