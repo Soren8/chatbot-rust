@@ -32,6 +32,7 @@ class Config:
     MODEL_NAME = "dolphin3.1-8b"
     MODEL_CONTEXT_SIZE = 8192
     CONTEXT_SLIDE_SIZE = 6144  # 75% of 8192
+    SYSTEM_PROMPT_BUFFER = 0.2  # Reserve 20% of context for system prompt
     SESSION_TIMEOUT = 3600
     DEFAULT_LLM = None
 
