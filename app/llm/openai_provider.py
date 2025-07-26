@@ -93,7 +93,12 @@ class OpenaiProvider(BaseLLMProvider):
             
             extra_body = {}
             if "openrouter.ai" in self.base_url and self.allowed_providers:
-                extra_body = {"providers": {"only": self.allowed_providers}}  # Restrict to allowed providers
+                extra_body = {
+                    "providers": {
+                        "only": self.allowed_providers,
+                        "allow_fallbacks": False
+                    }
+                }  # Restrict to allowed providers with no fallbacks
             
             stream = self.client.chat.completions.create(
                 model=self.model,
