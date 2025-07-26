@@ -4,6 +4,7 @@ import time
 import logging
 from collections import defaultdict
 from pathlib import Path
+from app.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -225,11 +226,11 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
         # Return temporary prompt if available
         if username in TEMPORARY_STORAGE and 'prompt' in TEMPORARY_STORAGE[username]:
             return TEMPORARY_STORAGE[username]['prompt']
-        return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+        return Config.DEFAULT_SYSTEM_PROMPT
     
     filepath = SETS_DIR / username / f"{set_name}_prompt.txt"
     if not filepath.exists() or filepath.stat().st_size == 0:
-        return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+        return Config.DEFAULT_SYSTEM_PROMPT
 
     # Check if set is encrypted
     sets_file = SETS_DIR / username / "sets.json"
@@ -238,12 +239,12 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             sets = json.load(f)
     except Exception as e:
         logger.error(f"Error loading sets.json for {username}: {str(e)}")
-        return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+        return Config.DEFAULT_SYSTEM_PROMPT
     
     if set_name in sets and sets[set_name].get("encrypted", False):
         # Skip decryption if file is empty
         if os.path.getsize(filepath) == 0:
-            return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+            return Config.DEFAULT_SYSTEM_PROMPT
             
         try:
             if not password:
@@ -251,7 +252,7 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
                 from flask import session
                 if 'password' not in session:
                     logger.error(f"Password not available for decryption for {username}")
-                    return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
+                    return Config.DEFAULT_SYSTEM_PROMPT
                 password = session['password']
             
             salt = get_user_salt(username)
