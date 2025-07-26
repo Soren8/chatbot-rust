@@ -315,7 +315,7 @@ def save_user_chat_history(username: str, full_history: list, set_name: str = "d
     salt = get_user_salt(username)
     key = _get_encryption_key(password, salt)
     f = Fernet(key)
-    encrypted_data = f.encrypt(json.dumps(history).encode())
+    encrypted_data = f.encrypt(json.dumps(full_history).encode())
     
     filepath = user_sets_dir / f"{set_name}_history.json"
     logger.debug(f"Writing history file to: {filepath}")
