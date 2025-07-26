@@ -35,7 +35,7 @@ def truncate_history(session_history, available_tokens):
     
     return truncated_history
 
-def generate_text_stream(prompt, system_prompt, model_name, session_history, memory_text):
+def generate_text_stream(prompt, system_prompt, model_name, full_history, memory_text):
     logger.debug("Entered chat_logic.generate_text_stream()")
     logger.debug("Parameters received: prompt: %s, system_prompt: %s, model_name: %s",
                  prompt, system_prompt, model_name)
@@ -63,14 +63,14 @@ def generate_text_stream(prompt, system_prompt, model_name, session_history, mem
     # Get context size from config
     context_size = llm_config.get("context_size", Config.MODEL_CONTEXT_SIZE)
     
-    # Calculate available tokens for history and truncate if needed
+    # Calculate available tokens for history and truncate a copy if needed
     available_tokens = calculate_available_history_tokens(context_size, system_prompt, memory_text)
-    truncated_history = truncate_history(session_history, available_tokens)
+    truncated_history = truncate_history(full_history, available_tokens)
     
-    if len(truncated_history) < len(session_history):
+    if len(truncated_history) < len(full_history):
         logger.warning("Truncated chat history from %d to %d messages to fit in context window", 
-                      len(session_history), len(truncated_history))
-        logger.debug("Original history length in tokens: %d", sum(len(u)+len(a) for u,a in session_history)//4)
+                      len(full_history), len(truncated_history))
+        logger.debug("Original history length in tokens: %d", sum(len(u)+len(a) for u,a in full_history)//4)
         logger.debug("Truncated history length in tokens: %d", sum(len(u)+len(a) for u,a in truncated_history)//4)
     
     # Instantiate the appropriate provider based on the configuration type.

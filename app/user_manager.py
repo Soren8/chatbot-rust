@@ -283,7 +283,7 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             logger.error(f"Error reading plaintext prompt for {username}/{set_name}: {str(e)}")
             return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
-def save_user_chat_history(username: str, history: list, set_name: str = "default", password: str = None):
+def save_user_chat_history(username: str, full_history: list, set_name: str = "default", password: str = None):
     logger.debug(f"Saving chat history for set: {set_name}")
     """Save chat history for a user's set"""
     user_sets_dir = Path(SETS_DIR) / username

@@ -400,11 +400,12 @@ def chat():
                 f"Memory Text Length: {len(memory_text)}"
             )
             
+            # Pass full history to LLM but only use truncated version for generation
             stream = generate_text_stream(
                 prompt=user_message,
                 system_prompt=system_prompt,
-                model_name=selected_model,  # Use the selected model
-                session_history=current_history,
+                model_name=selected_model,
+                full_history=current_history,  # Pass full history
                 memory_text=memory_text
             )
 
@@ -425,12 +426,16 @@ def chat():
             user_session["history"].append((user_message, clean_response))
             logger.info(f"Chat response generated. Length: {len(response_text)} characters")
             
-            # Save history if user is logged in
+            # Save full history to storage
             if session_id.startswith("guest_"):
                 return
             try:
-                # Always pass the password for encryption
-                save_user_chat_history(session_id, user_session["history"], set_name, password)
+                save_user_chat_history(
+                    session_id, 
+                    user_session["history"],  # Full history
+                    set_name, 
+                    password
+                )
             except ValueError as e:
                 logger.error(f"Failed to save chat history: {str(e)}")
                 yield f"\n[Error] Failed to save chat history: {str(e)}"
