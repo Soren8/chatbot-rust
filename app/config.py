@@ -21,7 +21,9 @@ class Config:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        # Specifically mute the Ollama provider debug logs
+        # Set Flask and Werkzeug loggers to respect our log level
+        logging.getLogger('werkzeug').setLevel(cls.LOG_LEVEL)
+        # Mute specific chatty loggers
         logging.getLogger('app.llm.ollama_provider').setLevel(logging.WARNING)
     
     # TTS configuration
