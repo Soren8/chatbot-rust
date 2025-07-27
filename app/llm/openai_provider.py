@@ -22,7 +22,9 @@ class OpenaiProvider(BaseLLMProvider):
         logger.debug(f"Initializing OpenAI provider with API key: {self.masked_api_key}")
         self.base_url = config.get('base_url', 'https://api.openai.com/v1')
         self.timeout = config.get('request_timeout', 300.0)
-        self.allowed_providers = config.get('allowed_providers', [])  # List of allowed OpenRouter providers, e.g., ["anthropic", "openai"]
+        self.allowed_providers = config.get('allowed_providers', [])
+        if isinstance(self.allowed_providers, str):
+            self.allowed_providers = [self.allowed_providers]
         
         # Log configuration with masked API key
         logger.debug(
@@ -121,4 +123,3 @@ class OpenaiProvider(BaseLLMProvider):
                 f"Base URL: {self.base_url}"
             )
             yield f"\n[Error]: {str(e)}"
-            
