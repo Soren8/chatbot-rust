@@ -22,10 +22,7 @@ class OpenaiProvider(BaseLLMProvider):
         logger.debug(f"Initializing OpenAI provider with API key: {self.masked_api_key}")
         self.base_url = config.get('base_url', 'https://api.openai.com/v1')
         self.timeout = config.get('request_timeout', 300.0)
-        self.allowed_providers = config.get('allowed_providers', [])  # New: List of allowed OpenRouter providers, e.g., ["anthropic", "openai"]
-        if not isinstance(self.allowed_providers, list):
-            logger.warning(f"Allowed providers should be a list, received {type(self.allowed_providers)}. Converting to list.")
-            self.allowed_providers = [self.allowed_providers] if self.allowed_providers else []
+        self.allowed_providers = config.get('allowed_providers', [])  # List of allowed OpenRouter providers, e.g., ["anthropic", "openai"]
         
         # Log configuration with masked API key
         logger.debug(
@@ -33,7 +30,7 @@ class OpenaiProvider(BaseLLMProvider):
             f"Base URL: {self.base_url}\n"
             f"API Key: {self.masked_api_key}\n"
             f"Timeout: {self.timeout}s\n"
-            f"Allowed Providers: {self.allowed_providers}"
+            f"Allowed Providers (in attempt order): {self.allowed_providers}"
         )
 
         # Initialize the client with the config
@@ -94,18 +91,18 @@ class OpenaiProvider(BaseLLMProvider):
             extra_body = {}
             if "openrouter.ai" in self.base_url and self.allowed_providers:
                 extra_body = {
-                    "providers": {
-                        "only": self.allowed_providers,
-                        "allow_fallbacks": False
+                    "provider": {
+                        "order": self.allowed_providers,  # Changed: Use 'order' for strict sequencing without merging globals
+                        "allow_fallbacks": False  # Strictly prevent fallback to non-specified providers
                     }
-                }  # Restrict to allowed providers with no fallbacks
+                }
             
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
                 stream=True,
-                extra_body=extra_body  # New: Pass provider restrictions if applicable
+                extra_body=extra_body
             )
             
             response_text = ""
@@ -124,3 +121,4 @@ class OpenaiProvider(BaseLLMProvider):
                 f"Base URL: {self.base_url}"
             )
             yield f"\n[Error]: {str(e)}"
+            
