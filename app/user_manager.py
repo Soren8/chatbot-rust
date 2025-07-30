@@ -172,8 +172,6 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
 
 def save_user_memory(username: str, memory_content: str, set_name: str = "default", password: str = None):
     logger.debug(f"Saving memory for set: {set_name}")
-    max_size = 5000
-    memory_content = memory_content[:max_size]
     
     # Check if user is logged in
     from flask import session
@@ -386,8 +384,6 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             return []
 
 def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", password: str = None):
-    max_size = 3000
-    system_prompt = system_prompt[:max_size]
     
     from flask import session
     if 'username' not in session or session['username'] != username:
