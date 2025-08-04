@@ -341,6 +341,25 @@ def chat():
             "initialized": True
         })
 
+    # Ensure complete history is loaded for logged-in users
+    if "username" in session and not user_session["history"]:
+        set_name_temp = request.json.get("set_name", "default")
+        password_temp = session.get("password")
+        logger.debug(f"History is empty, reloading from disk. Set: {set_name_temp}")
+        
+        history = load_user_chat_history(session["username"], set_name_temp, password_temp)
+        formatted_history = []
+        for item in history:
+            if isinstance(item, tuple) and len(item) == 2:
+                formatted_history.append(item)
+            elif isinstance(item, list) and len(item) == 2:
+                formatted_history.append(tuple(item))
+            else:
+                logger.warning(f"Skipping invalid history item: {item}")
+        
+        user_session["history"] = formatted_history
+        logger.debug(f"Reloaded {len(formatted_history)} history items from disk")
+
     # Get password from session - needed for encryption
     password = session.get("password")
     if not password and not session_id.startswith("guest_"):
