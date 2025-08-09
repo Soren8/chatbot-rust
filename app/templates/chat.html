@@ -271,7 +271,7 @@
         {% if logged_in %}
         // Load available sets
         function loadSets() {
-            fetch('/get_sets')
+            return fetch('/get_sets')
             .then(response => response.json())
             .then(data => {
                 const selector = document.getElementById('set-selector');
@@ -354,7 +354,14 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        loadSets();
+                        // Reload sets and automatically select the new one
+                        loadSets().then(() => {
+                            // Set the selector to the new set
+                            const selector = document.getElementById('set-selector');
+                            selector.value = setName;
+                            // Trigger change event to load the set
+                            selector.dispatchEvent(new Event('change'));
+                        });
                         appendMessage('<strong>System:</strong> Created new set: ' + setName, 'system-message');
                     } else {
                         appendMessage('<strong>Error:</strong> ' + data.error, 'error-message');
