@@ -27,8 +27,7 @@ body {
 
 /* Buttons and containers on chat page */
 .reset-chat,
-.toggle-memory,
-.toggle-system-prompt {
+.toggle-config {
     display: block;
     width: 100%;
     padding: 10px;
@@ -47,15 +46,25 @@ body {
     text-align: center;
 }
 
-/* Containers for memory and system prompt */
-.memory-container,
-.system-prompt-container {
+/* Container for combined configuration */
+.config-container {
     display: none;
     background-color: #1e2229;
     border: 1px solid #2c3e50;
     border-radius: 5px;
     margin-bottom: 10px;
     padding: 10px;
+}
+
+/* Individual sections within the configuration container */
+.config-section {
+    margin-bottom: 15px;
+}
+
+.config-section h3 {
+    margin-top: 0;
+    margin-bottom: 8px;
+    color: #d0d0d0;
 }
 
 /* Textareas inside containers */
@@ -434,8 +443,7 @@ body {
     
     .user-input,
     .reset-chat,
-    .toggle-memory,
-    .toggle-system-prompt,
+    .toggle-config,
     .save-memory,
     .save-system-prompt {
         font-size: 14px;

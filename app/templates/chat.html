@@ -39,16 +39,19 @@
         {% endif %}
     </div>
 
-    <button id="toggle-system-prompt" class="toggle-system-prompt">Show/Hide System Prompt</button>
-    <div id="system-prompt-container" class="system-prompt-container">
-        <textarea id="user-system-prompt" class="user-system-prompt" placeholder="User system prompt here..."></textarea>
-        <button id="save-system-prompt" class="save-system-prompt">Save System Prompt</button>
-    </div>
-
-    <button id="toggle-memory" class="toggle-memory">Show/Hide Memory</button>
-    <div id="memory-container" class="memory-container">
-        <textarea id="user-memory" class="user-memory" placeholder="User memory here..."></textarea>
-        <button id="save-memory" class="save-memory">Save Memory</button>
+    <button id="toggle-config" class="toggle-config">Show/Hide Configuration</button>
+    <div id="config-container" class="config-container">
+        <div class="config-section">
+            <h3>System Prompt</h3>
+            <textarea id="user-system-prompt" class="user-system-prompt" placeholder="User system prompt here..."></textarea>
+            <button id="save-system-prompt" class="save-system-prompt">Save System Prompt</button>
+        </div>
+        
+        <div class="config-section">
+            <h3>Memory</h3>
+            <textarea id="user-memory" class="user-memory" placeholder="User memory here..."></textarea>
+            <button id="save-memory" class="save-memory">Save Memory</button>
+        </div>
     </div>
 
     <button id="reset-chat" class="reset-chat">Reset Chat</button>
@@ -482,9 +485,9 @@
             return div.innerHTML;
         }
 
-        document.getElementById('toggle-system-prompt').addEventListener('click', function() {
-            const sysPromptContainer = document.getElementById('system-prompt-container');
-            sysPromptContainer.style.display = (sysPromptContainer.style.display === 'none' || sysPromptContainer.style.display === '') ? 'block' : 'none';
+        document.getElementById('toggle-config').addEventListener('click', function() {
+            const configContainer = document.getElementById('config-container');
+            configContainer.style.display = (configContainer.style.display === 'none' || configContainer.style.display === '') ? 'block' : 'none';
         });
 
         document.getElementById('save-system-prompt').addEventListener('click', function() {
@@ -521,11 +524,6 @@
                 appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
                 console.error('Error saving system prompt:', error);
             });
-        });
-
-        document.getElementById('toggle-memory').addEventListener('click', function() {
-            const memContainer = document.getElementById('memory-container');
-            memContainer.style.display = (memContainer.style.display === 'none' || memContainer.style.display === '') ? 'block' : 'none';
         });
 
         document.getElementById('save-memory').addEventListener('click', function() {
