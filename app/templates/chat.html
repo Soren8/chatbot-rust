@@ -36,6 +36,7 @@
         </select>
         <button id="new-set" class="set-management-button">New Set</button>
         <button id="delete-set" class="set-management-button">Delete Set</button>
+        <button id="reset-chat" class="set-management-button">Reset Chat</button>
         {% endif %}
     </div>
 
@@ -53,8 +54,6 @@
             <button id="save-memory" class="save-memory">Save Memory</button>
         </div>
     </div>
-
-    <button id="reset-chat" class="reset-chat">Reset Chat</button>
 
     <div class="chat-container">
         <div id="chat-box" class="chat-box">
@@ -741,41 +740,42 @@
         });
 
         document.getElementById('reset-chat').addEventListener('click', function() {
-            // Get active set
             const setSelector = document.getElementById('set-selector');
             const activeSet = setSelector ? setSelector.value : 'default';
             
-            var requestData = {
-                set_name: activeSet  // Include active set in request
-            };
-            
-            fetch('/reset_chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestData)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.json().then(err => {
-                        throw new Error(err.message || 'Failed to reset chat');
-                    });
-                }
-                return response.json();
-            })
-            .then(response => {
-                if (response.status === 'success') {
-                    document.getElementById('chat-content').innerHTML = '';
-                    appendMessage(`<strong>System:</strong> Chat history has been reset for set '${response.set_name}'.`, 'system-message');
-                } else {
-                    appendMessage(`<strong>Error:</strong> ${escapeHTML(response.message)}`, 'error-message');
-                }
-            })
-            .catch(error => {
-                console.error('Fetch error:', error);
-                appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message');
-            });
+            if (confirm(`Are you sure you want to reset the chat history for set: ${activeSet}?`)) {
+                var requestData = {
+                    set_name: activeSet  // Include active set in request
+                };
+                
+                fetch('/reset_chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestData)
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(err => {
+                            throw new Error(err.message || 'Failed to reset chat');
+                        });
+                    }
+                    return response.json();
+                })
+                .then(response => {
+                    if (response.status === 'success') {
+                        document.getElementById('chat-content').innerHTML = '';
+                        appendMessage(`<strong>System:</strong> Chat history has been reset for set '${response.set_name}'.`, 'system-message');
+                    } else {
+                        appendMessage(`<strong>Error:</strong> ${escapeHTML(response.message)}`, 'error-message');
+                    }
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                    appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message');
+                });
+            }
         });
     });
         function toggleThinking(button) {
