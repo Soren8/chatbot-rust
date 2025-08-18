@@ -241,10 +241,8 @@ def delete_message():
 
         logger.debug("Checking history idx=%d user_text(100)=%s ai_text(100)=%s", idx, u_text[:100], a_text[:100])
 
-        # Match strategy:
-        # - If ai_message provided, require both user and ai to match.
-        # - If ai_message is empty, match on user only.
-        if u_text == user_message and (not ai_message or a_text == ai_message):
+        # Match strategy: match on user_message only (ignore minor AI text mismatches)
+        if u_text == user_message:
             logger.debug("Match found at history index %d", idx)
             # Remove matched pair
             history.pop(idx)
