@@ -276,9 +276,10 @@
                 return;
             }
 
-            if (target.classList.contains('delete-button')) {
+            const deleteBtn = target.closest('.delete-button');
+            if (deleteBtn) {
                 console.debug("[DELETE] Delete button clicked via event delegation");
-                const userMessageElement = target.closest('.message.user-message');
+                const userMessageElement = deleteBtn.closest('.message.user-message');
                 if (!userMessageElement) return;
 
                 // Find the corresponding AI message (assumed to be the immediate next sibling)
