@@ -147,21 +147,30 @@ body {
 }
 
 .regenerate-container {
-    text-align: right;
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
     margin-top: 8px;
 }
 
 .regenerate-button {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background-color: #3a3a3a;
     color: #d0d0d0;
     border: none;
-    padding: 3px 8px;
-    border-radius: 3px;
+    padding: 8px 12px;
+    min-width: 56px;
+    border-radius: 6px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 14px;
     line-height: 1.2;
     z-index: 1;
+    white-space: nowrap;
 }
 
 .regenerate-button:hover {
@@ -170,20 +179,25 @@ body {
 }
 
 .play-button {
-    background-color: #3a3a3a;  /* Match regenerate button background */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #3a3a3a;
     border: none;
     cursor: pointer;
-    padding: 3px 8px;  /* Match regenerate button padding */
-    margin-left: 5px;
-    font-size: 11px;  /* Match regenerate button size */
+    padding: 8px 12px;
+    min-width: 56px;
+    margin-left: 0;
+    font-size: 14px;
     line-height: 1.2;
-    color: #d0d0d0;  /* Match regenerate button color */
-    border-radius: 3px;  /* Match regenerate button border-radius */
+    color: #d0d0d0;
+    border-radius: 6px;
+    white-space: nowrap;
 }
 
 .play-button:hover {
-    background-color: #4a4a4a;  /* Match regenerate button hover */
-    transform: scale(1.05);  /* Match regenerate button hover effect */
+    background-color: #4a4a4a;
+    transform: scale(1.03);
 }
 
 .play-button:disabled {
