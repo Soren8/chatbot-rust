@@ -468,13 +468,15 @@
             // If this is a user message, add a delete (trash) button
             if (className && className.indexOf('user-message') !== -1) {
                 try {
+                    const deleteContainer = document.createElement('div');
+                    deleteContainer.className = 'regenerate-container';
                     const deleteBtn = document.createElement('button');
                     deleteBtn.type = 'button';
                     deleteBtn.className = 'delete-button';
                     deleteBtn.title = 'Delete message';
                     deleteBtn.textContent = '🗑';
-                    // Append button to the message element
-                    messageElement.appendChild(deleteBtn);
+                    deleteContainer.appendChild(deleteBtn);
+                    messageElement.appendChild(deleteContainer);
                 } catch (e) {
                     console.debug("Failed to add delete button:", e);
                 }

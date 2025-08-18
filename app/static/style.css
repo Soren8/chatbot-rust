@@ -200,13 +200,13 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background-color: transparent;
+    background-color: #3a3a3a;
     border: none;
     cursor: pointer;
-    padding: 6px 8px;
-    margin-left: 8px;
+    padding: 8px 12px;
+    min-width: 56px;
     font-size: 14px;
-    line-height: 1;
+    line-height: 1.2;
     color: #d0d0d0;
     border-radius: 6px;
     white-space: nowrap;
@@ -214,8 +214,8 @@ body {
 
 /* Hover state for delete button */
 .delete-button:hover {
-    background-color: rgba(255, 255, 255, 0.03);
-    color: #ffffff;
+    background-color: #4a4a4a;
+    transform: scale(1.05);
 }
 
 .play-button:hover {
