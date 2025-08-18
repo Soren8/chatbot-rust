@@ -160,7 +160,7 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background-color: #3a3a3a;
+    background-color: #6d6d6d;
     color: #d0d0d0;
     border: none;
     padding: 8px 12px;
@@ -182,7 +182,7 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background-color: #3a3a3a;
+    background-color: #6d6d6d;
     border: none;
     cursor: pointer;
     padding: 8px 12px;
@@ -200,7 +200,7 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background-color: #3a3a3a;
+    background-color: #6d6d6d;
     border: none;
     cursor: pointer;
     padding: 8px 12px;
