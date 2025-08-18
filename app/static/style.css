@@ -206,6 +206,17 @@ body {
     cursor: not-allowed;
 }
 
+/* When audio is playing, show a distinct stop-state on the button */
+.play-button.playing {
+    background-color: #a33;
+    color: #ffffff;
+    transform: none;
+}
+
+.play-button.playing:hover {
+    background-color: #b44;
+}
+
 .system-message {
     background-color: #555555;
     align-self: center;

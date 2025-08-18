@@ -75,6 +75,10 @@
         availableModels: {{ available_llms|default([])|tojson }}
     };
 
+    // Track currently playing audio and its control button so we can stop it
+    let CURRENT_AUDIO = null;
+    let CURRENT_AUDIO_BUTTON = null;
+
     function disablePremiumModels() {
         const selector = document.getElementById('modelSelect');
         if (!selector) return;
@@ -422,19 +426,56 @@
         function playTTS(button) {
             console.debug("[TTS] Play button clicked");
             console.debug("[TTS] Button element:", button);
+
+            // If this button controls the currently playing audio => stop it
+            if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
+                console.debug("[TTS] Stopping current audio via same button");
+                try {
+                    CURRENT_AUDIO.pause();
+                    CURRENT_AUDIO.currentTime = 0;
+                } catch (e) {
+                    console.debug("[TTS] Error stopping audio:", e);
+                }
+                if (CURRENT_AUDIO_BUTTON) {
+                    CURRENT_AUDIO_BUTTON.classList.remove('playing');
+                    CURRENT_AUDIO_BUTTON.disabled = false;
+                    CURRENT_AUDIO_BUTTON.textContent = "▶";
+                }
+                CURRENT_AUDIO = null;
+                CURRENT_AUDIO_BUTTON = null;
+                return;
+            }
+
+            // If another audio is playing, stop it and reset its button
+            if (CURRENT_AUDIO) {
+                console.debug("[TTS] Stopping previously playing audio");
+                try {
+                    CURRENT_AUDIO.pause();
+                    CURRENT_AUDIO.currentTime = 0;
+                } catch (e) {
+                    console.debug("[TTS] Error stopping previous audio:", e);
+                }
+                if (CURRENT_AUDIO_BUTTON) {
+                    CURRENT_AUDIO_BUTTON.classList.remove('playing');
+                    CURRENT_AUDIO_BUTTON.disabled = false;
+                    CURRENT_AUDIO_BUTTON.textContent = "▶";
+                }
+                CURRENT_AUDIO = null;
+                CURRENT_AUDIO_BUTTON = null;
+            }
             
             const messageElement = button.closest('.message');
             console.debug("[TTS] Message element:", messageElement);
-            
+
             const messageText = messageElement.querySelector('.ai-message-text')?.textContent || '';
             console.debug("[TTS] Message text extracted:", messageText);
-            
+
             if (!messageText) {
                 console.error("[TTS] No text found to play");
                 return;
             }
 
-            // Disable button while processing
+            // Disable button while fetching audio
             button.disabled = true;
             button.textContent = "...";
             console.debug("[TTS] Button disabled and loading state set");
@@ -460,20 +501,48 @@
                 console.debug("[TTS] Audio blob received");
                 const audioUrl = URL.createObjectURL(blob);
                 const audio = new Audio(audioUrl);
+
+                // Track globally so we can stop it from other buttons
+                CURRENT_AUDIO = audio;
+                CURRENT_AUDIO_BUTTON = button;
+
+                // Enable the button so it can be used to stop playback, and show Stop icon
+                button.disabled = false;
+                button.classList.add('playing');
+                button.textContent = "⏹";
+
                 console.debug("[TTS] Audio element created, playing...");
-                audio.play();
-                
-                // Re-enable button after playback ends
+                audio.play().catch(err => {
+                    console.error("[TTS] Audio play failed:", err);
+                });
+
+                // When playback ends naturally, reset button/UI
                 audio.addEventListener('ended', () => {
                     console.debug("[TTS] Audio playback ended");
-                    button.disabled = false;
-                    button.textContent = "▶";
+                    if (CURRENT_AUDIO_BUTTON) {
+                        CURRENT_AUDIO_BUTTON.classList.remove('playing');
+                        CURRENT_AUDIO_BUTTON.disabled = false;
+                        CURRENT_AUDIO_BUTTON.textContent = "▶";
+                    }
+                    try { URL.revokeObjectURL(audioUrl); } catch (e) {}
+                    CURRENT_AUDIO = null;
+                    CURRENT_AUDIO_BUTTON = null;
+                });
+
+                // If the audio is paused/stopped elsewhere, ensure UI is reset
+                audio.addEventListener('pause', () => {
+                    if (CURRENT_AUDIO_BUTTON) {
+                        CURRENT_AUDIO_BUTTON.classList.remove('playing');
+                        CURRENT_AUDIO_BUTTON.disabled = false;
+                        CURRENT_AUDIO_BUTTON.textContent = "▶";
+                    }
                 });
             })
             .catch(error => {
                 console.error("[TTS] Error:", error);
                 button.disabled = false;
                 button.textContent = "▶";
+                button.classList.remove('playing');
                 alert('Error playing audio: ' + error.message);
             });
         }
