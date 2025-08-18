@@ -208,13 +208,13 @@ body {
 
 /* When audio is playing, show a distinct stop-state on the button */
 .play-button.playing {
-    background-color: #a33;
-    color: #ffffff;
+    background-color: #3a3a3a;
+    color: #d0d0d0;
     transform: none;
 }
 
 .play-button.playing:hover {
-    background-color: #b44;
+    background-color: #4a4a4a;
 }
 
 .system-message {
