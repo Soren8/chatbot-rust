@@ -194,7 +194,10 @@ def delete_message():
     """
     Deletes a user/AI message pair from the in-memory session history.
     Expects JSON: { user_message: str, ai_message: str, set_name: str (optional) }
-    Matches the first history tuple where both user and ai text match (trimmed).
+    Matching strategy:
+      - Prefer exact match on both user and ai messages (trimmed).
+      - If ai_message is not supplied/empty, match on user_message only (first occurrence).
+    After removal, persist updated history to disk for logged-in users and return success.
     """
     user_message = (request.json.get("user_message") or "").strip()
     ai_message = (request.json.get("ai_message") or "").strip()
@@ -207,22 +210,63 @@ def delete_message():
     if session_id not in sessions:
         return jsonify({"status": "error", "error": "session not found"}), 404
 
-    history = sessions[session_id].get("history", [])
+    # Ensure we have the latest history loaded for logged-in users
+    user_session = sessions[session_id]
+    try:
+        ensure_full_history_loaded(user_session)
+    except Exception as e:
+        logger.debug(f"ensure_full_history_loaded raised: {e}")
+
+    history = user_session.get("history", []) or []
+
+    # Try to find a matching history item.
     for idx, item in enumerate(list(history)):
         try:
             u, a = item
         except Exception:
+            # skip malformed entries
             continue
-        if (u or "").strip() == user_message and (a or "").strip() == ai_message:
-            # Found a match - remove it
+
+        u_text = (u or "").strip()
+        a_text = (a or "").strip()
+
+        # Match strategy:
+        # - If ai_message provided, require both user and ai to match.
+        # - If ai_message is empty, match on user only.
+        if u_text == user_message and (not ai_message or a_text == ai_message):
+            # Remove matched pair
             history.pop(idx)
             sessions[session_id]["history"] = history
+
             # Persist change for logged-in users
             if "username" in session:
+                username = session["username"]
+                password_to_use = None
+
+                # Determine whether the set is encrypted and choose password accordingly
                 try:
-                    save_user_chat_history(session["username"], history, set_name, session.get("password"))
+                    sets_file = os.path.join(SETS_DIR, username, "sets.json")
+                    encrypted = False
+                    if os.path.exists(sets_file):
+                        try:
+                            with open(sets_file, "r", encoding="utf-8") as f:
+                                sets = json.load(f)
+                                if isinstance(sets, dict) and set_name in sets:
+                                    encrypted = bool(sets[set_name].get("encrypted", False))
+                        except Exception as e:
+                            logger.debug(f"Failed to read sets.json for {username}: {e}")
+                    # Use session password only if the set is encrypted
+                    password_to_use = session.get("password") if encrypted else None
                 except Exception as e:
-                    logger.error(f"Failed to save history after delete: {e}")
+                    logger.debug(f"Error determining encryption for set '{set_name}': {e}")
+                    password_to_use = session.get("password")
+
+                try:
+                    save_user_chat_history(username, history, set_name, password_to_use)
+                    logger.info(f"Deleted message pair and saved updated history for user '{username}', set '{set_name}'")
+                except Exception as e:
+                    logger.error(f"Failed to save history after delete for user '{username}': {e}")
+
             return jsonify({"status": "success"})
 
     return jsonify({"status": "error", "error": "message pair not found"}), 404
