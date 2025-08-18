@@ -474,7 +474,7 @@
                     deleteBtn.type = 'button';
                     deleteBtn.className = 'delete-button';
                     deleteBtn.title = 'Delete message';
-                    deleteBtn.textContent = '🗑';
+                    deleteBtn.innerHTML = '<span class="delete-icon">🗑</span>';
                     deleteContainer.appendChild(deleteBtn);
                     messageElement.appendChild(deleteContainer);
                 } catch (e) {
