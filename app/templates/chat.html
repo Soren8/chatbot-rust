@@ -117,7 +117,9 @@
         const aiMessageElement = button.closest('.message');
         const previousUserMessage = aiMessageElement.previousElementSibling;
         if (previousUserMessage && previousUserMessage.classList.contains('user-message')) {
-            const userMessage = previousUserMessage.textContent.replace('You:', '').trim();
+            // Ensure we only extract the user's message text, not any UI (like the trashcan emoji)
+            const userMessageSpan = previousUserMessage.querySelector('.user-message-text');
+            const userMessage = (userMessageSpan ? userMessageSpan.textContent : previousUserMessage.textContent).replace('You:', '').trim();
             
             const activeSet = document.getElementById('set-selector')?.value || 'default';
             
