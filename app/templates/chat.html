@@ -267,11 +267,55 @@
 
     document.addEventListener('DOMContentLoaded', function() {
         disablePremiumModels(); // Initialize model disabling
-        // Add event delegation for play buttons
+        // Add event delegation for play and delete buttons
         document.addEventListener('click', function(event) {
-            if (event.target.classList.contains('play-button')) {
+            const target = event.target;
+            if (target.classList.contains('play-button')) {
                 console.debug("[TTS] Play button click detected via event delegation");
-                playTTS(event.target);
+                playTTS(target);
+                return;
+            }
+
+            if (target.classList.contains('delete-button')) {
+                console.debug("[DELETE] Delete button clicked via event delegation");
+                const userMessageElement = target.closest('.message.user-message');
+                if (!userMessageElement) return;
+
+                // Find the corresponding AI message (assumed to be the immediate next sibling)
+                const aiMessageElement = userMessageElement.nextElementSibling && userMessageElement.nextElementSibling.classList.contains('ai-message')
+                    ? userMessageElement.nextElementSibling
+                    : null;
+
+                // Extract plain text for server-side deletion
+                const userText = (userMessageElement.textContent || '').replace('You:', '').trim();
+                const aiText = aiMessageElement ? (aiMessageElement.querySelector('.ai-message-text')?.textContent || '').trim() : '';
+
+                // Remove from DOM immediately for responsive UI
+                if (aiMessageElement) aiMessageElement.remove();
+                userMessageElement.remove();
+
+                // Send deletion request to server to persist removal from session history (best-effort)
+                fetch('/delete_message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        user_message: userText,
+                        ai_message: aiText,
+                        set_name: document.getElementById('set-selector')?.value || 'default'
+                    })
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        console.error("[DELETE] Server failed to delete message pair");
+                    } else {
+                        console.debug("[DELETE] Server delete confirmed");
+                    }
+                })
+                .catch(err => {
+                    console.error("[DELETE] Delete request failed:", err);
+                });
             }
         });
         {% if logged_in %}
@@ -416,6 +460,22 @@
             const messageElement = document.createElement('div');
             messageElement.className = 'message ' + className;
             messageElement.innerHTML = message;
+
+            // If this is a user message, add a delete (trash) button
+            if (className && className.indexOf('user-message') !== -1) {
+                try {
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.type = 'button';
+                    deleteBtn.className = 'delete-button';
+                    deleteBtn.title = 'Delete message';
+                    deleteBtn.textContent = '🗑';
+                    // Append button to the message element
+                    messageElement.appendChild(deleteBtn);
+                } catch (e) {
+                    console.debug("Failed to add delete button:", e);
+                }
+            }
+
             chatContent.appendChild(messageElement);
             const chatBox = document.getElementById('chat-box');
             chatBox.scrollTop = chatBox.scrollHeight;

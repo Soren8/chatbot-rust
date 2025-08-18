@@ -189,6 +189,44 @@ def delete_set():
         return jsonify({"status": "success"})
     return jsonify({"status": "error", "error": "Cannot delete set"})
 
+@bp.route("/delete_message", methods=["POST"])
+def delete_message():
+    """
+    Deletes a user/AI message pair from the in-memory session history.
+    Expects JSON: { user_message: str, ai_message: str, set_name: str (optional) }
+    Matches the first history tuple where both user and ai text match (trimmed).
+    """
+    user_message = (request.json.get("user_message") or "").strip()
+    ai_message = (request.json.get("ai_message") or "").strip()
+    set_name = request.json.get("set_name", "default")
+
+    if not user_message:
+        return jsonify({"status": "error", "error": "user_message is required"}), 400
+
+    session_id = session.get("username", f"guest_{request.remote_addr}")
+    if session_id not in sessions:
+        return jsonify({"status": "error", "error": "session not found"}), 404
+
+    history = sessions[session_id].get("history", [])
+    for idx, item in enumerate(list(history)):
+        try:
+            u, a = item
+        except Exception:
+            continue
+        if (u or "").strip() == user_message and (a or "").strip() == ai_message:
+            # Found a match - remove it
+            history.pop(idx)
+            sessions[session_id]["history"] = history
+            # Persist change for logged-in users
+            if "username" in session:
+                try:
+                    save_user_chat_history(session["username"], history, set_name, session.get("password"))
+                except Exception as e:
+                    logger.error(f"Failed to save history after delete: {e}")
+            return jsonify({"status": "success"})
+
+    return jsonify({"status": "error", "error": "message pair not found"}), 404
+
 @bp.route("/load_set", methods=["POST"])
 def load_set():
     if "username" not in session:

@@ -195,6 +195,29 @@ body {
     white-space: nowrap;
 }
 
+/* Delete (trash) button for user messages */
+.delete-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 6px 8px;
+    margin-left: 8px;
+    font-size: 14px;
+    line-height: 1;
+    color: #d0d0d0;
+    border-radius: 6px;
+    white-space: nowrap;
+}
+
+/* Hover state for delete button */
+.delete-button:hover {
+    background-color: rgba(255, 255, 255, 0.03);
+    color: #ffffff;
+}
+
 .play-button:hover {
     background-color: #4a4a4a;
     transform: scale(1.03);
