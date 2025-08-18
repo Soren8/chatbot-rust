@@ -199,25 +199,33 @@ def delete_message():
       - If ai_message is not supplied/empty, match on user_message only (first occurrence).
     After removal, persist updated history to disk for logged-in users and return success.
     """
+    logger.debug("delete_message called; raw json: %s", request.get_json())
     user_message = (request.json.get("user_message") or "").strip()
     ai_message = (request.json.get("ai_message") or "").strip()
     set_name = request.json.get("set_name", "default")
 
     if not user_message:
+        logger.debug("delete_message missing user_message in request")
         return jsonify({"status": "error", "error": "user_message is required"}), 400
 
     session_id = session.get("username", f"guest_{request.remote_addr}")
+    logger.debug("Computed session_id=%s; session keys=%s; requester_ip=%s", session_id, list(session.keys()), request.remote_addr)
+
     if session_id not in sessions:
+        logger.debug("Session id %s not found in sessions store", session_id)
         return jsonify({"status": "error", "error": "session not found"}), 404
 
     # Ensure we have the latest history loaded for logged-in users
     user_session = sessions[session_id]
+    logger.debug("User session before deletion: last_used=%s history_len=%d system_prompt_saved=%s",
+                 user_session.get("last_used"), len(user_session.get("history", [])), user_session.get("system_prompt_saved"))
     try:
         ensure_full_history_loaded(user_session)
     except Exception as e:
-        logger.debug(f"ensure_full_history_loaded raised: {e}")
+        logger.exception("ensure_full_history_loaded raised an exception")
 
     history = user_session.get("history", []) or []
+    logger.debug("Current history length: %d; preview: %s", len(history), history[:5])
 
     # Try to find a matching history item.
     for idx, item in enumerate(list(history)):
@@ -225,18 +233,23 @@ def delete_message():
             u, a = item
         except Exception:
             # skip malformed entries
+            logger.debug("Skipping malformed history item at idx %d: %s", idx, item)
             continue
 
         u_text = (u or "").strip()
         a_text = (a or "").strip()
 
+        logger.debug("Checking history idx=%d user_text(100)=%s ai_text(100)=%s", idx, u_text[:100], a_text[:100])
+
         # Match strategy:
         # - If ai_message provided, require both user and ai to match.
         # - If ai_message is empty, match on user only.
         if u_text == user_message and (not ai_message or a_text == ai_message):
+            logger.debug("Match found at history index %d", idx)
             # Remove matched pair
             history.pop(idx)
             sessions[session_id]["history"] = history
+            logger.debug("Removed history index %d. New history length: %d", idx, len(history))
 
             # Persist change for logged-in users
             if "username" in session:
@@ -247,28 +260,40 @@ def delete_message():
                 try:
                     sets_file = os.path.join(SETS_DIR, username, "sets.json")
                     encrypted = False
+                    logger.debug("Looking for sets.json at: %s", sets_file)
                     if os.path.exists(sets_file):
+                        logger.debug("sets.json exists for user %s", username)
                         try:
                             with open(sets_file, "r", encoding="utf-8") as f:
                                 sets = json.load(f)
+                                logger.debug("sets.json content keys: %s", list(sets.keys()) if isinstance(sets, dict) else "not a dict")
                                 if isinstance(sets, dict) and set_name in sets:
                                     encrypted = bool(sets[set_name].get("encrypted", False))
-                        except Exception as e:
-                            logger.debug(f"Failed to read sets.json for {username}: {e}")
+                                    logger.debug("Set '%s' encrypted flag: %s", set_name, encrypted)
+                        except Exception:
+                            logger.exception("Failed to read or parse sets.json for %s", username)
+                    else:
+                        logger.debug("No sets.json for user %s (expected at %s)", username, sets_file)
                     # Use session password only if the set is encrypted
                     password_to_use = session.get("password") if encrypted else None
-                except Exception as e:
-                    logger.debug(f"Error determining encryption for set '{set_name}': {e}")
+                    logger.debug("password_to_use provided: %s", bool(password_to_use))
+                except Exception:
+                    logger.exception("Error determining encryption for set '%s'", set_name)
                     password_to_use = session.get("password")
 
                 try:
+                    logger.debug("Attempting to save_user_chat_history for user=%s set=%s history_len=%d", username, set_name, len(history))
                     save_user_chat_history(username, history, set_name, password_to_use)
-                    logger.info(f"Deleted message pair and saved updated history for user '{username}', set '{set_name}'")
-                except Exception as e:
-                    logger.error(f"Failed to save history after delete for user '{username}': {e}")
+                    logger.info("Deleted message pair and saved updated history for user '%s', set '%s'", username, set_name)
+                except Exception:
+                    logger.exception("Failed to save history after delete for user '%s', set '%s'", username, set_name)
+            else:
+                logger.debug("Not logged-in user; change persisted to in-memory session only")
 
             return jsonify({"status": "success"})
 
+    logger.debug("No matching message pair found. user_message=%s ai_message=%s history_len=%d", user_message[:200], ai_message[:200], len(history))
+    logger.debug("History contents for debugging: %s", history)
     return jsonify({"status": "error", "error": "message pair not found"}), 404
 
 @bp.route("/load_set", methods=["POST"])
