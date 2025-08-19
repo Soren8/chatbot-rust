@@ -77,6 +77,11 @@ This document outlines the high-level architecture and planned enhancements for 
   - Break out LLM providers into a git submodule so they can be shared and consumed by other projects or front ends.
   - Establish semantic versioning and backward-compatibility guarantees for the provider interface.
 
+- **Voice Mode**
+  - Silero VAD voice activity detection
+  - Whisper Large v3 turbo
+  - Smart Turn v2 by @trydaily
+
 - **Documentation**
   - Create an OpenAPI/Swagger spec or at least a Markdown API reference for all HTTP routes.
   - Host a `/docs` page or integrate with tools like Redoc to expose interactive API docs.
