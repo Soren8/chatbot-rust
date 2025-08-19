@@ -81,6 +81,7 @@ This document outlines the high-level architecture and planned enhancements for 
   - Silero VAD voice activity detection
   - Whisper Large v3 turbo
   - Smart Turn v2 by @trydaily
+  - Kokoro_tts
 
 - **Documentation**
   - Create an OpenAPI/Swagger spec or at least a Markdown API reference for all HTTP routes.
