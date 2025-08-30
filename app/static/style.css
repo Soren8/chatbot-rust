@@ -390,6 +390,12 @@ a:hover, a:focus {
     min-height: max(220px, 30vh);
 }
 
+/* Prevent the chat content from growing without bound. Limit to roughly 100 lines. */
+#chat-content {
+    max-height: 120em; /* ~100 lines at ~1.2em line-height */
+    overflow: auto;
+}
+
 /* Make chat area and input use dark backgrounds (mobile-friendly, not blinding white) */
 #chat-box, #chat-box .card-body {
     background-color: #1e1f21; /* dark gray */
