@@ -174,6 +174,38 @@
         });
     </script>
 
+    <script>
+        // Ensure input stays visible on mobile when focusing the keyboard
+        document.addEventListener('DOMContentLoaded', function() {
+            try {
+                var input = document.getElementById('user-input');
+                var chatBox = document.getElementById('chat-box');
+                if (!input || !chatBox) return;
+
+                function updateInputHeight() {
+                    try {
+                        var h = input.getBoundingClientRect().height || 56;
+                        document.documentElement.style.setProperty('--chat-input-height', h + 'px');
+                        // Ensure chat box padding accounts for the input
+                        chatBox.style.paddingBottom = 'calc(' + h + 'px + env(safe-area-inset-bottom, 0))';
+                    } catch (e) {}
+                }
+
+                input.addEventListener('focus', function() {
+                    // update heights and scroll input into view after keyboard appears
+                    updateInputHeight();
+                    setTimeout(function() {
+                        try { input.scrollIntoView({block: 'center'}); } catch (e) {}
+                    }, 300);
+                });
+
+                // Also update on orientation change / resize
+                window.addEventListener('resize', updateInputHeight);
+                updateInputHeight();
+            } catch (e) { console.debug('mobile input helper error', e); }
+        });
+    </script>
+
 <script>
     function escapeHTML(str) {
         var div = document.createElement('div');

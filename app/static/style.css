@@ -390,6 +390,26 @@ a:hover, a:focus {
     min-height: max(220px, 30vh);
 }
 
+/* Mobile: pin the input to the bottom and reserve space in the chat box so virtual keyboard and browser chrome don't hide it */
+:root { --chat-input-height: 56px; }
+
+@media (max-width: 767.98px) {
+    #chat-area .input-group {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: env(safe-area-inset-bottom, 0);
+        padding: 0.5rem;
+        background: rgba(0,0,0,0.04);
+        z-index: 1050;
+    }
+
+    /* Reserve space so chat messages are not covered by the pinned input */
+    #chat-box {
+        padding-bottom: calc(var(--chat-input-height) + env(safe-area-inset-bottom, 0));
+    }
+}
+
 /* Prevent the chat content from growing without bound. Limit to roughly 100 lines. */
 #chat-content {
     max-height: 120em; /* ~100 lines at ~1.2em line-height */
