@@ -18,11 +18,6 @@
             </button>
             <span class="navbar-brand navbar-brand-center">AI Chat</span>
             <div class="navbar-nav ms-auto d-flex flex-row align-items-center flex-nowrap gap-3">
-                <div class="nav-item tier-status">
-                    <span class="navbar-text me-2">Account:
-                        <span class="badge bg-{% if user_tier == 'premium' %}success{% else %}secondary{% endif %}">{{ 'Premium' if user_tier == 'premium' else 'Free' }}</span>
-                    </span>
-                </div>
                 {% if logged_in %}
                 <a class="nav-link" href="/logout">Sign Out</a>
                 {% else %}
@@ -46,6 +41,12 @@
                 <div id="settingsCollapse" class="collapse p-3 h-100">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h5 class="mb-0">Settings</h5>
+                        <span class="navbar-text ms-auto d-none d-md-inline">Account:
+                            <span class="badge bg-{% if user_tier == 'premium' %}success{% else %}secondary{% endif %}">{{ 'Premium' if user_tier == 'premium' else 'Free' }}</span>
+                        </span>
+                        <span class="navbar-text ms-2 d-inline d-md-none">Account:
+                            <span class="badge bg-{% if user_tier == 'premium' %}success{% else %}secondary{% endif %}">{{ 'Premium' if user_tier == 'premium' else 'Free' }}</span>
+                        </span>
                     </div>
 
                     {% if logged_in %}
