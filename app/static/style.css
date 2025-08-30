@@ -205,6 +205,16 @@
     z-index: 1;
 }
 
+/* Make navbar links use Bootstrap primary color (sign in/out etc.) */
+.navbar .nav-link {
+    color: var(--bs-primary) !important;
+}
+.navbar .nav-link:hover,
+.navbar .nav-link:focus {
+    color: var(--bs-primary) !important;
+    opacity: 0.85;
+}
+
 /* Thinking text styles */
 .thinking-container {
     margin: 10px 0;
