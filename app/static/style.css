@@ -155,18 +155,7 @@
 }
 
 /* Make certain select controls narrower and right-aligned */
-.select-right {
-    width: 80%;
-    margin-left: auto;
-    display: block;
-}
-
-@media (max-width: 767.98px) {
-    .select-right {
-        width: 100%;
-        margin-left: 0;
-    }
-}
+/* Removed .select-right in favor of grid columns for consistent select widths */
 
 /* Upgrade button */
 .upgrade-btn {

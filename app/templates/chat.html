@@ -52,9 +52,9 @@
                     {% if logged_in %}
                     <div class="mb-3">
                         <div class="row g-2 align-items-center mb-2">
-                            <label class="col-auto col-form-label mb-0">Model</label>
-                            <div class="col">
-                                <select id="modelSelect" class="form-select select-right" onchange="validateModelTier()">
+                            <label class="col-3 col-form-label mb-0 text-end">Model</label>
+                            <div class="col-9">
+                                <select id="modelSelect" class="form-select" onchange="validateModelTier()">
                                     {% for llm in available_llms %}
                                     <option value="{{ llm.provider_name }}" data-tier="{{ llm.tier }}">{{ llm.provider_name }}</option>
                                     {% endfor %}
@@ -63,9 +63,9 @@
                         </div>
 
                         <div class="row g-2 align-items-center mb-2">
-                            <label class="col-auto col-form-label mb-0">Set</label>
-                            <div class="col">
-                                <select id="set-selector" class="form-select select-right">
+                            <label class="col-3 col-form-label mb-0 text-end">Set</label>
+                            <div class="col-9">
+                                <select id="set-selector" class="form-select">
                                     <option value="default">Default Set</option>
                                 </select>
                             </div>
