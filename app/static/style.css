@@ -407,6 +407,14 @@ a:hover, a:focus {
     padding-bottom: 0 !important;
 }
 
+/* On small screens reserve extra padding so the fixed input doesn't overlap last messages */
+@media (max-width: 767.98px) {
+    #chat-box {
+        /* use the computed input height if available, fallback to 56px, plus a small margin */
+        padding-bottom: calc(var(--chat-input-height, 56px) + env(safe-area-inset-bottom, 0) + 12px) !important;
+    }
+}
+
 /* Mobile: pin the input to the bottom and reserve space in the chat box so virtual keyboard and browser chrome don't hide it */
 :root { --chat-input-height: 56px; }
 
