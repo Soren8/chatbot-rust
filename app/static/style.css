@@ -303,6 +303,18 @@ a:hover, a:focus {
     }
 }
 
+/* Ensure chat area has usable height on small screens when settings are open */
+@media (max-width: 767.98px) {
+    /* Make the messages container tall enough (~20 text lines) so users don't see a single-line chat */
+    #chat-content {
+        min-height: 24em;
+    }
+    /* Ensure the chat card respects that minimum */
+    #chat-box {
+        min-height: 24em;
+    }
+}
+
 /* On md+ make settings panel content stretch vertically and let the two cards share space */
 @media (min-width: 768px) {
     #settingsCollapse {
