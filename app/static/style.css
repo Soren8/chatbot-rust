@@ -402,6 +402,11 @@ a:hover, a:focus {
     min-height: max(220px, 30vh);
 }
 
+/* Remove extra bottom padding to keep chat content flush with the chat box */
+#chat-box, #chat-content {
+    padding-bottom: 0 !important;
+}
+
 /* Mobile: pin the input to the bottom and reserve space in the chat box so virtual keyboard and browser chrome don't hide it */
 :root { --chat-input-height: 56px; }
 
