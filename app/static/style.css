@@ -344,6 +344,13 @@ a:hover, a:focus {
     }
 }
 
+/* On small screens do not force fixed heights; on md+ keep full-height layout */
+@media (min-width: 768px) {
+    #settings-col, #settingsCollapse, #chat-area, #chat-box {
+        height: 100%;
+    }
+}
+
 /* Ensure chat-box retains a reasonable minimum height even when settings are open */
 #chat-box {
     min-height: max(220px, 30vh);
