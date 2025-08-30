@@ -218,6 +218,16 @@ a:hover, a:focus {
     text-decoration: underline;
 }
 
+/* Ensure navbar links use the primary color even with .navbar-dark defaults */
+.navbar .nav-link {
+    color: var(--bs-primary) !important;
+}
+.navbar .nav-link:hover,
+.navbar .nav-link:focus {
+    color: var(--bs-primary) !important;
+    opacity: 0.9;
+}
+
 /* Thinking text styles */
 .thinking-container {
     margin: 10px 0;
