@@ -394,8 +394,11 @@
                         const chunk = decoder.decode(value, { stream: true });
                        processChunk(chunk);
                        
-                       const $chatBox = $('#chat-box');
-                       $chatBox.scrollTop($chatBox[0].scrollHeight);
+                const $chatBox = $('#chat-box');
+                // Determine if we should auto-scroll while streaming: only if the user
+                // was already at (or near) the bottom before streaming started.
+                const __autoScroll = ($chatBox.scrollTop() + $chatBox.innerHeight() >= $chatBox[0].scrollHeight - 50);
+                if (__autoScroll) { $chatBox.scrollTop($chatBox[0].scrollHeight); }
 
                         return readStream();
                     });
@@ -632,8 +635,11 @@
             }
 
             $chatContent.append($messageElement);
-            const $chatBox = $('#chat-box');
-            $chatBox.scrollTop($chatBox[0].scrollHeight);
+                const $chatBox = $('#chat-box');
+                // Respect the auto-scroll preference detected when streaming began
+                if (typeof __autoScroll !== 'undefined' ? __autoScroll : ($chatBox.scrollTop() + $chatBox.innerHeight() >= $chatBox[0].scrollHeight - 50)) {
+                    $chatBox.scrollTop($chatBox[0].scrollHeight);
+                }
         }
 
 
