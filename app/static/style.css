@@ -326,6 +326,22 @@ a:hover, a:focus {
     .settings-cards .card .card-body {
         overflow: auto;
     }
+    /* Make textarea fill available card-body space and keep Save button at bottom */
+    .settings-cards .card .card-body {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+    .settings-cards .card .card-body textarea {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        resize: none;
+        margin-bottom: 0.5rem;
+    }
+    .settings-cards .card .card-body .btn {
+        flex: 0 0 auto;
+    }
 }
 
 /* Ensure chat-box retains a reasonable minimum height even when settings are open */
