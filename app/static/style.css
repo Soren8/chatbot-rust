@@ -190,6 +190,21 @@
     text-decoration: underline;
 }
 
+/* Center the navbar brand while keeping left/right controls visible */
+.navbar-brand-center {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    top: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none; /* ensure clicks go to controls on the sides */
+}
+
+/* Ensure brand remains visible above other elements */
+.navbar .navbar-brand-center {
+    z-index: 1;
+}
+
 /* Thinking text styles */
 .thinking-container {
     margin: 10px 0;
