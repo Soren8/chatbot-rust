@@ -529,6 +529,10 @@
                             'ai-message'
                         );
                     });
+                    // After loading history, ensure chat is scrolled to the bottom
+                    setTimeout(function() {
+                        try { $('#chat-box').scrollTop($('#chat-box')[0].scrollHeight); } catch (e) { console.debug('scroll to bottom failed', e); }
+                    }, 0);
                 }
                 
                 appendMessage('<strong>System:</strong> Loaded set: ' + setName, 'system-message');
