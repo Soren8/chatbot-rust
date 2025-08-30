@@ -154,6 +154,20 @@
     background-color: #4a4a4a;
 }
 
+/* Make certain select controls narrower and right-aligned */
+.select-right {
+    width: 80%;
+    margin-left: auto;
+    display: block;
+}
+
+@media (max-width: 767.98px) {
+    .select-right {
+        width: 100%;
+        margin-left: 0;
+    }
+}
+
 /* Upgrade button */
 .upgrade-btn {
     margin-left: 8px;

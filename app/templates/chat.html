@@ -57,7 +57,7 @@
                         <div class="row g-2 align-items-center mb-2">
                             <label class="col-auto col-form-label mb-0">Model</label>
                             <div class="col">
-                                <select id="modelSelect" class="form-select" onchange="validateModelTier()">
+                                <select id="modelSelect" class="form-select select-right" onchange="validateModelTier()">
                                     {% for llm in available_llms %}
                                     <option value="{{ llm.provider_name }}" data-tier="{{ llm.tier }}">{{ llm.provider_name }}</option>
                                     {% endfor %}
@@ -68,7 +68,7 @@
                         <div class="row g-2 align-items-center mb-2">
                             <label class="col-auto col-form-label mb-0">Set</label>
                             <div class="col">
-                                <select id="set-selector" class="form-select w-100">
+                                <select id="set-selector" class="form-select select-right">
                                     <option value="default">Default Set</option>
                                 </select>
                             </div>
