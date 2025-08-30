@@ -29,8 +29,13 @@
 }
 
 .error-message {
+    background-color: #555555;
+    display: block;
+    margin: 0.5rem auto;
+    font-style: italic;
+    text-align: center;
+    max-width: 90%;
     color: #e06a6a;
-    font-weight: bold;
 }
 
 .regenerate-container {
