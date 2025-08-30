@@ -446,6 +446,15 @@ a:hover, a:focus {
     overflow: auto;
 }
 
+/* On small screens, allow the chat to grow naturally (avoid nested scrolling). */
+@media (max-width: 767.98px) {
+    #chat-content {
+        max-height: none;
+        /* Let the page scroll instead of producing an inner scrollbar */
+        overflow: visible;
+    }
+}
+
 /* Make chat area and input use dark backgrounds (mobile-friendly, not blinding white) */
 #chat-box, #chat-box .card-body {
     background-color: #1e1f21; /* dark gray */
