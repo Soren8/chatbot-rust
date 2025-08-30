@@ -111,7 +111,8 @@
 }
 
 .delete-icon {
-    font-size: 27px !important;
+    /* keep icon sizing consistent with other control icons */
+    font-size: 1em;
     line-height: 1;
 }
 
