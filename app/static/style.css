@@ -365,6 +365,37 @@ a:hover, a:focus {
     color: #9aa0a6;
 }
 
+/* Settings panel cards and controls should also use dark backgrounds */
+.settings-cards .card,
+.settings-cards .card .card-body,
+.settings-cards .card .card-header {
+    background-color: #1e1f21; /* dark gray */
+    color: #e6e6e6;
+    border-color: #2a2a2a;
+}
+
+.settings-cards .card .card-header {
+    background-color: #242526;
+}
+
+.settings-cards .card .card-body textarea,
+.settings-cards .card .card-body .form-control {
+    background-color: #2a2a2a;
+    color: #e6e6e6;
+    border-color: #444;
+}
+
+/* Make outline-light buttons on the navbar stay transparent/dark on mobile */
+.navbar .btn-outline-light {
+    background-color: transparent;
+    color: #e6e6e6;
+    border-color: rgba(255,255,255,0.6);
+}
+.navbar .btn-outline-light:active,
+.navbar .btn-outline-light:focus {
+    background-color: rgba(255,255,255,0.05);
+}
+
 /* Fix flexbox overflow on initial load: ensure containers can shrink/grow and allow children to fill available height */
 .container-fluid.flex-grow-1.d-flex {
     flex: 1 1 auto;
