@@ -128,20 +128,24 @@
                 var bsCollapse = bootstrap.Collapse.getOrCreateInstance(collapseEl, {toggle:false});
 
                 function applyState(open) {
+                    // When the settings collapse is closed, hide the settings column on ALL sizes
+                    if (!open) {
+                        settingsCol.classList.add('d-none');
+                    } else {
+                        settingsCol.classList.remove('d-none');
+                    }
+
+                    // Adjust chat area width on md+ when settings are shown/hidden
                     if (window.innerWidth >= 768) {
-                        // On md+ when closed, hide the settings column and expand chat to full width
                         if (!open) {
-                            settingsCol.classList.add('d-none');
                             chatArea.classList.remove('col-md-8');
                             chatArea.classList.add('col-md-12');
                         } else {
-                            settingsCol.classList.remove('d-none');
                             chatArea.classList.remove('col-md-12');
                             chatArea.classList.add('col-md-8');
                         }
                     } else {
-                        // On small screens keep settings column present (will stack above chat)
-                        settingsCol.classList.remove('d-none');
+                        // On small screens ensure chat area uses the md-8 class for consistency when switching
                         chatArea.classList.remove('col-md-12');
                         chatArea.classList.add('col-md-8');
                     }

@@ -263,3 +263,8 @@
         font-size: 18px !important;
     }
 }
+
+/* Ensure chat-box retains a reasonable minimum height even when settings are open */
+#chat-box {
+    min-height: max(220px, 30vh);
+}
