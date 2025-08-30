@@ -302,6 +302,32 @@ a:hover, a:focus {
     }
 }
 
+/* On md+ make settings panel content stretch vertically and let the two cards share space */
+@media (min-width: 768px) {
+    #settingsCollapse {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+    /* container that holds the two cards */
+    .settings-cards {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        min-height: 0;
+    }
+    .settings-cards .card {
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+    .settings-cards .card .card-body {
+        overflow: auto;
+    }
+}
+
 /* Ensure chat-box retains a reasonable minimum height even when settings are open */
 #chat-box {
     min-height: max(220px, 30vh);
