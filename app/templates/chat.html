@@ -442,7 +442,8 @@
             .then(data => {
                 const $selector = $('#set-selector');
                 $selector.empty(); // Clear existing options
-                $.each(data, function(index, setName) {
+                // Server returns an object mapping setName -> metadata, so iterate keys
+                $.each(data, function(setName, meta) {
                     $selector.append(`<option value="${setName}">${setName}</option>`);
                 });
                 // After loading sets, trigger a change event to load the default set
