@@ -409,9 +409,14 @@ a:hover, a:focus {
 
 /* On small screens reserve extra padding so the fixed input doesn't overlap last messages */
 @media (max-width: 767.98px) {
-    #chat-box {
-        /* use the computed input height if available, fallback to 56px, plus a small margin */
+    /* Reserve space on the chat-area instead of the chat-box so the fixed input doesn't overlap
+       and to avoid extra space inside the chat card itself. */
+    #chat-area {
         padding-bottom: calc(var(--chat-input-height, 56px) + env(safe-area-inset-bottom, 0) + 12px) !important;
+    }
+    /* Ensure the chat-box uses any remaining space without extra internal padding */
+    #chat-box {
+        padding-bottom: 0 !important;
     }
 }
 
