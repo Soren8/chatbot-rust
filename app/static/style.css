@@ -393,6 +393,19 @@ a:hover, a:focus {
     border-color: #444;
 }
 
+/* Ensure select controls match dark inputs inside settings and chat areas */
+#settingsCollapse .form-select,
+#chat-area .form-select {
+    background-color: #2a2a2a;
+    color: #e6e6e6;
+    border-color: #444;
+}
+#settingsCollapse .form-select option,
+#chat-area .form-select option {
+    background-color: #2a2a2a;
+    color: #e6e6e6;
+}
+
 /* Make outline-light buttons on the navbar stay transparent/dark on mobile */
 .navbar .btn-outline-light {
     background-color: transparent;
