@@ -360,10 +360,11 @@
                     if (!content) return;
                     console.debug(`[VISIBLE] Appending: ${JSON.stringify(content)}`);
                     if (!hasWrittenToDOM) {
-                        messageTextElement.innerHTML = escapeHTML(content);
+                        // Use textContent to avoid HTML rendering issues and ensure streamed text is visible
+                        messageTextElement.textContent = content;
                         hasWrittenToDOM = true;
                     } else {
-                        messageTextElement.innerHTML += escapeHTML(content);
+                        messageTextElement.textContent += content;
                     }
                 }
 
@@ -371,11 +372,11 @@
                     if (!content) return;
                     console.debug(`[THINKING] Appending: ${JSON.stringify(content)}`);
                     if (!hasWrittenToDOM) {
-                        messageTextElement.innerHTML = ''; // Clear "Thinking..."
+                        messageTextElement.textContent = ''; // Clear "Thinking..."
                         hasWrittenToDOM = true;
                     }
                     thinkingContainerWrapper.style.display = 'block';
-                    thinkingContentElement.innerHTML += escapeHTML(content);
+                    thinkingContentElement.textContent += content;
                 }
 
                 function readStream() {
