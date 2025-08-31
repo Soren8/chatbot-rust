@@ -372,19 +372,7 @@ def regenerate():
                     # Encode the chunk to bytes before yielding
                     yield chunk.encode('utf-8')
 
-                # If regenerating, replace the AI reply paired with the same user message
-                replaced = False
-                for i in range(len(user_session["history"]) - 1, -1, -1):
-                    try:
-                        u, a = user_session["history"][i]
-                    except Exception:
-                        continue
-                    if (u or "").strip() == (user_message or "").strip():
-                        user_session["history"][i] = (user_message, response_text)
-                        replaced = True
-                        break
-                if not replaced:
-                    user_session["history"].append((user_message, response_text))
+                user_session["history"].append((user_message, response_text))
                 logger.info(f"Regenerated response. Length: {len(response_text)} characters")
                 
                 # Save chat history to the active set if logged in
