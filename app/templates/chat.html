@@ -508,13 +508,15 @@
         // Add event delegation for play and delete buttons
         $(document).on('click', function(event) {
             const target = event.target;
-            if (target.classList.contains('play-button')) {
+            // Support clicks on inner icon elements by using closest()
+            const playBtn = target.closest && target.closest('.play-button');
+            if (playBtn) {
                 console.debug("[TTS] Play button click detected via event delegation");
-                playTTS(target);
+                playTTS(playBtn);
                 return;
             }
 
-            const deleteBtn = target.closest('.delete-button');
+            const deleteBtn = target.closest && target.closest('.delete-button');
             if (deleteBtn) {
                 console.debug("[DELETE] Delete button clicked via event delegation");
                 const userMessageElement = deleteBtn.closest('.message.user-message');
@@ -1068,8 +1070,10 @@
                                 else appendVisible(buffer);
                                 buffer = '';
                             }
-                            const buttons = targetElement.querySelectorAll('.regenerate-button, .play-button');
-                            buttons.forEach(button => button.disabled = false);
+                            try {
+                                $targetElement.find('.regenerate-button, .play-button').prop('disabled', false);
+                                $targetElement.find('.play-button').html('<i class="bi bi-play-fill"></i>');
+                            } catch (e) { console.debug('enable buttons error', e); }
                             return;
                         }
                         const chunk = decoder.decode(value, { stream: true });
