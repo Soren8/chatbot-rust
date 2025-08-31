@@ -470,7 +470,7 @@
                 if (data.history && data.history.length > 0) {
                     console.log(`Loading ${data.history.length} history items`);
                     data.history.forEach(([userMsg, aiMsg]) => {
-                        appendMessage('<strong>You:</strong> ' + escapeHTML(userMsg), 'user-message');
+                        appendMessage(userMsg, 'user-message');
                         appendMessage(
                             `<strong>AI:</strong>&nbsp;<span class="ai-message-text">${escapeHTML(aiMsg)}</span>
                             <div class="regenerate-container">
@@ -556,17 +556,32 @@
             }
         });
         {% endif %}
-        function appendMessage(message, className) {
+        function appendMessage(message, className, pairIndex) {
             const $chatContent = $('#chat-content');
             const $messageElement = $('<div>').addClass('message ' + className);
-            
+
             if (className && className.indexOf('user-message') !== -1) {
-                $messageElement.html(`<span class="user-message-text">${message}</span>`);
+                // Determine original text for storage: callers may pass raw text or preformatted HTML
+                let originalText = message;
+                if (typeof message === 'string' && message.indexOf('<strong>You:') !== -1) {
+                    // If preformatted, decode to plain text and strip 'You:' prefix
+                    const tmp = document.createElement('div');
+                    tmp.innerHTML = message;
+                    originalText = (tmp.textContent || tmp.innerText || '').replace(/^\s*You:\s*/, '').trim();
+                }
+                // Render with consistent prefix and escaped content
+                $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${escapeHTML(originalText)}</span>`);
+                // Store the original raw text for accurate server requests
+                $messageElement.attr('data-original', originalText);
             } else {
                 $messageElement.html(message);
             }
 
             // If this is a user message, add a delete (trash) button
+            if (typeof pairIndex !== 'undefined' && pairIndex !== null) {
+                $messageElement.attr('data-pair-index', pairIndex);
+            }
+
             if (className && className.indexOf('user-message') !== -1) {
                 try {
                     const $deleteContainer = $('<div>').addClass('regenerate-container');
@@ -583,14 +598,13 @@
             }
 
             $chatContent.append($messageElement);
-                const $chatBox = $('#chat-box');
-                // Respect the auto-scroll preference detected when streaming began
-                if (typeof __autoScroll !== 'undefined' ? __autoScroll : ($chatBox.scrollTop() + $chatBox.innerHeight() >= $chatBox[0].scrollHeight - 50)) {
-                    $chatBox.scrollTop($chatBox[0].scrollHeight);
-                }
+            const $chatBox = $('#chat-box');
+            // Respect the auto-scroll preference detected when streaming began
+            if (typeof __autoScroll !== 'undefined' ? __autoScroll : ($chatBox.scrollTop() + $chatBox.innerHeight() >= $chatBox[0].scrollHeight - 50)) {
+                $chatBox.scrollTop($chatBox[0].scrollHeight);
+            }
+            return $messageElement; // return jQuery element for callers if needed
         }
-
-
 
         function playTTS(button) {
             console.debug("[TTS] Play button clicked");
