@@ -253,7 +253,8 @@
         const $target = $targetAI.length ? $targetAI : $aiMessageElement;
 
         // prepare placeholder in target
-                        $target.html(`<strong>AI:</strong><div class="thinking-container"><button class="toggle-thinking" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`);
+                        // initially hide thinking container and its toggle until we actually receive <think> content
+                        $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`);
 
         fetch('/regenerate', {
             method: 'POST',
@@ -280,7 +281,9 @@
 
             function appendThinking(text) {
                 if (!text) return;
+                // Reveal the thinking UI only when we actually have thinking content
                 $thinkingWrap.show();
+                $thinkingWrap.find('.toggle-thinking').show();
                 $thinkingContent.text($thinkingContent.text() + text);
             }
 
@@ -817,8 +820,8 @@
                 const decoder = new TextDecoder('utf-8');
 
                 // Add AI message placeholder with thinking container
-                    appendMessage(
-                    `<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`,
+                appendMessage(
+                    `<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`,
                     'ai-message'
                 );
                 const $targetElement = $('.ai-message:last-child');
