@@ -247,8 +247,15 @@
 
         const userText = $previousUserMessage.find('.user-message-text').text().replace(/^<strong>You:<\/strong>\s*/,'').trim() || $previousUserMessage.text().trim();
 
-        // compute pair index (position among user-message elements) and choose target AI element
-        const pairIndex = $('.message.user-message').index($previousUserMessage);
+        // compute pair index (position among user-message elements) using DOM to avoid
+        // jQuery edge-cases where index() can return -1 for wrapped nodes
+        const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
+        let pairIndex = userMsgNodes.indexOf($previousUserMessage[0]);
+        if (pairIndex === -1) {
+            // Fallback: try matching by comparing text content if direct node match fails
+            const prevText = ($previousUserMessage.find('.user-message-text').text() || '').trim();
+            pairIndex = userMsgNodes.findIndex(n => (n.querySelector('.user-message-text') || {}).textContent?.trim() === prevText);
+        }
         const $targetAI = $('.ai-message').eq(pairIndex);
         const $target = $targetAI.length ? $targetAI : $aiMessageElement;
 
