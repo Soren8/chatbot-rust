@@ -601,9 +601,30 @@ def regenerate():
 
     logger.info(f"Received regenerate request. Session: {session_id}")
 
-    # Remove the last response from history
-    if user_session["history"] and user_session["history"][-1][0] == user_message:
-        user_session["history"].pop()
+    # Allow regenerating a specific pair by index. If `pair_index` is provided,
+    # remove that item so we can replace it. Otherwise fall back to removing
+    # the last item if it matches the provided user_message (legacy behavior).
+    pair_index = request.json.get("pair_index", None)
+    insertion_index = None
+    if pair_index is not None:
+        try:
+            pair_index = int(pair_index)
+            if 0 <= pair_index < len(user_session.get("history", [])):
+                logger.debug(f"Regenerate requested for index {pair_index}")
+                user_session["history"].pop(pair_index)
+                insertion_index = pair_index
+            else:
+                logger.debug(f"pair_index {pair_index} out of range; falling back to last-item behavior")
+                pair_index = None
+        except Exception:
+            logger.exception("Invalid pair_index provided; falling back to last-item behavior")
+            pair_index = None
+
+    if pair_index is None:
+        # Remove the last response from history if it matches the provided user_message
+        if user_session["history"] and user_session["history"][-1][0] == user_message:
+            user_session["history"].pop()
+            insertion_index = len(user_session["history"])  # append position
 
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
