@@ -311,7 +311,14 @@
 
             function read() {
                 reader.read().then(({done, value}) => {
-                    if (done) return;
+                    if (done) {
+                        // enable regenerate/play buttons when stream ends
+                        try {
+                            $aiMessageElement.find('.regenerate-button, .play-button').prop('disabled', false);
+                            $aiMessageElement.find('.play-button').html('<i class="bi bi-play-fill"></i>');
+                        } catch (e) { console.debug('enable buttons on done error', e); }
+                        return;
+                    }
                     buffer += decoder.decode(value, {stream:true});
                     processBuffer();
                     // auto-scroll if near bottom
@@ -323,6 +330,9 @@
                     read();
                 }).catch(err => {
                     console.error('Stream read error', err);
+                    try {
+                        $aiMessageElement.find('.regenerate-button, .play-button').prop('disabled', false);
+                    } catch (e) {}
                 });
             }
 
