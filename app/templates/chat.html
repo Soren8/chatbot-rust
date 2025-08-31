@@ -253,7 +253,7 @@
         const $target = $targetAI.length ? $targetAI : $aiMessageElement;
 
         // prepare placeholder in target
-        $target.html(`<strong>AI:</strong><div class="thinking-container"><button class="toggle-thinking" onclick="toggleThinking(this)">▶ Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`);
+                        $target.html(`<strong>AI:</strong><div class="thinking-container"><button class="toggle-thinking" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`);
 
         fetch('/regenerate', {
             method: 'POST',
@@ -817,8 +817,8 @@
                 const decoder = new TextDecoder('utf-8');
 
                 // Add AI message placeholder with thinking container
-                appendMessage(
-                    `<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" onclick="toggleThinking(this)">▶ Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`,
+                    appendMessage(
+                    `<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`,
                     'ai-message'
                 );
                 const $targetElement = $('.ai-message:last-child');
@@ -1000,10 +1000,10 @@
             const $contentDiv = $button.next();
             if ($contentDiv.css('display') === 'none') {
                 $contentDiv.css('display', 'block');
-                $button.text('▼ Hide Thinking');
+                $button.html('<i class="bi bi-caret-down-fill"></i> Hide Thinking');
             } else {
                 $contentDiv.css('display', 'none');
-                $button.text('▶ Show Thinking');
+                $button.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
             }
         }
         
