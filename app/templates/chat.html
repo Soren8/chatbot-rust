@@ -886,10 +886,10 @@
                     'ai-message'
                 );
                 const $targetElement = $('.ai-message:last-child');
-                // Use raw DOM elements here so appendVisible/appendThinking (which use textContent)
-                const messageTextElement = $targetElement.find('.ai-message-text')[0];
-                const thinkingContainerWrapper = $targetElement.find('.thinking-container')[0];
-                const thinkingContentElement = $targetElement.find('.thinking-content')[0];
+                // Use jQuery objects so appendVisible/appendThinking can use jQuery APIs
+                const $messageTextElement = $targetElement.find('.ai-message-text');
+                const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
+                const $thinkingContentElement = $targetElement.find('.thinking-content');
 
                 let buffer = '';
                 let state = 'visible'; // 'visible' or 'thinking'
@@ -954,10 +954,11 @@
                     if (!content) return;
                     console.debug(`[VISIBLE] Appending: ${JSON.stringify(content)}`);
                     if (!hasWrittenToDOM) {
-                        messageTextElement.innerHTML = escapeHTML(content);
+                        $messageTextElement.text(content);
                         hasWrittenToDOM = true;
                     } else {
-                        messageTextElement.innerHTML += escapeHTML(content);
+                        // append as text to avoid HTML interpretation
+                        $messageTextElement.text($messageTextElement.text() + content);
                     }
                 }
 
@@ -965,11 +966,11 @@
                     if (!content) return;
                     console.debug(`[THINKING] Appending: ${JSON.stringify(content)}`);
                     if (!hasWrittenToDOM) {
-                        messageTextElement.innerHTML = ''; // Clear "Thinking..."
+                        $messageTextElement.text(''); // Clear "Thinking..."
                         hasWrittenToDOM = true;
                     }
-                    thinkingContainerWrapper.style.display = 'block';
-                    thinkingContentElement.innerHTML += escapeHTML(content);
+                    $thinkingContainerWrapper.show();
+                    $thinkingContentElement.text($thinkingContentElement.text() + content);
                 }
 
                 function readStream() {
