@@ -673,8 +673,16 @@ def regenerate():
                 if response_text.strip():
                     # Remove thinking text from final response before storing in history
                     clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
-                    user_session["history"].append((user_message, clean_response))
-                    logger.info("Response added to history")
+                    # If we determined an insertion_index earlier, insert there; otherwise append
+                    try:
+                        if insertion_index is not None:
+                            user_session["history"].insert(insertion_index, (user_message, clean_response))
+                        else:
+                            user_session["history"].append((user_message, clean_response))
+                        logger.info("Response added to history at index %s", insertion_index)
+                    except Exception:
+                        logger.exception("Failed to insert regenerated response into history; appending instead")
+                        user_session["history"].append((user_message, clean_response))
                     
                     # Save history if user is logged in
                     if is_logged_in:
