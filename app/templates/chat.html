@@ -240,6 +240,99 @@
         previousModel = $modelSelect.val();
     }
     
+    function regenerateMessage(button) {
+        const $aiMessageElement = $(button).closest('.message');
+        const $previousUserMessage = $aiMessageElement.prev('.message.user-message');
+        if ($previousUserMessage.length === 0) return;
+
+        const userText = $previousUserMessage.find('.user-message-text').text().replace(/^<strong>You:<\/strong>\s*/,'').trim() || $previousUserMessage.text().trim();
+
+        // prepare placeholder
+        $aiMessageElement.html(`<strong>AI:</strong><div class="thinking-container"><button class="toggle-thinking" onclick="toggleThinking(this)">▶ Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`);
+
+        fetch('/regenerate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message: userText, system_prompt: $('#user-system-prompt').val(), set_name: $('#set-selector').val() || 'default', model_name: $('#modelSelect').val() })
+        })
+        .then(response => {
+            if (!response.ok) throw new Error('Network response was not ok');
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+
+            const $msgText = $aiMessageElement.find('.ai-message-text');
+            const $thinkingWrap = $aiMessageElement.find('.thinking-container');
+            const $thinkingContent = $aiMessageElement.find('.thinking-content');
+
+            let buffer = '';
+            let state = 'visible';
+
+            function appendVisible(text) {
+                if (!text) return;
+                if ($msgText.text() === 'Thinking...' || $msgText.text().trim() === '') $msgText.text(text);
+                else $msgText.text($msgText.text() + text);
+            }
+
+            function appendThinking(text) {
+                if (!text) return;
+                $thinkingWrap.show();
+                $thinkingContent.text($thinkingContent.text() + text);
+            }
+
+            function processBuffer() {
+                while (buffer.length > 0) {
+                    if (state === 'visible') {
+                        const tagStart = buffer.indexOf('<think>');
+                        if (tagStart !== -1) {
+                            appendVisible(buffer.substring(0, tagStart));
+                            buffer = buffer.substring(tagStart + '<think>'.length);
+                            state = 'thinking';
+                            continue;
+                        } else {
+                            appendVisible(buffer);
+                            buffer = '';
+                            break;
+                        }
+                    } else {
+                        const tagEnd = buffer.indexOf('</think>');
+                        if (tagEnd !== -1) {
+                            appendThinking(buffer.substring(0, tagEnd));
+                            buffer = buffer.substring(tagEnd + '</think>'.length);
+                            state = 'visible';
+                            continue;
+                        } else {
+                            appendThinking(buffer);
+                            buffer = '';
+                            break;
+                        }
+                    }
+                }
+            }
+
+            function read() {
+                reader.read().then(({done, value}) => {
+                    if (done) return;
+                    buffer += decoder.decode(value, {stream:true});
+                    processBuffer();
+                    // auto-scroll if near bottom
+                    const $chatBox = $('#chat-box');
+                    if ($chatBox.length) {
+                        const nearBottom = ($chatBox.scrollTop() + $chatBox.innerHeight() >= $chatBox[0].scrollHeight - 50);
+                        if (nearBottom) $chatBox.scrollTop($chatBox[0].scrollHeight);
+                    }
+                    read();
+                }).catch(err => {
+                    console.error('Stream read error', err);
+                });
+            }
+
+            read();
+        })
+        .catch(err => {
+            console.error('Regenerate fetch error', err);
+            $aiMessageElement.html(`<strong>AI:</strong> <span class="error-message">Error: ${err.message}</span>`);
+        });
+    }
 
     function regenerateMessage(button) {
         const $aiMessageElement = $(button).closest('.message');
