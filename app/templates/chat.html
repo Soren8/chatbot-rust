@@ -886,9 +886,10 @@
                     'ai-message'
                 );
                 const $targetElement = $('.ai-message:last-child');
-                const $messageTextElement = $targetElement.find('.ai-message-text');
-                const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
-                const $thinkingContentElement = $targetElement.find('.thinking-content');
+                // Use raw DOM elements here so appendVisible/appendThinking (which use textContent)
+                const messageTextElement = $targetElement.find('.ai-message-text')[0];
+                const thinkingContainerWrapper = $targetElement.find('.thinking-container')[0];
+                const thinkingContentElement = $targetElement.find('.thinking-content')[0];
 
                 let buffer = '';
                 let state = 'visible'; // 'visible' or 'thinking'
