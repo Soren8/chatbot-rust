@@ -246,7 +246,7 @@
         if ($previousUserMessage.length === 0) return;
 
         // Extract plain user text and strip any leading "You:" prefix (text-only, not HTML)
-        const userText = ($previousUserMessage.find('.user-message-text').text() || $previousUserMessage.text() || '').replace(/^\s*You:\s*/, '').trim();
+        const userText = ($previousUserMessage.attr('data-original') || ($previousUserMessage.find('.user-message-text').text() || $previousUserMessage.text() || '').replace(/^\s*You:\s*/, '')).trim();
 
         // compute pair index (position among user-message elements) using DOM to avoid
         // jQuery edge-cases where index() can return -1 for wrapped nodes
