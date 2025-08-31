@@ -121,54 +121,41 @@
 
     <script>
         // Show settings by default on md+ screens, collapse by default on small screens
-        document.addEventListener('DOMContentLoaded', function() {
+        $(function() {
             try {
-                var collapseEl = document.getElementById('settingsCollapse');
-                var settingsCol = document.getElementById('settings-col');
-                var chatArea = document.getElementById('chat-area');
-                if (!collapseEl || !settingsCol || !chatArea) return;
+                var $collapseEl = $('#settingsCollapse');
+                var collapseEl = $collapseEl[0];
+                var $settingsCol = $('#settings-col');
+                var settingsCol = $settingsCol[0];
+                var $chatArea = $('#chat-area');
+                var chatArea = $chatArea[0];
+                if (!$collapseEl.length || !$settingsCol.length || !$chatArea.length) return;
 
                 var bsCollapse = bootstrap.Collapse.getOrCreateInstance(collapseEl, {toggle:false});
 
                 function applyState(open) {
                     // When the settings collapse is closed, hide the settings column on ALL sizes
-                    if (!open) {
-                        settingsCol.classList.add('d-none');
-                    } else {
-                        settingsCol.classList.remove('d-none');
-                    }
+                    if (!open) { $settingsCol.addClass('d-none'); } else { $settingsCol.removeClass('d-none'); }
 
                     // Adjust chat area width on md+ when settings are shown/hidden
-                    if (window.innerWidth >= 768) {
-                        if (!open) {
-                            chatArea.classList.remove('col-md-8');
-                            chatArea.classList.add('col-md-12');
-                        } else {
-                            chatArea.classList.remove('col-md-12');
-                            chatArea.classList.add('col-md-8');
-                        }
+                    if ($(window).width() >= 768) {
+                        if (!open) { $chatArea.removeClass('col-md-8').addClass('col-md-12'); }
+                        else { $chatArea.removeClass('col-md-12').addClass('col-md-8'); }
                     } else {
-                        // On small screens ensure chat area uses the md-8 class for consistency when switching
-                        chatArea.classList.remove('col-md-12');
-                        chatArea.classList.add('col-md-8');
+                        $chatArea.removeClass('col-md-12').addClass('col-md-8');
                     }
                 }
-
                 // Initialize based on viewport
-                if (window.innerWidth >= 768) {
-                    bsCollapse.show();
-                } else {
-                    bsCollapse.hide();
-                }
-                applyState(bsCollapse._isShown || collapseEl.classList.contains('show'));
+                if ($(window).width() >= 768) { bsCollapse.show(); } else { bsCollapse.hide(); }
+                applyState(bsCollapse._isShown || $collapseEl.hasClass('show'));
 
-                collapseEl.addEventListener('shown.bs.collapse', function() { applyState(true); });
-                collapseEl.addEventListener('hidden.bs.collapse', function() { applyState(false); });
+                $collapseEl.on('shown.bs.collapse', function() { applyState(true); });
+                $collapseEl.on('hidden.bs.collapse', function() { applyState(false); });
 
                 // On resize ensure visible on md+ and update layout
-                window.addEventListener('resize', function() {
-                    if (window.innerWidth >= 768) bsCollapse.show();
-                    applyState(collapseEl.classList.contains('show'));
+                $(window).on('resize', function() {
+                    if ($(window).width() >= 768) bsCollapse.show();
+                    applyState($collapseEl.hasClass('show'));
                 });
             } catch (e) { console.debug('settings collapse init error', e); }
         });
@@ -176,31 +163,27 @@
 
     <script>
         // Ensure input stays visible on mobile when focusing the keyboard
-        document.addEventListener('DOMContentLoaded', function() {
+        $(function() {
             try {
-                var input = document.getElementById('user-input');
-                var chatBox = document.getElementById('chat-box');
-                if (!input || !chatBox) return;
+                var $input = $('#user-input');
+                var $chatBox = $('#chat-box');
+                if (!$input.length || !$chatBox.length) return;
 
                 function updateInputHeight() {
                     try {
-                        var h = input.getBoundingClientRect().height || 56;
-                        document.documentElement.style.setProperty('--chat-input-height', h + 'px');
+                        var h = $input[0].getBoundingClientRect().height || 56;
+                        $(':root').css('--chat-input-height', h + 'px');
                         // Ensure chat box padding accounts for the input
-                        chatBox.style.paddingBottom = 'calc(' + h + 'px + env(safe-area-inset-bottom, 0))';
+                        $chatBox.css('padding-bottom', 'calc(' + h + 'px + env(safe-area-inset-bottom, 0))');
                     } catch (e) {}
                 }
 
-                input.addEventListener('focus', function() {
-                    // update heights and scroll input into view after keyboard appears
+                $input.on('focus', function() {
                     updateInputHeight();
-                    setTimeout(function() {
-                        try { input.scrollIntoView({block: 'center'}); } catch (e) {}
-                    }, 300);
+                    setTimeout(function() { try { $input[0].scrollIntoView({block: 'center'}); } catch (e) {} }, 300);
                 });
 
-                // Also update on orientation change / resize
-                window.addEventListener('resize', updateInputHeight);
+                $(window).on('resize', updateInputHeight);
                 updateInputHeight();
             } catch (e) { console.debug('mobile input helper error', e); }
         });
