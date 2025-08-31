@@ -394,8 +394,14 @@ def regenerate():
                     # Encode the chunk to bytes before yielding
                     yield chunk.encode('utf-8')
 
-                user_session["history"].append((user_message, response_text))
-                logger.info(f"Regenerated response. Length: {len(response_text)} characters")
+                # Strip any <think> blocks before storing the final AI text
+                clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
+                if insertion_index is not None:
+                    # Insert regenerated pair back at the requested index
+                    user_session["history"].insert(insertion_index, (user_message, clean_response))
+                else:
+                    user_session["history"].append((user_message, clean_response))
+                logger.info(f"Regenerated response. Length: {len(clean_response)} characters; inserted_at={insertion_index}")
                 
                 # Save chat history to the active set if logged in
                 if "username" in session:
