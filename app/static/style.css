@@ -540,3 +540,10 @@ a:hover, a:focus {
     min-height: 0;
     height: 100%;
 }
+
+/* Ensure body fills the viewport, supporting WebKit safe-area handling */
+body {
+    height: 100vh;
+    height: -webkit-fill-available;
+    min-height: -webkit-fill-available;
+}
