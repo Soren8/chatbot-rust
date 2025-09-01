@@ -62,6 +62,34 @@ def register_routes(app):
     register_tts_routes(bp)
     app.register_blueprint(bp)
 
+
+def _is_model_allowed_for_user(provider_name: str, username: str) -> (bool, str):
+    """Return (allowed, message) whether the current user may use provider_name.
+
+    - If provider is not found, return (False, msg)
+    - If provider tier is 'premium' and user is not premium, return (False, msg)
+    - Otherwise return (True, "")
+    """
+    # Find provider config by provider_name
+    provider = next((llm for llm in Config.LLM_PROVIDERS if llm.get("provider_name") == provider_name), None)
+    if not provider:
+        return False, "Requested model not found"
+
+    model_tier = provider.get("tier", "free")
+    # Treat unknown username as guest/free
+    if not username:
+        user_tier = "free"
+    else:
+        try:
+            user_tier = get_user_tier(username)
+        except Exception:
+            user_tier = "free"
+
+    if model_tier == "premium" and user_tier != "premium":
+        return False, "This model requires a Premium account"
+
+    return True, ""
+
 @bp.before_app_request
 def rate_limit():
     ip = request.remote_addr
@@ -147,11 +175,19 @@ def home():
         user_memory = user_session["memory"]
         user_system_prompt = user_session["system_prompt"]
 
+    # Determine user tier and filter available models for non-premium users
+    user_tier = get_user_tier(username) if logged_in else "free"
+    if user_tier != "premium":
+        # Exclude premium-tier providers from the list shown to free users
+        filtered_llms = [llm for llm in Config.LLM_PROVIDERS if llm.get("tier", "free") != "premium"]
+    else:
+        filtered_llms = Config.LLM_PROVIDERS
+
     return render_template(
         "chat.html",
         logged_in=logged_in,
-        user_tier=get_user_tier(username) if logged_in else "free",
-        available_llms=Config.LLM_PROVIDERS,
+        user_tier=user_tier,
+        available_llms=filtered_llms,
         Config=Config
     )
 
@@ -508,6 +544,13 @@ def chat():
     # Get the selected model name from the request before entering the generator function
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
     logger.debug(f"Using selected model: {selected_model}")
+
+    # Validate model selection against user tier
+    username = session.get("username") if "username" in session else None
+    allowed, msg = _is_model_allowed_for_user(selected_model, username)
+    if not allowed:
+        logger.warning(f"Model selection not allowed for user {username}: {selected_model} - {msg}")
+        return jsonify({"error": msg}), 403
     
     # Get current history from session
     current_history = user_session["history"]
@@ -634,6 +677,13 @@ def regenerate():
     # Get the selected model name from the request before entering the generator function
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
     logger.debug(f"Regenerating with selected model: {selected_model}")
+
+    # Validate model selection against user tier
+    username = session.get("username") if "username" in session else None
+    allowed, msg = _is_model_allowed_for_user(selected_model, username)
+    if not allowed:
+        logger.warning(f"Regenerate request not allowed for user {username}: {selected_model} - {msg}")
+        return jsonify({"error": msg}), 403
     
     # Capture logged-in state before entering generator context
     is_logged_in = "username" in session
