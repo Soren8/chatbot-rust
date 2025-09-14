@@ -178,7 +178,7 @@ window.regenerateMessage = function regenerateMessage(button) {
   }
   const $targetAI = $('.ai-message').eq(pairIndex);
   const $target = $targetAI.length ? $targetAI : $aiMessageElement;
-  $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`);
+  $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`);
 
   fetch('/regenerate', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -274,6 +274,9 @@ window.regenerateMessage = function regenerateMessage(button) {
 $(document).ready(function() {
   disablePremiumModels();
 
+  // Validate model tier on selection change (replacing inline onchange)
+  $('#modelSelect').on('change', validateModelTier);
+
   // Delegation for play and delete
   $(document).on('click', function(event) {
     const target = event.target;
@@ -292,6 +295,10 @@ $(document).ready(function() {
         .catch(()=>{});
     }
   });
+
+  // Delegated handlers replacing inline onclicks
+  $(document).on('click', '.regenerate-button', function() { window.regenerateMessage(this); });
+  $(document).on('click', '.toggle-thinking', function() { window.toggleThinking(this); });
 
   // Load sets for logged-in users
   if (window.APP_DATA.loggedIn) {
@@ -318,7 +325,7 @@ $(document).ready(function() {
           if (data.history && data.history.length > 0) {
             data.history.forEach(([userMsg, aiMsg]) => {
               appendMessage(userMsg, 'user-message');
-              appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${escapeHTML(aiMsg)}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\" onclick=\"regenerateMessage(this)\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\" onclick=\"playTTS(this)\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
+              appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${escapeHTML(aiMsg)}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
             });
             setTimeout(function() { try { $('#chat-box').scrollTop($('#chat-box')[0].scrollHeight); } catch (e) {} }, 0);
           }
@@ -395,7 +402,7 @@ $(document).ready(function() {
       .then(response => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
-        appendMessage(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;" onclick="toggleThinking(this)"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" onclick="regenerateMessage(this)" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" onclick="playTTS(this)" disabled><i class="bi bi-play-fill"></i></button></div>`, 'ai-message');
+        appendMessage(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`, 'ai-message');
         const $targetElement = $('.ai-message:last-child');
         const $messageTextElement = $targetElement.find('.ai-message-text');
         const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
@@ -514,4 +521,3 @@ window.toggleThinking = function toggleThinking(button) {
     $button.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
   }
 }
-
