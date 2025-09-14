@@ -45,6 +45,7 @@ This document outlines the high-level architecture and planned enhancements for 
   - Avoid storing raw passwords in the session; use tokens or derive keys post-login.
   - Use Flask-Login and Flask-Session (backed by Redis or a database in production) instead of custom in-memory storage.
   - Ensure password hashing uses a strong KDF (bcrypt or Argon2) with per-user salts.
+  - CSP tightening (styles): consider removing `style-src 'unsafe-inline'` by migrating inline style attributes to CSS classes and avoiding JS-driven inline style mutations (e.g., prefer class toggles over element.style). Skipped for now; revisit if threat model changes.
 
 - **Rate Limiting & Concurrency**
   - Replace custom IP-based rate limiter with a battle-tested extension like `Flask-Limiter` (support per-user and global rate caps).
