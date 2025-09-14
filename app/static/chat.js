@@ -521,3 +521,22 @@ window.toggleThinking = function toggleThinking(button) {
     $button.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
   }
 }
+// Initialize config from inline template if globals are not set
+(function initConfig() {
+  if (!window.APP_DATA || !window.DEFAULT_SYSTEM_PROMPT) {
+    const tpl = document.getElementById('app-data');
+    if (tpl) {
+      try {
+        const cfg = JSON.parse(tpl.textContent || '{}');
+        window.APP_DATA = window.APP_DATA || {
+          userTier: cfg.userTier || 'free',
+          availableModels: cfg.availableModels || [],
+          loggedIn: !!cfg.loggedIn,
+        };
+        window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || cfg.defaultSystemPrompt || '';
+      } catch (e) {
+        console.debug('APP_DATA parse error', e);
+      }
+    }
+  }
+})();
