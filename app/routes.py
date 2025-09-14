@@ -154,8 +154,8 @@ def login():
             # Store encryption password server-side only
             USER_PASSWORDS[username] = password
             # Load user memory and system prompt
-            user_memory = load_user_memory(username)
-            user_system_prompt = load_user_system_prompt(username)
+            user_memory = load_user_memory(username, "default", password)
+            user_system_prompt = load_user_system_prompt(username, "default", password)
             sessions[username]["memory"] = user_memory
             sessions[username]["system_prompt"] = user_system_prompt
             sessions[username]["system_prompt_saved"] = user_system_prompt
@@ -323,8 +323,8 @@ def delete_message():
                             logger.exception("Failed to read or parse sets.json for %s", username)
                     else:
                         logger.debug("No sets.json for user %s (expected at %s)", username, sets_file)
-                    # Use stored password only if the set is encrypted
-                    password_to_use = USER_PASSWORDS.get(username) if encrypted else None
+                    # Use stored password for encryption
+                    password_to_use = USER_PASSWORDS.get(username)
                     logger.debug("password_to_use provided: %s", bool(password_to_use))
                 except Exception:
                     logger.exception("Error determining encryption for set '%s'", set_name)
@@ -377,7 +377,7 @@ def load_set():
     
     # Load data
     logger.debug("Loading memory...")
-    memory = load_user_memory(username, set_name)
+    memory = load_user_memory(username, set_name, password if encrypted else None)
     logger.debug("Loading system prompt...")
     system_prompt = load_user_system_prompt(username, set_name, password if encrypted else None)
     logger.debug("Loading chat history...")
@@ -422,7 +422,7 @@ def update_memory():
     if "username" in session:
         # Logged-in user - save to disk
         username = session["username"]
-        password = USER_PASSWORDS.get(username) if encrypted else None
+        password = USER_PASSWORDS.get(username)
         
         logger.debug(f"Updating memory for user {username}, set {set_name}. "
                     f"Memory length: {len(user_memory)}")
@@ -461,7 +461,7 @@ def update_system_prompt():
     if "username" in session:
         # Logged-in user - save to disk
         username = session["username"]
-        password = USER_PASSWORDS.get(username) if encrypted else None
+        password = USER_PASSWORDS.get(username)
         
         logger.debug(f"Updating system prompt for user {username}, set {set_name}. "
                     f"Prompt length: {len(system_prompt)}")
@@ -532,7 +532,7 @@ def chat():
         if "username" in session:
             set_name = request.json.get("set_name", "default")
             encrypted = request.json.get("encrypted", False)
-            password = USER_PASSWORDS.get(session["username"]) if encrypted else None
+            password = USER_PASSWORDS.get(session["username"]) 
             save_user_system_prompt(session["username"], new_system_prompt, set_name, password if encrypted else None)
 
     # Update system prompt if it has changed
@@ -541,7 +541,7 @@ def chat():
         if "username" in session:
             set_name = request.json.get("set_name", "default")
             encrypted = request.json.get("encrypted", False)
-            password = USER_PASSWORDS.get(session["username"]) if encrypted else None
+            password = USER_PASSWORDS.get(session["username"]) 
             save_user_system_prompt(session["username"], new_system_prompt, set_name, password if encrypted else None)
 
     if response_lock.locked():

@@ -133,7 +133,7 @@ def get_user_sets(username: str) -> dict:
     with sets_file.open("r") as f:
         return json.load(f)
 
-def load_user_memory(username: str, set_name: str = "default") -> str:
+def load_user_memory(username: str, set_name: str = "default", password: str = None) -> str:
     # Check if user is logged in
     from flask import session
     if 'username' not in session or session['username'] != username:
@@ -156,12 +156,11 @@ def load_user_memory(username: str, set_name: str = "default") -> str:
         if os.path.getsize(filepath) == 0:
             return ""
             
-        # Get password from session to derive encryption key
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for decryption")
+        # Require explicit password for decryption
+        if not password:
+            raise ValueError("Password required for decryption")
         salt = get_user_salt(username)
-        key = _get_encryption_key(session['password'], salt)
+        key = _get_encryption_key(password, salt)
         f = Fernet(key)
         with open(filepath, "rb") as file:
             encrypted_data = file.read()
@@ -199,12 +198,9 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     sets_file.write_text(json.dumps(sets), encoding='utf-8')
     logger.debug(f"Updated sets.json for {username}/{set_name}")
     
-    # Get password from session if not provided
+    # Require explicit password for encryption
     if not password:
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for encryption")
-        password = session['password']
+        raise ValueError("Password required for encryption")
     
     # Always encrypt using password
     salt = get_user_salt(username)
@@ -246,12 +242,7 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             
         try:
             if not password:
-                # Try to get password from session if not provided
-                from flask import session
-                if 'password' not in session:
-                    logger.error(f"Password not available for decryption for {username}")
-                    return Config.DEFAULT_SYSTEM_PROMPT
-                password = session['password']
+                raise ValueError("Password required for decryption")
             
             salt = get_user_salt(username)
             key = _get_encryption_key(password, salt)
@@ -306,10 +297,7 @@ def save_user_chat_history(username: str, full_history: list, set_name: str = "d
     logger.debug(f"Updated sets.json for {username}/{set_name}")
     
     if not password:
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for encryption")
-        password = session['password']
+        raise ValueError("Password required for encryption")
     
     salt = get_user_salt(username)
     key = _get_encryption_key(password, salt)
@@ -350,12 +338,7 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             
         try:
             if not password:
-                # Try to get password from session if not provided
-                from flask import session
-                if 'password' not in session:
-                    logger.error(f"Password not available for decryption for {username}")
-                    return []
-                password = session['password']
+                raise ValueError("Password required for decryption")
             
             salt = get_user_salt(username)
             key = _get_encryption_key(password, salt)
@@ -410,10 +393,7 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
         json.dump(sets, f)
     
     if not password:
-        from flask import session
-        if 'password' not in session:
-            raise ValueError("Password not available for encryption")
-        password = session['password']
+        raise ValueError("Password required for encryption")
     
     salt = get_user_salt(username)
     key = _get_encryption_key(password, salt)
