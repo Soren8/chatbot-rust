@@ -40,10 +40,11 @@ class Config:
 
     # Optional SRI hashes for CDN assets (set via env vars)
     CDN_SRI = {
-        "jquery": os.getenv("SRI_JQUERY", ""),
-        "bootstrap_css": os.getenv("SRI_BOOTSTRAP_CSS", ""),
-        "bootstrap_js": os.getenv("SRI_BOOTSTRAP_JS", ""),
-        "bootstrap_icons_css": os.getenv("SRI_BOOTSTRAP_ICONS_CSS", ""),
+        # Defaults pinned to current CDN versions; env can override if needed
+        "jquery": os.getenv("SRI_JQUERY", "sha384-vtXRMe3mGCbOeY7l30aIg8H9p3GdeSe4IFlP6G8JMa7o7lXvnz3GFKzPxzJdPfGK"),
+        "bootstrap_css": os.getenv("SRI_BOOTSTRAP_CSS", "sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM"),
+        "bootstrap_js": os.getenv("SRI_BOOTSTRAP_JS", "sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz"),
+        "bootstrap_icons_css": os.getenv("SRI_BOOTSTRAP_ICONS_CSS", "sha384-Ay26V7L8bsJTsX9Sxclnvsn+hkdiwRnrjZJXqKmkIDobPgIIWBOVguEcQQLDuhfN"),
     }
 
     @classmethod
