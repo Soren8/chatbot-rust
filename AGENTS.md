@@ -12,6 +12,8 @@
 - **Architecture**: Follow the established pattern of provider abstraction through BaseLLMProvider
 - **Configuration**: Use app/config.py for configuration management, reference .config.yml
 - **Types**: Although not currently used, consider adding type hints for improved code clarity
+- **Dead code**: Prefer deleting unused code over commenting it out
+- **History**: Do not add comments about how code used to be; use git history
 
 ## Project Structure
 - `app/llm/`: LLM provider implementations (OpenAI, Ollama)
