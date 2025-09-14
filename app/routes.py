@@ -59,12 +59,61 @@ MAX_REQUESTS_PER_MINUTE = 60
 # Server-side store for sensitive per-user secrets (e.g., encryption password)
 # Keyed by username; do NOT store plaintext passwords in client-side cookies.
 USER_PASSWORDS = {}
+PASSWORD_TTL_SECONDS = Config.SESSION_TIMEOUT
+_password_cleanup_thread_started = False
+
+def _set_user_password(username: str, password: str):
+    USER_PASSWORDS[username] = {"password": password, "last_used": time.time()}
+
+def _get_user_password(username: str):
+    entry = USER_PASSWORDS.get(username)
+    if not entry:
+        return None
+    now = time.time()
+    if now - entry.get("last_used", 0) > PASSWORD_TTL_SECONDS:
+        # Expired — remove and require re-auth
+        try:
+            del USER_PASSWORDS[username]
+        except Exception:
+            pass
+        return None
+    # Touch last used
+    entry["last_used"] = now
+    return entry.get("password")
+
+def _cleanup_password_store():
+    now = time.time()
+    expired = [u for u, e in USER_PASSWORDS.items() if now - e.get("last_used", 0) > PASSWORD_TTL_SECONDS]
+    for u in expired:
+        try:
+            del USER_PASSWORDS[u]
+        except Exception:
+            pass
+
+def _password_cleanup_loop():
+    interval = max(60, min(300, PASSWORD_TTL_SECONDS // 2 or 60))
+    while True:
+        try:
+            _cleanup_password_store()
+        except Exception:
+            logging.getLogger(__name__).debug("Password cleanup loop error", exc_info=True)
+        time.sleep(interval)
+
+def start_password_cleanup_thread():
+    global _password_cleanup_thread_started
+    if _password_cleanup_thread_started:
+        return
+    t = threading.Thread(target=_password_cleanup_loop, name="password-cleanup", daemon=True)
+    t.start()
+    _password_cleanup_thread_started = True
 
 def register_routes(app):
     # Store the config in the blueprint
     bp.config = app.config
     register_tts_routes(bp)
     app.register_blueprint(bp)
+    # Start background password cleanup
+    start_password_cleanup_thread()
 
 
 def _is_model_allowed_for_user(provider_name: str, username: str) -> (bool, str):
@@ -115,7 +164,7 @@ def ensure_full_history_loaded(user_session):
     """Ensure complete history is loaded for logged-in users with empty session history"""
     if "username" in session and not user_session["history"]:
         set_name_temp = request.json.get("set_name", "default")
-        password_temp = USER_PASSWORDS.get(session.get("username")) if "username" in session else None
+        password_temp = _get_user_password(session.get("username")) if "username" in session else None
         logger.debug(f"History is empty, reloading from disk. Set: {set_name_temp}")
         
         history = load_user_chat_history(session["username"], set_name_temp, password_temp)
@@ -152,7 +201,7 @@ def login():
         if validate_user(username, password):
             session["username"] = username
             # Store encryption password server-side only
-            USER_PASSWORDS[username] = password
+            _set_user_password(username, password)
             # Load user memory and system prompt
             user_memory = load_user_memory(username, "default", password)
             user_system_prompt = load_user_system_prompt(username, "default", password)
@@ -324,7 +373,7 @@ def delete_message():
                     else:
                         logger.debug("No sets.json for user %s (expected at %s)", username, sets_file)
                     # Use stored password for encryption
-                    password_to_use = USER_PASSWORDS.get(username)
+                    password_to_use = _get_user_password(username)
                     logger.debug("password_to_use provided: %s", bool(password_to_use))
                 except Exception:
                     logger.exception("Error determining encryption for set '%s'", set_name)
@@ -351,7 +400,7 @@ def load_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
-    password = USER_PASSWORDS.get(username)  # Get the stored password
+    password = _get_user_password(username)  # Get the stored password
     
     logger.debug(f"Loading set '{set_name}' for user '{username}'")
     
@@ -422,7 +471,7 @@ def update_memory():
     if "username" in session:
         # Logged-in user - save to disk
         username = session["username"]
-        password = USER_PASSWORDS.get(username)
+        password = _get_user_password(username)
         
         logger.debug(f"Updating memory for user {username}, set {set_name}. "
                     f"Memory length: {len(user_memory)}")
@@ -461,7 +510,7 @@ def update_system_prompt():
     if "username" in session:
         # Logged-in user - save to disk
         username = session["username"]
-        password = USER_PASSWORDS.get(username)
+        password = _get_user_password(username)
         
         logger.debug(f"Updating system prompt for user {username}, set {set_name}. "
                     f"Prompt length: {len(system_prompt)}")
@@ -521,7 +570,7 @@ def chat():
     ensure_full_history_loaded(user_session)
 
     # Get password from server-side store - needed for encryption
-    password = USER_PASSWORDS.get(session.get("username")) if "username" in session else None
+    password = _get_user_password(session.get("username")) if "username" in session else None
     if not password and not session_id.startswith("guest_"):
         logger.error("No password available in session for logged-in user")
         return jsonify({"error": "Session expired or invalid. Please log in again."}), 401
@@ -532,7 +581,7 @@ def chat():
         if "username" in session:
             set_name = request.json.get("set_name", "default")
             encrypted = request.json.get("encrypted", False)
-            password = USER_PASSWORDS.get(session["username"]) 
+            password = _get_user_password(session["username"]) 
             save_user_system_prompt(session["username"], new_system_prompt, set_name, password if encrypted else None)
 
     # Update system prompt if it has changed
@@ -541,7 +590,7 @@ def chat():
         if "username" in session:
             set_name = request.json.get("set_name", "default")
             encrypted = request.json.get("encrypted", False)
-            password = USER_PASSWORDS.get(session["username"]) 
+            password = _get_user_password(session["username"]) 
             save_user_system_prompt(session["username"], new_system_prompt, set_name, password if encrypted else None)
 
     if response_lock.locked():
@@ -554,7 +603,7 @@ def chat():
     # Get set_name and password before entering generator
     set_name = request.json.get("set_name", "default")
     encrypted = request.json.get("encrypted", False)
-    password = USER_PASSWORDS.get(session.get("username")) if "username" in session else None
+    password = _get_user_password(session.get("username")) if "username" in session else None
 
     # Get the selected model name from the request before entering the generator function
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
