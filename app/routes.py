@@ -183,11 +183,20 @@ def home():
     else:
         filtered_llms = Config.LLM_PROVIDERS
 
+    # Sanitize provider metadata for frontend (no secrets or base URLs)
+    available_llms = [
+        {
+            "provider_name": llm.get("provider_name", ""),
+            "tier": llm.get("tier", "free"),
+        }
+        for llm in filtered_llms
+    ]
+
     return render_template(
         "chat.html",
         logged_in=logged_in,
         user_tier=user_tier,
-        available_llms=filtered_llms,
+        available_llms=available_llms,
         Config=Config
     )
 
