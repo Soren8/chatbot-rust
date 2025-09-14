@@ -21,7 +21,7 @@
 - `data/`: Storage location for conversation data
 
 ## Scratchpad / Temp Files
-- Use `temp/` for ephemeral notes (e.g., TODOs); it’s gitignored.
+- Use `temp/` for ephemeral notes (e.g., TODOs); it’s gitignored; never reference `temp/` items in commit messages.
 
 ## Important Notes
 - Always validate provider configurations before committing
