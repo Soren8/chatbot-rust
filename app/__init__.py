@@ -25,6 +25,17 @@ def create_app():
     
     app = Flask(__name__)
     app.config.from_object(Config)
+
+    # Enforce secure cookie settings
+    app.config.update(
+        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+    )
+
+    # Fail fast if SECRET_KEY is missing or default
+    if not Config.SECRET_KEY or Config.SECRET_KEY == "default_secret_key":
+        raise RuntimeError("SECRET_KEY must be set to a strong value in production")
     
     # Configure third-party loggers
     logging.getLogger('werkzeug').setLevel(logging.WARNING)

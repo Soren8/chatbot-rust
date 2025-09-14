@@ -806,7 +806,7 @@
             }
 
             // Get values
-            const systemPrompt = $systemPromptElement.val() || {{ Config.DEFAULT_SYSTEM_PROMPT | tojson }};
+            const systemPrompt = $systemPromptElement.val() || {{ default_system_prompt | tojson }};
             const $setSelector = $('#set-selector');
             const activeSet = $setSelector.val() || 'default';
 
@@ -1035,7 +1035,7 @@
         
         {% if not logged_in %}
         // Initialize text areas for guest session
-        $('#user-system-prompt').val("{{ Config.DEFAULT_SYSTEM_PROMPT }}");
+        $('#user-system-prompt').val("{{ default_system_prompt }}");
         $('#user-memory').val("");
         {% endif %}
     </script>
