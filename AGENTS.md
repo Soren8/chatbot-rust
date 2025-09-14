@@ -1,4 +1,4 @@
-# CLAUDE.md - Development Guide
+# AGENTS.md - Development Guide
 
 ## Build & Run Commands
 - Start app (dev): `flask run` or `python -m app`
@@ -19,6 +19,9 @@
 - `app/chat_logic.py`: Core chat functionality
 - `app/routes.py`: Flask routes for the web interface
 - `data/`: Storage location for conversation data
+
+## Scratchpad / Temp Files
+- Use `temp/` for ephemeral notes (e.g., TODOs); it’s gitignored.
 
 ## Important Notes
 - Always validate provider configurations before committing
