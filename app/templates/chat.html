@@ -120,87 +120,19 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" {% if sri.bootstrap_js %}integrity="{{ sri.bootstrap_js }}" crossorigin="anonymous"{% else %}crossorigin="anonymous"{% endif %}></script>
 
     <script>
-        // Show settings by default on md+ screens, collapse by default on small screens
-        $(function() {
-            try {
-                var $collapseEl = $('#settingsCollapse');
-                var collapseEl = $collapseEl[0];
-                var $settingsCol = $('#settings-col');
-                var settingsCol = $settingsCol[0];
-                var $chatArea = $('#chat-area');
-                var chatArea = $chatArea[0];
-                if (!$collapseEl.length || !$settingsCol.length || !$chatArea.length) return;
-
-                var bsCollapse = bootstrap.Collapse.getOrCreateInstance(collapseEl, {toggle:false});
-
-                function applyState(open) {
-                    // When the settings collapse is closed, hide the settings column on ALL sizes
-                    if (!open) { $settingsCol.addClass('d-none'); } else { $settingsCol.removeClass('d-none'); }
-
-                    // Adjust chat area width on md+ when settings are shown/hidden
-                    if ($(window).width() >= 768) {
-                        if (!open) { $chatArea.removeClass('col-md-8').addClass('col-md-12'); }
-                        else { $chatArea.removeClass('col-md-12').addClass('col-md-8'); }
-                    } else {
-                        $chatArea.removeClass('col-md-12').addClass('col-md-8');
-                    }
-                }
-                // Initialize based on viewport
-                if ($(window).width() >= 768) { bsCollapse.show(); } else { bsCollapse.hide(); }
-                applyState(bsCollapse._isShown || $collapseEl.hasClass('show'));
-
-                $collapseEl.on('shown.bs.collapse', function() { applyState(true); });
-                $collapseEl.on('hidden.bs.collapse', function() { applyState(false); });
-
-                // On resize ensure visible on md+ and update layout
-                $(window).on('resize', function() {
-                    if ($(window).width() >= 768) bsCollapse.show();
-                    applyState($collapseEl.hasClass('show'));
-                });
-            } catch (e) { console.debug('settings collapse init error', e); }
-        });
+      // Inline config only; logic moved to /static/chat.js
+      window.APP_DATA = {
+        userTier: "{{ user_tier }}",
+        availableModels: {{ available_llms|default([])|tojson }},
+        loggedIn: {{ 'true' if logged_in else 'false' }}
+      };
+      window.DEFAULT_SYSTEM_PROMPT = {{ default_system_prompt | tojson }};
     </script>
+    <script src="/static/chat.js"></script>
 
-    <script>
-        // Ensure input stays visible on mobile when focusing the keyboard
-        $(function() {
-            try {
-                var $input = $('#user-input');
-                var $chatBox = $('#chat-box');
-                if (!$input.length || !$chatBox.length) return;
-
-                function updateInputHeight() {
-                    try {
-                        var h = $input[0].getBoundingClientRect().height || 56;
-                        $(':root').css('--chat-input-height', h + 'px');
-                        // Ensure chat box padding accounts for the input
-                        $chatBox.css('padding-bottom', 'calc(' + h + 'px + env(safe-area-inset-bottom, 0))');
-                    } catch (e) {}
-                }
-
-                $input.on('focus', function() {
-                    updateInputHeight();
-                    setTimeout(function() { try { $input[0].scrollIntoView({block: 'center'}); } catch (e) {} }, 300);
-                });
-
-                $(window).on('resize', updateInputHeight);
-                updateInputHeight();
-            } catch (e) { console.debug('mobile input helper error', e); }
-        });
-    </script>
+    
 
 <script>
-    function escapeHTML(str) {
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(str));
-        return div.innerHTML;
-    }
-
-    // App configuration data
-    const APP_DATA = {
-        userTier: "{{ user_tier }}",
-        availableModels: {{ available_llms|default([])|tojson }}
-    };
 
     // Track currently playing audio and its control button so we can stop it
     let CURRENT_AUDIO = null;
@@ -1033,11 +965,6 @@
             }
         }
         
-        {% if not logged_in %}
-        // Initialize text areas for guest session
-        $('#user-system-prompt').val("{{ default_system_prompt }}");
-        $('#user-memory').val("");
-        {% endif %}
     </script>
     <!-- jQuery and Bootstrap JS -->
     
