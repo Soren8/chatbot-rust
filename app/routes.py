@@ -191,7 +191,7 @@ def signup():
             return redirect(url_for("main.login"))
         else:
             return "User already exists.", 400
-    return render_template("signup.html")
+    return render_template("signup.html", sri=Config.CDN_SRI)
 
 @bp.route("/login", methods=["GET", "POST"])
 def login():
@@ -211,7 +211,7 @@ def login():
             return redirect(url_for("main.home"))
         else:
             return "Invalid credentials", 401
-    return render_template("login.html")
+    return render_template("login.html", sri=Config.CDN_SRI)
 
 @bp.route("/")
 def home():
@@ -251,8 +251,30 @@ def home():
         logged_in=logged_in,
         user_tier=user_tier,
         available_llms=available_llms,
-        default_system_prompt=Config.DEFAULT_SYSTEM_PROMPT
+        default_system_prompt=Config.DEFAULT_SYSTEM_PROMPT,
+        sri=Config.CDN_SRI
     )
+
+@bp.after_app_request
+def add_security_headers(response):
+    try:
+        csp = (
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'; "
+            "connect-src 'self'; "
+            "img-src 'self' data:; "
+            "font-src 'self' https://cdn.jsdelivr.net data:; "
+            "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+            "script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net 'unsafe-inline'"
+        )
+        response.headers.setdefault("Content-Security-Policy", csp)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+    except Exception:
+        logging.getLogger(__name__).debug("Failed to set security headers", exc_info=True)
+    return response
 
 @bp.route("/logout") 
 def logout():

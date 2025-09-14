@@ -38,6 +38,14 @@ class Config:
     DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant. Provide clear and concise answers to user queries."
     DEFAULT_LLM = None
 
+    # Optional SRI hashes for CDN assets (set via env vars)
+    CDN_SRI = {
+        "jquery": os.getenv("SRI_JQUERY", ""),
+        "bootstrap_css": os.getenv("SRI_BOOTSTRAP_CSS", ""),
+        "bootstrap_js": os.getenv("SRI_BOOTSTRAP_JS", ""),
+        "bootstrap_icons_css": os.getenv("SRI_BOOTSTRAP_ICONS_CSS", ""),
+    }
+
     @classmethod
     def load_config(cls):
         """Load YAML configuration and process environment variables"""
