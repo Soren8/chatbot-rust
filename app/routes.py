@@ -607,18 +607,17 @@ def chat():
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
             set_name = request.json.get("set_name", "default")
-            encrypted = request.json.get("encrypted", False)
+            # Always save encrypted; require ephemeral in-memory password
             password = _get_user_password(session["username"]) 
-            save_user_system_prompt(session["username"], new_system_prompt, set_name, password if encrypted else None)
+            save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
 
     # Update system prompt if it has changed
     current_system_prompt = user_session["system_prompt"]
     if new_system_prompt is not None and current_system_prompt != new_system_prompt:
         if "username" in session:
             set_name = request.json.get("set_name", "default")
-            encrypted = request.json.get("encrypted", False)
             password = _get_user_password(session["username"]) 
-            save_user_system_prompt(session["username"], new_system_prompt, set_name, password if encrypted else None)
+            save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
 
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
