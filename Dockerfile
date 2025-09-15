@@ -1,5 +1,5 @@
-# Use an official Python image as the base
-FROM python:3.10-slim
+# Base runtime image with app deps
+FROM python:3.10-slim AS runtime
 
 # Create a dedicated virtual environment
 RUN python -m venv /opt/venv
@@ -24,5 +24,12 @@ COPY app /app/app
 # Create data directory
 RUN mkdir -p /app/data
 
+# Test image adds pytest (kept out of production)
+FROM runtime AS test
+RUN pip install --no-cache-dir pytest
+WORKDIR /app
+
+# Production image with Gunicorn entrypoint
+FROM runtime AS prod
 # Run the Flask app with Gunicorn in production with debug logging and extended timeout
 CMD gunicorn --bind 0.0.0.0:80 --log-level ${LOG_LEVEL:-info} --capture-output --timeout ${GUNICORN_TIMEOUT:-600} "app:create_app()"

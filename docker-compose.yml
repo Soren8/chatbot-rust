@@ -1,9 +1,24 @@
 services:
   chatbot:
-    build: .
+    build:
+      context: .
+      target: prod
     ports:
       - "80:80"
     volumes:
       - ./data:/app/data
       - ./.config.yml:/app/.config.yml:ro
       - ./.env:/app/.env
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    working_dir: /app
+    command: pytest -q
+    environment:
+      SECRET_KEY: test_secret_key_for_security_tests
+      HOST_DATA_DIR: /tmp/testdata
+      PYTEST_ADDOPTS: -o cache_dir=/tmp/pytest_cache
+    volumes:
+      - .:/app
