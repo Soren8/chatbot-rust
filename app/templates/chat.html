@@ -128,6 +128,8 @@
       };
       window.DEFAULT_SYSTEM_PROMPT = {{ default_system_prompt | tojson }};
     </script>
+    <!-- Machine-readable app data for tests and clients; contains no secrets -->
+    <template id="app-data" type="application/json">{{ {"availableModels": available_llms|default([])} | tojson }}</template>
     <script src="/static/chat.js"></script>
 
     
