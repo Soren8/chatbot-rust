@@ -2,6 +2,7 @@ git-diff.patch
 __pycache__/*
 app/__pycache__/*
 app/llm/__pycache__/*
+tests/__pycache__/*
 data/*
 .env
 .aider*
