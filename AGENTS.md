@@ -2,8 +2,9 @@
 
 ## Build & Run Commands
 - Start app (dev): `flask run` or `python -m app`
-- Run in Docker: `docker-compose up --build`
+- Run in Docker: `docker compose up --build`
 - Run single test: `python chat_logic_test.py` or `python provider-test.py --provider [provider_name] --prompt "Your test prompt"`
+- Run tests in Docker: `docker compose up --build --exit-code-from tests tests` (reuses the app image with a test target)
 
 ## Code Style Guidelines
 - **Imports**: Standard library first, then third-party, then local modules
@@ -28,6 +29,7 @@
 - Keep `temp/todo.md` updated as you progress
 
 ## Important Notes
+- Commit early and often: make small, focused commits as you go. We can easily revert or squash later if needed.
 - Always validate provider configurations before committing
 - Test chat functionality with provider-test.py before making significant changes
 - Use logging instead of print statements for debugging
