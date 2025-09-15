@@ -7,8 +7,18 @@ services:
       - "80:80"
     volumes:
       - ./data:/app/data
-      - ./.config.yml:/app/.config.yml:ro
-      - ./.env:/app/.env
+      - type: bind
+        source: ./.config.yml
+        target: /app/.config.yml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
   tests:
     profiles: ["test"]
     build:
