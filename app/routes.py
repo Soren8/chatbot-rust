@@ -399,7 +399,7 @@ def delete_message():
                     logger.debug("password_to_use provided: %s", bool(password_to_use))
                 except Exception:
                     logger.exception("Error determining encryption for set '%s'", set_name)
-                    password_to_use = USER_PASSWORDS.get(username)
+                    password_to_use = _get_user_password(username)
 
                 try:
                     logger.debug("Attempting to save_user_chat_history for user=%s set=%s history_len=%d", username, set_name, len(history))
@@ -446,6 +446,11 @@ def load_set():
     else:
         logger.debug(f"Sets file does not exist: {sets_file}")
     
+    # If encrypted set and no ephemeral key available, require re-login
+    if encrypted and not password:
+        logger.error("Encrypted set requested but no in-memory password available")
+        return jsonify({"error": "relogin required"}), 401
+
     # Load data
     logger.debug("Loading memory...")
     memory = load_user_memory(username, set_name, password if encrypted else None)
@@ -719,7 +724,7 @@ def regenerate():
     system_prompt = request.json.get("system_prompt", "")
     set_name = request.json.get("set_name", "default")
     encrypted = request.json.get("encrypted", False)
-    password = USER_PASSWORDS.get(session.get("username")) if "username" in session else None
+    password = _get_user_password(session.get("username")) if "username" in session else None
 
     session_id = session.get("username", "guest_" + request.remote_addr)
     user_session = sessions[session_id]
@@ -868,7 +873,7 @@ def reset_chat():
                 session["username"], 
                 [],  # Empty history
                 set_name,
-                USER_PASSWORDS.get(session["username"]) if "username" in session else None
+                _get_user_password(session["username"]) if "username" in session else None
             )
             logger.info(f"Reset and saved empty chat history for set '{set_name}'")
         except Exception as e:

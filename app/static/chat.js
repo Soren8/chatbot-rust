@@ -353,7 +353,14 @@ $(document).ready(function() {
     $('#set-selector').on('change', function() {
       const setName = $(this).val();
       fetch('/load_set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ set_name: setName }) })
-        .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.json(); })
+        .then(async r => {
+          if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+          if (!r.ok) {
+            try { const err = await r.json(); throw new Error(err && (err.error || err.message) || 'Failed to load set'); }
+            catch (_) { throw new Error('Failed to load set'); }
+          }
+          return r.json();
+        })
         .then(data => {
           $('#user-system-prompt').val(data.system_prompt || '');
           $('#user-memory').val(data.memory || '');
@@ -367,8 +374,8 @@ $(document).ready(function() {
           }
           appendMessage('<strong>System:</strong> Loaded set: ' + setName, 'system-message');
         })
-        .catch(error => { appendMessage('<strong>Error:</strong> Failed to load set: ' + error.message, 'error-message'); });
-    });
+        .catch(error => { appendMessage('<strong>Error:</strong> Failed to load set: ' + escapeHTML(error.message), 'error-message'); });
+      });
     // Populate sets after binding change handler so initial trigger loads data
     loadSets();
 
