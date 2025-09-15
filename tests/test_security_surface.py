@@ -1,13 +1,5 @@
-import os
 import re
 import json
-
-
-def create_test_app():
-    # Ensure SECRET_KEY is present to satisfy app initialization
-    os.environ.setdefault("SECRET_KEY", "test_secret_key_for_security_tests")
-    from app import create_app
-    return create_app()
 
 
 def extract_app_data(html: str):
@@ -33,9 +25,7 @@ def assert_no_secrets(html: str):
         assert token.lower() not in lowered, f"Found potential secret token in HTML: {token}"
 
 
-def test_homepage_has_sanitized_models_and_no_secrets():
-    app = create_test_app()
-    client = app.test_client()
+def test_homepage_has_sanitized_models_and_no_secrets(client):
     resp = client.get("/")
     assert resp.status_code == 200
     html = resp.data.decode("utf-8", errors="ignore")
@@ -51,12 +41,9 @@ def test_homepage_has_sanitized_models_and_no_secrets():
         assert set(entry.keys()) <= {"provider_name", "tier"}, f"Unexpected fields in availableModels: {entry.keys()}"
 
 
-def test_auth_pages_have_no_secrets():
-    app = create_test_app()
-    client = app.test_client()
+def test_auth_pages_have_no_secrets(client):
     for path in ("/login", "/signup"):
         resp = client.get(path)
         assert resp.status_code == 200
         html = resp.data.decode("utf-8", errors="ignore")
         assert_no_secrets(html)
-
