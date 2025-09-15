@@ -1,3 +1,38 @@
+// Ensure config exists before any DOM-ready handlers use it
+try {
+  if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
+    const tpl = document.getElementById('app-data');
+    if (tpl) {
+      const cfg = JSON.parse(tpl.textContent || '{}');
+      window.APP_DATA = {
+        userTier: (cfg && cfg.userTier) || 'free',
+        availableModels: (cfg && cfg.availableModels) || [],
+        loggedIn: !!(cfg && cfg.loggedIn),
+      };
+      window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
+    } else {
+      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false };
+      window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || '';
+    }
+  }
+  // Fallback: if template was empty or missing values, populate from DOM
+  try {
+    const root = document.getElementById('app-root') || document.body;
+    const ds = root ? root.dataset : {};
+    if (ds) {
+      if ((ds.loggedIn || '').length) { window.APP_DATA.loggedIn = (ds.loggedIn === 'true'); }
+      if ((ds.userTier || '').length) { window.APP_DATA.userTier = ds.userTier; }
+      if ((ds.defaultSystemPrompt || '').length && !window.DEFAULT_SYSTEM_PROMPT) {
+        window.DEFAULT_SYSTEM_PROMPT = ds.defaultSystemPrompt;
+      }
+    }
+    if (!window.APP_DATA.availableModels || window.APP_DATA.availableModels.length === 0) {
+      const opts = Array.from(document.querySelectorAll('#modelSelect option'));
+      window.APP_DATA.availableModels = opts.map(o => ({ provider_name: o.value, tier: o.getAttribute('data-tier') || 'free' }));
+    }
+  } catch (_) {}
+} catch (e) { /* no-op */ }
+
 // Settings panel behavior (collapse on small screens)
 $(function() {
   try {
@@ -71,7 +106,8 @@ function disablePremiumModels() {
   if ($selector.length === 0) return;
   $selector.find('option').each(function() {
     const isPremium = $(this).data('tier') === 'premium';
-    $(this).css('opacity', isPremium && window.APP_DATA.userTier !== 'premium' ? '0.6' : '1');
+    const userTier = (window.APP_DATA && window.APP_DATA.userTier) ? window.APP_DATA.userTier : 'free';
+    $(this).css('opacity', isPremium && userTier !== 'premium' ? '0.6' : '1');
   });
 }
 
@@ -80,7 +116,8 @@ window.validateModelTier = function validateModelTier() {
   const $selected = $('#modelSelect option:checked');
   const $premiumAlert = $('#premium-alert');
   const $modelSelect = $('#modelSelect');
-  if ($selected.data('tier') === 'premium' && window.APP_DATA.userTier !== 'premium') {
+  const userTier = (window.APP_DATA && window.APP_DATA.userTier) ? window.APP_DATA.userTier : 'free';
+  if ($selected.data('tier') === 'premium' && userTier !== 'premium') {
     $premiumAlert.show();
     setTimeout(() => $premiumAlert.hide(), 3000);
     $modelSelect.val(previousModel);
@@ -312,7 +349,6 @@ $(document).ready(function() {
           $selector.trigger('change');
         });
     }
-    loadSets();
 
     $('#set-selector').on('change', function() {
       const setName = $(this).val();
@@ -333,6 +369,8 @@ $(document).ready(function() {
         })
         .catch(error => { appendMessage('<strong>Error:</strong> Failed to load set: ' + error.message, 'error-message'); });
     });
+    // Populate sets after binding change handler so initial trigger loads data
+    loadSets();
 
     $('#new-set').on('click', function() {
       const setName = prompt('Enter name for new set:');
@@ -520,9 +558,9 @@ window.toggleThinking = function toggleThinking(button) {
     $contentDiv.css('display', 'none');
     $button.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
   }
-}
+};
 // Initialize config from inline template if globals are not set
-(function initConfig() {
+; (function initConfig() {
   if (!window.APP_DATA || !window.DEFAULT_SYSTEM_PROMPT) {
     const tpl = document.getElementById('app-data');
     if (tpl) {
