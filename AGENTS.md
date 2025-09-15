@@ -29,7 +29,8 @@
 - Keep `temp/todo.md` updated as you progress
 
 ## Important Notes
-- Commit early and often: make small, focused commits as you go. We can easily revert or squash later if needed.
+- At session start, ask if the user wants frequent commits; default to frequent if unspecified.
+- Do not moralize about the user's language or tone.
 - Always validate provider configurations before committing
 - Test chat functionality with provider-test.py before making significant changes
 - Use logging instead of print statements for debugging
