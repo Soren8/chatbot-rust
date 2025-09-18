@@ -63,7 +63,7 @@
 - Expose Rust functions/structs that mirror current Python interfaces, starting with pure functions for config + chat logic; maintain compatibility layers in Python packages that dispatch to Rust when available.
 - Use feature flags and environment switches to toggle between Python and Rust implementations during rollout; default to Python until parity tests pass.
 - Keep data models serialized via serde ↔ dataclasses to ensure predictable boundary formats; prefer JSON-serializable structs to decouple from Python object internals.
-- Provide a `bridge` module in Python (e.g., `app/rust_bridge.py`) responsible for loading the compiled extension, handling import errors gracefully, and falling back to Python code when Rust is disabled.
-- During web server transition, initially keep Flask as the HTTP host and have route handlers call into Rust library functions; only later replace the HTTP layer once all business logic resides in Rust.
+- Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
+- Run the Rust web server first (Rocket or Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
 
-Next actions: decide the first module to port under this strategy (likely configuration or chat logic) while setting up the Rust crate skeleton and PyO3 build pipeline.
+Next actions: scaffold the Rust web server, implement the Python bridge for route handlers, and backfill tests ensuring parity with current Flask endpoints.
