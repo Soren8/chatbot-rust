@@ -60,10 +60,10 @@
 - Workspace planning: leave room for future crates (e.g., `providers-*` as separate crates) if we split functionality later.
 
 ## Item 3: Rust/Python Interop Strategy
-- Adopt **PyO3 + maturin** to compile Rust modules into Python extension packages (`chatbot_core`), letting existing Python code import Rust replacements incrementally.
-- Expose Rust functions/structs that mirror current Python interfaces, starting with pure functions for config + chat logic; maintain compatibility layers in Python packages that dispatch to Rust when available.
-- Use feature flags and environment switches to toggle between Python and Rust implementations during rollout; default to Python until parity tests pass.
-- Keep data models serialized via serde ↔ dataclasses to ensure predictable boundary formats; prefer JSON-serializable structs to decouple from Python object internals.
+- [x] Use **PyO3** to embed the Python interpreter inside the Rust server so existing business logic remains callable while we migrate modules.
+- [ ] Expose Rust functions/structs that mirror current Python interfaces, starting with pure functions for config + chat logic; maintain compatibility layers in Python packages that dispatch to Rust when available.
+- [ ] Use feature flags and environment switches to toggle between Python and Rust implementations during rollout; default to Python until parity tests pass.
+- [ ] Keep data models serialized via serde ↔ dataclasses to ensure predictable boundary formats; prefer JSON-serializable structs to decouple from Python object internals.
 - [x] Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
 - [x] Expose helper wrappers (e.g., `bridge::call_python_function`) to centrally manage imports and callable dispatch from Rust into Python.
 - [ ] Run the Rust web server first (Rocket or Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
