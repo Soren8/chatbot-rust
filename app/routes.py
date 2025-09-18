@@ -6,6 +6,7 @@ import os
 import json
 import re
 from collections import defaultdict
+from secrets import token_urlsafe
 from werkzeug.serving import WSGIRequestHandler
 WSGIRequestHandler.protocol_version = "HTTP/1.1"  # Enable keep-alive connections
 
@@ -48,6 +49,19 @@ sessions = defaultdict(
 response_lock = threading.Lock()
 requests_per_ip = {}
 MAX_REQUESTS_PER_MINUTE = 60
+
+# Helper utilities
+
+def _get_session_id() -> str:
+    """Return the canonical session identifier, allocating a guest ID if needed."""
+    if "username" in session:
+        return session["username"]
+
+    guest_id = session.get("guest_id")
+    if not guest_id:
+        guest_id = token_urlsafe(16)
+        session["guest_id"] = guest_id
+    return f"guest_{guest_id}"
 
 # Server-side store for sensitive per-user secrets (e.g., encryption password)
 # Keyed by username; do NOT store plaintext passwords in client-side cookies.
@@ -223,7 +237,7 @@ def home():
         user_memory = user_session["memory"]
         user_system_prompt = user_session["system_prompt"]
     else:
-        session_id = f"guest_{request.remote_addr}"
+        session_id = _get_session_id()
         user_session = sessions[session_id]
         user_memory = user_session["memory"]
         user_system_prompt = user_session["system_prompt"]
@@ -343,7 +357,7 @@ def delete_message():
         logger.debug("delete_message missing user_message in request")
         return jsonify({"status": "error", "error": "user_message is required"}), 400
 
-    session_id = session.get("username", f"guest_{request.remote_addr}")
+    session_id = _get_session_id()
     logger.debug("Computed session_id=%s; session keys=%s; requester_ip=%s", session_id, list(session.keys()), request.remote_addr)
 
     if session_id not in sessions:
@@ -517,7 +531,7 @@ def update_memory():
         })
     else:
         # Guest user - save to session memory and preserve it for first chat
-        session_id = f"guest_{request.remote_addr}"
+        session_id = _get_session_id()
         sessions[session_id]["memory"] = user_memory
         sessions[session_id]["initialized"] = True
 
@@ -565,7 +579,7 @@ def update_system_prompt():
         })
     else:
         # Guest user - save to session
-        session_id = f"guest_{request.remote_addr}"
+        session_id = _get_session_id()
         sessions[session_id]["system_prompt"] = system_prompt
         
         logger.debug(f"Updated system prompt in session memory for guest user {session_id}")
@@ -590,7 +604,7 @@ def chat():
         return jsonify({"error": "invalid set name"}), 400
 
     # Create consistent guest session ID without timestamp
-    session_id = session.get("username", f"guest_{request.remote_addr}")
+    session_id = _get_session_id()
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
@@ -753,7 +767,7 @@ def regenerate():
     encrypted = request.json.get("encrypted", False)
     password = _get_user_password(session.get("username")) if "username" in session else None
 
-    session_id = session.get("username", "guest_" + request.remote_addr)
+    session_id = _get_session_id()
     user_session = sessions[session_id]
     user_session["last_used"] = time.time()
 
@@ -883,7 +897,7 @@ def regenerate():
 
 @bp.route("/reset_chat", methods=["POST"])
 def reset_chat():
-    session_id = session.get("username", "guest_" + request.remote_addr)
+    session_id = _get_session_id()
     if session_id not in sessions:
         return jsonify({"status": "error", "message": "Session not found"}), 404
 
