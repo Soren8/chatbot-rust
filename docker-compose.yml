@@ -3,6 +3,8 @@ services:
     build:
       context: .
       target: prod
+      args:
+        RUST_BUILD_PROFILE: ${RUST_BUILD_PROFILE:-debug}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
