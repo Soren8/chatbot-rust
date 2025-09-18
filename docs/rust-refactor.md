@@ -67,3 +67,10 @@
 - [x] Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
 - [x] Expose helper wrappers (e.g., `bridge::call_python_function`) to centrally manage imports and callable dispatch from Rust into Python.
 - [ ] Run the Rust web server first (Rocket or Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
+
+## Item 4: Route Migration Progress
+- [x] `/` home page proxied through `bridge::proxy_request`
+- [ ] Auth endpoints (`/signup`, `/login`, `/logout`)
+- [ ] Chat APIs (`/chat`, `/regenerate`, `/reset_chat`)
+- [ ] Set management (`/get_sets`, `/create_set`, `/delete_set`, `/load_set`)
+- [ ] System prompts and memory endpoints (`/update_memory`, `/update_system_prompt`, `/delete_message`)
