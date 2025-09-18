@@ -10,7 +10,7 @@
 ## Checklist
 - [x] Inventory current Python modules and their entry points
 - [x] Define Rust project structure (crate layout, modules, build tooling)
-- [x] Establish interop strategy during transition (FFI or HTTP bridge)
+- [x] Establish interop strategy during transition (Rust-hosted, embedded Python bridge)
 - [x] Stand up Rust web server shell (Axum) with health check and placeholder UI route
 - [ ] Port configuration handling from `app/config.py` to Rust equivalent
 - [ ] Reimplement `app/chat_logic.py` core functionality in Rust
@@ -47,7 +47,7 @@
 ## Item 2: Proposed Rust Project Structure
 - `rust/` directory at repo root housing the new codebase alongside Python app.
 - `rust/Cargo.toml`: workspace manifest with a primary crate named `chatbot_core` (lib) and optional binary `chatbot_server`.
-- `rust/src/lib.rs`: library entry exporting modules callable from Python (via FFI/PyO3) and by internal Rust binaries.
+- `rust/src/lib.rs`: library entry exposing bridge helpers and shared logic for both the Axum server and future Rust crates.
 - Module layout under `rust/src/`:
   - `config/` (config loading + validation mirroring `app/config.py`).
   - `chat/` (business logic equivalent to `app/chat_logic.py`).
@@ -56,7 +56,7 @@
   - `persistence/` (chat history, file I/O abstractions).
   - `bridge/` (interop helpers exposed to Python).
 - `rust/src/bin/server.rs`: optional Axum-based executable once routing migrates.
-- Tooling: use `maturin` for building Python wheels in development, `cargo test` for Rust unit/integration tests, `ruff`/`black` remain for Python during transition.
+- Tooling: rely on `cargo` for Rust builds/tests; add `maturin` later only if we need Python-packaged wheels. Keep `ruff`/`black` for Python during transition.
 - Workspace planning: leave room for future crates (e.g., `providers-*` as separate crates) if we split functionality later.
 
 ## Item 3: Rust/Python Interop Strategy
