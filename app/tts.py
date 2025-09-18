@@ -86,9 +86,9 @@ def register_tts_routes(bp):
             logger.debug("TTS generation successful")
             return Response(
                 audio_data.getvalue(),
-                mimetype="audio/mpeg",
+                mimetype="audio/wav",
                 headers={
-                    "Content-Disposition": "inline; filename=tts.mp3"
+                    "Content-Disposition": "inline; filename=tts.wav"
                 }
             )
         except Exception as e:

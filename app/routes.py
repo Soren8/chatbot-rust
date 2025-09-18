@@ -272,7 +272,8 @@ def add_security_headers(response):
             "img-src 'self' data:; "
             "font-src 'self' https://cdn.jsdelivr.net data:; "
             "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
-            "script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net"
+            "script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net; "
+            "media-src 'self' blob: data:"
         )
         response.headers.setdefault("Content-Security-Policy", csp)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
