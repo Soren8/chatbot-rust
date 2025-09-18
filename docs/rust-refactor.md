@@ -11,6 +11,7 @@
 - [x] Inventory current Python modules and their entry points
 - [x] Define Rust project structure (crate layout, modules, build tooling)
 - [x] Establish interop strategy during transition (FFI or HTTP bridge)
+- [x] Stand up Rust web server shell (Axum) with health check and placeholder UI route
 - [ ] Port configuration handling from `app/config.py` to Rust equivalent
 - [ ] Reimplement `app/chat_logic.py` core functionality in Rust
 - [ ] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations
