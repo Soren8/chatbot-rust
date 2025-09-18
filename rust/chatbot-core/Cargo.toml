@@ -1,0 +1,12 @@
+[package]
+name = "chatbot-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "chatbot_core"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["auto-initialize"] }

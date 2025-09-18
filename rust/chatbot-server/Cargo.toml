@@ -1,0 +1,12 @@
+[package]
+name = "chatbot-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.7"
+chatbot-core = { path = "../chatbot-core" }
+tokio = { version = "1.37", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
