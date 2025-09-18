@@ -16,13 +16,6 @@ from flask import (
     url_for, render_template, current_app
 )
 
-# Configure logging first
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
