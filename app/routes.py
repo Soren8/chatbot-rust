@@ -5,6 +5,7 @@ import threading
 import os
 import json
 import re
+import hmac
 from collections import defaultdict
 from secrets import token_urlsafe
 from werkzeug.serving import WSGIRequestHandler
@@ -161,6 +162,28 @@ def rate_limit():
         return "Too many requests, please slow down.", 429
     requests_per_ip[ip].append(current_time)
 
+
+@bp.before_app_request
+def csrf_protect():
+    if request.method in ("GET", "HEAD", "OPTIONS", "TRACE"):
+        _get_csrf_token()
+        return
+
+    expected = session.get("csrf_token")
+    if not expected:
+        return jsonify({"error": "CSRF token missing"}), 400
+
+    submitted = None
+    if request.is_json:
+        submitted = request.headers.get(CSRF_HEADER)
+    else:
+        submitted = request.form.get("csrf_token") or request.headers.get(CSRF_HEADER)
+
+    if not _constant_time_compare(submitted or "", expected):
+        if request.is_json:
+            return jsonify({"error": "Invalid CSRF token"}), 400
+        return "Invalid CSRF token", 400
+
 def clean_old_sessions():
     current_time = time.time()
     for session_id in list(sessions.keys()):
@@ -205,7 +228,7 @@ def signup():
             logger.warning("Signup rejected invalid username '%s': %s", username, exc)
             return "Username may only include letters, numbers, '_' or '-'", 400
         return "User already exists.", 400
-    return render_template("signup.html", sri=Config.CDN_SRI)
+    return render_template("signup.html", sri=Config.CDN_SRI, csrf_token=_get_csrf_token())
 
 @bp.route("/login", methods=["GET", "POST"])
 def login():
@@ -229,7 +252,7 @@ def login():
             logger.warning("Login rejected invalid username '%s': %s", username, exc)
             return "Invalid credentials", 401
         return "Invalid credentials", 401
-    return render_template("login.html", sri=Config.CDN_SRI)
+    return render_template("login.html", sri=Config.CDN_SRI, csrf_token=_get_csrf_token())
 
 @bp.route("/")
 def home():
@@ -270,7 +293,8 @@ def home():
         user_tier=user_tier,
         available_llms=available_llms,
         default_system_prompt=Config.DEFAULT_SYSTEM_PROMPT,
-        sri=Config.CDN_SRI
+        sri=Config.CDN_SRI,
+        csrf_token=_get_csrf_token()
     )
 
 @bp.after_app_request
@@ -992,3 +1016,20 @@ def reset_chat():
 def health_check():
     logger.info("Health check requested")
     return jsonify({"status": "healthy"}), 200
+# CSRF protection helpers
+
+CSRF_HEADER = "X-CSRF-Token"
+
+
+def _get_csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def _constant_time_compare(val1: str, val2: str) -> bool:
+    if not val1 or not val2:
+        return False
+    return hmac.compare_digest(val1, val2)

@@ -33,6 +33,27 @@ try {
   } catch (_) {}
 } catch (e) { /* no-op */ }
 
+try {
+  var appRoot = document.getElementById('app-root');
+  if (appRoot && appRoot.dataset) {
+    window.CSRF_TOKEN = appRoot.dataset.csrfToken || window.CSRF_TOKEN;
+  }
+  if (!window.CSRF_TOKEN) {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) {
+      window.CSRF_TOKEN = meta.getAttribute('content');
+    }
+  }
+} catch (e) { /* no-op */ }
+
+function withCsrf(headers) {
+  var result = headers ? Object.assign({}, headers) : {};
+  if (window.CSRF_TOKEN) {
+    result['X-CSRF-Token'] = window.CSRF_TOKEN;
+  }
+  return result;
+}
+
 // Settings panel behavior (collapse on small screens)
 $(function() {
   try {
@@ -188,7 +209,7 @@ window.playTTS = function playTTS(button) {
   const messageText = $messageElement.find('.ai-message-text').text() || '';
   if (!messageText) return;
   $(button).prop('disabled', true).text('...');
-  fetch('/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: messageText }) })
+  fetch('/tts', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text: messageText }) })
     .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.blob(); })
     .then(blob => {
       const audioUrl = URL.createObjectURL(blob);
@@ -218,7 +239,7 @@ window.regenerateMessage = function regenerateMessage(button) {
   $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`);
 
   fetch('/regenerate', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ message: userText, system_prompt: $('#user-system-prompt').val(), set_name: $('#set-selector').val() || 'default', model_name: $('#modelSelect').val(), pair_index: pairIndex })
   })
   .then(response => {
@@ -328,7 +349,7 @@ $(document).ready(function() {
       const aiText = aiMessageElement ? (aiMessageElement.querySelector('.ai-message-text')?.textContent || '').trim() : '';
       if (aiMessageElement) aiMessageElement.remove();
       userMessageElement.remove();
-      fetch('/delete_message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_message: userText, ai_message: aiText, set_name: $('#set-selector').val() || 'default' }) })
+      fetch('/delete_message', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ user_message: userText, ai_message: aiText, set_name: $('#set-selector').val() || 'default' }) })
         .catch(()=>{});
     }
   });
@@ -340,7 +361,7 @@ $(document).ready(function() {
   // Load sets for logged-in users
   if (window.APP_DATA.loggedIn) {
     function loadSets() {
-      return fetch('/get_sets')
+      return fetch('/get_sets', { headers: withCsrf() })
         .then(r => r.json())
         .then(data => {
           const $selector = $('#set-selector');
@@ -352,7 +373,7 @@ $(document).ready(function() {
 
     $('#set-selector').on('change', function() {
       const setName = $(this).val();
-      fetch('/load_set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ set_name: setName }) })
+      fetch('/load_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
         .then(async r => {
           if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
           if (!r.ok) {
@@ -382,7 +403,7 @@ $(document).ready(function() {
     $('#new-set').on('click', function() {
       const setName = prompt('Enter name for new set:');
       if (setName) {
-        fetch('/create_set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ set_name: setName }) })
+        fetch('/create_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
           .then(r => r.json())
           .then(data => {
             if (data.status === 'success') {
@@ -399,7 +420,7 @@ $(document).ready(function() {
       const setName = $('#set-selector').val();
       if (setName === 'default') { appendMessage('<strong>Error:</strong> Cannot delete default set', 'error-message'); return; }
       if (confirm('Are you sure you want to delete set: ' + setName + '?')) {
-        fetch('/delete_set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ set_name: setName }) })
+        fetch('/delete_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
           .then(r => r.json())
           .then(data => {
             if (data.status === 'success') { loadSets(); appendMessage('<strong>System:</strong> Deleted set: ' + setName, 'system-message'); }
@@ -413,7 +434,7 @@ $(document).ready(function() {
   $('#save-system-prompt').on('click', function() {
     const sysPromptText = $('#user-system-prompt').val();
     const setName = $('#set-selector').val() || 'default';
-    fetch('/update_system_prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_prompt: sysPromptText, set_name: setName }) })
+    fetch('/update_system_prompt', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ system_prompt: sysPromptText, set_name: setName }) })
       .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.json(); })
       .then(data => { if (data.status === 'success') appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message'); else appendMessage('<strong>Error:</strong> Failed to save system prompt.', 'error-message'); })
       .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
@@ -422,7 +443,7 @@ $(document).ready(function() {
   $('#save-memory').on('click', function() {
     const memText = $('#user-memory').val();
     const setName = $('#set-selector').val() || 'default';
-    fetch('/update_memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memory: memText, set_name: setName }) })
+    fetch('/update_memory', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ memory: memText, set_name: setName }) })
       .then(r => r.json())
       .then(data => { if (data.status === 'success') appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message'); else appendMessage('<strong>Error:</strong> Failed to save memory.', 'error-message'); })
       .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
@@ -442,7 +463,7 @@ $(document).ready(function() {
     $userInputElement.val('');
     appendMessage('<strong>You:</strong> ' + escapeHTML(message), 'user-message');
     const requestData = { message, system_prompt: systemPrompt, set_name: activeSet, model_name: $('#modelSelect').val() };
-    fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestData) })
+    fetch('/chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(requestData) })
       .then(response => { if (!response.ok) return response.text().then(t => { throw new Error(t || 'Network response was not ok'); }); return response; })
       .then(response => {
         const reader = response.body.getReader();
@@ -538,7 +559,7 @@ $(document).ready(function() {
   $('#reset-chat').on('click', function() {
     const setName = $('#set-selector').val() || 'default';
     if (confirm(`Are you sure you want to reset the chat history for set: ${setName}?`)) {
-      fetch('/reset_chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ set_name: setName }) })
+      fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
         .then(r => { if (!r.ok) return r.json().then(err => { throw new Error(err.message || 'Failed to reset chat'); }); return r.json(); })
         .then(response => { if (response.status === 'success') { $('#chat-content').empty(); appendMessage(`<strong>System:</strong> Chat history has been reset for set '${response.set_name}'.`, 'system-message'); } else { appendMessage(`<strong>Error:</strong> ${escapeHTML(response.message)}`, 'error-message'); } })
         .catch(error => { appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message'); });
