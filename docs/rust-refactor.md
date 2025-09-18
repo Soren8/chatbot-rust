@@ -65,5 +65,3 @@
 - Keep data models serialized via serde ↔ dataclasses to ensure predictable boundary formats; prefer JSON-serializable structs to decouple from Python object internals.
 - Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
 - Run the Rust web server first (Rocket or Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
-
-Next actions: scaffold the Rust web server, implement the Python bridge for route handlers, and backfill tests ensuring parity with current Flask endpoints.
