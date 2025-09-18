@@ -64,4 +64,4 @@ flowchart TB
 - Dynamic LLM provider filtering
 - Storage passphrase manager (Private tier)
 - Session timeout warnings (Ephemeral tier)
-- See design.md UI/UX Improvements section for related wireframes.
+- See [design.md](design.md) UI/UX Improvements section for related wireframes.

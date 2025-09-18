@@ -2,7 +2,7 @@
 
 This document outlines the high-level architecture and planned enhancements for the project, including both critical and lower-priority tasks. Use this roadmap to guide development efforts, ensure code quality, and maintain consistency across features.
 
-**Current Refactor Trail:** For the ongoing Python-to-Rust refactor, review `docs/rust-refactor.md` for guiding principles and the latest checklist before making related changes.
+**Current Refactor Trail:** For the ongoing Python-to-Rust refactor, review `rust-refactor.md` for guiding principles and the latest checklist before making related changes.
 
 ## Roadmap
 
