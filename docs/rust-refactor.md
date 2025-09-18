@@ -12,10 +12,10 @@
 - [x] Define Rust project structure (crate layout, modules, build tooling)
 - [x] Establish interop strategy during transition (Rust-hosted, embedded Python bridge)
 - [x] Stand up Rust web server shell (Axum) with health check and placeholder UI route
+- [ ] Migrate Flask routes to Axum handlers that delegate to Python logic via the bridge
 - [ ] Port configuration handling from `app/config.py` to Rust equivalent
 - [ ] Reimplement `app/chat_logic.py` core functionality in Rust
 - [ ] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations
-- [ ] Replace Flask routing with Rust web framework or adaptor
 - [ ] Migrate data persistence layer (`data/`) to Rust-compatible solution
 - [ ] Align logging and error handling with Rust tooling
 - [ ] Update testing strategy (unit, integration, provider tests) for Rust codebase
