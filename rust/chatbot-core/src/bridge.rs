@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
+use pyo3::Py;
 
 pub struct PythonResponse {
     pub status: u16,
@@ -8,17 +9,20 @@ pub struct PythonResponse {
 }
 
 /// Initializes the embedded Python interpreter and imports core application modules.
+#[allow(deprecated)]
 pub fn initialize_python() -> PyResult<()> {
     // For now we simply ensure the interpreter spins up.
     Python::with_gil(|_py| Ok(()))
 }
 
 /// Placeholder helper illustrating how Rust will invoke Python callables.
-pub fn call_python_function(module: &str, function: &str) -> PyResult<PyObject> {
+#[allow(deprecated)]
+pub fn call_python_function(module: &str, function: &str) -> PyResult<Py<PyAny>> {
     Python::with_gil(|py| {
         let module = py.import(module)?;
         let callable = module.getattr(function)?;
-        callable.call0()
+        let result = callable.call0()?;
+        Ok(result.unbind())
     })
 }
 
@@ -57,7 +61,7 @@ pub fn proxy_request(
             kwargs.set_item("body", py_body)?;
         }
 
-        let result = bridge.call_method("handle_request", (method, path), Some(kwargs))?;
+        let result = bridge.call_method("handle_request", (method, path), Some(&kwargs))?;
         let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) = result.extract()?;
 
         Ok(PythonResponse {
