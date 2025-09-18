@@ -5,7 +5,7 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Union
 
 from app.config import Config
 
@@ -179,6 +179,30 @@ def _get_encryption_key(password: str, salt: bytes) -> bytes:
     key = kdf.derive(password.encode())
     return b64encode(key)
 
+
+def derive_user_encryption_key(username: str, password: str) -> bytes:
+    """Derive and return the Fernet key for a user without storing the password."""
+    username = validate_username(username)
+    if not password:
+        raise ValueError("Password required to derive encryption key")
+    salt = get_user_salt(username)
+    return _get_encryption_key(password, salt)
+
+
+def _resolve_encryption_key(
+    username: str,
+    password: Optional[str] = None,
+    encryption_key: Optional[Union[str, bytes]] = None
+) -> bytes:
+    """Return a usable Fernet key based on provided credentials."""
+    if encryption_key is not None:
+        if isinstance(encryption_key, str):
+            return encryption_key.encode("utf-8")
+        return encryption_key
+    if password:
+        return derive_user_encryption_key(username, password)
+    raise ValueError("Password or encryption key required")
+
 def get_user_sets(username: str) -> dict:
     """Get list of saved memory/prompt sets for a user"""
     username = validate_username(username)
@@ -213,7 +237,12 @@ def get_user_sets(username: str) -> dict:
     return sanitised_sets
 
 
-def load_user_memory(username: str, set_name: str = "default", password: str = None) -> str:
+def load_user_memory(
+    username: str,
+    set_name: str = "default",
+    password: Optional[str] = None,
+    encryption_key: Optional[Union[str, bytes]] = None
+) -> str:
     username = validate_username(username)
     set_name = validate_set_name(set_name)
     # Check if user is logged in
@@ -235,10 +264,7 @@ def load_user_memory(username: str, set_name: str = "default", password: str = N
             return ""
             
         # Require explicit password for decryption
-        if not password:
-            raise ValueError("Password required for decryption")
-        salt = get_user_salt(username)
-        key = _get_encryption_key(password, salt)
+        key = _resolve_encryption_key(username, password, encryption_key)
         f = Fernet(key)
         with filepath.open("rb") as file:
             encrypted_data = file.read()
@@ -247,7 +273,13 @@ def load_user_memory(username: str, set_name: str = "default", password: str = N
         with filepath.open("r", encoding="utf-8") as f:
             return f.read()
 
-def save_user_memory(username: str, memory_content: str, set_name: str = "default", password: str = None):
+def save_user_memory(
+    username: str,
+    memory_content: str,
+    set_name: str = "default",
+    password: Optional[str] = None,
+    encryption_key: Optional[Union[str, bytes]] = None
+):
     logger.debug(f"Saving memory for set: {set_name}")
     
     # Check if user is logged in
@@ -275,12 +307,7 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     logger.debug(f"Updated sets.json for {username}/{set_name}")
     
     # Require explicit password for encryption
-    if not password:
-        raise ValueError("Password required for encryption")
-    
-    # Always encrypt using password
-    salt = get_user_salt(username)
-    key = _get_encryption_key(password, salt)
+    key = _resolve_encryption_key(username, password, encryption_key)
     f = Fernet(key)
     encrypted_data = f.encrypt(memory_content.encode())
     
@@ -289,7 +316,12 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
         
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
-def load_user_system_prompt(username: str, set_name: str = "default", password: str = None) -> str:
+def load_user_system_prompt(
+    username: str,
+    set_name: str = "default",
+    password: Optional[str] = None,
+    encryption_key: Optional[Union[str, bytes]] = None
+) -> str:
     username = validate_username(username)
     set_name = validate_set_name(set_name)
     # Check if user is logged in
@@ -316,11 +348,7 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             return Config.DEFAULT_SYSTEM_PROMPT
             
         try:
-            if not password:
-                raise ValueError("Password required for decryption")
-            
-            salt = get_user_salt(username)
-            key = _get_encryption_key(password, salt)
+            key = _resolve_encryption_key(username, password, encryption_key)
             f = Fernet(key)
             
             with filepath.open("rb") as file:
@@ -348,7 +376,13 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             logger.error(f"Error reading plaintext prompt for {username}/{set_name}: {str(e)}")
             return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
 
-def save_user_chat_history(username: str, full_history: list, set_name: str = "default", password: str = None):
+def save_user_chat_history(
+    username: str,
+    full_history: list,
+    set_name: str = "default",
+    password: Optional[str] = None,
+    encryption_key: Optional[Union[str, bytes]] = None
+):
     logger.debug(f"Saving chat history for set: {set_name}")
     """Save chat history for a user's set"""
     username = validate_username(username)
@@ -371,11 +405,7 @@ def save_user_chat_history(username: str, full_history: list, set_name: str = "d
         json.dump(sets, f, indent=2)
     logger.debug(f"Updated sets.json for {username}/{set_name}")
     
-    if not password:
-        raise ValueError("Password required for encryption")
-    
-    salt = get_user_salt(username)
-    key = _get_encryption_key(password, salt)
+    key = _resolve_encryption_key(username, password, encryption_key)
     f = Fernet(key)
     encrypted_data = f.encrypt(json.dumps(full_history).encode())
     
@@ -386,7 +416,12 @@ def save_user_chat_history(username: str, full_history: list, set_name: str = "d
     
     logger.debug(f"Successfully saved encrypted chat history for user {username}, set {set_name}")
 
-def load_user_chat_history(username: str, set_name: str = "default", password: str = None) -> list:
+def load_user_chat_history(
+    username: str,
+    set_name: str = "default",
+    password: Optional[str] = None,
+    encryption_key: Optional[Union[str, bytes]] = None
+) -> list:
     """Load chat history for a user's set"""
     username = validate_username(username)
     set_name = validate_set_name(set_name)
@@ -407,11 +442,7 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             return []
             
         try:
-            if not password:
-                raise ValueError("Password required for decryption")
-            
-            salt = get_user_salt(username)
-            key = _get_encryption_key(password, salt)
+            key = _resolve_encryption_key(username, password, encryption_key)
             f = Fernet(key)
             
             with filepath.open("rb") as file:
@@ -436,7 +467,13 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             logger.error(f"Error reading plaintext history for {username}/{set_name}: {str(e)}")
             return []
 
-def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", password: str = None):
+def save_user_system_prompt(
+    username: str,
+    system_prompt: str,
+    set_name: str = "default",
+    password: Optional[str] = None,
+    encryption_key: Optional[Union[str, bytes]] = None
+):
     username = validate_username(username)
     set_name = validate_set_name(set_name)
     from flask import session
@@ -459,11 +496,7 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     with sets_file.open("w", encoding='utf-8') as f:
         json.dump(sets, f, indent=2)
     
-    if not password:
-        raise ValueError("Password required for encryption")
-    
-    salt = get_user_salt(username)
-    key = _get_encryption_key(password, salt)
+    key = _resolve_encryption_key(username, password, encryption_key)
     f = Fernet(key)
     encrypted_data = f.encrypt(system_prompt.encode())
     

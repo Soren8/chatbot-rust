@@ -28,6 +28,7 @@ from app.user_manager import (
     load_user_chat_history, save_user_chat_history, get_user_tier,
     validate_set_name, validate_username
 )
+from app.user_manager import derive_user_encryption_key
 from app.chat_logic import generate_text_stream
 from app.config import Config
 
@@ -63,56 +64,55 @@ def _get_session_id() -> str:
         session["guest_id"] = guest_id
     return f"guest_{guest_id}"
 
-# Server-side store for sensitive per-user secrets (e.g., encryption password)
-# Keyed by username; do NOT store plaintext passwords in client-side cookies.
-USER_PASSWORDS = {}
-PASSWORD_TTL_SECONDS = Config.SESSION_TIMEOUT
-_password_cleanup_thread_started = False
+# Server-side store for per-user encryption keys
+USER_ENCRYPTION_KEYS = {}
+ENCRYPTION_KEY_TTL_SECONDS = Config.SESSION_TIMEOUT
+_encryption_cleanup_thread_started = False
 
-def _set_user_password(username: str, password: str):
-    USER_PASSWORDS[username] = {"password": password, "last_used": time.time()}
+def _set_user_encryption_key(username: str, key: bytes):
+    USER_ENCRYPTION_KEYS[username] = {"key": key, "last_used": time.time()}
 
-def _get_user_password(username: str):
-    entry = USER_PASSWORDS.get(username)
+def _get_user_encryption_key(username: str):
+    entry = USER_ENCRYPTION_KEYS.get(username)
     if not entry:
         return None
     now = time.time()
-    if now - entry.get("last_used", 0) > PASSWORD_TTL_SECONDS:
+    if now - entry.get("last_used", 0) > ENCRYPTION_KEY_TTL_SECONDS:
         # Expired — remove and require re-auth
         try:
-            del USER_PASSWORDS[username]
+            del USER_ENCRYPTION_KEYS[username]
         except Exception:
             pass
         return None
     # Touch last used
     entry["last_used"] = now
-    return entry.get("password")
+    return entry.get("key")
 
-def _cleanup_password_store():
+def _cleanup_encryption_store():
     now = time.time()
-    expired = [u for u, e in USER_PASSWORDS.items() if now - e.get("last_used", 0) > PASSWORD_TTL_SECONDS]
+    expired = [u for u, e in USER_ENCRYPTION_KEYS.items() if now - e.get("last_used", 0) > ENCRYPTION_KEY_TTL_SECONDS]
     for u in expired:
         try:
-            del USER_PASSWORDS[u]
+            del USER_ENCRYPTION_KEYS[u]
         except Exception:
             pass
 
-def _password_cleanup_loop():
-    interval = max(60, min(300, PASSWORD_TTL_SECONDS // 2 or 60))
+def _encryption_cleanup_loop():
+    interval = max(60, min(300, ENCRYPTION_KEY_TTL_SECONDS // 2 or 60))
     while True:
         try:
-            _cleanup_password_store()
+            _cleanup_encryption_store()
         except Exception:
-            logging.getLogger(__name__).debug("Password cleanup loop error", exc_info=True)
+            logging.getLogger(__name__).debug("Encryption key cleanup loop error", exc_info=True)
         time.sleep(interval)
 
 def start_password_cleanup_thread():
-    global _password_cleanup_thread_started
-    if _password_cleanup_thread_started:
+    global _encryption_cleanup_thread_started
+    if _encryption_cleanup_thread_started:
         return
-    t = threading.Thread(target=_password_cleanup_loop, name="password-cleanup", daemon=True)
+    t = threading.Thread(target=_encryption_cleanup_loop, name="password-cleanup", daemon=True)
     t.start()
-    _password_cleanup_thread_started = True
+    _encryption_cleanup_thread_started = True
 
 def register_routes(app):
     # Store the config in the blueprint
@@ -171,10 +171,14 @@ def ensure_full_history_loaded(user_session):
     """Ensure complete history is loaded for logged-in users with empty session history"""
     if "username" in session and not user_session["history"]:
         set_name_temp = request.json.get("set_name", "default")
-        password_temp = _get_user_password(session.get("username")) if "username" in session else None
+        key_temp = _get_user_encryption_key(session.get("username")) if "username" in session else None
         logger.debug(f"History is empty, reloading from disk. Set: {set_name_temp}")
         
-        history = load_user_chat_history(session["username"], set_name_temp, password_temp)
+        history = load_user_chat_history(
+            session["username"],
+            set_name_temp,
+            encryption_key=key_temp
+        )
         formatted_history = []
         for item in history:
             if isinstance(item, tuple) and len(item) == 2:
@@ -211,11 +215,12 @@ def login():
         try:
             if validate_user(username, password):
                 session["username"] = username
-                # Store encryption password server-side only
-                _set_user_password(username, password)
+                # Store derived encryption key server-side only
+                encryption_key = derive_user_encryption_key(username, password)
+                _set_user_encryption_key(username, encryption_key)
                 # Load user memory and system prompt
-                user_memory = load_user_memory(username, "default", password)
-                user_system_prompt = load_user_system_prompt(username, "default", password)
+                user_memory = load_user_memory(username, "default", encryption_key=encryption_key)
+                user_system_prompt = load_user_system_prompt(username, "default", encryption_key=encryption_key)
                 sessions[username]["memory"] = user_memory
                 sessions[username]["system_prompt"] = user_system_prompt
                 sessions[username]["system_prompt_saved"] = user_system_prompt
@@ -294,7 +299,7 @@ def add_security_headers(response):
 def logout():
     username = session.pop("username", None)
     if username:
-        USER_PASSWORDS.pop(username, None)
+        USER_ENCRYPTION_KEYS.pop(username, None)
     return redirect(url_for("main.home"))
 
 @bp.route("/get_sets", methods=["GET"])
@@ -407,11 +412,16 @@ def delete_message():
                     logger.error("Session username failed validation: %s", username)
                     return jsonify({"status": "error", "error": "invalid session"}), 400
 
-                password_to_use = _get_user_password(safe_username)
+                key_to_use = _get_user_encryption_key(safe_username)
 
                 try:
                     logger.debug("Attempting to save_user_chat_history for user=%s set=%s history_len=%d", safe_username, set_name, len(history))
-                    save_user_chat_history(safe_username, history, set_name, password_to_use)
+                    save_user_chat_history(
+                        safe_username,
+                        history,
+                        set_name,
+                        encryption_key=key_to_use
+                    )
                     logger.info("Deleted message pair and saved updated history for user '%s', set '%s'", safe_username, set_name)
                 except ValueError as exc:
                     logger.warning("Failed to save history after delete due to invalid input for user '%s': %s", safe_username, exc)
@@ -441,7 +451,7 @@ def load_set():
         logger.warning("load_set validation failed for user=%s set=%s: %s", username, set_name_raw, exc)
         return jsonify({"error": "invalid request"}), 400
 
-    password = _get_user_password(safe_username)  # Get the stored password
+    encryption_key = _get_user_encryption_key(safe_username)  # Retrieve stored key
     
     logger.debug(f"Loading set '{set_name}' for user '{username}'")
     
@@ -455,17 +465,29 @@ def load_set():
         logger.error("Failed to read set metadata for user %s: %s", safe_username, exc)
 
     # If encrypted set and no ephemeral key available, require re-login
-    if encrypted and not password:
+    if encrypted and not encryption_key:
         logger.error("Encrypted set requested but no in-memory password available")
         return jsonify({"error": "relogin required"}), 401
 
     # Load data
     logger.debug("Loading memory...")
-    memory = load_user_memory(safe_username, set_name, password if encrypted else None)
+    memory = load_user_memory(
+        safe_username,
+        set_name,
+        encryption_key=encryption_key if encrypted else None
+    )
     logger.debug("Loading system prompt...")
-    system_prompt = load_user_system_prompt(safe_username, set_name, password if encrypted else None)
+    system_prompt = load_user_system_prompt(
+        safe_username,
+        set_name,
+        encryption_key=encryption_key if encrypted else None
+    )
     logger.debug("Loading chat history...")
-    history = load_user_chat_history(safe_username, set_name, password if encrypted else None)
+    history = load_user_chat_history(
+        safe_username,
+        set_name,
+        encryption_key=encryption_key if encrypted else None
+    )
     
     # Ensure history is in correct format (list of tuples)
     formatted_history = []
@@ -511,14 +533,19 @@ def update_memory():
     if "username" in session:
         # Logged-in user - save to disk
         username = session["username"]
-        password = _get_user_password(username)
-        
+        encryption_key = _get_user_encryption_key(username)
+
         logger.debug(f"Updating memory for user {username}, set {set_name}. "
                     f"Memory length: {len(user_memory)}")
         
         sessions[username]["memory"] = user_memory
         try:
-            save_user_memory(username, user_memory, set_name, password)
+            save_user_memory(
+                username,
+                user_memory,
+                set_name,
+                encryption_key=encryption_key
+            )
         except ValueError as exc:
             logger.warning("Failed to save memory for user %s: %s", username, exc)
             return jsonify({"error": "invalid request"}), 400
@@ -559,14 +586,19 @@ def update_system_prompt():
     if "username" in session:
         # Logged-in user - save to disk
         username = session["username"]
-        password = _get_user_password(username)
+        encryption_key = _get_user_encryption_key(username)
         
         logger.debug(f"Updating system prompt for user {username}, set {set_name}. "
                     f"Prompt length: {len(system_prompt)}")
         
         sessions[username]["system_prompt"] = system_prompt
         try:
-            save_user_system_prompt(username, system_prompt, set_name, password)
+            save_user_system_prompt(
+                username,
+                system_prompt,
+                set_name,
+                encryption_key=encryption_key
+            )
         except ValueError as exc:
             logger.warning("Failed to save system prompt for user %s: %s", username, exc)
             return jsonify({"error": "invalid request"}), 400
@@ -628,9 +660,9 @@ def chat():
     # Ensure complete history is loaded for logged-in users with empty session history
     ensure_full_history_loaded(user_session)
 
-    # Get password from server-side store - needed for encryption
-    password = _get_user_password(session.get("username")) if "username" in session else None
-    if not password and not session_id.startswith("guest_"):
+    # Get encryption key from server-side store
+    encryption_key = _get_user_encryption_key(session.get("username")) if "username" in session else None
+    if not encryption_key and not session_id.startswith("guest_"):
         logger.error("No password available in session for logged-in user")
         return jsonify({"error": "Session expired or invalid. Please log in again."}), 401
 
@@ -639,9 +671,14 @@ def chat():
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
             # Always save encrypted; require ephemeral in-memory password
-            password = _get_user_password(session["username"]) 
+            encryption_key = _get_user_encryption_key(session["username"]) 
             try:
-                save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
+                save_user_system_prompt(
+                    session["username"],
+                    new_system_prompt,
+                    set_name,
+                    encryption_key=encryption_key
+                )
             except ValueError as exc:
                 logger.warning("chat failed to save system prompt for user %s: %s", session["username"], exc)
                 return jsonify({"error": "invalid request"}), 400
@@ -650,9 +687,14 @@ def chat():
     current_system_prompt = user_session["system_prompt"]
     if new_system_prompt is not None and current_system_prompt != new_system_prompt:
         if "username" in session:
-            password = _get_user_password(session["username"]) 
+            encryption_key = _get_user_encryption_key(session["username"]) 
             try:
-                save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
+                save_user_system_prompt(
+                    session["username"],
+                    new_system_prompt,
+                    set_name,
+                    encryption_key=encryption_key
+                )
             except ValueError as exc:
                 logger.warning("chat failed to persist updated system prompt for user %s: %s", session["username"], exc)
                 return jsonify({"error": "invalid request"}), 400
@@ -666,7 +708,7 @@ def chat():
 
     # Get set_name and password before entering generator
     encrypted = request.json.get("encrypted", False)
-    password = _get_user_password(session.get("username")) if "username" in session else None
+    encryption_key = _get_user_encryption_key(session.get("username")) if "username" in session else None
 
     # Get the selected model name from the request before entering the generator function
     selected_model = request.json.get("model_name", Config.DEFAULT_LLM["provider_name"])
@@ -731,7 +773,7 @@ def chat():
                     session_id,
                     user_session["history"],
                     set_name,
-                    password
+                    encryption_key=encryption_key
                 )
             except ValueError as e:
                 logger.error(f"Failed to save chat history: {str(e)}")
@@ -765,7 +807,7 @@ def regenerate():
         logger.warning("regenerate invalid set name '%s': %s", set_name_raw, exc)
         return jsonify({"error": "invalid set name"}), 400
     encrypted = request.json.get("encrypted", False)
-    password = _get_user_password(session.get("username")) if "username" in session else None
+    encryption_key = _get_user_encryption_key(session.get("username")) if "username" in session else None
 
     session_id = _get_session_id()
     user_session = sessions[session_id]
@@ -869,7 +911,12 @@ def regenerate():
                     # Save history if user is logged in
                     if is_logged_in:
                         try:
-                            save_user_chat_history(session_id, user_session["history"], set_name, password)
+                            save_user_chat_history(
+                                session_id,
+                                user_session["history"],
+                                set_name,
+                                encryption_key=encryption_key
+                            )
                             logger.info("Saved regenerated history to disk")
                         except ValueError as e:
                             logger.error(f"Failed to save chat history: {str(e)}")
@@ -919,7 +966,7 @@ def reset_chat():
                 session["username"],
                 [],
                 set_name,
-                _get_user_password(session["username"]) if "username" in session else None
+                encryption_key=_get_user_encryption_key(session["username"]) if "username" in session else None
             )
             logger.info(f"Reset and saved empty chat history for set '{set_name}'")
         except ValueError as exc:
