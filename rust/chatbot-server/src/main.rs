@@ -28,7 +28,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/logout", any(proxy_request_handler))
         .route("/chat", any(proxy_request_handler))
         .route("/regenerate", any(proxy_request_handler))
-        .route("/reset_chat", any(proxy_request_handler));
+        .route("/reset_chat", any(proxy_request_handler))
+        .route("/get_sets", any(proxy_request_handler))
+        .route("/create_set", any(proxy_request_handler))
+        .route("/delete_set", any(proxy_request_handler))
+        .route("/load_set", any(proxy_request_handler))
+        .route("/update_memory", any(proxy_request_handler))
+        .route("/update_system_prompt", any(proxy_request_handler))
+        .route("/delete_message", any(proxy_request_handler));
 
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
     let addr = listener.local_addr()?;
