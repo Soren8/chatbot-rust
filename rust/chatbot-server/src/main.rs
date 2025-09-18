@@ -1,5 +1,11 @@
 use anyhow::Error;
-use axum::{body::Body, http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode}, response::Response, routing::get, Router};
+use axum::{
+    body::{self, Body},
+    http::{header, HeaderName, HeaderValue, Method, Request, StatusCode},
+    response::Response,
+    routing::{any, get},
+    Router,
+};
 use chatbot_core::bridge::{self, PythonResponse};
 use tokio::net::TcpListener;
 use tracing::{error, info};
@@ -15,8 +21,11 @@ async fn main() -> anyhow::Result<()> {
     bridge::initialize_python().map_err(Error::from)?;
 
     let app = Router::new()
-        .route("/health", get(health_check))
-        .route("/", get(proxy_home));
+        .route("/health", any(proxy_request_handler))
+        .route("/", get(proxy_request_handler))
+        .route("/signup", any(proxy_request_handler))
+        .route("/login", any(proxy_request_handler))
+        .route("/logout", any(proxy_request_handler));
 
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
     let addr = listener.local_addr()?;
@@ -26,37 +35,44 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn health_check() -> &'static str {
-    "{\"status\":\"healthy\"}"
-}
+async fn proxy_request_handler(request: Request<Body>) -> Result<Response, (StatusCode, String)> {
+    let (parts, body) = request.into_parts();
+    let method = parts.method;
+    let uri = parts.uri;
+    let headers = parts.headers;
 
-async fn proxy_home(headers: HeaderMap) -> Result<Response, (StatusCode, String)> {
+    let body_bytes = read_body_bytes(method.clone(), body).await?;
+
     let cookie_header = headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
         .map(|s| s.to_owned());
 
-    let host_header = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
-
-    let mut forwarded_headers = Vec::new();
-    if let Some(host) = host_header.clone() {
-        forwarded_headers.push(("Host".to_string(), host));
-    }
+    let header_pairs = headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.to_string(), v.to_owned()))
+        })
+        .collect::<Vec<_>>();
 
     match bridge::proxy_request(
-        "GET",
-        "/",
-        None,
-        &forwarded_headers,
+        method.as_str(),
+        uri.path(),
+        uri.query(),
+        &header_pairs,
         cookie_header.as_deref(),
-        None,
+        body_bytes.as_deref(),
     ) {
         Ok(py_response) => build_response(py_response),
         Err(err) => {
-            error!(?err, "Python bridge error while handling home page");
+            error!(
+                ?err,
+                "Python bridge error while handling {path}",
+                path = uri.path()
+            );
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bridge error".to_string(),
@@ -66,15 +82,22 @@ async fn proxy_home(headers: HeaderMap) -> Result<Response, (StatusCode, String)
 }
 
 fn build_response(py_response: PythonResponse) -> Result<Response, (StatusCode, String)> {
-    let status = StatusCode::from_u16(py_response.status)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "invalid status".to_string()))?;
+    let status = StatusCode::from_u16(py_response.status).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid status".to_string(),
+        )
+    })?;
 
     let mut response = Response::builder()
         .status(status)
         .body(Body::from(py_response.body))
         .map_err(|err| {
             error!(?err, "failed to build response body");
-            (StatusCode::INTERNAL_SERVER_ERROR, "response build error".to_string())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
         })?;
 
     {
@@ -101,4 +124,23 @@ fn build_response(py_response: PythonResponse) -> Result<Response, (StatusCode, 
     }
 
     Ok(response)
+}
+
+async fn read_body_bytes(
+    method: Method,
+    body: Body,
+) -> Result<Option<Vec<u8>>, (StatusCode, String)> {
+    // Skip reading if this is a GET/HEAD request to avoid unnecessary work.
+    if method == Method::GET || method == Method::HEAD {
+        return Ok(None);
+    }
+
+    match body::to_bytes(body, 10 * 1024 * 1024).await {
+        Ok(bytes) if bytes.is_empty() => Ok(None),
+        Ok(bytes) => Ok(Some(bytes.to_vec())),
+        Err(err) => {
+            error!(?err, "failed to read request body");
+            Err((StatusCode::BAD_GATEWAY, "invalid request body".to_string()))
+        }
+    }
 }

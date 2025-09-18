@@ -62,7 +62,8 @@ pub fn proxy_request(
         }
 
         let result = bridge.call_method("handle_request", (method, path), Some(&kwargs))?;
-        let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) = result.extract()?;
+        let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
 
         Ok(PythonResponse {
             status,
