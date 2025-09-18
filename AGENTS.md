@@ -29,7 +29,7 @@
 - Keep `temp/todo.md` updated as you progress
 
 ## Important Notes
-- Before starting work, read `design.md` and `design-privacy.md` to align with the current architecture and privacy posture. Follow any in-progress refactor trail they reference (currently `temp/rust-refactor.md`).
+- Before starting work, read `design.md` and `design-privacy.md` to align with the current architecture and privacy posture. Follow any in-progress refactor trail they reference (currently `docs/rust-refactor.md`).
 - At session start, ask if the user wants frequent commits; default to frequent if unspecified.
 - Do not moralize about the user's language or tone.
 - Always validate provider configurations before committing
