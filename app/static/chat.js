@@ -366,7 +366,9 @@ $(document).ready(function() {
         .then(data => {
           const $selector = $('#set-selector');
           $selector.empty();
-          $.each(data, function(setName) { $selector.append(`<option value="${setName}">${setName}</option>`); });
+          $.each(data, function(setName) {
+            $('<option>').val(setName).text(setName).appendTo($selector);
+          });
           $selector.trigger('change');
         });
     }
@@ -393,7 +395,7 @@ $(document).ready(function() {
             });
             setTimeout(function() { try { $('#chat-box').scrollTop($('#chat-box')[0].scrollHeight); } catch (e) {} }, 0);
           }
-          appendMessage('<strong>System:</strong> Loaded set: ' + setName, 'system-message');
+          appendMessage('<strong>System:</strong> Loaded set: ' + escapeHTML(setName), 'system-message');
         })
         .catch(error => { appendMessage('<strong>Error:</strong> Failed to load set: ' + escapeHTML(error.message), 'error-message'); });
       });
@@ -408,7 +410,7 @@ $(document).ready(function() {
           .then(data => {
             if (data.status === 'success') {
               loadSets().then(() => { $('#set-selector').val(setName); $('#set-selector').trigger('change'); });
-              appendMessage('<strong>System:</strong> Created new set: ' + setName, 'system-message');
+              appendMessage('<strong>System:</strong> Created new set: ' + escapeHTML(setName), 'system-message');
             } else {
               appendMessage('<strong>Error:</strong> ' + data.error, 'error-message');
             }
@@ -423,7 +425,7 @@ $(document).ready(function() {
         fetch('/delete_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
           .then(r => r.json())
           .then(data => {
-            if (data.status === 'success') { loadSets(); appendMessage('<strong>System:</strong> Deleted set: ' + setName, 'system-message'); }
+            if (data.status === 'success') { loadSets(); appendMessage('<strong>System:</strong> Deleted set: ' + escapeHTML(setName), 'system-message'); }
             else { appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to delete set'), 'error-message'); }
           });
       }
@@ -561,7 +563,14 @@ $(document).ready(function() {
     if (confirm(`Are you sure you want to reset the chat history for set: ${setName}?`)) {
       fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
         .then(r => { if (!r.ok) return r.json().then(err => { throw new Error(err.message || 'Failed to reset chat'); }); return r.json(); })
-        .then(response => { if (response.status === 'success') { $('#chat-content').empty(); appendMessage(`<strong>System:</strong> Chat history has been reset for set '${response.set_name}'.`, 'system-message'); } else { appendMessage(`<strong>Error:</strong> ${escapeHTML(response.message)}`, 'error-message'); } })
+        .then(response => {
+          if (response.status === 'success') {
+            $('#chat-content').empty();
+            appendMessage('<strong>System:</strong> Chat history has been reset for set ' + escapeHTML(response.set_name) + '.', 'system-message');
+          } else {
+            appendMessage(`<strong>Error:</strong> ${escapeHTML(response.message)}`, 'error-message');
+          }
+        })
         .catch(error => { appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message'); });
     }
   });
