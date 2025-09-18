@@ -64,5 +64,6 @@
 - Expose Rust functions/structs that mirror current Python interfaces, starting with pure functions for config + chat logic; maintain compatibility layers in Python packages that dispatch to Rust when available.
 - Use feature flags and environment switches to toggle between Python and Rust implementations during rollout; default to Python until parity tests pass.
 - Keep data models serialized via serde ↔ dataclasses to ensure predictable boundary formats; prefer JSON-serializable structs to decouple from Python object internals.
-- Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
-- Run the Rust web server first (Rocket or Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
+- [x] Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
+- [x] Expose helper wrappers (e.g., `bridge::call_python_function`) to centrally manage imports and callable dispatch from Rust into Python.
+- [ ] Run the Rust web server first (Rocket or Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
