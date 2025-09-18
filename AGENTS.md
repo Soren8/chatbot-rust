@@ -34,3 +34,4 @@
 - Always validate provider configurations before committing
 - Test chat functionality with provider-test.py before making significant changes
 - Use logging instead of print statements for debugging
+- Skip running `python3 -m compileall`; it’s slow here and the user will run real functional tests.
