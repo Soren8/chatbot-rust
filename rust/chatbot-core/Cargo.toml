@@ -9,4 +9,4 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-pyo3 = { version = "0.21", features = ["auto-initialize"] }
+pyo3 = { version = "0.26", features = ["auto-initialize"] }
