@@ -25,7 +25,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(proxy_request_handler))
         .route("/signup", any(proxy_request_handler))
         .route("/login", any(proxy_request_handler))
-        .route("/logout", any(proxy_request_handler));
+        .route("/logout", any(proxy_request_handler))
+        .route("/chat", any(proxy_request_handler))
+        .route("/regenerate", any(proxy_request_handler))
+        .route("/reset_chat", any(proxy_request_handler));
 
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
     let addr = listener.local_addr()?;
