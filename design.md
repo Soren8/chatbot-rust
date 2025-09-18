@@ -14,6 +14,15 @@ This document outlines the high-level architecture and planned enhancements for 
   - Outsource authentication to Keycloak or Authentik (or other OIDC-compliant systems).
   - Add proper email verification and CAPTCHA workflows to prepare for production.
 
+#### Recently Completed Hardening
+
+- **Provider metadata hygiene** – the UI now receives only a sanitized model list (`provider_name`, `tier`), preventing accidental leakage of `api_key` or `base_url` values.
+- **Session isolation** – anonymous users are assigned stable random guest IDs instead of the remote IP, eliminating cross-user memory leaks behind shared NAT gateways.
+- **Encryption key handling** – login derives a Fernet key per user, stores it in-memory with an idle timeout, and never keeps the raw password. All persistence helpers accept the derived key instead of the plaintext password.
+- **CSRF protection** – every state-changing route validates a per-session token; the token is exposed to forms and Fetch calls, and the client attaches it automatically.
+- **Frontend sanitisation** – set names rendered in the chat UI are escaped before insertion, closing stored-XSS vectors through crafted identifiers.
+- **CSP refinements** – media sources now explicitly allow the `blob:` scheme used for streamed TTS playback while the rest of the policy remains locked down.
+
 
 - **Project Structure & Packaging**
   - Adopt Poetry with a standardized `pyproject.toml` layout for packaging, publishing, and dependency management.

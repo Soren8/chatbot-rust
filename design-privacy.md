@@ -14,7 +14,7 @@ Our privacy tiers were created to offer users progressive security options witho
 
 1. **Standard Tier**
    - **Authentication**: Password or OAuth
-   - **Data Storage**: Server-managed AES-256 keys
+   - **Data Storage**: Server-managed AES-256 keys; login derives a per-user Fernet key from the password, keeps it in memory for the active session only, and expires it after inactivity
    - **LLM Providers**: Any provider
    - **Recoverability**: Full account recovery
    - **Use Case**: General conversations where convenience is prioritized
@@ -49,7 +49,7 @@ The following matrix illustrates which providers are permitted in each privacy t
 ```mermaid
 flowchart TB
     A[Privacy Tier] --> B{Storage Method}
-    B -->|Standard| C[Server-managed keys]
+    B -->|Standard| C[Server-managed keys\n(derived per session, timed expiry)]
     B -->|Private| D[Client-derived keys]
     B -->|Ephemeral| E[Memory only]
 ```
