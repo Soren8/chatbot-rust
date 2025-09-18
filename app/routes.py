@@ -10,7 +10,6 @@ from werkzeug.serving import WSGIRequestHandler
 WSGIRequestHandler.protocol_version = "HTTP/1.1"  # Enable keep-alive connections
 
 # Define constants
-SETS_DIR = "data/user_sets"
 STREAM_TIMEOUT = 300  # 5 minutes in seconds
 from flask import (
     Blueprint, request, jsonify, Response, session, redirect, 
@@ -32,7 +31,8 @@ from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
     create_new_set, delete_set as delete_user_set,
-    load_user_chat_history, save_user_chat_history, get_user_tier
+    load_user_chat_history, save_user_chat_history, get_user_tier,
+    validate_set_name, validate_username
 )
 from app.chat_logic import generate_text_stream
 from app.config import Config
@@ -187,10 +187,13 @@ def signup():
         password = request.form.get("password")
         if not username or not password:
             return "Username and password required.", 400
-        if create_user(username, password):
-            return redirect(url_for("main.login"))
-        else:
-            return "User already exists.", 400
+        try:
+            if create_user(username, password):
+                return redirect(url_for("main.login"))
+        except ValueError as exc:
+            logger.warning("Signup rejected invalid username '%s': %s", username, exc)
+            return "Username may only include letters, numbers, '_' or '-'", 400
+        return "User already exists.", 400
     return render_template("signup.html", sri=Config.CDN_SRI)
 
 @bp.route("/login", methods=["GET", "POST"])
@@ -198,19 +201,22 @@ def login():
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
-        if validate_user(username, password):
-            session["username"] = username
-            # Store encryption password server-side only
-            _set_user_password(username, password)
-            # Load user memory and system prompt
-            user_memory = load_user_memory(username, "default", password)
-            user_system_prompt = load_user_system_prompt(username, "default", password)
-            sessions[username]["memory"] = user_memory
-            sessions[username]["system_prompt"] = user_system_prompt
-            sessions[username]["system_prompt_saved"] = user_system_prompt
-            return redirect(url_for("main.home"))
-        else:
+        try:
+            if validate_user(username, password):
+                session["username"] = username
+                # Store encryption password server-side only
+                _set_user_password(username, password)
+                # Load user memory and system prompt
+                user_memory = load_user_memory(username, "default", password)
+                user_system_prompt = load_user_system_prompt(username, "default", password)
+                sessions[username]["memory"] = user_memory
+                sessions[username]["system_prompt"] = user_system_prompt
+                sessions[username]["system_prompt_saved"] = user_system_prompt
+                return redirect(url_for("main.home"))
+        except ValueError as exc:
+            logger.warning("Login rejected invalid username '%s': %s", username, exc)
             return "Invalid credentials", 401
+        return "Invalid credentials", 401
     return render_template("login.html", sri=Config.CDN_SRI)
 
 @bp.route("/")
@@ -288,7 +294,11 @@ def get_sets():
     if "username" not in session:
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
-    sets = get_user_sets(username)
+    try:
+        sets = get_user_sets(username)
+    except ValueError as exc:
+        logger.warning("get_sets failed validation for user %s: %s", username, exc)
+        return jsonify({"error": "invalid session"}), 400
     return jsonify(sets)
 
 @bp.route("/create_set", methods=["POST"])
@@ -307,8 +317,12 @@ def delete_set():
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
     set_name = request.json.get("set_name")
-    if delete_user_set(username, set_name):
-        return jsonify({"status": "success"})
+    try:
+        if delete_user_set(username, set_name):
+            return jsonify({"status": "success"})
+    except ValueError as exc:
+        logger.warning("delete_set invalid request for user %s: %s", username, exc)
+        return jsonify({"status": "error", "error": "invalid set name"}), 400
     return jsonify({"status": "error", "error": "Cannot delete set"})
 
 @bp.route("/delete_message", methods=["POST"])
@@ -324,7 +338,12 @@ def delete_message():
     logger.debug("delete_message called; raw json: %s", request.get_json())
     user_message = (request.json.get("user_message") or "").strip()
     ai_message = (request.json.get("ai_message") or "").strip()
-    set_name = request.json.get("set_name", "default")
+    set_name_raw = request.json.get("set_name", "default")
+    try:
+        set_name = validate_set_name(set_name_raw)
+    except ValueError as exc:
+        logger.warning("delete_message received invalid set name '%s': %s", set_name_raw, exc)
+        return jsonify({"status": "error", "error": "invalid set name"}), 400
 
     if not user_message:
         logger.debug("delete_message missing user_message in request")
@@ -374,39 +393,23 @@ def delete_message():
             # Persist change for logged-in users
             if "username" in session:
                 username = session["username"]
-                password_to_use = None
-
-                # Determine whether the set is encrypted and choose password accordingly
                 try:
-                    sets_file = os.path.join(SETS_DIR, username, "sets.json")
-                    encrypted = False
-                    logger.debug("Looking for sets.json at: %s", sets_file)
-                    if os.path.exists(sets_file):
-                        logger.debug("sets.json exists for user %s", username)
-                        try:
-                            with open(sets_file, "r", encoding="utf-8") as f:
-                                sets = json.load(f)
-                                logger.debug("sets.json content keys: %s", list(sets.keys()) if isinstance(sets, dict) else "not a dict")
-                                if isinstance(sets, dict) and set_name in sets:
-                                    encrypted = bool(sets[set_name].get("encrypted", False))
-                                    logger.debug("Set '%s' encrypted flag: %s", set_name, encrypted)
-                        except Exception:
-                            logger.exception("Failed to read or parse sets.json for %s", username)
-                    else:
-                        logger.debug("No sets.json for user %s (expected at %s)", username, sets_file)
-                    # Use stored password for encryption
-                    password_to_use = _get_user_password(username)
-                    logger.debug("password_to_use provided: %s", bool(password_to_use))
-                except Exception:
-                    logger.exception("Error determining encryption for set '%s'", set_name)
-                    password_to_use = _get_user_password(username)
+                    safe_username = validate_username(username)
+                except ValueError:
+                    logger.error("Session username failed validation: %s", username)
+                    return jsonify({"status": "error", "error": "invalid session"}), 400
+
+                password_to_use = _get_user_password(safe_username)
 
                 try:
-                    logger.debug("Attempting to save_user_chat_history for user=%s set=%s history_len=%d", username, set_name, len(history))
-                    save_user_chat_history(username, history, set_name, password_to_use)
-                    logger.info("Deleted message pair and saved updated history for user '%s', set '%s'", username, set_name)
+                    logger.debug("Attempting to save_user_chat_history for user=%s set=%s history_len=%d", safe_username, set_name, len(history))
+                    save_user_chat_history(safe_username, history, set_name, password_to_use)
+                    logger.info("Deleted message pair and saved updated history for user '%s', set '%s'", safe_username, set_name)
+                except ValueError as exc:
+                    logger.warning("Failed to save history after delete due to invalid input for user '%s': %s", safe_username, exc)
+                    return jsonify({"status": "error", "error": "invalid request"}), 400
                 except Exception:
-                    logger.exception("Failed to save history after delete for user '%s', set '%s'", username, set_name)
+                    logger.exception("Failed to save history after delete for user '%s', set '%s'", safe_username, set_name)
             else:
                 logger.debug("Not logged-in user; change persisted to in-memory session only")
 
@@ -421,31 +424,28 @@ def load_set():
     if "username" not in session:
         return jsonify({"error": "Not authenticated"}), 403
     username = session["username"]
-    set_name = request.json.get("set_name")
-    password = _get_user_password(username)  # Get the stored password
+    set_name_raw = request.json.get("set_name")
+
+    try:
+        safe_username = validate_username(username)
+        set_name = validate_set_name(set_name_raw)
+    except ValueError as exc:
+        logger.warning("load_set validation failed for user=%s set=%s: %s", username, set_name_raw, exc)
+        return jsonify({"error": "invalid request"}), 400
+
+    password = _get_user_password(safe_username)  # Get the stored password
     
     logger.debug(f"Loading set '{set_name}' for user '{username}'")
     
     # Get encryption status from sets.json
-    sets_file = os.path.join(SETS_DIR, username, "sets.json")
     encrypted = False
-    if os.path.exists(sets_file):
-        try:
-            logger.debug(f"Reading sets file: {sets_file}")
-            with open(sets_file, "r") as f:
-                sets = json.load(f)
-                logger.debug(f"Sets file contents: {sets}")
-                if set_name in sets:
-                    encrypted = sets[set_name].get("encrypted", False)
-                    logger.debug(f"Set '{set_name}' encryption status: {encrypted}")
-                else:
-                    logger.debug(f"Set '{set_name}' not found in sets.json")
-        except Exception as e:
-            logger.error(f"Error reading sets.json: {str(e)}")
-            logger.debug("Traceback:", exc_info=True)
-    else:
-        logger.debug(f"Sets file does not exist: {sets_file}")
-    
+    try:
+        sets = get_user_sets(safe_username)
+        encrypted = sets.get(set_name, {}).get("encrypted", False)
+        logger.debug(f"Set '{set_name}' encryption status: {encrypted}")
+    except Exception as exc:
+        logger.error("Failed to read set metadata for user %s: %s", safe_username, exc)
+
     # If encrypted set and no ephemeral key available, require re-login
     if encrypted and not password:
         logger.error("Encrypted set requested but no in-memory password available")
@@ -453,11 +453,11 @@ def load_set():
 
     # Load data
     logger.debug("Loading memory...")
-    memory = load_user_memory(username, set_name, password if encrypted else None)
+    memory = load_user_memory(safe_username, set_name, password if encrypted else None)
     logger.debug("Loading system prompt...")
-    system_prompt = load_user_system_prompt(username, set_name, password if encrypted else None)
+    system_prompt = load_user_system_prompt(safe_username, set_name, password if encrypted else None)
     logger.debug("Loading chat history...")
-    history = load_user_chat_history(username, set_name, password if encrypted else None)
+    history = load_user_chat_history(safe_username, set_name, password if encrypted else None)
     
     # Ensure history is in correct format (list of tuples)
     formatted_history = []
@@ -489,7 +489,12 @@ def load_set():
 @bp.route("/update_memory", methods=["POST"])
 def update_memory():
     user_memory = request.json.get("memory", "")
-    set_name = request.json.get("set_name", "default")
+    set_name_raw = request.json.get("set_name", "default")
+    try:
+        set_name = validate_set_name(set_name_raw)
+    except ValueError as exc:
+        logger.warning("update_memory invalid set name '%s': %s", set_name_raw, exc)
+        return jsonify({"error": "invalid set name"}), 400
     encrypted = request.json.get("encrypted", False)
 
     if not user_memory:
@@ -504,7 +509,11 @@ def update_memory():
                     f"Memory length: {len(user_memory)}")
         
         sessions[username]["memory"] = user_memory
-        save_user_memory(username, user_memory, set_name, password)
+        try:
+            save_user_memory(username, user_memory, set_name, password)
+        except ValueError as exc:
+            logger.warning("Failed to save memory for user %s: %s", username, exc)
+            return jsonify({"error": "invalid request"}), 400
         
         logger.debug(f"Successfully updated memory for user {username}, set {set_name}")
         return jsonify({
@@ -528,7 +537,12 @@ def update_memory():
 @bp.route("/update_system_prompt", methods=["POST"])
 def update_system_prompt():
     system_prompt = request.json.get("system_prompt", "")
-    set_name = request.json.get("set_name", "default")
+    set_name_raw = request.json.get("set_name", "default")
+    try:
+        set_name = validate_set_name(set_name_raw)
+    except ValueError as exc:
+        logger.warning("update_system_prompt invalid set name '%s': %s", set_name_raw, exc)
+        return jsonify({"error": "invalid set name"}), 400
     encrypted = request.json.get("encrypted", False)
     
     if not system_prompt:
@@ -543,7 +557,11 @@ def update_system_prompt():
                     f"Prompt length: {len(system_prompt)}")
         
         sessions[username]["system_prompt"] = system_prompt
-        save_user_system_prompt(username, system_prompt, set_name, password)
+        try:
+            save_user_system_prompt(username, system_prompt, set_name, password)
+        except ValueError as exc:
+            logger.warning("Failed to save system prompt for user %s: %s", username, exc)
+            return jsonify({"error": "invalid request"}), 400
         
         logger.debug(f"Successfully updated system prompt for user {username}, set {set_name}")
         return jsonify({
@@ -570,6 +588,12 @@ def chat():
 
     user_message = request.json.get("message", "")
     new_system_prompt = request.json.get("system_prompt", None)
+    set_name_raw = request.json.get("set_name", "default")
+    try:
+        set_name = validate_set_name(set_name_raw)
+    except ValueError as exc:
+        logger.warning("chat invalid set name '%s': %s", set_name_raw, exc)
+        return jsonify({"error": "invalid set name"}), 400
 
     # Create consistent guest session ID without timestamp
     session_id = session.get("username", f"guest_{request.remote_addr}")
@@ -606,18 +630,24 @@ def chat():
         logger.info("Updating system prompt")
         user_session["system_prompt"] = new_system_prompt
         if "username" in session:
-            set_name = request.json.get("set_name", "default")
             # Always save encrypted; require ephemeral in-memory password
             password = _get_user_password(session["username"]) 
-            save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
+            try:
+                save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
+            except ValueError as exc:
+                logger.warning("chat failed to save system prompt for user %s: %s", session["username"], exc)
+                return jsonify({"error": "invalid request"}), 400
 
     # Update system prompt if it has changed
     current_system_prompt = user_session["system_prompt"]
     if new_system_prompt is not None and current_system_prompt != new_system_prompt:
         if "username" in session:
-            set_name = request.json.get("set_name", "default")
             password = _get_user_password(session["username"]) 
-            save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
+            try:
+                save_user_system_prompt(session["username"], new_system_prompt, set_name, password)
+            except ValueError as exc:
+                logger.warning("chat failed to persist updated system prompt for user %s: %s", session["username"], exc)
+                return jsonify({"error": "invalid request"}), 400
 
     if response_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
@@ -627,7 +657,6 @@ def chat():
     system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
 
     # Get set_name and password before entering generator
-    set_name = request.json.get("set_name", "default")
     encrypted = request.json.get("encrypted", False)
     password = _get_user_password(session.get("username")) if "username" in session else None
 
@@ -691,9 +720,9 @@ def chat():
                 return
             try:
                 save_user_chat_history(
-                    session_id, 
-                    user_session["history"],  # Full history
-                    set_name, 
+                    session_id,
+                    user_session["history"],
+                    set_name,
                     password
                 )
             except ValueError as e:
@@ -721,7 +750,12 @@ def regenerate():
 
     user_message = request.json.get("message", "")
     system_prompt = request.json.get("system_prompt", "")
-    set_name = request.json.get("set_name", "default")
+    set_name_raw = request.json.get("set_name", "default")
+    try:
+        set_name = validate_set_name(set_name_raw)
+    except ValueError as exc:
+        logger.warning("regenerate invalid set name '%s': %s", set_name_raw, exc)
+        return jsonify({"error": "invalid set name"}), 400
     encrypted = request.json.get("encrypted", False)
     password = _get_user_password(session.get("username")) if "username" in session else None
 
@@ -860,7 +894,12 @@ def reset_chat():
         return jsonify({"status": "error", "message": "Session not found"}), 404
 
     # Get set name from request
-    set_name = request.json.get("set_name", "default")
+    set_name_raw = request.json.get("set_name", "default")
+    try:
+        set_name = validate_set_name(set_name_raw)
+    except ValueError as exc:
+        logger.warning("reset_chat invalid set name '%s': %s", set_name_raw, exc)
+        return jsonify({"status": "error", "message": "invalid set name"}), 400
     
     # Reset history only
     sessions[session_id]["history"] = []
@@ -869,12 +908,18 @@ def reset_chat():
     if "username" in session:
         try:
             save_user_chat_history(
-                session["username"], 
-                [],  # Empty history
+                session["username"],
+                [],
                 set_name,
                 _get_user_password(session["username"]) if "username" in session else None
             )
             logger.info(f"Reset and saved empty chat history for set '{set_name}'")
+        except ValueError as exc:
+            logger.warning("reset_chat invalid input for user %s: %s", session["username"], exc)
+            return jsonify({
+                "status": "error",
+                "message": "invalid request"
+            }), 400
         except Exception as e:
             logger.error(f"Error saving empty history: {str(e)}")
             return jsonify({

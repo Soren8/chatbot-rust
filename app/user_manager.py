@@ -2,8 +2,11 @@ import os
 import json
 import time
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
+from typing import Dict
+
 from app.config import Config
 
 logger = logging.getLogger(__name__)
@@ -22,8 +25,7 @@ SETS_DIR.mkdir(parents=True, exist_ok=True)
 SALT_DIR.mkdir(parents=True, exist_ok=True)
 
 import bcrypt
-from typing import Dict
-from base64 import b64encode, b64decode
+from base64 import b64encode
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -31,38 +33,91 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # Temporary storage for non-logged-in users
 TEMPORARY_STORAGE = defaultdict(dict)
 
-# Initialize users file if it doesn't exist
-if not os.path.exists(USERS_FILE):
-    with open(USERS_FILE, "w") as f:
-        json.dump({}, f)
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+SET_NAME_PATTERN = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
+
+
+def validate_username(username: str) -> str:
+    """Return a normalised username or raise ValueError if invalid."""
+    if not isinstance(username, str):
+        raise ValueError("Invalid username")
+    candidate = username.strip()
+    if not candidate or not USERNAME_PATTERN.fullmatch(candidate):
+        raise ValueError("Username must be 1-64 chars of letters, numbers, '_' or '-' only")
+    return candidate
+
+
+def validate_set_name(set_name: str, allow_default: bool = True) -> str:
+    """Return a normalised set name or raise ValueError if unsafe."""
+    if set_name is None:
+        set_name = "default" if allow_default else ""
+    if not isinstance(set_name, str):
+        raise ValueError("Invalid set name")
+    candidate = set_name.strip()
+    if allow_default and candidate == "":
+        candidate = "default"
+    if not candidate:
+        raise ValueError("Set name is required")
+    if candidate in {".", ".."}:
+        raise ValueError("Set name cannot be '.' or '..'")
+    if not SET_NAME_PATTERN.fullmatch(candidate):
+        raise ValueError("Set name must be 1-64 chars using letters, numbers, spaces, '_' or '-' only")
+    return candidate
+
+def _ensure_users_file():
+    if not USERS_FILE.exists():
+        with USERS_FILE.open("w", encoding="utf-8") as f:
+            json.dump({}, f)
+
+
+_ensure_users_file()
+
 
 def load_users() -> Dict:
-    with open(USERS_FILE, "r") as f:
-        users = json.load(f)
-    
-    # Migrate old format to new format
-    for username, data in users.items():
-        if isinstance(data, str):  # Old format
-            users[username] = {
-                "password": data,
-                "tier": "free"  # Explicit tier field
-            }
-        elif "tier" not in users[username]:  # New format migration
-            users[username]["tier"] = "free"
-    
-    return users  # The 'tier' field will remain plaintext
+    with USERS_FILE.open("r", encoding="utf-8") as f:
+        raw_users = json.load(f) or {}
+
+    migrated_users: Dict[str, Dict] = {}
+    for raw_username, data in raw_users.items():
+        try:
+            username = validate_username(raw_username)
+        except ValueError:
+            logger.warning("Ignoring user with unsafe username stored on disk: %s", raw_username)
+            continue
+
+        if isinstance(data, str):
+            entry = {"password": data, "tier": "free"}
+        else:
+            entry = dict(data)
+            entry.setdefault("tier", "free")
+        migrated_users[username] = entry
+
+    # Rewrite if migration changed anything
+    if migrated_users != raw_users:
+        save_users(migrated_users)
+
+    return migrated_users
+
 
 def save_users(users: Dict):
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
+    safe_users: Dict[str, Dict] = {}
+    for raw_username, data in users.items():
+        username = validate_username(raw_username)
+        safe_users[username] = data
+    with USERS_FILE.open("w", encoding="utf-8") as f:
+        json.dump(safe_users, f, indent=2)
+
 
 def get_user_tier(username: str) -> str:
     """Get the user's account tier"""
+    username = validate_username(username)
     users = load_users()
     return users.get(username, {}).get("tier", "free")
 
+
 def set_user_tier(username: str, tier: str):
     """Update a user's account tier"""
+    username = validate_username(username)
     users = load_users()
     if username in users:
         users[username]["tier"] = tier
@@ -70,40 +125,44 @@ def set_user_tier(username: str, tier: str):
         return True
     return False
 
+
 def create_user(username: str, password: str) -> bool:
     """
     Create a new user with Free tier by default
     """
+    username = validate_username(username)
     users = load_users()
     if username in users:
         return False
 
-    # Store password hashed for security
     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
     users[username] = {
-        "password": hashed_password.decode('utf-8'),  # Hashed
-        "tier": "free"  # Plaintext
+        "password": hashed_password.decode('utf-8'),
+        "tier": "free"
     }
     save_users(users)
     return True
+
 
 def validate_user(username: str, password: str) -> bool:
     """
     Validate a username and password against stored hashed credentials.
     """
+    username = validate_username(username)
     users = load_users()
     if username in users:
         stored_pass = users[username].get("password", "")
         return bcrypt.checkpw(password.encode('utf-8'), stored_pass.encode('utf-8'))
     return False
 
+
 def get_user_salt(username: str) -> bytes:
     """Retrieve or generate a per-user salt."""
+    username = validate_username(username)
     filepath = SALT_DIR / f"{username}_salt"
     if filepath.exists():
         with filepath.open("rb") as f:
             return f.read()
-    # Generate a new salt
     new_salt = os.urandom(16)
     with filepath.open("wb") as f:
         f.write(new_salt)
@@ -122,18 +181,41 @@ def _get_encryption_key(password: str, salt: bytes) -> bytes:
 
 def get_user_sets(username: str) -> dict:
     """Get list of saved memory/prompt sets for a user"""
+    username = validate_username(username)
     user_sets_dir = SETS_DIR / username
     user_sets_dir.mkdir(parents=True, exist_ok=True)
     
     sets_file = user_sets_dir / "sets.json"
     if not sets_file.exists():
-        with sets_file.open("w") as f:
+        with sets_file.open("w", encoding="utf-8") as f:
             json.dump({"default": {"created": time.time()}}, f)
-    
-    with sets_file.open("r") as f:
-        return json.load(f)
+
+    with sets_file.open("r", encoding="utf-8") as f:
+        raw_sets = json.load(f) or {}
+
+    sanitised_sets = {}
+    changed = False
+    for raw_name, meta in raw_sets.items():
+        try:
+            name = validate_set_name(raw_name)
+        except ValueError:
+            logger.warning("Dropping unsafe set name '%s' for user '%s'", raw_name, username)
+            changed = True
+            continue
+        sanitised_sets[name] = meta
+        if name != raw_name:
+            changed = True
+
+    if changed:
+        with sets_file.open("w", encoding="utf-8") as f:
+            json.dump(sanitised_sets, f, indent=2)
+
+    return sanitised_sets
+
 
 def load_user_memory(username: str, set_name: str = "default", password: str = None) -> str:
+    username = validate_username(username)
+    set_name = validate_set_name(set_name)
     # Check if user is logged in
     from flask import session
     if 'username' not in session or session['username'] != username:
@@ -146,12 +228,8 @@ def load_user_memory(username: str, set_name: str = "default", password: str = N
     if not filepath.exists() or filepath.stat().st_size == 0:
         return ""
         
-    # Check if set is encrypted
-    sets_file = SETS_DIR / username / "sets.json"
-    with sets_file.open("r") as f:
-        sets = json.load(f)
-    
-    if set_name in sets and sets[set_name].get("encrypted", False):
+    sets = get_user_sets(username)
+    if sets.get(set_name, {}).get("encrypted", False):
         # Skip decryption if file is empty
         if os.path.getsize(filepath) == 0:
             return ""
@@ -162,11 +240,11 @@ def load_user_memory(username: str, set_name: str = "default", password: str = N
         salt = get_user_salt(username)
         key = _get_encryption_key(password, salt)
         f = Fernet(key)
-        with open(filepath, "rb") as file:
+        with filepath.open("rb") as file:
             encrypted_data = file.read()
         return f.decrypt(encrypted_data).decode()
     else:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with filepath.open("r", encoding="utf-8") as f:
             return f.read()
 
 def save_user_memory(username: str, memory_content: str, set_name: str = "default", password: str = None):
@@ -174,28 +252,26 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     
     # Check if user is logged in
     from flask import session
+    username = validate_username(username)
+    set_name = validate_set_name(set_name)
+
     if 'username' not in session or session['username'] != username:
         TEMPORARY_STORAGE[username]['memory'] = memory_content
         return
         
-    user_sets_dir = Path(SETS_DIR) / username
+    user_sets_dir = SETS_DIR / username
     user_sets_dir.mkdir(parents=True, exist_ok=True)
     
     # Update sets.json
-    sets_file = user_sets_dir / "sets.json"
-    if sets_file.exists():
-        with sets_file.open("r", encoding='utf-8') as f:
-            sets = json.load(f)
-    else:
-        sets = {}
-    
-    # Always mark as encrypted
+    sets = get_user_sets(username)
     sets[set_name] = {
         "created": time.time(),
         "encrypted": True
     }
-    
-    sets_file.write_text(json.dumps(sets), encoding='utf-8')
+
+    sets_file = user_sets_dir / "sets.json"
+    with sets_file.open("w", encoding="utf-8") as f:
+        json.dump(sets, f, indent=2)
     logger.debug(f"Updated sets.json for {username}/{set_name}")
     
     # Require explicit password for encryption
@@ -214,6 +290,8 @@ def save_user_memory(username: str, memory_content: str, set_name: str = "defaul
     logger.debug(f"Successfully saved encrypted memory for {username}/{set_name}")
 
 def load_user_system_prompt(username: str, set_name: str = "default", password: str = None) -> str:
+    username = validate_username(username)
+    set_name = validate_set_name(set_name)
     # Check if user is logged in
     from flask import session
     if 'username' not in session or session['username'] != username:
@@ -226,16 +304,13 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
     if not filepath.exists() or filepath.stat().st_size == 0:
         return Config.DEFAULT_SYSTEM_PROMPT
 
-    # Check if set is encrypted
-    sets_file = SETS_DIR / username / "sets.json"
     try:
-        with sets_file.open("r", encoding='utf-8') as f:
-            sets = json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading sets.json for {username}: {str(e)}")
+        sets = get_user_sets(username)
+    except ValueError as exc:
+        logger.error("Failed to load sets for user %s: %s", username, exc)
         return Config.DEFAULT_SYSTEM_PROMPT
     
-    if set_name in sets and sets[set_name].get("encrypted", False):
+    if sets.get(set_name, {}).get("encrypted", False):
         # Skip decryption if file is empty
         if os.path.getsize(filepath) == 0:
             return Config.DEFAULT_SYSTEM_PROMPT
@@ -248,7 +323,7 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             key = _get_encryption_key(password, salt)
             f = Fernet(key)
             
-            with open(filepath, "rb") as file:
+            with filepath.open("rb") as file:
                 encrypted_data = file.read()
                 logger.debug(f"Read {len(encrypted_data)} bytes from {filepath}")
                 
@@ -267,7 +342,7 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
             return "You are a helpful AI assistant based on the Dolphin 3 8B model. Provide clear and concise answers to user queries."
     else:
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with filepath.open("r", encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             logger.error(f"Error reading plaintext prompt for {username}/{set_name}: {str(e)}")
@@ -276,16 +351,14 @@ def load_user_system_prompt(username: str, set_name: str = "default", password: 
 def save_user_chat_history(username: str, full_history: list, set_name: str = "default", password: str = None):
     logger.debug(f"Saving chat history for set: {set_name}")
     """Save chat history for a user's set"""
-    user_sets_dir = Path(SETS_DIR) / username
+    username = validate_username(username)
+    set_name = validate_set_name(set_name)
+
+    user_sets_dir = SETS_DIR / username
     user_sets_dir.mkdir(parents=True, exist_ok=True)
     
     # Update sets.json
-    sets_file = user_sets_dir / "sets.json"
-    if sets_file.exists():
-        with sets_file.open("r", encoding='utf-8') as f:
-            sets = json.load(f)
-    else:
-        sets = {}
+    sets = get_user_sets(username)
     
     # Always mark as encrypted
     sets[set_name] = {
@@ -293,7 +366,9 @@ def save_user_chat_history(username: str, full_history: list, set_name: str = "d
         "encrypted": True
     }
     
-    sets_file.write_text(json.dumps(sets), encoding='utf-8')
+    sets_file = user_sets_dir / "sets.json"
+    with sets_file.open("w", encoding='utf-8') as f:
+        json.dump(sets, f, indent=2)
     logger.debug(f"Updated sets.json for {username}/{set_name}")
     
     if not password:
@@ -313,25 +388,20 @@ def save_user_chat_history(username: str, full_history: list, set_name: str = "d
 
 def load_user_chat_history(username: str, set_name: str = "default", password: str = None) -> list:
     """Load chat history for a user's set"""
+    username = validate_username(username)
+    set_name = validate_set_name(set_name)
     # Add check for logged-in status
     from flask import session
     if 'username' not in session or session['username'] != username:
         return []
     
-    filepath = Path(SETS_DIR) / username / f"{set_name}_history.json"
+    filepath = SETS_DIR / username / f"{set_name}_history.json"
     if not filepath.exists() or filepath.stat().st_size == 0:
         return []
         
-    # Check if set is encrypted
-    sets_file = Path(SETS_DIR) / username / "sets.json"
-    try:
-        with open(sets_file, "r") as f:
-            sets = json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading sets.json for {username}: {str(e)}")
-        return []
-    
-    if set_name in sets and sets[set_name].get("encrypted", False):
+    sets = get_user_sets(username)
+
+    if sets.get(set_name, {}).get("encrypted", False):
         # Skip decryption if file is empty
         if os.path.getsize(filepath) == 0:
             return []
@@ -344,7 +414,7 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             key = _get_encryption_key(password, salt)
             f = Fernet(key)
             
-            with open(filepath, "rb") as file:
+            with filepath.open("rb") as file:
                 encrypted_data = file.read()
                 
             try:
@@ -352,7 +422,7 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             except Exception as e:
                 logger.error(f"Decryption failed for {username}/{set_name}: {str(e)}")
                 # Try reading as plaintext in case encryption flag was set incorrectly
-                with open(filepath, "r", encoding="utf-8") as f:
+                with filepath.open("r", encoding="utf-8") as f:
                     return json.load(f)
                     
         except Exception as e:
@@ -360,14 +430,15 @@ def load_user_chat_history(username: str, set_name: str = "default", password: s
             return []
     else:
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with filepath.open("r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Error reading plaintext history for {username}/{set_name}: {str(e)}")
             return []
 
 def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "default", password: str = None):
-    
+    username = validate_username(username)
+    set_name = validate_set_name(set_name)
     from flask import session
     if 'username' not in session or session['username'] != username:
         TEMPORARY_STORAGE[username]['prompt'] = system_prompt
@@ -376,12 +447,7 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
     user_sets_dir = SETS_DIR / username
     user_sets_dir.mkdir(parents=True, exist_ok=True)
     
-    sets_file = user_sets_dir / "sets.json"
-    if sets_file.exists():
-        with sets_file.open("r", encoding='utf-8') as f:
-            sets = json.load(f)
-    else:
-        sets = {}
+    sets = get_user_sets(username)
     
     # Always mark as encrypted
     sets[set_name] = {
@@ -389,8 +455,9 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
         "encrypted": True
     }
     
+    sets_file = user_sets_dir / "sets.json"
     with sets_file.open("w", encoding='utf-8') as f:
-        json.dump(sets, f)
+        json.dump(sets, f, indent=2)
     
     if not password:
         raise ValueError("Password required for encryption")
@@ -408,31 +475,33 @@ def save_user_system_prompt(username: str, system_prompt: str, set_name: str = "
 
 def create_new_set(username: str, set_name: str) -> bool:
     """Create a new empty set for a user"""
-    if not set_name or set_name.isspace():
+    username = validate_username(username)
+    try:
+        set_name = validate_set_name(set_name, allow_default=False)
+    except ValueError:
         return False
-        
+
     user_sets_dir = SETS_DIR / username
     user_sets_dir.mkdir(parents=True, exist_ok=True)
     
-    sets_file = user_sets_dir / "sets.json"
-    if sets_file.exists():
-        with sets_file.open("r", encoding='utf-8') as f:
-            sets = json.load(f)
-    else:
-        sets = {}
+    sets = get_user_sets(username)
     
     if set_name in sets:
         return False
         
     sets[set_name] = {"created": time.time()}
     
-    with open(sets_file, "w") as f:
-        json.dump(sets, f)
+    sets_file = user_sets_dir / "sets.json"
+    with sets_file.open("w", encoding="utf-8") as f:
+        json.dump(sets, f, indent=2)
     
     return True
 
 def delete_set(username: str, set_name: str) -> bool:
     """Delete a set and its associated files"""
+    username = validate_username(username)
+    set_name = validate_set_name(set_name)
+
     if set_name == "default":
         return False
         
@@ -451,7 +520,7 @@ def delete_set(username: str, set_name: str) -> bool:
     # Remove from sets.json
     del sets[set_name]
     with sets_file.open("w", encoding='utf-8') as f:
-        json.dump(sets, f)
+        json.dump(sets, f, indent=2)
     
     # Delete associated files
     memory_file = user_sets_dir / f"{set_name}_memory.txt"
