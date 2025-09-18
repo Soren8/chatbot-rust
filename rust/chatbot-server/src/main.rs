@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use chatbot_core::bridge::{self, PythonResponse};
+use std::env;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -37,7 +38,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/update_system_prompt", any(proxy_request_handler))
         .route("/delete_message", any(proxy_request_handler));
 
-    let listener = TcpListener::bind("0.0.0.0:8000").await?;
+    let bind_addr = env::var("CHATBOT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:80".into());
+    let listener = TcpListener::bind(&bind_addr).await?;
     let addr = listener.local_addr()?;
     info!("listening on http://{addr}");
 

@@ -21,6 +21,8 @@ services:
       HOST_DATA_DIR: ${HOST_DATA_DIR:-/app/data}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-600}
+      CHATBOT_BIND_ADDR: ${CHATBOT_BIND_ADDR:-0.0.0.0:80}
+      PYTHONPATH: /app
       
       # TTS + provider config envs that .config.yml may reference
       TTS_HOST: ${TTS_HOST:-localhost}

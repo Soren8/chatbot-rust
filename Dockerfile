@@ -1,5 +1,5 @@
 # Base runtime image with app deps
-FROM python:3.10-slim AS runtime
+FROM python:3.11-slim AS runtime
 
 # Create a dedicated virtual environment
 RUN python -m venv /opt/venv
@@ -24,6 +24,36 @@ COPY app /app/app
 # Create data directory
 RUN mkdir -p /app/data
 
+ENV PYTHONPATH="/app"
+
+# Build the Rust server using the same base environment
+FROM runtime AS rust-build
+ARG RUST_BUILD_PROFILE=debug
+ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    pkg-config \
+    libssl-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:$PATH"
+ENV PYO3_PYTHON="/opt/venv/bin/python"
+
+WORKDIR /build
+RUN mkdir -p rust/chatbot-core/src rust/chatbot-server/src
+
+COPY rust/Cargo.toml rust/Cargo.lock ./rust/
+COPY rust/chatbot-core/Cargo.toml ./rust/chatbot-core/
+COPY rust/chatbot-server/Cargo.toml ./rust/chatbot-server/
+
+WORKDIR /build/rust
+RUN cargo fetch
+
+COPY rust /build/rust
+RUN cargo build --profile ${RUST_BUILD_PROFILE} -p chatbot-server
+
 # Test image adds pytest (kept out of production)
 FROM runtime AS test
 RUN pip install --no-cache-dir pytest
@@ -31,5 +61,9 @@ WORKDIR /app
 
 # Production image with Gunicorn entrypoint
 FROM runtime AS prod
-# Run the Flask app with Gunicorn in production with debug logging and extended timeout
-CMD gunicorn --bind 0.0.0.0:80 --log-level ${LOG_LEVEL:-info} --capture-output --timeout ${GUNICORN_TIMEOUT:-600} "app:create_app()"
+ARG RUST_BUILD_PROFILE=debug
+ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
+COPY --from=rust-build /build/rust/target/${RUST_BUILD_PROFILE}/chatbot-server /usr/local/bin/chatbot-server
+
+# Default to Axum server; bind address is configurable via CHATBOT_BIND_ADDR (see docker-compose)
+CMD ["chatbot-server"]
