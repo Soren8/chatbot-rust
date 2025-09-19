@@ -31,3 +31,4 @@ sha2 = "0.10"
 [dev-dependencies]
 tempfile = "3"
 tracing-appender = "0.2"
+pyo3 = { version = "0.26", features = ["auto-initialize"] }
