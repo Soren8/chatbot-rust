@@ -73,6 +73,7 @@
 - [ ] Auth endpoints (`/signup`, `/login`, `/logout`)
   - [x] `/signup` POST handled by native Rust logic while reusing Flask for CSRF issuance
   - [x] `/login` flow verified via Rust integration test that exercises the bridge and captures session cookies
+  - [x] `/logout` GET handled natively with integration coverage ensuring session cookies rotate correctly
 - [x] `/health` proxied through Axum to reuse Flask handler
  - [x] Chat APIs (`/chat`, `/regenerate`, `/reset_chat`)
  - [x] Set management (`/get_sets`, `/create_set`, `/delete_set`, `/load_set`)
@@ -85,6 +86,7 @@
 - Docker workflow builds the Rust binary and exports the static root; CI includes pytest parity tests and the `verify_no_secrets` scan.
 - Tests profile runs now stream both Python and Rust logs into timestamped artifacts under `temp/test-logs/`, making integration failures (e.g., `/login`) observable from the host without modifying app code.
 - Rust crate split into `lib` + `bin` and includes integration tests for static serving plus authenticated flows (signup/login) that exercise the embedded Flask bridge inside Docker using the shared test helpers.
+- Sign-out parity is validated through the new Rust `/logout` handler, which relies on the bridge for session teardown while asserting cookie rotation in the Docker test harness.
 - Remaining work focuses on replacing Python route handlers and logic modules one at a time while keeping parity coverage.
 
 ### Route-by-Route Migration Loop
