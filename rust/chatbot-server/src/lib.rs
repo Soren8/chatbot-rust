@@ -13,7 +13,9 @@ use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tower_http::services::ServeDir;
 
+mod login;
 mod signup;
+mod user_store;
 
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::registry()
@@ -47,7 +49,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/signup",
             get(proxy_request_handler).post(signup::handle_signup_post),
         )
-        .route("/login", any(proxy_request_handler))
+        .route(
+            "/login",
+            get(proxy_request_handler).post(login::handle_login_post),
+        )
         .route("/logout", any(proxy_request_handler))
         .route("/chat", any(proxy_request_handler))
         .route("/regenerate", any(proxy_request_handler))
@@ -123,7 +128,7 @@ async fn proxy_request_handler(request: Request<Body>) -> Result<Response, (Stat
     }
 }
 
-fn build_response(py_response: PythonResponse) -> Result<Response, (StatusCode, String)> {
+pub(crate) fn build_response(py_response: PythonResponse) -> Result<Response, (StatusCode, String)> {
     let status = StatusCode::from_u16(py_response.status).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

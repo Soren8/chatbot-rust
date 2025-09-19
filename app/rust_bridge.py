@@ -8,9 +8,15 @@ import hmac
 from http.cookies import SimpleCookie
 from typing import Dict, Iterable, Optional, Tuple
 
-from flask import session
+from flask import make_response, redirect, session, url_for
 
 from app import create_app
+from app.routes import (
+    _set_user_encryption_key,
+    load_user_memory,
+    load_user_system_prompt,
+    sessions,
+)
 
 _app_lock = threading.Lock()
 _flask_app = None
@@ -98,6 +104,46 @@ def validate_csrf_token(cookie_header: Optional[str], submitted_token: Optional[
         return hmac.compare_digest(submitted_token, expected)
     except TypeError:
         return submitted_token == expected
+
+
+def finalize_login(
+    cookie_header: Optional[str],
+    username: str,
+    encryption_key: bytes,
+) -> Tuple[int, Iterable[Tuple[str, str]], bytes]:
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context("/", method="POST", headers=headers or None):
+        session["username"] = username
+        key_bytes = encryption_key if isinstance(encryption_key, bytes) else encryption_key.encode("utf-8")
+        _set_user_encryption_key(username, key_bytes)
+
+        user_memory = load_user_memory(username, "default", encryption_key=key_bytes)
+        user_system_prompt = load_user_system_prompt(
+            username,
+            "default",
+            encryption_key=key_bytes,
+        )
+
+        sessions[username]["memory"] = user_memory
+        sessions[username]["system_prompt"] = user_system_prompt
+        sessions[username]["system_prompt_saved"] = user_system_prompt
+
+        response = redirect(url_for("main.home"))
+        app.session_interface.save_session(app, session, response)
+
+        header_items_fn = response.headers.items
+        header_params = inspect.signature(header_items_fn).parameters
+        if "multi" in header_params:
+            header_items = list(header_items_fn(multi=True))
+        else:
+            header_items = list(header_items_fn())
+
+        return response.status_code, header_items, response.get_data()
 
 
 def handle_request(

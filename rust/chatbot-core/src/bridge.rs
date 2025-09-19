@@ -81,3 +81,28 @@ pub fn validate_csrf_token(cookie_header: Option<&str>, token: &str) -> PyResult
         result.extract()
     })
 }
+
+/// Finalize login by deferring to Flask session handling.
+pub fn finalize_login(
+    cookie_header: Option<&str>,
+    username: &str,
+    encryption_key: &[u8],
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let key = PyBytes::new(py, encryption_key);
+        let result = bridge.call_method(
+            "finalize_login",
+            (cookie_header, username, key),
+            None,
+        )?;
+        let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers: header_items,
+            body: body_bytes,
+        })
+    })
+}
