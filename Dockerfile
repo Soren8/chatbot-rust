@@ -25,6 +25,7 @@ COPY app /app/app
 RUN mkdir -p /app/data
 
 ENV PYTHONPATH="/app"
+ENV CHATBOT_STATIC_ROOT="/app/app/static"
 
 # Build the Rust server using the same base environment
 FROM runtime AS rust-build
@@ -45,6 +46,7 @@ WORKDIR /build
 RUN mkdir -p rust/chatbot-core/src rust/chatbot-server/src
 # Provide placeholder targets so `cargo fetch` recognizes the workspace members.
 RUN printf 'fn main() {}\n' > rust/chatbot-server/src/main.rs \
+    && printf '' > rust/chatbot-server/src/lib.rs \
     && touch rust/chatbot-core/src/lib.rs
 
 COPY rust/Cargo.toml rust/Cargo.lock ./rust/
