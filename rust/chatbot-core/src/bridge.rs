@@ -122,3 +122,19 @@ pub fn logout_user(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
         })
     })
 }
+
+/// Render the home page via Flask and return the complete response.
+pub fn render_home(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let result = bridge.call_method("render_home", (cookie_header,), None)?;
+        let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers: header_items,
+            body: body_bytes,
+        })
+    })
+}

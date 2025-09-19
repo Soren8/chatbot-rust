@@ -13,6 +13,7 @@ use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tower_http::services::ServeDir;
 
+mod home;
 mod login;
 mod logout;
 mod signup;
@@ -45,7 +46,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .nest_service("/static", ServeDir::new(static_root))
         .route("/favicon.ico", get(favicon))
         .route("/health", any(proxy_request_handler))
-        .route("/", get(proxy_request_handler))
+        .route("/", get(home::handle_home))
         .route(
             "/signup",
             get(proxy_request_handler).post(signup::handle_signup_post),

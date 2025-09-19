@@ -1,6 +1,8 @@
 # AGENTS.md - Development Guide
 
 ## Build & Run Commands
+
+- Run Rust integration tests: `docker compose run --rm tests cargo test --manifest-path rust/Cargo.toml --test <name>`
 - Start app (dev): `flask run` or `python -m app`
 - Run in Docker: `docker compose up --build`
 - Run single test: `python chat_logic_test.py` or `python provider-test.py --provider [provider_name] --prompt "Your test prompt"`

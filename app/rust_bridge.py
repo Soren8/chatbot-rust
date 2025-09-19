@@ -17,6 +17,7 @@ from app.routes import (
     load_user_system_prompt,
     sessions,
     USER_ENCRYPTION_KEYS,
+    home,
 )
 
 _app_lock = threading.Lock()
@@ -146,6 +147,27 @@ def finalize_login(
 
         return response.status_code, header_items, response.get_data()
 
+
+
+def render_home(cookie_header: Optional[str] = None):
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context("/", method="GET", headers=headers or None):
+        response = make_response(home())
+        app.session_interface.save_session(app, session, response)
+
+        header_items_fn = response.headers.items
+        header_params = inspect.signature(header_items_fn).parameters
+        if "multi" in header_params:
+            header_items = list(header_items_fn(multi=True))
+        else:
+            header_items = list(header_items_fn())
+
+        return response.status_code, header_items, response.get_data()
 
 def logout_user(cookie_header: Optional[str] = None):
     app = _get_app()
