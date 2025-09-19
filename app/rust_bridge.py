@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import threading
 import inspect
+import hmac
 from http.cookies import SimpleCookie
 from typing import Dict, Iterable, Optional, Tuple
+
+from flask import session
 
 from app import create_app
 
@@ -72,6 +75,29 @@ def _set_cookie_on_client(client, host_header: Optional[str], morsel) -> None:
         set_cookie(host, morsel.key, value, **cookie_kwargs)
     else:
         set_cookie(morsel.key, value, **cookie_kwargs)
+
+
+def validate_csrf_token(cookie_header: Optional[str], submitted_token: Optional[str]) -> bool:
+    """Return True if the submitted token matches the session CSRF token."""
+
+    if not submitted_token:
+        return False
+
+    app = _get_app()
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context("/", method="POST", headers=headers):
+        expected = session.get("csrf_token")
+
+    if not expected:
+        return False
+
+    try:
+        return hmac.compare_digest(submitted_token, expected)
+    except TypeError:
+        return submitted_token == expected
 
 
 def handle_request(

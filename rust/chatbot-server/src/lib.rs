@@ -13,6 +13,8 @@ use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tower_http::services::ServeDir;
 
+mod signup;
+
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::from_default_env())
@@ -41,7 +43,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/favicon.ico", get(favicon))
         .route("/health", any(proxy_request_handler))
         .route("/", get(proxy_request_handler))
-        .route("/signup", any(proxy_request_handler))
+        .route(
+            "/signup",
+            get(proxy_request_handler).post(signup::handle_signup_post),
+        )
         .route("/login", any(proxy_request_handler))
         .route("/logout", any(proxy_request_handler))
         .route("/chat", any(proxy_request_handler))

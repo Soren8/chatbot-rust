@@ -72,3 +72,12 @@ pub fn proxy_request(
         })
     })
 }
+
+/// Validate a CSRF token against the Flask session state.
+pub fn validate_csrf_token(cookie_header: Option<&str>, token: &str) -> PyResult<bool> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let result = bridge.call_method("validate_csrf_token", (cookie_header, token), None)?;
+        result.extract()
+    })
+}

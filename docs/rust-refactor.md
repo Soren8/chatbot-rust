@@ -70,7 +70,8 @@
 
 ## Item 4: Route Migration Progress
 - [x] `/` home page proxied through `bridge::proxy_request`
-- [x] Auth endpoints (`/signup`, `/login`, `/logout`)
+- [ ] Auth endpoints (`/signup`, `/login`, `/logout`)
+  - [x] `/signup` POST handled by native Rust logic while reusing Flask for CSRF issuance
 - [x] `/health` proxied through Axum to reuse Flask handler
  - [x] Chat APIs (`/chat`, `/regenerate`, `/reset_chat`)
  - [x] Set management (`/get_sets`, `/create_set`, `/delete_set`, `/load_set`)
