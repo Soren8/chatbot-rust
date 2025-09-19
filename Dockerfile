@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code and tests for containerized runs
 COPY app /app/app
 COPY tests /app/tests
+COPY rust /app/rust
 
 # Create data directory
 RUN mkdir -p /app/data
@@ -66,6 +67,16 @@ RUN if [ "${RUST_BUILD_PROFILE}" = "debug" ]; then \
 
 # Test image adds pytest (kept out of production)
 FROM runtime AS test
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    pkg-config \
+    libssl-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:$PATH"
+
 RUN pip install --no-cache-dir pytest
 WORKDIR /app
 
