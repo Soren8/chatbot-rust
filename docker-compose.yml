@@ -44,5 +44,6 @@ services:
       SECRET_KEY: test_secret_key_for_security_tests
       HOST_DATA_DIR: /tmp/testdata
       PYTEST_ADDOPTS: -o cache_dir=/tmp/pytest_cache
+      PYTHONPATH: /app
     volumes:
       - .:/app
