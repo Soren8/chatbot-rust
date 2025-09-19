@@ -30,7 +30,7 @@ fn extract_cookie(set_cookie: &str) -> String {
 #[tokio::test]
 async fn login_flow_sets_session_cookie() {
     common::ensure_pythonpath();
-    let _ = common::init_tracing();
+    common::init_tracing();
     env::set_var("SECRET_KEY", "test_secret_key");
 
     let data_dir = TempDir::new().expect("temp data dir");

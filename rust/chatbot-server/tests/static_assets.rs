@@ -1,9 +1,8 @@
 use axum::{
-    body::Body,
+    body::{to_bytes, Body},
     http::{Request, StatusCode},
 };
 use chatbot_server::build_router;
-use hyper::body::to_bytes;
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -25,7 +24,9 @@ async fn serves_static_files_from_configured_root() {
         .expect("static file request");
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body()).await.expect("read body");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
     assert!(body.starts_with(b"body"));
 }
 

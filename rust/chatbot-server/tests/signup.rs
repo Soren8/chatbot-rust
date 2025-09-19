@@ -2,8 +2,6 @@ use std::{
     env,
     fs::File,
     io::BufReader,
-    path::PathBuf,
-    sync::Once,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,18 +17,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 use urlencoding::encode;
 
-static PYTHONPATH_INIT: Once = Once::new();
-
-fn ensure_pythonpath() {
-    PYTHONPATH_INIT.call_once(|| {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .canonicalize()
-            .expect("workspace root");
-        env::set_var("PYTHONPATH", repo_root.to_str().expect("utf8 path"));
-    });
-}
+mod common;
 
 fn extract_csrf_token(html: &str) -> Option<String> {
     let re = Regex::new(r#"name="csrf_token" value="([^"]+)""#).unwrap();
@@ -48,7 +35,8 @@ fn extract_cookie(set_cookie: &str) -> String {
 
 #[tokio::test]
 async fn signup_flow_creates_user_record() {
-    ensure_pythonpath();
+    common::ensure_pythonpath();
+    common::init_tracing();
 
     env::set_var("SECRET_KEY", "test_secret_key");
 
