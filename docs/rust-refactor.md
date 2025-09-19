@@ -72,6 +72,7 @@
 - [x] `/` home page proxied through `bridge::proxy_request`
 - [ ] Auth endpoints (`/signup`, `/login`, `/logout`)
   - [x] `/signup` POST handled by native Rust logic while reusing Flask for CSRF issuance
+  - [x] `/login` flow verified via Rust integration test that exercises the bridge and captures session cookies
 - [x] `/health` proxied through Axum to reuse Flask handler
  - [x] Chat APIs (`/chat`, `/regenerate`, `/reset_chat`)
  - [x] Set management (`/get_sets`, `/create_set`, `/delete_set`, `/load_set`)
@@ -79,10 +80,11 @@
 - [x] Static assets served directly from Axum (`/static`, `/favicon.ico`) with integration tests
 - [x] Bridge parity tests executing in Docker to validate route equivalence across environments
 
-### Current Status (2025-09-18)
+### Current Status (2025-09-19)
 - Rust Axum server now handles all HTTP entrypoints, delegating to the Python bridge for business logic while serving static assets natively.
 - Docker workflow builds the Rust binary and exports the static root; CI includes pytest parity tests and the `verify_no_secrets` scan.
-- Rust crate split into `lib` + `bin` and includes integration tests for static serving.
+- Tests profile runs now stream both Python and Rust logs into timestamped artifacts under `temp/test-logs/`, making integration failures (e.g., `/login`) observable from the host without modifying app code.
+- Rust crate split into `lib` + `bin` and includes integration tests for static serving plus authenticated flows (signup/login) that exercise the embedded Flask bridge inside Docker using the shared test helpers.
 - Remaining work focuses on replacing Python route handlers and logic modules one at a time while keeping parity coverage.
 
 ### Route-by-Route Migration Loop
