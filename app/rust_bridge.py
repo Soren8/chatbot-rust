@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import inspect
 from http.cookies import SimpleCookie
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -19,6 +20,58 @@ def _get_app():
             if _flask_app is None:
                 _flask_app = create_app()
     return _flask_app
+
+
+def _set_cookie_on_client(client, host_header: Optional[str], morsel) -> None:
+    """Set a cookie on the Flask test client across Werkzeug versions."""
+
+    set_cookie = client.set_cookie
+    params = inspect.signature(set_cookie).parameters
+    accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+
+    def accepts(name: str) -> bool:
+        return accepts_kwargs or name in params
+
+    cookie_kwargs = {}
+
+    domain = morsel["domain"]
+    if domain and accepts("domain"):
+        cookie_kwargs["domain"] = domain
+
+    path = morsel["path"] or "/"
+    if path and accepts("path"):
+        cookie_kwargs["path"] = path
+
+    if morsel["secure"] and accepts("secure"):
+        cookie_kwargs["secure"] = True
+
+    if morsel["httponly"] and accepts("httponly"):
+        cookie_kwargs["httponly"] = True
+
+    samesite = morsel["samesite"]
+    if samesite and accepts("samesite"):
+        cookie_kwargs["samesite"] = samesite
+
+    max_age = morsel["max-age"]
+    if max_age and accepts("max_age"):
+        try:
+            cookie_kwargs["max_age"] = int(max_age)
+        except ValueError:
+            # Ignore malformed max-age values; Flask/Werkzeug expect int.
+            pass
+
+    expires = morsel["expires"]
+    if expires and accepts("expires"):
+        cookie_kwargs["expires"] = expires
+
+    value = morsel.value or ""
+    host = (host_header or "localhost").split(":", 1)[0]
+
+    parameters = list(params.keys())
+    if parameters and parameters[0] == "server_name":
+        set_cookie(host, morsel.key, value, **cookie_kwargs)
+    else:
+        set_cookie(morsel.key, value, **cookie_kwargs)
 
 
 def handle_request(
@@ -39,12 +92,9 @@ def handle_request(
         if cookie_header:
             parsed = SimpleCookie()
             parsed.load(cookie_header)
+            host = headers.get("Host")
             for morsel in parsed.values():
-                client.set_cookie(
-                    server_name=headers.get("Host", "localhost"),
-                    key=morsel.key,
-                    value=morsel.value,
-                )
+                _set_cookie_on_client(client, host, morsel)
 
         response = client.open(
             path=path,
@@ -55,5 +105,10 @@ def handle_request(
             follow_redirects=False,
         )
 
-        header_items = list(response.headers.items(multi=True))
+        header_items_fn = response.headers.items
+        header_params = inspect.signature(header_items_fn).parameters
+        if "multi" in header_params:
+            header_items = list(header_items_fn(multi=True))
+        else:
+            header_items = list(header_items_fn())
         return response.status_code, header_items, response.get_data()
