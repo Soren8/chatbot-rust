@@ -43,6 +43,9 @@ ENV PYO3_PYTHON="/opt/venv/bin/python"
 
 WORKDIR /build
 RUN mkdir -p rust/chatbot-core/src rust/chatbot-server/src
+# Provide placeholder targets so `cargo fetch` recognizes the workspace members.
+RUN printf 'fn main() {}\n' > rust/chatbot-server/src/main.rs \
+    && touch rust/chatbot-core/src/lib.rs
 
 COPY rust/Cargo.toml rust/Cargo.lock ./rust/
 COPY rust/chatbot-core/Cargo.toml ./rust/chatbot-core/
@@ -52,7 +55,11 @@ WORKDIR /build/rust
 RUN cargo fetch
 
 COPY rust /build/rust
-RUN cargo build --profile ${RUST_BUILD_PROFILE} -p chatbot-server
+RUN if [ "${RUST_BUILD_PROFILE}" = "debug" ]; then \
+        cargo build -p chatbot-server; \
+    else \
+        cargo build --profile "${RUST_BUILD_PROFILE}" -p chatbot-server; \
+    fi
 
 # Test image adds pytest (kept out of production)
 FROM runtime AS test
