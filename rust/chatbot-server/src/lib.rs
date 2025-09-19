@@ -153,6 +153,9 @@ pub(crate) fn build_response(py_response: PythonResponse) -> Result<Response, (S
     {
         let headers = response.headers_mut();
         for (name, value) in py_response.headers {
+            if name.eq_ignore_ascii_case("transfer-encoding") {
+                continue;
+            }
             let header_name = match HeaderName::from_bytes(name.as_bytes()) {
                 Ok(name) => name,
                 Err(err) => {

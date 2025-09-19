@@ -225,10 +225,26 @@ def handle_request(
             follow_redirects=False,
         )
 
+        # Ensure we can read the payload from streamed responses before
+        # returning it to Rust. Werkzeug guards streaming responses with
+        # direct_passthrough, so disable it prior to get_data().
+        response.direct_passthrough = False
+
+        body_bytes = response.get_data()
+
         header_items_fn = response.headers.items
         header_params = inspect.signature(header_items_fn).parameters
         if "multi" in header_params:
             header_items = list(header_items_fn(multi=True))
         else:
             header_items = list(header_items_fn())
-        return response.status_code, header_items, response.get_data()
+
+        # The bridge collapses streamed responses into a single payload, so
+        # drop chunked transfer-encoding metadata that would now be invalid.
+        header_items = [
+            (name, value)
+            for name, value in header_items
+            if name.lower() != "transfer-encoding"
+        ]
+
+        return response.status_code, header_items, body_bytes
