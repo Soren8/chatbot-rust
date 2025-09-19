@@ -14,6 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tower_http::services::ServeDir;
 
 mod login;
+mod logout;
 mod signup;
 mod user_store;
 
@@ -53,7 +54,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/login",
             get(proxy_request_handler).post(login::handle_login_post),
         )
-        .route("/logout", any(proxy_request_handler))
+        .route("/logout", get(logout::handle_logout))
         .route("/chat", any(proxy_request_handler))
         .route("/regenerate", any(proxy_request_handler))
         .route("/reset_chat", any(proxy_request_handler))

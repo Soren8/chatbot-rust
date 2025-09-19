@@ -11,27 +11,12 @@ use axum::{
 };
 use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
-use regex::Regex;
 use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
 use urlencoding::encode;
 
 mod common;
-
-fn extract_csrf_token(html: &str) -> Option<String> {
-    let re = Regex::new(r#"name="csrf_token" value="([^"]+)""#).unwrap();
-    re.captures(html).and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-}
-
-fn extract_cookie(set_cookie: &str) -> String {
-    set_cookie
-        .split(';')
-        .next()
-        .unwrap_or(set_cookie)
-        .trim()
-        .to_owned()
-}
 
 #[tokio::test]
 async fn signup_flow_creates_user_record() {
@@ -69,7 +54,7 @@ async fn signup_flow_creates_user_record() {
     let body = to_bytes(get_response.into_body(), 64 * 1024)
         .await
         .expect("read body");
-    let csrf = extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
         .expect("csrf token present");
 
     let username = format!(
@@ -92,7 +77,7 @@ async fn signup_flow_creates_user_record() {
                 .method("POST")
                 .uri("/signup")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, extract_cookie(&set_cookie))
+                .header(header::COOKIE, common::extract_cookie(&set_cookie))
                 .body(Body::from(payload))
                 .unwrap(),
         )

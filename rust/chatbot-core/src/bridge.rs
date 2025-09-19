@@ -106,3 +106,19 @@ pub fn finalize_login(
         })
     })
 }
+
+/// Clear Flask session state and redirect back to the home page.
+pub fn logout_user(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let result = bridge.call_method("logout_user", (cookie_header,), None)?;
+        let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers: header_items,
+            body: body_bytes,
+        })
+    })
+}

@@ -16,6 +16,7 @@ from app.routes import (
     load_user_memory,
     load_user_system_prompt,
     sessions,
+    USER_ENCRYPTION_KEYS,
 )
 
 _app_lock = threading.Lock()
@@ -132,6 +133,31 @@ def finalize_login(
         sessions[username]["memory"] = user_memory
         sessions[username]["system_prompt"] = user_system_prompt
         sessions[username]["system_prompt_saved"] = user_system_prompt
+
+        response = redirect(url_for("main.home"))
+        app.session_interface.save_session(app, session, response)
+
+        header_items_fn = response.headers.items
+        header_params = inspect.signature(header_items_fn).parameters
+        if "multi" in header_params:
+            header_items = list(header_items_fn(multi=True))
+        else:
+            header_items = list(header_items_fn())
+
+        return response.status_code, header_items, response.get_data()
+
+
+def logout_user(cookie_header: Optional[str] = None):
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context("/logout", method="GET", headers=headers or None):
+        username = session.pop("username", None)
+        if username:
+            USER_ENCRYPTION_KEYS.pop(username, None)
 
         response = redirect(url_for("main.home"))
         app.session_interface.save_session(app, session, response)

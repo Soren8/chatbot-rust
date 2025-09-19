@@ -1,3 +1,4 @@
+use regex::Regex;
 use std::{env, path::PathBuf, sync::Once};
 
 static PYTHONPATH_INIT: Once = Once::new();
@@ -50,4 +51,18 @@ pub fn init_tracing() {
             .with_test_writer()
             .try_init();
     });
+}
+
+pub fn extract_csrf_token(html: &str) -> Option<String> {
+    let re = Regex::new(r#"name="csrf_token" value="([^"]+)""#).unwrap();
+    re.captures(html).and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+}
+
+pub fn extract_cookie(set_cookie: &str) -> String {
+    set_cookie
+        .split(';')
+        .next()
+        .unwrap_or(set_cookie)
+        .trim()
+        .to_owned()
 }
