@@ -18,8 +18,9 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy only the application code
+# Copy application code and tests for containerized runs
 COPY app /app/app
+COPY tests /app/tests
 
 # Create data directory
 RUN mkdir -p /app/data

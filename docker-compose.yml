@@ -42,8 +42,6 @@ services:
     command: pytest -q
     environment:
       SECRET_KEY: test_secret_key_for_security_tests
-      HOST_DATA_DIR: /tmp/testdata
+      HOST_DATA_DIR: /app/data
       PYTEST_ADDOPTS: -o cache_dir=/tmp/pytest_cache
       PYTHONPATH: /app
-    volumes:
-      - .:/app
