@@ -2,6 +2,7 @@
 
 ## Guiding Principles
 - Pair each migration milestone with tests that document existing Python behavior and verify the Rust replacement.
+- Prioritize Rust-based test coverage; new scenarios should be exercised via cargo tests so they remain after Python teardown.
 - Maintain functional parity during the transition; keep Python implementations available until their Rust counterparts are tested and ready.
 - Ensure Rust additions interoperate cleanly with remaining Python modules; migrate one module at a time.
 - Preserve provider contracts by validating configuration and integrations whenever the abstraction layer changes.
