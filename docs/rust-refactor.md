@@ -75,3 +75,26 @@
  - [x] Chat APIs (`/chat`, `/regenerate`, `/reset_chat`)
  - [x] Set management (`/get_sets`, `/create_set`, `/delete_set`, `/load_set`)
  - [x] System prompts and memory endpoints (`/update_memory`, `/update_system_prompt`, `/delete_message`)
+- [x] Static assets served directly from Axum (`/static`, `/favicon.ico`) with integration tests
+- [x] Bridge parity tests executing in Docker to validate route equivalence across environments
+
+### Current Status (2025-09-18)
+- Rust Axum server now handles all HTTP entrypoints, delegating to the Python bridge for business logic while serving static assets natively.
+- Docker workflow builds the Rust binary and exports the static root; CI includes pytest parity tests and the `verify_no_secrets` scan.
+- Rust crate split into `lib` + `bin` and includes integration tests for static serving.
+- Remaining work focuses on replacing Python route handlers and logic modules one at a time while keeping parity coverage.
+
+### Route-by-Route Migration Loop
+For each Flask endpoint (grouped where it makes sense):
+1. **Baseline tests** – ensure pytest coverage and bridge parity tests exercise the current Python behaviour; add cases if gaps exist.
+2. **Port handler** – implement the equivalent Axum handler (initially calling into Python via the bridge until the Rust logic is ready).
+3. **Rust integration tests** – cover new behaviour (status codes, headers, cookies, CSRF) using tower/axum test helpers.
+4. **Run suites** – execute `docker compose run --rm tests pytest …` and the relevant `cargo test` set; keep CI scripts green.
+5. **Interactive check** – verify the route manually in the UI to confirm end-to-end behaviour.
+6. **Iterate** – once parity is confirmed, refactor the underlying business logic (e.g., chat logic or providers) into Rust and repeat.
+
+Tracking endpoints still needing full Rust implementations:
+- Authentication (`/signup`, `/login`, `/logout`) – logic still lives in Python; needs Rust port after tests are expanded.
+- Chat workflows (`/chat`, `/regenerate`, `/reset_chat`) – next candidate once auth is complete.
+- System prompt + memory management (`/update_system_prompt`, `/update_memory`, `/delete_message`, set CRUD) – migrate after chat flows.
+- Ancillary routes (TTS, provider health checks) – evaluate once core flows are in Rust.
