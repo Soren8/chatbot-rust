@@ -49,7 +49,8 @@ sessions = defaultdict(
     }
 )
 
-response_lock = threading.Lock()
+_response_locks = {}
+_response_lock_registry_lock = threading.Lock()
 requests_per_ip = {}
 MAX_REQUESTS_PER_MINUTE = 60
 
@@ -193,6 +194,18 @@ def clean_old_sessions():
     for session_id in list(sessions.keys()):
         if current_time - sessions[session_id]["last_used"] > Config.SESSION_TIMEOUT:
             del sessions[session_id]
+            with _response_lock_registry_lock:
+                _response_locks.pop(session_id, None)
+
+
+def _get_response_lock(session_id: str) -> threading.Lock:
+    """Return a lock scoped to a specific session to avoid global blocking."""
+    with _response_lock_registry_lock:
+        lock = _response_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _response_locks[session_id] = lock
+        return lock
 
 def ensure_full_history_loaded(user_session):
     """Ensure complete history is loaded for logged-in users with empty session history"""
@@ -727,7 +740,8 @@ def chat():
                 logger.warning("chat failed to persist updated system prompt for user %s: %s", session["username"], exc)
                 return jsonify({"error": "invalid request"}), 400
 
-    if response_lock.locked():
+    session_lock = _get_response_lock(session_id)
+    if session_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
 
     # Get memory text from the session regardless of login status
@@ -754,7 +768,7 @@ def chat():
     logger.debug(f"Using history for generation: {len(current_history)} items")
     
     def generate():
-        with response_lock:
+        with session_lock:
             logger.debug(
                 "LLM Request Details:\n"
                 f"Provider: {selected_model}\n"
@@ -871,7 +885,8 @@ def regenerate():
             user_session["history"].pop()
             insertion_index = len(user_session["history"])  # append position
 
-    if response_lock.locked():
+    session_lock = _get_response_lock(session_id)
+    if session_lock.locked():
         return jsonify({"error": "A response is currently being generated. Please wait and try again."}), 429
 
     memory_text = user_session.get("memory", "")
@@ -892,7 +907,7 @@ def regenerate():
 
     def generate():
         logger.info(f"Starting regeneration for session {session_id}")
-        with response_lock:
+        with session_lock:
             try:
                 logger.info("Preparing to call LLM for regeneration")
                 
