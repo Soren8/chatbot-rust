@@ -39,9 +39,33 @@ services:
       context: .
       target: test
     working_dir: /app
-    command: pytest -q
+    command: >-
+      bash -lc '
+        set -uo pipefail
+        mkdir -p /app/test-logs
+        LOG_FILE=/app/test-logs/tests-$(date +%Y%m%d-%H%M%S).log
+        exec > >(tee "$${LOG_FILE}") 2>&1
+        echo "[tests] writing logs to $${LOG_FILE}"
+        PY_STATUS=0
+        RUST_STATUS=0
+        /opt/venv/bin/python -m pytest -q
+        PY_STATUS=$?
+        cargo test --manifest-path /app/rust/Cargo.toml --workspace -- --nocapture
+        RUST_STATUS=$?
+        echo "[tests] pytest exit code: $${PY_STATUS}"
+        echo "[tests] cargo exit code: $${RUST_STATUS}"
+        EXIT_CODE=$$PY_STATUS
+        if [ $$RUST_STATUS -ne 0 ]; then
+          EXIT_CODE=$$RUST_STATUS
+        fi
+        exit $$EXIT_CODE
+      '
     environment:
       SECRET_KEY: test_secret_key_for_security_tests
       HOST_DATA_DIR: /app/data
       PYTEST_ADDOPTS: -o cache_dir=/tmp/pytest_cache
       PYTHONPATH: /app
+      RUST_LOG: info
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./temp/test-logs:/app/test-logs
