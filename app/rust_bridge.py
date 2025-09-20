@@ -5,6 +5,12 @@ from __future__ import annotations
 import json
 import os
 import base64
+import traceback
+
+# If Python-side code raises, tests can inspect LAST_EXCEPTION to get the
+# formatted traceback and fail deterministically. This is reset on each
+# entry so tests can detect the most recent error.
+LAST_EXCEPTION: Optional[str] = None
 import threading
 import inspect
 import hmac
@@ -279,13 +285,16 @@ def chat_prepare(
     cookie_header: Optional[str],
     payload: Dict[str, object],
 ):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
     app = _get_app()
 
     headers = {}
     if cookie_header:
         headers["Cookie"] = cookie_header
 
-    with app.test_request_context(
+    try:
+        with app.test_request_context(
         "/chat",
         method="POST",
         headers=headers or None,
@@ -447,6 +456,23 @@ def chat_prepare(
                 }
 
             provider_config = dict(provider_config_raw)
+            # Normalize `allowed_providers` so it's always a list. YAML may
+            # contain a single string; other code (and Rust's deserializer)
+            # expects a sequence. Mirror the logic used in `get_provider_config`.
+            allowed = provider_config.get("allowed_providers", [])
+            if isinstance(allowed, str):
+                provider_config["allowed_providers"] = [allowed]
+
+            # Ensure `test_chunks` is a list when present and valid JSON.
+            # Some configs may set this as a JSON string; try to coerce if
+            # necessary.
+            tc = provider_config.get("test_chunks")
+            if isinstance(tc, str):
+                try:
+                    provider_config["test_chunks"] = json.loads(tc)
+                except Exception:
+                    # leave as-is; downstream code will ignore invalid values
+                    pass
 
             history_serialisable = []
             for item in user_session.get("history", []):
@@ -481,9 +507,16 @@ def chat_prepare(
 
             return {"ok": True, "context": json.dumps(context)}
         except Exception:
+            # capture the full traceback for test introspection and re-raise
+            LAST_EXCEPTION = traceback.format_exc()
             logger.exception("chat_prepare raised unexpected error; releasing lock")
             session_lock.release()
             raise
+    except Exception:
+        # Ensure LAST_EXCEPTION is set for unexpected outer exceptions
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        raise
 
 
 def chat_finalize(
