@@ -128,135 +128,135 @@ def validate_csrf_token(cookie_header: Optional[str], submitted_token: Optional[
         headers["Cookie"] = cookie_header
 
     with app.test_request_context("/", method="POST", headers=headers):
-        expected = session.get("csrf_token")
+            expected = session.get("csrf_token")
 
-    if not expected:
-        return False
+            if not expected:
+            return False
 
-    try:
-        return hmac.compare_digest(submitted_token, expected)
-    except TypeError:
-        return submitted_token == expected
+            try:
+            return hmac.compare_digest(submitted_token, expected)
+            except TypeError:
+            return submitted_token == expected
 
 
-def finalize_login(
-    cookie_header: Optional[str],
-    username: str,
-    encryption_key: bytes,
-) -> Tuple[int, Iterable[Tuple[str, str]], bytes]:
-    app = _get_app()
+            def finalize_login(
+            cookie_header: Optional[str],
+            username: str,
+            encryption_key: bytes,
+            ) -> Tuple[int, Iterable[Tuple[str, str]], bytes]:
+            app = _get_app()
 
-    headers = {}
-    if cookie_header:
-        headers["Cookie"] = cookie_header
+            headers = {}
+            if cookie_header:
+            headers["Cookie"] = cookie_header
 
-    with app.test_request_context("/", method="POST", headers=headers or None):
-        session["username"] = username
-        key_bytes = encryption_key if isinstance(encryption_key, bytes) else encryption_key.encode("utf-8")
-        _set_user_encryption_key(username, key_bytes)
+            with app.test_request_context("/", method="POST", headers=headers or None):
+            session["username"] = username
+            key_bytes = encryption_key if isinstance(encryption_key, bytes) else encryption_key.encode("utf-8")
+            _set_user_encryption_key(username, key_bytes)
 
-        user_memory = load_user_memory(username, "default", encryption_key=key_bytes)
-        user_system_prompt = load_user_system_prompt(
+            user_memory = load_user_memory(username, "default", encryption_key=key_bytes)
+            user_system_prompt = load_user_system_prompt(
             username,
             "default",
             encryption_key=key_bytes,
-        )
+            )
 
-        sessions[username]["memory"] = user_memory
-        sessions[username]["system_prompt"] = user_system_prompt
-        sessions[username]["system_prompt_saved"] = user_system_prompt
+            sessions[username]["memory"] = user_memory
+            sessions[username]["system_prompt"] = user_system_prompt
+            sessions[username]["system_prompt_saved"] = user_system_prompt
 
-        response = redirect(url_for("main.home"))
-        app.session_interface.save_session(app, session, response)
+            response = redirect(url_for("main.home"))
+            app.session_interface.save_session(app, session, response)
 
-        return _response_to_triplet(response)
+            return _response_to_triplet(response)
 
 
 
-def render_home(cookie_header: Optional[str] = None):
-    app = _get_app()
+            def render_home(cookie_header: Optional[str] = None):
+            app = _get_app()
 
-    headers = {}
-    if cookie_header:
-        headers["Cookie"] = cookie_header
+            headers = {}
+            if cookie_header:
+            headers["Cookie"] = cookie_header
 
-    with app.test_request_context("/", method="GET", headers=headers or None):
-        response = make_response(home())
-        app.session_interface.save_session(app, session, response)
+            with app.test_request_context("/", method="GET", headers=headers or None):
+            response = make_response(home())
+            app.session_interface.save_session(app, session, response)
 
-        return _response_to_triplet(response)
+            return _response_to_triplet(response)
 
-def logout_user(cookie_header: Optional[str] = None):
-    app = _get_app()
+            def logout_user(cookie_header: Optional[str] = None):
+            app = _get_app()
 
-    headers = {}
-    if cookie_header:
-        headers["Cookie"] = cookie_header
+            headers = {}
+            if cookie_header:
+            headers["Cookie"] = cookie_header
 
-    with app.test_request_context("/logout", method="GET", headers=headers or None):
-        username = session.pop("username", None)
-        if username:
+            with app.test_request_context("/logout", method="GET", headers=headers or None):
+            username = session.pop("username", None)
+            if username:
             USER_ENCRYPTION_KEYS.pop(username, None)
 
-        response = redirect(url_for("main.home"))
-        app.session_interface.save_session(app, session, response)
+            response = redirect(url_for("main.home"))
+            app.session_interface.save_session(app, session, response)
 
-        return _response_to_triplet(response)
+            return _response_to_triplet(response)
 
 
-def handle_request(
-    method: str,
-    path: str,
-    *,
-    query_string: Optional[str] = None,
-    headers: Optional[Dict[str, str]] = None,
-    body: Optional[bytes] = None,
-    cookie_header: Optional[str] = None,
-) -> Tuple[int, Iterable[Tuple[str, str]], bytes]:
-    """Dispatch an HTTP request into Flask and return the raw response triplet."""
+            def handle_request(
+            method: str,
+            path: str,
+            *,
+            query_string: Optional[str] = None,
+            headers: Optional[Dict[str, str]] = None,
+            body: Optional[bytes] = None,
+            cookie_header: Optional[str] = None,
+            ) -> Tuple[int, Iterable[Tuple[str, str]], bytes]:
+            """Dispatch an HTTP request into Flask and return the raw response triplet."""
 
-    app = _get_app()
-    headers = headers or {}
+            app = _get_app()
+            headers = headers or {}
 
-    with app.test_client() as client:
-        if cookie_header:
+            with app.test_client() as client:
+            if cookie_header:
             parsed = SimpleCookie()
             parsed.load(cookie_header)
             host = headers.get("Host")
             for morsel in parsed.values():
                 _set_cookie_on_client(client, host, morsel)
 
-        response = client.open(
+            response = client.open(
             path=path,
             method=method,
             query_string=query_string,
             headers=headers,
             data=body,
             follow_redirects=False,
-        )
+            )
 
-        # Ensure we can read the payload from streamed responses before
-        # returning it to Rust. Werkzeug guards streaming responses with
-        # direct_passthrough, so disable it prior to get_data().
-        response.direct_passthrough = False
+            # Ensure we can read the payload from streamed responses before
+            # returning it to Rust. Werkzeug guards streaming responses with
+            # direct_passthrough, so disable it prior to get_data().
+            response.direct_passthrough = False
 
-        status, header_items, body_bytes = _response_to_triplet(response)
+            status, header_items, body_bytes = _response_to_triplet(response)
 
-        # The bridge collapses streamed responses into a single payload, so
-        # drop chunked transfer-encoding metadata that would now be invalid.
-        header_items = [
+            # The bridge collapses streamed responses into a single payload, so
+            # drop chunked transfer-encoding metadata that would now be invalid.
+            header_items = [
             (name, value)
             for name, value in header_items
             if name.lower() != "transfer-encoding"
-        ]
+            ]
 
-        return status, header_items, body_bytes
+            return status, header_items, body_bytes
 
 
-def get_provider_config(provider_name: Optional[str] = None):
-    target = provider_name or Config.DEFAULT_LLM.get("provider_name", "")
-    for provider in Config.LLM_PROVIDERS:
-        if provider.get("provider_name") == target:
+            def get_provider_config(provider_name: Optional[str] = None):
+            target = provider_name or Config.DEFAULT_LLM.get("provider_name", "")
+            for provider in Config.LLM_PROVIDERS:
+            if provider.get("provider_name") == target:
             allowed = provider.get("allowed_providers", [])
             if isinstance(allowed, str):
                 allowed = [allowed]
@@ -272,34 +272,34 @@ def get_provider_config(provider_name: Optional[str] = None):
                 "test_chunks": provider.get("test_chunks"),
             }
             return json.dumps(payload)
-    return None
+            return None
 
 
-def _build_error_response(status_code: int, payload: Dict[str, str]):
-    response = jsonify(payload)
-    response.status_code = status_code
-    return _response_to_triplet(response)
+            def _build_error_response(status_code: int, payload: Dict[str, str]):
+            response = jsonify(payload)
+            response.status_code = status_code
+            return _response_to_triplet(response)
 
 
-def chat_prepare(
-    cookie_header: Optional[str],
-    payload: Dict[str, object],
-):
-    global LAST_EXCEPTION
-    LAST_EXCEPTION = None
-    app = _get_app()
+            def chat_prepare(
+            cookie_header: Optional[str],
+            payload: Dict[str, object],
+            ):
+            global LAST_EXCEPTION
+            LAST_EXCEPTION = None
+            app = _get_app()
 
-    headers = {}
-    if cookie_header:
-        headers["Cookie"] = cookie_header
+            headers = {}
+            if cookie_header:
+            headers["Cookie"] = cookie_header
 
-    try:
-        with app.test_request_context(
+            try:
+            with app.test_request_context(
             "/chat",
             method="POST",
             headers=headers or None,
             json=payload,
-        ):
+            ):
             clean_old_sessions()
 
             user_message = (payload.get("message") or "").strip()
@@ -310,21 +310,21 @@ def chat_prepare(
                 }
 
             new_system_prompt = payload.get("system_prompt")
-        set_name_raw = payload.get("set_name", "default") or "default"
-        try:
+            set_name_raw = payload.get("set_name", "default") or "default"
+            try:
             set_name = validate_set_name(set_name_raw)
-        except ValueError as exc:
+            except ValueError as exc:
             logger.warning("chat invalid set name '%s': %s", set_name_raw, exc)
             return {
                 "ok": False,
                 "response": _build_error_response(400, {"error": "invalid set name"}),
             }
 
-        session_id = _get_session_id()
-        user_session = sessions[session_id]
-        user_session["last_used"] = time.time()
+            session_id = _get_session_id()
+            user_session = sessions[session_id]
+            user_session["last_used"] = time.time()
 
-        if session_id.startswith("guest_") and not user_session.get("initialized", False):
+            if session_id.startswith("guest_") and not user_session.get("initialized", False):
             user_session.update(
                 {
                     "history": [],
@@ -333,13 +333,13 @@ def chat_prepare(
                 }
             )
 
-        logger.info("Received chat request. Session: %s", session_id)
+            logger.info("Received chat request. Session: %s", session_id)
 
-        ensure_full_history_loaded(user_session)
+            ensure_full_history_loaded(user_session)
 
-        session_username = session.get("username") if "username" in session else None
-        encryption_key = _get_user_encryption_key(session_username) if session_username else None
-        if not encryption_key and not session_id.startswith("guest_"):
+            session_username = session.get("username") if "username" in session else None
+            encryption_key = _get_user_encryption_key(session_username) if session_username else None
+            if not encryption_key and not session_id.startswith("guest_"):
             logger.error("No password available in session for logged-in user")
             return {
                 "ok": False,
@@ -349,7 +349,7 @@ def chat_prepare(
                 ),
             }
 
-        if new_system_prompt is not None:
+            if new_system_prompt is not None:
             logger.info("Updating system prompt")
             user_session["system_prompt"] = new_system_prompt
             if session_username:
@@ -372,8 +372,8 @@ def chat_prepare(
                         "response": _build_error_response(400, {"error": "invalid request"}),
                     }
 
-        current_system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
-        if new_system_prompt is not None and current_system_prompt != new_system_prompt and session_username:
+            current_system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
+            if new_system_prompt is not None and current_system_prompt != new_system_prompt and session_username:
             current_key = _get_user_encryption_key(session_username)
             try:
                 save_user_system_prompt(
@@ -393,9 +393,9 @@ def chat_prepare(
                     "response": _build_error_response(400, {"error": "invalid request"}),
                 }
 
-        session_lock = _get_response_lock(session_id)
-        lock_acquired = False
-        if session_lock.locked():
+            session_lock = _get_response_lock(session_id)
+            lock_acquired = False
+            if session_lock.locked():
             return {
                 "ok": False,
                 "response": _build_error_response(
@@ -403,9 +403,9 @@ def chat_prepare(
                     {"error": "A response is currently being generated. Please wait and try again."},
                 ),
             }
-        if session_lock.acquire(blocking=False):
+            if session_lock.acquire(blocking=False):
             lock_acquired = True
-        else:
+            else:
             return {
                 "ok": False,
                 "response": _build_error_response(
@@ -414,7 +414,7 @@ def chat_prepare(
                 ),
             }
 
-        try:
+            try:
             memory_text = user_session.get("memory", "")
             system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
             encrypted = bool(payload.get("encrypted", False))
