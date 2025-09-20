@@ -295,14 +295,14 @@ def chat_prepare(
 
     try:
         with app.test_request_context(
-        "/chat",
-        method="POST",
-        headers=headers or None,
-        json=payload,
-    ):
-        clean_old_sessions()
+            "/chat",
+            method="POST",
+            headers=headers or None,
+            json=payload,
+        ):
+            clean_old_sessions()
 
-        user_message = (payload.get("message") or "").strip()
+            user_message = (payload.get("message") or "").strip()
         if not user_message:
             return {
                 "ok": False,
