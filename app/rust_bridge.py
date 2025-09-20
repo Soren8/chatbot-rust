@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import threading
 import inspect
 import hmac
@@ -23,6 +24,7 @@ from app.routes import (
     home,
     clean_old_sessions,
     _get_session_id,
+    _get_user_encryption_key,
     _get_response_lock,
     _is_model_allowed_for_user,
     ensure_full_history_loaded,
