@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import inspect
 import hmac
+import time
 from http.cookies import SimpleCookie
 from typing import Dict, Iterable, Optional, Tuple
 
-from flask import make_response, redirect, session, url_for
+from flask import make_response, redirect, session, url_for, request, jsonify
 
 from app import create_app
 from app.routes import (
@@ -18,6 +21,16 @@ from app.routes import (
     sessions,
     USER_ENCRYPTION_KEYS,
     home,
+    clean_old_sessions,
+    _get_session_id,
+    _get_response_lock,
+    _is_model_allowed_for_user,
+    ensure_full_history_loaded,
+    save_user_chat_history,
+    save_user_system_prompt,
+    Config,
+    validate_set_name,
+    logger,
 )
 
 _app_lock = threading.Lock()
@@ -85,6 +98,16 @@ def _set_cookie_on_client(client, host_header: Optional[str], morsel) -> None:
         set_cookie(morsel.key, value, **cookie_kwargs)
 
 
+def _response_to_triplet(response):
+    header_items_fn = response.headers.items
+    header_params = inspect.signature(header_items_fn).parameters
+    if "multi" in header_params:
+        header_items = list(header_items_fn(multi=True))
+    else:
+        header_items = list(header_items_fn())
+    return response.status_code, header_items, response.get_data()
+
+
 def validate_csrf_token(cookie_header: Optional[str], submitted_token: Optional[str]) -> bool:
     """Return True if the submitted token matches the session CSRF token."""
 
@@ -138,14 +161,7 @@ def finalize_login(
         response = redirect(url_for("main.home"))
         app.session_interface.save_session(app, session, response)
 
-        header_items_fn = response.headers.items
-        header_params = inspect.signature(header_items_fn).parameters
-        if "multi" in header_params:
-            header_items = list(header_items_fn(multi=True))
-        else:
-            header_items = list(header_items_fn())
-
-        return response.status_code, header_items, response.get_data()
+        return _response_to_triplet(response)
 
 
 
@@ -160,14 +176,7 @@ def render_home(cookie_header: Optional[str] = None):
         response = make_response(home())
         app.session_interface.save_session(app, session, response)
 
-        header_items_fn = response.headers.items
-        header_params = inspect.signature(header_items_fn).parameters
-        if "multi" in header_params:
-            header_items = list(header_items_fn(multi=True))
-        else:
-            header_items = list(header_items_fn())
-
-        return response.status_code, header_items, response.get_data()
+        return _response_to_triplet(response)
 
 def logout_user(cookie_header: Optional[str] = None):
     app = _get_app()
@@ -184,14 +193,7 @@ def logout_user(cookie_header: Optional[str] = None):
         response = redirect(url_for("main.home"))
         app.session_interface.save_session(app, session, response)
 
-        header_items_fn = response.headers.items
-        header_params = inspect.signature(header_items_fn).parameters
-        if "multi" in header_params:
-            header_items = list(header_items_fn(multi=True))
-        else:
-            header_items = list(header_items_fn())
-
-        return response.status_code, header_items, response.get_data()
+        return _response_to_triplet(response)
 
 
 def handle_request(
@@ -230,14 +232,7 @@ def handle_request(
         # direct_passthrough, so disable it prior to get_data().
         response.direct_passthrough = False
 
-        body_bytes = response.get_data()
-
-        header_items_fn = response.headers.items
-        header_params = inspect.signature(header_items_fn).parameters
-        if "multi" in header_params:
-            header_items = list(header_items_fn(multi=True))
-        else:
-            header_items = list(header_items_fn())
+        status, header_items, body_bytes = _response_to_triplet(response)
 
         # The bridge collapses streamed responses into a single payload, so
         # drop chunked transfer-encoding metadata that would now be invalid.
@@ -247,4 +242,302 @@ def handle_request(
             if name.lower() != "transfer-encoding"
         ]
 
-        return response.status_code, header_items, body_bytes
+        return status, header_items, body_bytes
+
+
+def get_provider_config(provider_name: Optional[str] = None):
+    target = provider_name or Config.DEFAULT_LLM.get("provider_name", "")
+    for provider in Config.LLM_PROVIDERS:
+        if provider.get("provider_name") == target:
+            allowed = provider.get("allowed_providers", [])
+            if isinstance(allowed, str):
+                allowed = [allowed]
+            payload = {
+                "provider_name": provider.get("provider_name", ""),
+                "type": provider.get("type", ""),
+                "base_url": provider.get("base_url", ""),
+                "api_key": provider.get("api_key"),
+                "model_name": provider.get("model_name", ""),
+                "context_size": provider.get("context_size"),
+                "request_timeout": provider.get("request_timeout"),
+                "allowed_providers": allowed or [],
+                "test_chunks": provider.get("test_chunks"),
+            }
+            return json.dumps(payload)
+    return None
+
+
+def _build_error_response(status_code: int, payload: Dict[str, str]):
+    response = jsonify(payload)
+    response.status_code = status_code
+    return _response_to_triplet(response)
+
+
+def chat_prepare(
+    cookie_header: Optional[str],
+    payload: Dict[str, object],
+):
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context(
+        "/chat",
+        method="POST",
+        headers=headers or None,
+        json=payload,
+    ):
+        clean_old_sessions()
+
+        user_message = (payload.get("message") or "").strip()
+        if not user_message:
+            return {
+                "ok": False,
+                "response": _build_error_response(400, {"error": "message is required"}),
+            }
+
+        new_system_prompt = payload.get("system_prompt")
+        set_name_raw = payload.get("set_name", "default") or "default"
+        try:
+            set_name = validate_set_name(set_name_raw)
+        except ValueError as exc:
+            logger.warning("chat invalid set name '%s': %s", set_name_raw, exc)
+            return {
+                "ok": False,
+                "response": _build_error_response(400, {"error": "invalid set name"}),
+            }
+
+        session_id = _get_session_id()
+        user_session = sessions[session_id]
+        user_session["last_used"] = time.time()
+
+        if session_id.startswith("guest_") and not user_session.get("initialized", False):
+            user_session.update(
+                {
+                    "history": [],
+                    "system_prompt": Config.DEFAULT_SYSTEM_PROMPT,
+                    "initialized": True,
+                }
+            )
+
+        logger.info("Received chat request. Session: %s", session_id)
+
+        ensure_full_history_loaded(user_session)
+
+        session_username = session.get("username") if "username" in session else None
+        encryption_key = _get_user_encryption_key(session_username) if session_username else None
+        if not encryption_key and not session_id.startswith("guest_"):
+            logger.error("No password available in session for logged-in user")
+            return {
+                "ok": False,
+                "response": _build_error_response(
+                    401,
+                    {"error": "Session expired or invalid. Please log in again."},
+                ),
+            }
+
+        if new_system_prompt is not None:
+            logger.info("Updating system prompt")
+            user_session["system_prompt"] = new_system_prompt
+            if session_username:
+                current_key = _get_user_encryption_key(session_username)
+                try:
+                    save_user_system_prompt(
+                        session_username,
+                        new_system_prompt,
+                        set_name,
+                        encryption_key=current_key,
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "chat failed to save system prompt for user %s: %s",
+                        session_username,
+                        exc,
+                    )
+                    return {
+                        "ok": False,
+                        "response": _build_error_response(400, {"error": "invalid request"}),
+                    }
+
+        current_system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
+        if new_system_prompt is not None and current_system_prompt != new_system_prompt and session_username:
+            current_key = _get_user_encryption_key(session_username)
+            try:
+                save_user_system_prompt(
+                    session_username,
+                    new_system_prompt,
+                    set_name,
+                    encryption_key=current_key,
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "chat failed to persist updated system prompt for user %s: %s",
+                    session_username,
+                    exc,
+                )
+                return {
+                    "ok": False,
+                    "response": _build_error_response(400, {"error": "invalid request"}),
+                }
+
+        session_lock = _get_response_lock(session_id)
+        lock_acquired = False
+        if session_lock.locked():
+            return {
+                "ok": False,
+                "response": _build_error_response(
+                    429,
+                    {"error": "A response is currently being generated. Please wait and try again."},
+                ),
+            }
+        if session_lock.acquire(blocking=False):
+            lock_acquired = True
+        else:
+            return {
+                "ok": False,
+                "response": _build_error_response(
+                    429,
+                    {"error": "A response is currently being generated. Please wait and try again."},
+                ),
+            }
+
+        try:
+            memory_text = user_session.get("memory", "")
+            system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
+            encrypted = bool(payload.get("encrypted", False))
+            selected_model = payload.get("model_name") or Config.DEFAULT_LLM["provider_name"]
+
+            allowed, msg = _is_model_allowed_for_user(selected_model, session_username)
+            if not allowed:
+                logger.warning(
+                    "Model selection not allowed for user %s: %s - %s",
+                    session_username,
+                    selected_model,
+                    msg,
+                )
+                if lock_acquired:
+                    session_lock.release()
+                return {
+                    "ok": False,
+                    "response": _build_error_response(403, {"error": msg}),
+                }
+
+            provider_config_raw = next(
+                (
+                    llm
+                    for llm in Config.LLM_PROVIDERS
+                    if llm.get("provider_name") == selected_model
+                ),
+                None,
+            )
+            if not provider_config_raw:
+                logger.warning("Requested model not found: %s", selected_model)
+                if lock_acquired:
+                    session_lock.release()
+                return {
+                    "ok": False,
+                    "response": _build_error_response(
+                        400,
+                        {"error": "requested model not found"},
+                    ),
+                }
+
+            provider_config = dict(provider_config_raw)
+
+            history_serialisable = []
+            for item in user_session.get("history", []):
+                if not isinstance(item, (tuple, list)) or len(item) != 2:
+                    continue
+                user_part = (item[0] or "") if item[0] is not None else ""
+                assistant_part = (item[1] or "") if item[1] is not None else ""
+                history_serialisable.append([user_part, assistant_part])
+
+            context = {
+                "session_id": session_id,
+                "username": session_username,
+                "set_name": set_name,
+                "memory_text": memory_text,
+                "system_prompt": system_prompt,
+                "history": history_serialisable,
+                "encrypted": encrypted,
+                "model_name": selected_model,
+                "provider_config": provider_config,
+            }
+
+            updated_key = _get_user_encryption_key(session_username) if session_username else None
+            if updated_key:
+                context["encryption_key"] = base64.b64encode(updated_key).decode("ascii")
+
+            test_chunks = os.getenv("CHATBOT_TEST_OPENAI_CHUNKS")
+            if test_chunks:
+                try:
+                    context["test_chunks"] = json.loads(test_chunks)
+                except json.JSONDecodeError:
+                    logger.warning("Invalid CHATBOT_TEST_OPENAI_CHUNKS payload; ignoring")
+
+            return {"ok": True, "context": json.dumps(context)}
+        except Exception:
+            logger.exception("chat_prepare raised unexpected error; releasing lock")
+            session_lock.release()
+            raise
+
+
+def chat_finalize(
+    cookie_header: Optional[str],
+    session_id: str,
+    set_name: str,
+    user_message: str,
+    assistant_response: str,
+    encryption_key: Optional[bytes] = None,
+):
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    extras: list[str] = []
+
+    with app.test_request_context(
+        "/chat",
+        method="POST",
+        headers=headers or None,
+    ):
+        try:
+            user_session = sessions.get(session_id)
+            if user_session is None:
+                logger.debug("Session %s missing during finalize", session_id)
+                return extras
+
+            history = user_session.setdefault("history", [])
+            history.append((user_message, assistant_response))
+            logger.info("Chat response generated. Length: %d characters", len(assistant_response))
+
+            if not session_id.startswith("guest_"):
+                try:
+                    save_user_chat_history(
+                        session_id,
+                        history,
+                        set_name,
+                        encryption_key=encryption_key,
+                    )
+                except ValueError as exc:
+                    logger.error("Failed to save chat history: %s", exc)
+                    extras.append(f"\n[Error] Failed to save chat history: {exc}")
+                except Exception as exc:
+                    logger.error("Unexpected error saving chat history: %s", exc)
+                    extras.append("\n[Error] Unexpected error saving chat history")
+        finally:
+            lock = _get_response_lock(session_id)
+            if lock.locked():
+                lock.release()
+
+    return extras
+
+
+def chat_release_lock(session_id: str):
+    lock = _get_response_lock(session_id)
+    if lock.locked():
+        lock.release()

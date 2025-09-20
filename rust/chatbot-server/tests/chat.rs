@@ -1,4 +1,4 @@
-use std::{env, ffi::CString};
+use std::env;
 
 use axum::{
     body::{to_bytes, Body},
@@ -7,7 +7,7 @@ use axum::{
 use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
-use pyo3::{prelude::*, types::PyModule};
+use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::json;
 use tempfile::TempDir;
@@ -30,22 +30,36 @@ async fn chat_endpoint_returns_stubbed_stream() {
 
     bridge::initialize_python().expect("python bridge init");
 
+    env::set_var(
+        "CHATBOT_TEST_OPENAI_CHUNKS",
+        serde_json::to_string(&vec![
+            "Hello from test ".to_string(),
+            "<think>plan</think>".to_string(),
+            "final chunk".to_string(),
+        ])
+        .expect("chunk json"),
+    );
+
     Python::with_gil(|py| {
-        let code = CString::new(
+        let code = std::ffi::CString::new(
             r#"
-from app import routes
+from app.config import Config
 
-def _test_generate_text_stream(*args, **kwargs):
-    for chunk in ["Hello from test ", "<think>plan</think>", "final chunk"]:
-        yield chunk
-
-routes.generate_text_stream = _test_generate_text_stream
+Config.LLM_PROVIDERS = [{
+    'provider_name': 'default',
+    'type': 'openai',
+    'model_name': 'gpt-test',
+    'base_url': 'https://api.openai.com/v1',
+    'api_key': 'test-key',
+    'context_size': 4096,
+}]
+Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
 "#,
         )
-        .expect("code cstring");
-        let filename = CString::new("test_patch.py").expect("fname cstring");
-        let module_name = CString::new("test_patch").expect("module cstring");
-        PyModule::from_code(py, &code, &filename, &module_name).expect("patch chat generator");
+        .expect("c string");
+
+        py.run(code.as_c_str(), None, None)
+            .expect("configure openai provider");
     });
 
     let static_root = resolve_static_root();
@@ -128,4 +142,6 @@ routes.generate_text_stream = _test_generate_text_stream
     assert!(body_text.contains("Hello from test "));
     assert!(body_text.contains("<think>plan</think>"));
     assert!(body_text.contains("final chunk"));
+
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 }

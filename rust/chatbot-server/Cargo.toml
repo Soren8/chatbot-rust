@@ -27,6 +27,11 @@ base64 = "0.22"
 pbkdf2 = "0.12"
 rand = { version = "0.8", features = ["std"] }
 sha2 = "0.10"
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio-stream = "0.1"
+async-stream = "0.3"
+futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

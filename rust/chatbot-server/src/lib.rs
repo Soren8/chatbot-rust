@@ -3,20 +3,22 @@ use axum::{
     body::{self, Body},
     http::{header, HeaderName, HeaderValue, Method, Request, StatusCode},
     response::Response,
-    routing::{any, get},
+    routing::{any, get, post},
     Router,
 };
 use chatbot_core::bridge::{self, PythonResponse};
 use std::{env, path::PathBuf};
 use tokio::net::TcpListener;
+use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use tower_http::services::ServeDir;
 
+mod chat;
 mod health;
 mod home;
 mod login;
 mod logout;
+mod providers;
 mod signup;
 mod user_store;
 
@@ -57,7 +59,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             get(proxy_request_handler).post(login::handle_login_post),
         )
         .route("/logout", get(logout::handle_logout))
-        .route("/chat", any(proxy_request_handler))
+        .route("/chat", post(chat::handle_chat))
         .route("/regenerate", any(proxy_request_handler))
         .route("/reset_chat", any(proxy_request_handler))
         .route("/get_sets", any(proxy_request_handler))
@@ -131,7 +133,9 @@ async fn proxy_request_handler(request: Request<Body>) -> Result<Response, (Stat
     }
 }
 
-pub(crate) fn build_response(py_response: PythonResponse) -> Result<Response, (StatusCode, String)> {
+pub(crate) fn build_response(
+    py_response: PythonResponse,
+) -> Result<Response, (StatusCode, String)> {
     let status = StatusCode::from_u16(py_response.status).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
