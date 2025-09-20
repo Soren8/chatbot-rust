@@ -72,6 +72,18 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
         assert!(bridge.getattr("base64").is_ok(), "app.rust_bridge missing 'base64' import");
     });
 
+    // Also invoke the Python `chat_prepare` entry point directly with a
+    // minimal payload to ensure it does not raise during normal setup. If
+    // this call raises (for example due to a missing symbol), fail the
+    // test so we catch regressions in the bridge code path.
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge").expect("import rust_bridge");
+        let payload = pyo3::types::PyDict::new(py);
+        payload.set_item("message", "healthcheck").expect("set message");
+        let result = bridge.call_method("chat_prepare", (py.None(), payload), None);
+        assert!(result.is_ok(), "python chat_prepare raised: {:?}", result.err());
+    });
+
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
