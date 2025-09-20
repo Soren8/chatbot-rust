@@ -303,13 +303,13 @@ def chat_prepare(
             clean_old_sessions()
 
             user_message = (payload.get("message") or "").strip()
-        if not user_message:
-            return {
-                "ok": False,
-                "response": _build_error_response(400, {"error": "message is required"}),
-            }
+            if not user_message:
+                return {
+                    "ok": False,
+                    "response": _build_error_response(400, {"error": "message is required"}),
+                }
 
-        new_system_prompt = payload.get("system_prompt")
+            new_system_prompt = payload.get("system_prompt")
         set_name_raw = payload.get("set_name", "default") or "default"
         try:
             set_name = validate_set_name(set_name_raw)
