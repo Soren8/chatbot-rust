@@ -154,6 +154,14 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
         !body_text.contains("500 (Internal Server Error)"),
         "chat returned 500 error payload: {body_text}"
     );
+    assert!(
+        !body_text.contains("[Error]"),
+        "chat returned error chunk payload: {body_text}"
+    );
+    assert!(
+        !body_text.contains("bridge error"),
+        "chat returned bridge error payload: {body_text}"
+    );
 
     // Validate expected streamed chunks are present
     assert!(body_text.contains("Hello from test "));
