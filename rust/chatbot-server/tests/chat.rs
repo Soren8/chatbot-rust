@@ -62,6 +62,16 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
             .expect("configure openai provider");
     });
 
+    // Sanity-check the python bridge module for required imports that the
+    // Rust bridge expects at runtime. If these are missing (for example
+    // `base64`), `chat_prepare` will raise a NameError and the server will
+    // return a bridge error; fail the test early so CI surfaces this class
+    // of bug immediately.
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge").expect("import rust_bridge");
+        assert!(bridge.getattr("base64").is_ok(), "app.rust_bridge missing 'base64' import");
+    });
+
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
