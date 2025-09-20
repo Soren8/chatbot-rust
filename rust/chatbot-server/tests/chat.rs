@@ -86,6 +86,15 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
             .expect("configure openai provider");
     });
 
+    // Redirect Python stderr to an in-memory buffer so we can assert no
+    // Python-side tracebacks or errors were written during the request.
+    Python::with_gil(|py| {
+        let io = py.import("io").expect("import io");
+        let sys = py.import("sys").expect("import sys");
+        let stringio = io.call_method0("StringIO").expect("StringIO");
+        sys.setattr("stderr", stringio).expect("redirect stderr");
+    });
+
     // Sanity-check the python bridge module for required imports that the
     // Rust bridge expects at runtime. If these are missing (for example
     // `base64`), `chat_prepare` will raise a NameError and the server will
@@ -237,6 +246,21 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
     // body directly.
     let error_count = chatbot_server::test_instrumentation::take_error_count();
     assert_eq!(error_count, 0, "server emitted {} HTTP 5xx responses", error_count);
+
+    // Inspect Python stderr for tracebacks that would indicate bridge-side
+    // exceptions that may not appear in the HTTP body. Fail the test if any
+    // such Python errors were recorded.
+    Python::with_gil(|py| {
+        let sys = py.import("sys").expect("import sys");
+        let stderr = sys.getattr("stderr").expect("get stderr");
+        let contents = stderr.call_method0("getvalue").expect("getvalue");
+        let py_err_text: String = contents.extract().unwrap_or_default();
+        assert!(
+            !py_err_text.contains("Traceback"),
+            "python stderr contained traceback: {}",
+            py_err_text
+        );
+    });
 
     // Validate expected streamed chunks are present
     assert!(body_text.contains("Hello from test "));
