@@ -1,4 +1,4 @@
-# Rust Migration Checklist
+# Rust Refactor Migration
 
 ## Guiding Principles
 - Pair each migration milestone with tests that document existing Python behavior and verify the Rust replacement.
@@ -13,15 +13,52 @@
 - [x] Define Rust project structure (crate layout, modules, build tooling)
 - [x] Establish interop strategy during transition (Rust-hosted, embedded Python bridge)
 - [x] Stand up Rust web server shell (Axum) with health check and placeholder UI route
-- [ ] Migrate Flask routes to Axum handlers that delegate to Python logic via the bridge
+- [x] Proxy Axum endpoints to existing Flask routes for interim functionality
+    - [ ] TTS endpoint `/tts'
+- [ ] Migrate Flask routes to Axum handlers that delegate to Python logic via the bridge, following the Route-by-Route Migration Loop
+    - [x] Auth endpoints
+        - [x] `/signup`
+        - [x] `/login`
+        - [x] `/logout`
+    - [x] Base endpoints
+        - [x] `/` (home)
+        - [x] `/health`
+        - [x] `/static`
+    - [ ] Chat endpoints
+        - [x] `/chat`
+        - [ ] `/regenerate`
+        - [ ] `/reset_chat`
+    - [ ] TTS endpoint `/tts'
+    - [ ] Set management endpoints
+        - [ ] `/get_sets`
+        - [ ] `/create_set`
+        - [ ] `/delete_set`
+        - [ ] `/load_set`)
+    - [ ] System prompts and memory endpoints
+        - [ ] `/update_memory`
+        - [ ] `/update_system_prompt`
+        - [ ] `/delete_message`
 - [ ] Port configuration handling from `app/config.py` to Rust equivalent
 - [ ] Reimplement `app/chat_logic.py` core functionality in Rust
 - [ ] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations
+  - Providers status:
+    - [x] OpenAI — Rust implementation with streaming & test-chunk support
+    - [ ] Ollama
 - [ ] Migrate data persistence layer (`data/`) to Rust-compatible solution
 - [ ] Align logging and error handling with Rust tooling
-- [ ] Update testing strategy (unit, integration, provider tests) for Rust codebase
+- [x] Update testing strategy (unit, integration, provider tests) for Rust codebase
+  - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors
 - [ ] Document deployment changes, make note of `temp/` scratchpad usage, and update Docker setup
 - [ ] Plan deprecation timeline for remaining Python components
+
+### Route-by-Route Migration Loop
+For each Flask endpoint (grouped where it makes sense):
+1. **Baseline tests** – ensure pytest coverage and bridge parity tests exercise the current Python behaviour; add cases if gaps exist.
+2. **Port handler** – implement the equivalent Axum handler (initially calling into Python via the bridge until the Rust logic is ready).
+3. **Rust integration tests** – cover new behaviour (status codes, headers, cookies, CSRF) using tower/axum test helpers.
+4. **Run suites** – execute `docker compose run --rm tests pytest …` and the relevant `cargo test` set; keep CI scripts green.
+5. **Interactive check** – verify the route manually in the UI to confirm end-to-end behaviour.
+6. **Iterate** – once parity is confirmed, refactor the underlying business logic (e.g., chat logic or providers) into Rust and repeat.
 
 ## Item 1: Python Inventory (2024-11-24)
 **Application package**
@@ -61,47 +98,12 @@
 - Workspace planning: leave room for future crates (e.g., `providers-*` as separate crates) if we split functionality later.
 
 ## Item 3: Rust/Python Interop Strategy
-- [x] Use **PyO3** to embed the Python interpreter inside the Rust server so existing business logic remains callable while we migrate modules.
-- [ ] Expose Rust functions/structs that mirror current Python interfaces, starting with pure functions for config + chat logic; maintain compatibility layers in Python packages that dispatch to Rust when available.
-- [ ] Use feature flags and environment switches to toggle between Python and Rust implementations during rollout; default to Python until parity tests pass.
-- [ ] Keep data models serialized via serde ↔ dataclasses to ensure predictable boundary formats; prefer JSON-serializable structs to decouple from Python object internals.
-- [x] Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
-- [x] Expose helper wrappers (e.g., `bridge::call_python_function`) to centrally manage imports and callable dispatch from Rust into Python.
-- [ ] Run the Rust web server first (Rocket or Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
+- Use **PyO3** to embed the Python interpreter inside the Rust server so existing business logic remains callable while we migrate modules.
+- Expose Rust functions/structs that mirror current Python interfaces, starting with pure functions for config + chat logic; maintain compatibility layers in Python packages that dispatch to Rust when available.
+- Keep data models serialized via serde ↔ dataclasses to ensure predictable boundary formats; prefer JSON-serializable structs to decouple from Python object internals.
+- Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
+- Expose helper wrappers (e.g., `bridge::call_python_function`) to centrally manage imports and callable dispatch from Rust into Python.
+- Run the Rust web server first (Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
 
-## Item 4: Route Migration Progress
-- [x] `/` home page proxied through `bridge::proxy_request`
-- [ ] Auth endpoints (`/signup`, `/login`, `/logout`)
-  - [x] `/signup` POST handled by native Rust logic while reusing Flask for CSRF issuance
-  - [x] `/login` flow verified via Rust integration test that exercises the bridge and captures session cookies
-  - [x] `/logout` GET handled natively with integration coverage ensuring session cookies rotate correctly
-- [x] `/health` served by a native Axum handler returning the JSON status payload
- - [x] Chat APIs (`/chat`, `/regenerate`, `/reset_chat`)
- - [x] Set management (`/get_sets`, `/create_set`, `/delete_set`, `/load_set`)
- - [x] System prompts and memory endpoints (`/update_memory`, `/update_system_prompt`, `/delete_message`)
-- [x] Static assets served directly from Axum (`/static`, `/favicon.ico`) with integration tests
-- [x] Bridge parity tests executing in Docker to validate route equivalence across environments
 
-### Current Status (2025-09-19)
-- Rust Axum server now handles all HTTP entrypoints, delegating to the Python bridge for business logic while serving static assets natively.
-- `/health` no longer uses the Python bridge; Axum responds directly with the existing JSON payload and is covered by `cargo test --test health`.
-- Docker workflow builds the Rust binary and exports the static root; CI includes pytest parity tests and the `verify_no_secrets` scan.
-- Tests profile runs now stream both Python and Rust logs into timestamped artifacts under `temp/test-logs/`, making integration failures (e.g., `/login`) observable from the host without modifying app code.
-- Rust crate split into `lib` + `bin` and includes integration tests for static serving plus authenticated flows (signup/login) that exercise the embedded Flask bridge inside Docker using the shared test helpers.
-- Sign-out parity is validated through the new Rust `/logout` handler, which relies on the bridge for session teardown while asserting cookie rotation in the Docker test harness.
-- Remaining work focuses on replacing Python route handlers and logic modules one at a time while keeping parity coverage.
 
-### Route-by-Route Migration Loop
-For each Flask endpoint (grouped where it makes sense):
-1. **Baseline tests** – ensure pytest coverage and bridge parity tests exercise the current Python behaviour; add cases if gaps exist.
-2. **Port handler** – implement the equivalent Axum handler (initially calling into Python via the bridge until the Rust logic is ready).
-3. **Rust integration tests** – cover new behaviour (status codes, headers, cookies, CSRF) using tower/axum test helpers.
-4. **Run suites** – execute `docker compose run --rm tests pytest …` and the relevant `cargo test` set; keep CI scripts green.
-5. **Interactive check** – verify the route manually in the UI to confirm end-to-end behaviour.
-6. **Iterate** – once parity is confirmed, refactor the underlying business logic (e.g., chat logic or providers) into Rust and repeat.
-
-Tracking endpoints still needing full Rust implementations:
-- Authentication (`/signup`, `/login`, `/logout`) – logic still lives in Python; needs Rust port after tests are expanded.
-- Chat workflows (`/chat`, `/regenerate`, `/reset_chat`) – next candidate once auth is complete.
-- System prompt + memory management (`/update_system_prompt`, `/update_memory`, `/delete_message`, set CRUD) – migrate after chat flows.
-- Ancillary routes (TTS, provider health checks) – evaluate once core flows are in Rust.
