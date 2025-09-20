@@ -139,6 +139,23 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
         .expect("read chat body");
     let body_text = std::str::from_utf8(&body_bytes).expect("chat utf8");
 
+    // Fail fast if the response indicates a bridge/server error so the
+    // integration test surface real backend failures instead of silently
+    // passing on a stubbed happy-path.
+    assert!(
+        !body_text.contains("Error: bridge error"),
+        "chat returned bridge error payload: {body_text}"
+    );
+    assert!(
+        !body_text.contains("Failed to load resource"),
+        "chat returned resource-loading error payload: {body_text}"
+    );
+    assert!(
+        !body_text.contains("500 (Internal Server Error)"),
+        "chat returned 500 error payload: {body_text}"
+    );
+
+    // Validate expected streamed chunks are present
     assert!(body_text.contains("Hello from test "));
     assert!(body_text.contains("<think>plan</think>"));
     assert!(body_text.contains("final chunk"));
