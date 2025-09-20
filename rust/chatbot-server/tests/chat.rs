@@ -22,7 +22,31 @@ static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
 #[tokio::test]
 async fn chat_endpoint_returns_stubbed_stream() {
     common::ensure_pythonpath();
-    common::init_tracing();
+    // Initialize a tracing subscriber that captures logs into an in-memory
+    // buffer so we can assert no internal server errors are logged during
+    // the test. We avoid calling `common::init_tracing()` here because it
+    // installs a global test writer we cannot inspect.
+    let log_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    {
+        let make_writer_buf = log_buf.clone();
+        struct BufWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let mut inner = self.0.lock().unwrap();
+                inner.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(move || BufWriter(make_writer_buf.clone()))
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    }
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let data_dir = TempDir::new().expect("temp data dir");
@@ -189,6 +213,21 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
             "chat returned error indicator '{}': {}",
             indicator,
             body_text
+        );
+    }
+
+    // Also ensure no internal server errors were recorded in the log buffer
+    // we installed earlier. This catches cases where the server responded
+    // with HTTP 500 to an XHR/fetch (seen only in browser console) and
+    // where the response body itself doesn't include the error text.
+    let logs = String::from_utf8_lossy(&log_buf.lock().unwrap()).to_string();
+    let log_error_indicators = ["Internal Server Error", "ERROR", "bridge error", "Traceback"]; 
+    for ind in &log_error_indicators {
+        assert!(
+            !logs.contains(ind),
+            "server logs contained error indicator '{}': {}",
+            ind,
+            logs
         );
     }
 
