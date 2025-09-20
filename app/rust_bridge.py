@@ -320,12 +320,7 @@ def chat_prepare(
                     "response": _build_error_response(400, {"error": "invalid set name"}),
                 }
 
-            # Ensure we have an active request context when accessing
-            # session-bound helpers. Some code paths may have lost the
-            # implicit context; call `_get_session_id` inside an explicit
-            # test_request_context to guarantee correctness.
-            with app.test_request_context("/chat", method="POST", headers=headers or None, json=payload):
-                session_id = _get_session_id()
+            session_id = _get_session_id()
             user_session = sessions[session_id]
             user_session["last_used"] = time.time()
 
@@ -581,3 +576,4 @@ def chat_release_lock(session_id: str):
     lock = _get_response_lock(session_id)
     if lock.locked():
         lock.release()
+
