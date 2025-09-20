@@ -231,6 +231,13 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
         );
     }
 
+    // Also check the test instrumentation counter for any recorded 500s.
+    // The server increments this counter whenever a 500 is built so tests
+    // can detect server-side errors that may not surface in the response
+    // body directly.
+    let error_count = chatbot_server::test_instrumentation::take_error_count();
+    assert_eq!(error_count, 0, "server emitted {} HTTP 5xx responses", error_count);
+
     // Validate expected streamed chunks are present
     assert!(body_text.contains("Hello from test "));
     assert!(body_text.contains("<think>plan</think>"));
