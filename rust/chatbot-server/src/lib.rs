@@ -21,6 +21,7 @@ mod logout;
 mod providers;
 mod signup;
 mod user_store;
+mod test_instrumentation;
 
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::registry()
@@ -178,6 +179,12 @@ pub(crate) fn build_response(
 
             headers.append(header_name, header_value);
         }
+    }
+
+    // Record server-side errors for test instrumentation so integration
+    // tests can assert no 500s were emitted during their run.
+    if py_response.status >= 500 {
+        test_instrumentation::record_error();
     }
 
     Ok(response)
