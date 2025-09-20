@@ -157,6 +157,23 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
         "model_name": "default",
     });
 
+    // As an additional guard, call the Python bridge proxy directly using the
+    // same cookie and body data the HTTP handler will use. This exercises the
+    // exact Python code path the running server uses and will raise a
+    // PyErr/NameError here if the bridge is broken, causing the test to
+    // fail.
+    let header_pairs: Vec<(String, String)> = vec![];
+    let body_bytes = serde_json::to_vec(&payload).expect("payload bytes");
+    chatbot_core::bridge::proxy_request(
+        "POST",
+        "/chat",
+        None,
+        &header_pairs,
+        Some(&common::extract_cookie(&set_cookie)),
+        Some(&body_bytes),
+    )
+    .expect("python bridge proxy_request should not raise");
+
     let chat_response = app
         .clone()
         .oneshot(
