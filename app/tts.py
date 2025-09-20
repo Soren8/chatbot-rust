@@ -66,31 +66,40 @@ def generate_tts_audio(text: str) -> BytesIO:
         raise RuntimeError(f"TTS API connection failed: {str(e)}")
 
 def register_tts_routes(bp):
+    # Keep the simple route for the web client
     @bp.route("/tts", methods=["POST"])
     def tts():
-        """
-        Minimal TTS endpoint that handles the HTTP communication.
-        Delegates actual TTS generation to generate_tts_audio().
-        """
-        logger.debug("TTS request received")
-        text = request.json.get("text", "")
-        logger.debug(f"Received text: {text[:100]}...")  # Log first 100 chars
-        
-        if not text:
-            logger.debug("Empty text received")
-            return jsonify({"error": "No text provided"}), 400
+        """Web-facing TTS endpoint used by the frontend (POST /tts)."""
+        return _handle_tts_request()
 
-        try:
-            logger.debug(f"Generating TTS for text: {text[:50]}...")
-            audio_data = generate_tts_audio(text)
-            logger.debug("TTS generation successful")
-            return Response(
-                audio_data.getvalue(),
-                mimetype="audio/wav",
-                headers={
-                    "Content-Disposition": "inline; filename=tts.wav"
-                }
-            )
-        except Exception as e:
-            logger.error(f"TTS generation failed: {str(e)}", exc_info=True)
-            return jsonify({"error": "TTS generation failed"}), 500
+    # Keep only the legacy `/tts` endpoint to match the old Flask
+    # behavior exactly. The axum/Rust layer should proxy requests to
+    # this same `/tts` path so frontend code does not need to change.
+
+
+def _handle_tts_request():
+    """Common handler for TTS requests used by multiple routes."""
+    logger.debug("TTS request received")
+    if not request.is_json:
+        logger.debug("TTS request missing JSON body")
+        return jsonify({"error": "JSON body required"}), 400
+
+    text = request.json.get("text", "")
+    logger.debug(f"Received text: {text[:100]}...")  # Log first 100 chars
+
+    if not text:
+        logger.debug("Empty text received")
+        return jsonify({"error": "No text provided"}), 400
+
+    try:
+        logger.debug(f"Generating TTS for text: {text[:50]}...")
+        audio_data = generate_tts_audio(text)
+        logger.debug("TTS generation successful")
+        return Response(
+            audio_data.getvalue(),
+            mimetype="audio/wav",
+            headers={"Content-Disposition": "inline; filename=tts.wav"},
+        )
+    except Exception as e:
+        logger.error(f"TTS generation failed: {str(e)}", exc_info=True)
+        return jsonify({"error": "TTS generation failed"}), 500

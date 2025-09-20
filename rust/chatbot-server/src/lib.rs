@@ -61,6 +61,11 @@ pub fn build_router(static_root: PathBuf) -> Router {
         )
         .route("/logout", get(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))
+        // Proxy TTS endpoints to the Python/Flask app so the frontend can
+        // continue to call the legacy `/tts` URL without changes.
+        .route("/tts", any(proxy_request_handler))
+        .route("/api/tts", any(proxy_request_handler))
+        .route("/api/tts/stream", any(proxy_request_handler))
         .route("/regenerate", any(proxy_request_handler))
         .route("/reset_chat", any(proxy_request_handler))
         .route("/get_sets", any(proxy_request_handler))
