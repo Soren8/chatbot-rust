@@ -10,4 +10,3 @@ pub fn record_error() {
 pub fn take_error_count() -> usize {
     ERROR_COUNT.swap(0, Ordering::SeqCst)
 }
-

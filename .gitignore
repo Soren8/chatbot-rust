@@ -11,3 +11,4 @@ provider-test.yml
 .config.yml
 temp/
 rust/target/
+.cargo/

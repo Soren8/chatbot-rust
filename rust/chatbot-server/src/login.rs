@@ -12,7 +12,9 @@ use crate::user_store::{normalise_username, UserStore, UserStoreError};
 
 const INVALID_CREDENTIALS: &str = "Invalid credentials";
 
-pub async fn handle_login_post(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
+pub async fn handle_login_post(
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
@@ -21,12 +23,10 @@ pub async fn handle_login_post(request: Request<Body>) -> Result<Response<Body>,
         .and_then(|value| value.to_str().ok())
         .map(|s| s.to_owned());
 
-    let body_bytes = body::to_bytes(body, 64 * 1024)
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to read login body");
-            (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
-        })?;
+    let body_bytes = body::to_bytes(body, 64 * 1024).await.map_err(|err| {
+        error!(?err, "failed to read login body");
+        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+    })?;
 
     let form: HashMap<String, String> = from_bytes(&body_bytes).map_err(|err| {
         error!(?err, "failed to parse login form");
@@ -41,19 +41,17 @@ pub async fn handle_login_post(request: Request<Body>) -> Result<Response<Body>,
         return invalid_credentials();
     }
 
-    let csrf_valid = bridge::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-        error!(?err, "failed to validate CSRF token via python bridge");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
-        )
-    })?;
+    let csrf_valid =
+        bridge::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
+            error!(?err, "failed to validate CSRF token via python bridge");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "bridge error".to_string(),
+            )
+        })?;
 
     if !csrf_valid {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Invalid CSRF token".to_string(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "Invalid CSRF token".to_string()));
     }
 
     let username = match normalise_username(username_raw) {

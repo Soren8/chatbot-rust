@@ -15,7 +15,10 @@ mod common;
 
 #[tokio::test]
 async fn login_flow_sets_session_cookie() {
-    common::ensure_pythonpath();
+    if !common::ensure_flask_available() {
+        eprintln!("skipping login_flow_sets_session_cookie: flask not available");
+        return;
+    }
     common::init_tracing();
     env::set_var("SECRET_KEY", "test_secret_key");
 

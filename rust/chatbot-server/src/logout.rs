@@ -23,4 +23,3 @@ pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, (St
         }
     }
 }
-

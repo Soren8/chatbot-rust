@@ -1,0 +1,170 @@
+use std::env;
+
+use axum::{
+    body::Body,
+    http::{header, Method, Request, StatusCode},
+};
+use chatbot_core::bridge;
+use chatbot_server::{build_router, resolve_static_root};
+use once_cell::sync::Lazy;
+use pyo3::prelude::*;
+use regex::Regex;
+use serde_json::json;
+use tempfile::TempDir;
+use tower::ServiceExt;
+
+mod common;
+
+static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
+});
+
+#[tokio::test]
+async fn reset_chat_clears_history() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping reset_chat_clears_history: flask not available");
+        return;
+    }
+    common::init_tracing();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let data_dir = TempDir::new().expect("temp data dir");
+    env::set_var("HOST_DATA_DIR", data_dir.path());
+
+    bridge::initialize_python().expect("python bridge init");
+
+    Python::with_gil(|py| {
+        let code = std::ffi::CString::new(
+            r#"
+from app.config import Config
+
+Config.LLM_PROVIDERS = [{
+    'provider_name': 'default',
+    'type': 'openai',
+    'model_name': 'gpt-test',
+    'base_url': 'https://api.openai.com/v1',
+    'api_key': 'test-key',
+    'context_size': 4096,
+}]
+Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
+"#,
+        )
+        .expect("c string");
+
+        py.run(code.as_c_str(), None, None)
+            .expect("configure openai provider");
+    });
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let home_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / response");
+
+    assert_eq!(home_response.status(), StatusCode::OK);
+
+    let set_cookie = home_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie present")
+        .to_owned();
+
+    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
+        .await
+        .expect("read home body");
+    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
+    let csrf_token = CSRF_META_RE
+        .captures(body_text)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+        .expect("csrf token in page");
+
+    let cookie_value = common::extract_cookie(&set_cookie);
+
+    Python::with_gil(|py| {
+        let locals = pyo3::types::PyDict::new(py);
+        locals
+            .set_item("cookie", &cookie_value)
+            .expect("set cookie");
+        locals
+            .set_item("history", vec![("user", "assistant"), ("second", "reply")])
+            .expect("set history");
+
+        let code = std::ffi::CString::new(
+            r#"
+from app.rust_bridge import _get_app
+from app.routes import sessions, _get_session_id
+
+app = _get_app()
+with app.test_request_context('/', headers={'Cookie': cookie}):
+    session_id = _get_session_id()
+    sessions[session_id]['history'] = history
+"#,
+        )
+        .expect("c string");
+
+        py.run(code.as_c_str(), None, Some(&locals))
+            .expect("seed history");
+    });
+
+    let reset_payload = json!({"set_name": "default"});
+
+    let reset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/reset_chat")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::COOKIE, &cookie_value)
+                .body(Body::from(
+                    serde_json::to_vec(&reset_payload).expect("payload bytes"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /reset_chat response");
+
+    assert_eq!(reset_response.status(), StatusCode::OK);
+
+    Python::with_gil(|py| {
+        let locals = pyo3::types::PyDict::new(py);
+        locals
+            .set_item("cookie", &cookie_value)
+            .expect("set cookie");
+
+        let code = std::ffi::CString::new(
+            r#"
+from app.rust_bridge import _get_app
+from app.routes import sessions, _get_session_id
+
+app = _get_app()
+with app.test_request_context('/', headers={'Cookie': cookie}):
+    session_id = _get_session_id()
+    history_len = len(sessions[session_id]['history'])
+"#,
+        )
+        .expect("c string");
+
+        py.run(code.as_c_str(), None, Some(&locals))
+            .expect("inspect history");
+
+        let history_len: usize = locals
+            .get_item("history_len")
+            .expect("history_len lookup")
+            .expect("history_len missing")
+            .extract()
+            .expect("extract history_len");
+        assert_eq!(history_len, 0, "history not cleared by reset_chat");
+    });
+}

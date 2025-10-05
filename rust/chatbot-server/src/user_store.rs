@@ -1,8 +1,7 @@
 use std::{
     collections::HashMap,
-    env,
+    env, fmt,
     fs::{self, File},
-    fmt,
     io::{Read, Write},
     path::PathBuf,
 };
@@ -91,7 +90,9 @@ impl From<serde_json::Error> for UserStoreError {
 
 impl UserStore {
     pub(crate) fn new() -> Result<Self, UserStoreError> {
-        let base = env::var("HOST_DATA_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("./data"));
+        let base = env::var("HOST_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./data"));
         if !base.exists() {
             fs::create_dir_all(&base)?;
         }

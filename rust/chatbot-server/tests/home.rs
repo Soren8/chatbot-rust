@@ -1,4 +1,3 @@
-
 use std::{env, fs::File, io::Write, path::PathBuf, sync::OnceLock};
 
 use axum::{
@@ -69,16 +68,15 @@ fn extract_app_data(body: &str) -> Value {
 
 #[tokio::test]
 async fn home_route_guest_filters_premium_models() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping home_route_guest_filters_premium_models: flask not available");
+        return;
+    }
     let app = build_app();
 
     let response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .expect("GET /");
 
@@ -108,6 +106,10 @@ async fn home_route_guest_filters_premium_models() {
 
 #[tokio::test]
 async fn home_route_logged_in_premium_sees_premium_models() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping home_route_logged_in_premium_sees_premium_models: flask not available");
+        return;
+    }
     let data_dir = ensure_env();
     let users_file = data_dir.join("users.json");
 
@@ -166,10 +168,7 @@ async fn home_route_logged_in_premium_sees_premium_models() {
             Request::builder()
                 .method("POST")
                 .uri("/login")
-                .header(
-                    header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, common::extract_cookie(&set_cookie))
                 .body(Body::from(payload))
                 .unwrap(),

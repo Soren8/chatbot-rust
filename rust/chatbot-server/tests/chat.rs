@@ -21,7 +21,10 @@ static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[tokio::test]
 async fn chat_endpoint_returns_stubbed_stream() {
-    common::ensure_pythonpath();
+    if !common::ensure_flask_available() {
+        eprintln!("skipping chat_endpoint_returns_stubbed_stream: flask not available");
+        return;
+    }
     // Initialize a tracing subscriber that captures logs into an in-memory
     // buffer so we can assert no internal server errors are logged during
     // the test. We avoid calling `common::init_tracing()` here because it
@@ -102,7 +105,10 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
     // of bug immediately.
     Python::with_gil(|py| {
         let bridge = py.import("app.rust_bridge").expect("import rust_bridge");
-        assert!(bridge.getattr("base64").is_ok(), "app.rust_bridge missing 'base64' import");
+        assert!(
+            bridge.getattr("base64").is_ok(),
+            "app.rust_bridge missing 'base64' import"
+        );
     });
 
     // Also invoke the Python `chat_prepare` entry point directly with a
@@ -112,9 +118,15 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
     Python::with_gil(|py| {
         let bridge = py.import("app.rust_bridge").expect("import rust_bridge");
         let payload = pyo3::types::PyDict::new(py);
-        payload.set_item("message", "healthcheck").expect("set message");
+        payload
+            .set_item("message", "healthcheck")
+            .expect("set message");
         let result = bridge.call_method("chat_prepare", (py.None(), payload), None);
-        assert!(result.is_ok(), "python chat_prepare raised: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "python chat_prepare raised: {:?}",
+            result.err()
+        );
     });
 
     let static_root = resolve_static_root();
@@ -247,7 +259,12 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
     // with HTTP 500 to an XHR/fetch (seen only in browser console) and
     // where the response body itself doesn't include the error text.
     let logs = String::from_utf8_lossy(&log_buf.lock().unwrap()).to_string();
-    let log_error_indicators = ["Internal Server Error", "ERROR", "bridge error", "Traceback"]; 
+    let log_error_indicators = [
+        "Internal Server Error",
+        "ERROR",
+        "bridge error",
+        "Traceback",
+    ];
     for ind in &log_error_indicators {
         assert!(
             !logs.contains(ind),
@@ -262,7 +279,11 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
     // can detect server-side errors that may not surface in the response
     // body directly.
     let error_count = chatbot_server::test_instrumentation::take_error_count();
-    assert_eq!(error_count, 0, "server emitted {} HTTP 5xx responses", error_count);
+    assert_eq!(
+        error_count, 0,
+        "server emitted {} HTTP 5xx responses",
+        error_count
+    );
 
     // Inspect Python stderr for tracebacks that would indicate bridge-side
     // exceptions that may not appear in the HTTP body. Fail the test if any

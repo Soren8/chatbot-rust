@@ -519,6 +519,208 @@ def chat_prepare(
         raise
 
 
+def regenerate_prepare(
+    cookie_header: Optional[str],
+    payload: Dict[str, object],
+):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    try:
+        with app.test_request_context(
+            "/regenerate",
+            method="POST",
+            headers=headers or None,
+            json=payload,
+        ):
+            clean_old_sessions()
+
+            user_message = (payload.get("message") or "").strip()
+            if not user_message:
+                return {
+                    "ok": False,
+                    "response": _build_error_response(400, {"error": "message is required"}),
+                }
+
+            new_system_prompt = payload.get("system_prompt")
+            set_name_raw = payload.get("set_name", "default") or "default"
+            try:
+                set_name = validate_set_name(set_name_raw)
+            except ValueError as exc:
+                logger.warning("regenerate invalid set name '%s': %s", set_name_raw, exc)
+                return {
+                    "ok": False,
+                    "response": _build_error_response(400, {"error": "invalid set name"}),
+                }
+
+            session_id = _get_session_id()
+            user_session = sessions[session_id]
+            user_session["last_used"] = time.time()
+
+            ensure_full_history_loaded(user_session)
+
+            logger.info("Received regenerate request. Session: %s", session_id)
+
+            pair_index_raw = payload.get("pair_index")
+            insertion_index = None
+            if pair_index_raw is not None:
+                try:
+                    pair_index = int(pair_index_raw)
+                    if 0 <= pair_index < len(user_session.get("history", [])):
+                        logger.debug("Regenerate requested for index %s", pair_index)
+                        user_session["history"].pop(pair_index)
+                        insertion_index = pair_index
+                    else:
+                        logger.debug(
+                            "pair_index %s out of range; falling back to last-item behavior",
+                            pair_index_raw,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Invalid pair_index provided; falling back to last-item behavior"
+                    )
+
+            if insertion_index is None:
+                history = user_session.get("history", [])
+                if history and history[-1][0] == user_message:
+                    history.pop()
+                    insertion_index = len(history)
+
+            session_lock = _get_response_lock(session_id)
+            lock_acquired = False
+            if session_lock.locked():
+                return {
+                    "ok": False,
+                    "response": _build_error_response(
+                        429,
+                        {
+                            "error": "A response is currently being generated. Please wait and try again.",
+                        },
+                    ),
+                }
+            if session_lock.acquire(blocking=False):
+                lock_acquired = True
+            else:
+                return {
+                    "ok": False,
+                    "response": _build_error_response(
+                        429,
+                        {
+                            "error": "A response is currently being generated. Please wait and try again.",
+                        },
+                    ),
+                }
+
+            try:
+                username = session.get("username") if "username" in session else None
+                encryption_key = _get_user_encryption_key(username) if username else None
+
+                selected_model = payload.get("model_name") or Config.DEFAULT_LLM["provider_name"]
+                logger.debug("Regenerating with selected model: %s", selected_model)
+
+                allowed, msg = _is_model_allowed_for_user(selected_model, username)
+                if not allowed:
+                    logger.warning(
+                        "Regenerate request not allowed for user %s: %s - %s",
+                        username,
+                        selected_model,
+                        msg,
+                    )
+                    if lock_acquired:
+                        session_lock.release()
+                    return {
+                        "ok": False,
+                        "response": _build_error_response(403, {"error": msg}),
+                    }
+
+                provider_config_raw = next(
+                    (
+                        llm
+                        for llm in Config.LLM_PROVIDERS
+                        if llm.get("provider_name") == selected_model
+                    ),
+                    None,
+                )
+                if not provider_config_raw:
+                    logger.warning("Requested model not found: %s", selected_model)
+                    if lock_acquired:
+                        session_lock.release()
+                    return {
+                        "ok": False,
+                        "response": _build_error_response(
+                            400,
+                            {"error": "requested model not found"},
+                        ),
+                    }
+
+                provider_config = dict(provider_config_raw)
+                allowed = provider_config.get("allowed_providers", [])
+                if isinstance(allowed, str):
+                    provider_config["allowed_providers"] = [allowed]
+
+                test_chunks = provider_config.get("test_chunks")
+                if isinstance(test_chunks, str):
+                    try:
+                        provider_config["test_chunks"] = json.loads(test_chunks)
+                    except Exception:
+                        pass
+
+                history_serialisable = []
+                for item in user_session.get("history", []):
+                    if not isinstance(item, (tuple, list)) or len(item) != 2:
+                        continue
+                    user_part = (item[0] or "") if item[0] is not None else ""
+                    assistant_part = (item[1] or "") if item[1] is not None else ""
+                    history_serialisable.append([user_part, assistant_part])
+
+                system_prompt = user_session.get("system_prompt", Config.DEFAULT_SYSTEM_PROMPT)
+                encrypted = bool(payload.get("encrypted", False))
+                memory_text = user_session.get("memory", "")
+
+                context = {
+                    "session_id": session_id,
+                    "username": username,
+                    "set_name": set_name,
+                    "memory_text": memory_text,
+                    "system_prompt": system_prompt,
+                    "history": history_serialisable,
+                    "encrypted": encrypted,
+                    "model_name": selected_model,
+                    "provider_config": provider_config,
+                }
+
+                if encryption_key:
+                    context["encryption_key"] = base64.b64encode(encryption_key).decode("ascii")
+
+                test_chunks_env = os.getenv("CHATBOT_TEST_OPENAI_CHUNKS")
+                if test_chunks_env:
+                    try:
+                        context["test_chunks"] = json.loads(test_chunks_env)
+                    except json.JSONDecodeError:
+                        logger.warning("Invalid CHATBOT_TEST_OPENAI_CHUNKS payload; ignoring")
+
+                return {
+                    "ok": True,
+                    "context": json.dumps(context),
+                    "insertion_index": insertion_index,
+                }
+            except Exception:
+                LAST_EXCEPTION = traceback.format_exc()
+                logger.exception("regenerate_prepare raised unexpected error; releasing lock")
+                if lock_acquired:
+                    session_lock.release()
+                raise
+    except Exception:
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        raise
+
+
 def chat_finalize(
     cookie_header: Optional[str],
     session_id: str,
@@ -577,3 +779,156 @@ def chat_release_lock(session_id: str):
     if lock.locked():
         lock.release()
 
+
+def regenerate_finalize(
+    cookie_header: Optional[str],
+    session_id: str,
+    set_name: str,
+    user_message: str,
+    assistant_response: str,
+    insertion_index: Optional[int] = None,
+    encryption_key: Optional[bytes] = None,
+):
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    extras: list[str] = []
+
+    with app.test_request_context(
+        "/regenerate",
+        method="POST",
+        headers=headers or None,
+    ):
+        try:
+            user_session = sessions.get(session_id)
+            if user_session is None:
+                logger.debug("Session %s missing during regenerate finalize", session_id)
+                return extras
+
+            history = user_session.setdefault("history", [])
+
+            if (
+                insertion_index is not None
+                and isinstance(insertion_index, int)
+                and 0 <= insertion_index <= len(history)
+            ):
+                try:
+                    history.insert(insertion_index, (user_message, assistant_response))
+                    logger.info(
+                        "Inserted regenerated response at index %s for session %s",
+                        insertion_index,
+                        session_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to insert regenerated response; appending instead"
+                    )
+                    history.append((user_message, assistant_response))
+            else:
+                history.append((user_message, assistant_response))
+
+            logger.info(
+                "Regenerated response persisted. Length: %d characters",
+                len(assistant_response),
+            )
+
+            username = session.get("username") if "username" in session else None
+            if username:
+                try:
+                    save_user_chat_history(
+                        session_id,
+                        history,
+                        set_name,
+                        encryption_key=encryption_key,
+                    )
+                    logger.info("Saved regenerated history to disk for user %s", username)
+                except ValueError as exc:
+                    logger.error("Failed to save regenerated history: %s", exc)
+                    extras.append(f"\n[Error] Failed to save chat history: {exc}")
+                except Exception as exc:
+                    logger.error("Unexpected error saving regenerated history: %s", exc)
+                    extras.append("\n[Error] Unexpected error saving chat history")
+        finally:
+            lock = _get_response_lock(session_id)
+            if lock.locked():
+                lock.release()
+
+    return extras
+
+
+def reset_chat(
+    cookie_header: Optional[str],
+    payload: Dict[str, object],
+):
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context(
+        "/reset_chat",
+        method="POST",
+        headers=headers or None,
+        json=payload,
+    ):
+        session_id = _get_session_id()
+        if session_id not in sessions:
+            return _build_error_response(
+                404,
+                {"status": "error", "message": "Session not found"},
+            )
+
+        set_name_raw = payload.get("set_name", "default") or "default"
+        try:
+            set_name = validate_set_name(set_name_raw)
+        except ValueError as exc:
+            logger.warning("reset_chat invalid set name '%s': %s", set_name_raw, exc)
+            return _build_error_response(
+                400,
+                {"status": "error", "message": "invalid set name"},
+            )
+
+        sessions[session_id]["history"] = []
+
+        if "username" in session:
+            try:
+                save_user_chat_history(
+                    session["username"],
+                    [],
+                    set_name,
+                    encryption_key=
+                    _get_user_encryption_key(session["username"]) if "username" in session else None,
+                )
+                logger.info("Reset and saved empty chat history for set '%s'", set_name)
+            except ValueError as exc:
+                logger.warning(
+                    "reset_chat invalid input for user %s: %s",
+                    session["username"],
+                    exc,
+                )
+                return _build_error_response(
+                    400,
+                    {"status": "error", "message": "invalid request"},
+                )
+            except Exception as exc:
+                logger.error("Error saving empty history: %s", exc)
+                return _build_error_response(
+                    500,
+                    {
+                        "status": "error",
+                        "message": f"Failed to save empty history: {exc}",
+                    },
+                )
+
+        response = jsonify(
+            {
+                "status": "success",
+                "message": "Chat history has been reset.",
+                "set_name": set_name,
+            }
+        )
+        return _response_to_triplet(response)

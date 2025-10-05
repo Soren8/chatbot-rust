@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use async_stream::stream;
@@ -9,11 +10,10 @@ use axum::{
 };
 use bytes::Bytes;
 use chatbot_core::bridge::{
-    self, chat_finalize, chat_prepare, get_provider_config, ChatRequestData,
+    self, get_provider_config, regenerate_finalize, regenerate_prepare, RegenerateRequestData,
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info};
 
 use crate::chat_utils::{
@@ -24,7 +24,7 @@ use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
 
 #[derive(Deserialize)]
-struct ChatRequest {
+struct RegenerateRequest {
     message: String,
     #[serde(default)]
     system_prompt: Option<String>,
@@ -34,9 +34,13 @@ struct ChatRequest {
     model_name: Option<String>,
     #[serde(default)]
     encrypted: Option<bool>,
+    #[serde(default)]
+    pair_index: Option<i32>,
 }
 
-pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
+pub async fn handle_regenerate(
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
     if request.method() != axum::http::Method::POST {
         return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
     }
@@ -46,12 +50,12 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 2 * 1024 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read chat request body");
+        error!(?err, "failed to read regenerate request body");
         (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
     })?;
 
-    let payload: ChatRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "invalid chat request payload");
+    let payload: RegenerateRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
+        error!(?err, "invalid regenerate request payload");
         (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
     })?;
 
@@ -105,7 +109,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
     }
 
     if provider_config.provider_type.to_lowercase() != "openai" {
-        info!(model = %selected_model, "deferring chat request to python bridge");
+        info!(model = %selected_model, "deferring regenerate request to python bridge");
         let header_pairs = headers
             .iter()
             .filter_map(|(name, value)| {
@@ -117,14 +121,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             .collect::<Vec<_>>();
         let py_response = bridge::proxy_request(
             "POST",
-            "/chat",
+            "/regenerate",
             uri.query(),
             &header_pairs,
             cookie_header.as_deref(),
             Some(&body_bytes),
         )
         .map_err(|err| {
-            error!(?err, "python bridge error for /chat fallback");
+            error!(?err, "python bridge error for /regenerate fallback");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bridge error".to_string(),
@@ -133,16 +137,17 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         return crate::build_response(py_response);
     }
 
-    let request_data = ChatRequestData {
+    let request_data = RegenerateRequestData {
         message: payload.message.as_str(),
         system_prompt: payload.system_prompt.as_deref(),
         set_name: payload.set_name.as_deref(),
         model_name: Some(selected_model.as_str()),
         encrypted: payload.encrypted.unwrap_or(false),
+        pair_index: payload.pair_index,
     };
 
-    let prepare = chat_prepare(cookie_header.as_deref(), &request_data).map_err(|err| {
-        error!(?err, "chat_prepare bridge call failed");
+    let prepare = regenerate_prepare(cookie_header.as_deref(), &request_data).map_err(|err| {
+        error!(?err, "regenerate_prepare bridge call failed");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "bridge error".to_string(),
@@ -159,6 +164,8 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             "missing chat context".to_string(),
         )
     })?;
+
+    let insertion_index = prepare.insertion_index;
 
     let lock_guard = Arc::new(Mutex::new(ChatLockGuard::new(context.session_id.clone())));
 
@@ -246,12 +253,13 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         }
 
         let clean_response = strip_think_tags(&response_text);
-        match finalize_chat(
+        match regenerate_finalize(
             cookie_for_finalize.as_deref(),
             &session_id,
             &set_name,
             &user_message,
             &clean_response,
+            insertion_index,
             encryption_key.as_deref(),
         ) {
             Ok(extra_chunks) => {
@@ -261,10 +269,10 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
                 }
             }
             Err(err) => {
-                error!(?err, "chat_finalize failed");
+                error!(?err, "regenerate_finalize failed");
                 stream_lock.lock().unwrap().release_if_needed();
                 if !encountered_error {
-                    let msg = "\n[Error] Failed to persist chat history".to_string();
+                    let msg = "\n[Error] Failed to persist regenerated chat history".to_string();
                     yield Bytes::from(msg.into_bytes());
                 }
             }
@@ -281,7 +289,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(body_stream))
         .map_err(|err| {
-            error!(?err, "failed to build chat response");
+            error!(?err, "failed to build regenerate response");
             lock_guard.lock().unwrap().release_if_needed();
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -289,25 +297,6 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             )
         })?;
 
-    debug!("/chat request handled via Rust path");
+    debug!("/regenerate request handled via Rust path");
     Ok(response)
-}
-
-fn finalize_chat(
-    cookie_header: Option<&str>,
-    session_id: &str,
-    set_name: &str,
-    user_message: &str,
-    assistant_response: &str,
-    encryption_key: Option<&[u8]>,
-) -> Result<Vec<String>> {
-    chat_finalize(
-        cookie_header,
-        session_id,
-        set_name,
-        user_message,
-        assistant_response,
-        encryption_key,
-    )
-    .map_err(|err| err.into())
 }

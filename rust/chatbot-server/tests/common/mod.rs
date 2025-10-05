@@ -1,3 +1,4 @@
+use pyo3::prelude::*;
 use regex::Regex;
 use std::{env, path::PathBuf, sync::Once};
 
@@ -43,6 +44,13 @@ pub fn ensure_pythonpath() {
     });
 }
 
+/// Ensure Flask is importable; returns false when the dependency is missing so
+/// callers can gracefully skip integration tests.
+pub fn ensure_flask_available() -> bool {
+    ensure_pythonpath();
+    Python::with_gil(|py| py.import("flask").is_ok())
+}
+
 /// Initialise tracing once for tests; additional calls become no-ops.
 pub fn init_tracing() {
     TRACING_INIT.call_once(|| {
@@ -55,7 +63,8 @@ pub fn init_tracing() {
 
 pub fn extract_csrf_token(html: &str) -> Option<String> {
     let re = Regex::new(r#"name="csrf_token" value="([^"]+)""#).unwrap();
-    re.captures(html).and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+    re.captures(html)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
 }
 
 pub fn extract_cookie(set_cookie: &str) -> String {

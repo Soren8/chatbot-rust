@@ -14,14 +14,17 @@ use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod chat;
+mod chat_utils;
 mod health;
 mod home;
 mod login;
 mod logout;
 mod providers;
+mod regenerate;
+mod reset_chat;
 mod signup;
-mod user_store;
 pub mod test_instrumentation;
+mod user_store;
 
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::registry()
@@ -66,8 +69,8 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/tts", any(proxy_request_handler))
         .route("/api/tts", any(proxy_request_handler))
         .route("/api/tts/stream", any(proxy_request_handler))
-        .route("/regenerate", any(proxy_request_handler))
-        .route("/reset_chat", any(proxy_request_handler))
+        .route("/regenerate", post(regenerate::handle_regenerate))
+        .route("/reset_chat", post(reset_chat::handle_reset_chat))
         .route("/get_sets", any(proxy_request_handler))
         .route("/create_set", any(proxy_request_handler))
         .route("/delete_set", any(proxy_request_handler))
