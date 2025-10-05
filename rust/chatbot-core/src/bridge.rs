@@ -500,6 +500,36 @@ pub fn regenerate_finalize(
     })
 }
 
+pub fn generate_tts(
+    cookie_header: Option<&str>,
+    csrf_token: &str,
+    content_type: Option<&str>,
+    body: Option<&[u8]>,
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("csrf_token", csrf_token)?;
+        if let Some(content_type) = content_type {
+            kwargs.set_item("content_type", content_type)?;
+        }
+        if let Some(body_bytes) = body {
+            let py_body = PyBytes::new(py, body_bytes);
+            kwargs.set_item("body", py_body)?;
+        }
+
+        let result = bridge.call_method("generate_tts", (cookie_header,), Some(&kwargs))?;
+        let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers: header_items,
+            body: body_bytes,
+        })
+    })
+}
+
 pub fn reset_chat(cookie_header: Option<&str>, set_name: Option<&str>) -> PyResult<PythonResponse> {
     Python::with_gil(|py| {
         let bridge = py.import("app.rust_bridge")?;

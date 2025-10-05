@@ -14,7 +14,7 @@
 - [x] Establish interop strategy during transition (Rust-hosted, embedded Python bridge)
 - [x] Stand up Rust web server shell (Axum) with health check and placeholder UI route
 - [x] Proxy Axum endpoints to existing Flask routes for interim functionality
-    - [ ] TTS endpoint `/tts'
+    - [x] TTS endpoint `/tts'
 - [ ] Migrate Flask routes to Axum handlers that delegate to Python logic via the bridge, following the Route-by-Route Migration Loop
     - [x] Auth endpoints
         - [x] `/signup`
@@ -28,7 +28,7 @@
         - [x] `/chat`
         - [x] `/regenerate`
         - [x] `/reset_chat`
-    - [ ] TTS endpoint `/tts'
+    - [x] TTS endpoint `/tts'
     - [ ] Set management endpoints
         - [ ] `/get_sets`
         - [ ] `/create_set`
@@ -104,5 +104,4 @@ For each Flask endpoint (grouped where it makes sense):
 - Provide a `bridge` module so Rust can embed Python during the routing-first migration, handling GIL management and graceful fallbacks.
 - Expose helper wrappers (e.g., `bridge::call_python_function`) to centrally manage imports and callable dispatch from Rust into Python.
 - Run the Rust web server first (Axum) while calling into existing Python business logic; progressively replace those Python calls as modules migrate.
-
 

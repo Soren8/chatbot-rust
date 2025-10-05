@@ -24,6 +24,7 @@ mod regenerate;
 mod reset_chat;
 mod signup;
 pub mod test_instrumentation;
+mod tts;
 mod user_store;
 
 pub async fn run() -> anyhow::Result<()> {
@@ -64,9 +65,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
         )
         .route("/logout", get(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))
-        // Proxy TTS endpoints to the Python/Flask app so the frontend can
-        // continue to call the legacy `/tts` URL without changes.
-        .route("/tts", any(proxy_request_handler))
+        // Handle the primary `/tts` endpoint via the bridge so we can
+        // enforce CSRF and response semantics in Rust while still
+        // delegating audio generation to Python for now.
+        .route("/tts", post(tts::handle_tts))
         .route("/api/tts", any(proxy_request_handler))
         .route("/api/tts/stream", any(proxy_request_handler))
         .route("/regenerate", post(regenerate::handle_regenerate))

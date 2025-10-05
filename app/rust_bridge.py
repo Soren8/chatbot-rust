@@ -39,7 +39,9 @@ from app.routes import (
     Config,
     validate_set_name,
     logger,
+    CSRF_HEADER,
 )
+from app.tts import _handle_tts_request
 
 _app_lock = threading.Lock()
 _flask_app = None
@@ -279,6 +281,44 @@ def _build_error_response(status_code: int, payload: Dict[str, str]):
     response = jsonify(payload)
     response.status_code = status_code
     return _response_to_triplet(response)
+
+
+def generate_tts(
+    cookie_header: Optional[str],
+    *,
+    csrf_token: Optional[str] = None,
+    content_type: Optional[str] = None,
+    body: Optional[bytes] = None,
+):
+    """Invoke the Flask TTS handler within a test request context."""
+
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    try:
+        with app.test_request_context(
+            "/tts",
+            method="POST",
+            headers=headers or None,
+            data=body,
+            content_type=content_type,
+        ):
+            response = make_response(_handle_tts_request())
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("TTS bridge invocation failed")
+        return _build_error_response(500, {"error": "TTS generation failed"})
 
 
 def chat_prepare(
