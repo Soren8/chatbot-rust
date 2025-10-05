@@ -645,3 +645,114 @@ pub fn load_set(
         })
     })
 }
+
+pub fn update_memory(
+    cookie_header: Option<&str>,
+    csrf_token: &str,
+    memory: Option<&str>,
+    set_name: Option<&str>,
+    encrypted: Option<bool>,
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let payload = PyDict::new(py);
+        if let Some(memory) = memory {
+            payload.set_item("memory", memory)?;
+        }
+        if let Some(set_name) = set_name {
+            payload.set_item("set_name", set_name)?;
+        }
+        if let Some(encrypted) = encrypted {
+            payload.set_item("encrypted", encrypted)?;
+        }
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("csrf_token", csrf_token)?;
+
+        let result =
+            bridge.call_method("update_memory", (cookie_header, payload), Some(&kwargs))?;
+        let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers,
+            body: body_bytes,
+        })
+    })
+}
+
+pub fn update_system_prompt(
+    cookie_header: Option<&str>,
+    csrf_token: &str,
+    system_prompt: Option<&str>,
+    set_name: Option<&str>,
+    encrypted: Option<bool>,
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let payload = PyDict::new(py);
+        if let Some(system_prompt) = system_prompt {
+            payload.set_item("system_prompt", system_prompt)?;
+        }
+        if let Some(set_name) = set_name {
+            payload.set_item("set_name", set_name)?;
+        }
+        if let Some(encrypted) = encrypted {
+            payload.set_item("encrypted", encrypted)?;
+        }
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("csrf_token", csrf_token)?;
+
+        let result = bridge.call_method(
+            "update_system_prompt",
+            (cookie_header, payload),
+            Some(&kwargs),
+        )?;
+        let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers,
+            body: body_bytes,
+        })
+    })
+}
+
+pub fn delete_message(
+    cookie_header: Option<&str>,
+    csrf_token: &str,
+    user_message: Option<&str>,
+    ai_message: Option<&str>,
+    set_name: Option<&str>,
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let payload = PyDict::new(py);
+        if let Some(user_message) = user_message {
+            payload.set_item("user_message", user_message)?;
+        }
+        if let Some(ai_message) = ai_message {
+            payload.set_item("ai_message", ai_message)?;
+        }
+        if let Some(set_name) = set_name {
+            payload.set_item("set_name", set_name)?;
+        }
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("csrf_token", csrf_token)?;
+
+        let result =
+            bridge.call_method("delete_message", (cookie_header, payload), Some(&kwargs))?;
+        let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers,
+            body: body_bytes,
+        })
+    })
+}

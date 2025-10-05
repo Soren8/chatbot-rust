@@ -34,10 +34,10 @@
         - [x] `/create_set`
         - [x] `/delete_set`
         - [x] `/load_set`
-    - [ ] System prompts and memory endpoints
-        - [ ] `/update_memory`
-        - [ ] `/update_system_prompt`
-        - [ ] `/delete_message`
+    - [x] System prompts and memory endpoints
+        - [x] `/update_memory`
+        - [x] `/update_system_prompt`
+        - [x] `/delete_message`
 - [ ] Port configuration handling from `app/config.py` to Rust equivalent
 - [ ] Reimplement `app/chat_logic.py` core functionality in Rust
 - [ ] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations

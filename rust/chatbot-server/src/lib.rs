@@ -19,6 +19,7 @@ mod health;
 mod home;
 mod login;
 mod logout;
+mod memory;
 mod providers;
 mod regenerate;
 mod reset_chat;
@@ -78,9 +79,12 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/create_set", post(sets::handle_create_set))
         .route("/delete_set", post(sets::handle_delete_set))
         .route("/load_set", post(sets::handle_load_set))
-        .route("/update_memory", any(proxy_request_handler))
-        .route("/update_system_prompt", any(proxy_request_handler))
-        .route("/delete_message", any(proxy_request_handler))
+        .route("/update_memory", post(memory::handle_update_memory))
+        .route(
+            "/update_system_prompt",
+            post(memory::handle_update_system_prompt),
+        )
+        .route("/delete_message", post(memory::handle_delete_message))
 }
 
 pub fn resolve_static_root() -> PathBuf {

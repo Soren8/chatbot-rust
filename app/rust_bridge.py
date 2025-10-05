@@ -40,6 +40,9 @@ from app.routes import (
     create_set as flask_create_set,
     delete_set as flask_delete_set,
     load_set as flask_load_set,
+    update_memory as flask_update_memory,
+    update_system_prompt as flask_update_system_prompt,
+    delete_message as flask_delete_message,
     Config,
     validate_set_name,
     logger,
@@ -1035,6 +1038,117 @@ def load_set(
             LAST_EXCEPTION = traceback.format_exc()
         logger.exception("load_set bridge invocation failed")
         return _build_error_response(500, {"error": "Failed to load set"})
+
+
+def update_memory(
+    cookie_header: Optional[str],
+    payload: Optional[Dict[str, object]] = None,
+    *,
+    csrf_token: Optional[str] = None,
+):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
+
+    try:
+        with app.test_request_context(
+            "/update_memory",
+            method="POST",
+            headers=headers or None,
+            json=payload or {},
+        ):
+            response = make_response(flask_update_memory())
+            app.session_interface.save_session(app, session, response)
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("update_memory bridge invocation failed")
+        return _build_error_response(
+            500,
+            {"status": "error", "error": "failed to update memory"},
+        )
+
+
+def update_system_prompt(
+    cookie_header: Optional[str],
+    payload: Optional[Dict[str, object]] = None,
+    *,
+    csrf_token: Optional[str] = None,
+):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
+
+    try:
+        with app.test_request_context(
+            "/update_system_prompt",
+            method="POST",
+            headers=headers or None,
+            json=payload or {},
+        ):
+            response = make_response(flask_update_system_prompt())
+            app.session_interface.save_session(app, session, response)
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("update_system_prompt bridge invocation failed")
+        return _build_error_response(
+            500,
+            {"status": "error", "error": "failed to update system prompt"},
+        )
+
+
+def delete_message(
+    cookie_header: Optional[str],
+    payload: Optional[Dict[str, object]] = None,
+    *,
+    csrf_token: Optional[str] = None,
+):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
+
+    try:
+        with app.test_request_context(
+            "/delete_message",
+            method="POST",
+            headers=headers or None,
+            json=payload or {},
+        ):
+            response = make_response(flask_delete_message())
+            app.session_interface.save_session(app, session, response)
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("delete_message bridge invocation failed")
+        return _build_error_response(
+            500,
+            {"status": "error", "error": "Failed to delete message"},
+        )
 
 
 def reset_chat(
