@@ -36,6 +36,10 @@ from app.routes import (
     ensure_full_history_loaded,
     save_user_chat_history,
     save_user_system_prompt,
+    get_sets as flask_get_sets,
+    create_set as flask_create_set,
+    delete_set as flask_delete_set,
+    load_set as flask_load_set,
     Config,
     validate_set_name,
     logger,
@@ -897,6 +901,140 @@ def regenerate_finalize(
                 lock.release()
 
     return extras
+
+
+def get_sets(cookie_header: Optional[str]):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    try:
+        with app.test_request_context(
+            "/get_sets",
+            method="GET",
+            headers=headers or None,
+        ):
+            response = make_response(flask_get_sets())
+            app.session_interface.save_session(app, session, response)
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("get_sets bridge invocation failed")
+        return _build_error_response(500, {"error": "failed to load sets"})
+
+
+def create_set(
+    cookie_header: Optional[str],
+    payload: Optional[Dict[str, object]] = None,
+    *,
+    csrf_token: Optional[str] = None,
+):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
+
+    try:
+        with app.test_request_context(
+            "/create_set",
+            method="POST",
+            headers=headers or None,
+            json=payload or {},
+        ):
+            response = make_response(flask_create_set())
+            app.session_interface.save_session(app, session, response)
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("create_set bridge invocation failed")
+        return _build_error_response(
+            500,
+            {"status": "error", "error": "Failed to create set"},
+        )
+
+
+def delete_set(
+    cookie_header: Optional[str],
+    payload: Optional[Dict[str, object]] = None,
+    *,
+    csrf_token: Optional[str] = None,
+):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
+
+    try:
+        with app.test_request_context(
+            "/delete_set",
+            method="POST",
+            headers=headers or None,
+            json=payload or {},
+        ):
+            response = make_response(flask_delete_set())
+            app.session_interface.save_session(app, session, response)
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("delete_set bridge invocation failed")
+        return _build_error_response(
+            500,
+            {"status": "error", "error": "Failed to delete set"},
+        )
+
+
+def load_set(
+    cookie_header: Optional[str],
+    payload: Optional[Dict[str, object]] = None,
+    *,
+    csrf_token: Optional[str] = None,
+):
+    global LAST_EXCEPTION
+    LAST_EXCEPTION = None
+
+    app = _get_app()
+
+    headers: Dict[str, str] = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    if csrf_token:
+        headers[CSRF_HEADER] = csrf_token
+
+    try:
+        with app.test_request_context(
+            "/load_set",
+            method="POST",
+            headers=headers or None,
+            json=payload or {},
+        ):
+            response = make_response(flask_load_set())
+            app.session_interface.save_session(app, session, response)
+            return _response_to_triplet(response)
+    except Exception:  # pragma: no cover - defensive logging for bridge failures
+        if LAST_EXCEPTION is None:
+            LAST_EXCEPTION = traceback.format_exc()
+        logger.exception("load_set bridge invocation failed")
+        return _build_error_response(500, {"error": "Failed to load set"})
 
 
 def reset_chat(

@@ -549,3 +549,99 @@ pub fn reset_chat(cookie_header: Option<&str>, set_name: Option<&str>) -> PyResu
         })
     })
 }
+
+pub fn get_sets(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let result = bridge.call_method("get_sets", (cookie_header,), None)?;
+        let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers,
+            body: body_bytes,
+        })
+    })
+}
+
+pub fn create_set(
+    cookie_header: Option<&str>,
+    csrf_token: &str,
+    set_name: Option<&str>,
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let payload = PyDict::new(py);
+        if let Some(set_name) = set_name {
+            payload.set_item("set_name", set_name)?;
+        }
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("csrf_token", csrf_token)?;
+
+        let result = bridge.call_method("create_set", (cookie_header, payload), Some(&kwargs))?;
+        let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers,
+            body: body_bytes,
+        })
+    })
+}
+
+pub fn delete_set(
+    cookie_header: Option<&str>,
+    csrf_token: &str,
+    set_name: Option<&str>,
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let payload = PyDict::new(py);
+        if let Some(set_name) = set_name {
+            payload.set_item("set_name", set_name)?;
+        }
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("csrf_token", csrf_token)?;
+
+        let result = bridge.call_method("delete_set", (cookie_header, payload), Some(&kwargs))?;
+        let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers,
+            body: body_bytes,
+        })
+    })
+}
+
+pub fn load_set(
+    cookie_header: Option<&str>,
+    csrf_token: &str,
+    set_name: Option<&str>,
+) -> PyResult<PythonResponse> {
+    Python::with_gil(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let payload = PyDict::new(py);
+        if let Some(set_name) = set_name {
+            payload.set_item("set_name", set_name)?;
+        }
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("csrf_token", csrf_token)?;
+
+        let result = bridge.call_method("load_set", (cookie_header, payload), Some(&kwargs))?;
+        let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
+            result.extract()?;
+
+        Ok(PythonResponse {
+            status,
+            headers,
+            body: body_bytes,
+        })
+    })
+}

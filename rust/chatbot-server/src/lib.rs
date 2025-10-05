@@ -22,6 +22,7 @@ mod logout;
 mod providers;
 mod regenerate;
 mod reset_chat;
+mod sets;
 mod signup;
 pub mod test_instrumentation;
 mod tts;
@@ -73,10 +74,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/api/tts/stream", any(proxy_request_handler))
         .route("/regenerate", post(regenerate::handle_regenerate))
         .route("/reset_chat", post(reset_chat::handle_reset_chat))
-        .route("/get_sets", any(proxy_request_handler))
-        .route("/create_set", any(proxy_request_handler))
-        .route("/delete_set", any(proxy_request_handler))
-        .route("/load_set", any(proxy_request_handler))
+        .route("/get_sets", get(sets::handle_get_sets))
+        .route("/create_set", post(sets::handle_create_set))
+        .route("/delete_set", post(sets::handle_delete_set))
+        .route("/load_set", post(sets::handle_load_set))
         .route("/update_memory", any(proxy_request_handler))
         .route("/update_system_prompt", any(proxy_request_handler))
         .route("/delete_message", any(proxy_request_handler))
