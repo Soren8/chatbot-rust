@@ -34,7 +34,9 @@
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture. Follow any in-progress refactor trail they reference (currently `docs/rust-refactor.md`).
 - At session start, ask if the user wants frequent commits; default to frequent if unspecified.
 - Do not moralize about the user's language or tone.
+- Preserve the `.cargo/` directory; do not delete it because it caches Rust build artifacts used by other agents.
 - Always validate provider configurations before committing
 - Test chat functionality with provider-test.py before making significant changes
 - Use logging instead of print statements for debugging
 - Skip running `python3 -m compileall`; it’s slow here and the user will run real functional tests.
+- Treat the task as complete only after all required tests pass and your changes are committed to git.
