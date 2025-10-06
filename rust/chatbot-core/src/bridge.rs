@@ -1,3 +1,4 @@
+use crate::config::ProviderConfig;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
@@ -139,19 +140,6 @@ pub fn render_home(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
 }
 
 #[derive(Debug, Clone)]
-pub struct ProviderConfig {
-    pub provider_name: String,
-    pub provider_type: String,
-    pub base_url: String,
-    pub api_key: Option<String>,
-    pub model_name: String,
-    pub context_size: Option<u32>,
-    pub request_timeout: Option<f64>,
-    pub allowed_providers: Vec<String>,
-    pub test_chunks: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone)]
 pub struct ChatContext {
     pub session_id: String,
     pub username: Option<String>,
@@ -195,20 +183,6 @@ pub struct RegenerateRequestData<'a> {
 }
 
 #[derive(Deserialize)]
-struct ProviderConfigJson {
-    provider_name: String,
-    #[serde(rename = "type")]
-    provider_type: String,
-    base_url: String,
-    api_key: Option<String>,
-    model_name: String,
-    context_size: Option<u32>,
-    request_timeout: Option<f64>,
-    allowed_providers: Option<Vec<String>>,
-    test_chunks: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
 struct ChatContextJson {
     session_id: String,
     username: Option<String>,
@@ -218,25 +192,9 @@ struct ChatContextJson {
     history: Vec<Vec<String>>,
     encrypted: bool,
     model_name: String,
-    provider_config: ProviderConfigJson,
+    provider_config: ProviderConfig,
     encryption_key: Option<String>,
     test_chunks: Option<Vec<String>>,
-}
-
-impl From<ProviderConfigJson> for ProviderConfig {
-    fn from(value: ProviderConfigJson) -> Self {
-        Self {
-            provider_name: value.provider_name,
-            provider_type: value.provider_type,
-            base_url: value.base_url,
-            api_key: value.api_key,
-            model_name: value.model_name,
-            context_size: value.context_size,
-            request_timeout: value.request_timeout,
-            allowed_providers: value.allowed_providers.unwrap_or_default(),
-            test_chunks: value.test_chunks,
-        }
-    }
 }
 
 impl TryFrom<ChatContextJson> for ChatContext {
@@ -265,7 +223,7 @@ impl TryFrom<ChatContextJson> for ChatContext {
             None => None,
         };
 
-        let mut provider = ProviderConfig::from(value.provider_config);
+        let mut provider = value.provider_config;
         // If the top-level context provided test chunks (via CHATBOT_TEST_OPENAI_CHUNKS),
         // prefer those over an absent provider-level test_chunks value so tests can stub
         // provider streaming without modifying provider config dicts.
@@ -287,20 +245,6 @@ impl TryFrom<ChatContextJson> for ChatContext {
             test_chunks: value.test_chunks,
         })
     }
-}
-
-pub fn get_provider_config(model_name: Option<&str>) -> PyResult<Option<ProviderConfig>> {
-    Python::with_gil(|py| {
-        let bridge = py.import("app.rust_bridge")?;
-        let result = bridge.call_method("get_provider_config", (model_name,), None)?;
-        if result.is_none() {
-            return Ok(None);
-        }
-        let config_json: String = result.extract()?;
-        let parsed: ProviderConfigJson = serde_json::from_str(&config_json)
-            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-        Ok(Some(ProviderConfig::from(parsed)))
-    })
 }
 
 pub fn chat_prepare(

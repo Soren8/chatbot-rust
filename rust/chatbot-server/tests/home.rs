@@ -5,7 +5,7 @@ use axum::{
     http::{header, Request, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::bridge;
+use chatbot_core::{bridge, config};
 use chatbot_server::{build_router, resolve_static_root};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -40,6 +40,7 @@ default_system_prompt: "Test system prompt"
 "#;
         std::fs::write(dir.path().join(".config.yml"), config).expect("write config");
         env::set_current_dir(dir.path()).expect("chdir test config dir");
+        config::reset();
 
         TestEnv { data_dir: dir }
     });

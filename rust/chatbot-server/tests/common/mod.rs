@@ -1,6 +1,8 @@
+use chatbot_core::config;
 use pyo3::prelude::*;
 use regex::Regex;
-use std::{env, path::PathBuf, sync::Once};
+use std::{env, fs, path::Path, path::PathBuf, sync::Once};
+use tempfile::TempDir;
 
 static PYTHONPATH_INIT: Once = Once::new();
 static TRACING_INIT: Once = Once::new();
@@ -74,4 +76,60 @@ pub fn extract_cookie(set_cookie: &str) -> String {
         .unwrap_or(set_cookie)
         .trim()
         .to_owned()
+}
+
+pub struct TestWorkspace {
+    temp_dir: TempDir,
+    original_cwd: PathBuf,
+    previous_host_data_dir: Option<String>,
+}
+
+impl TestWorkspace {
+    pub fn with_openai_provider() -> Self {
+        let original_cwd = env::current_dir().expect("missing current dir");
+        let temp_dir = TempDir::new().expect("tempdir");
+        write_openai_config(temp_dir.path());
+
+        env::set_current_dir(temp_dir.path()).expect("set current dir");
+        let previous_host_data_dir = env::var("HOST_DATA_DIR").ok();
+        env::set_var("HOST_DATA_DIR", temp_dir.path());
+
+        config::reset();
+
+        Self {
+            temp_dir,
+            original_cwd,
+            previous_host_data_dir,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        self.temp_dir.path()
+    }
+}
+
+impl Drop for TestWorkspace {
+    fn drop(&mut self) {
+        let _ = env::set_current_dir(&self.original_cwd);
+        if let Some(previous) = &self.previous_host_data_dir {
+            env::set_var("HOST_DATA_DIR", previous);
+        } else {
+            env::remove_var("HOST_DATA_DIR");
+        }
+    }
+}
+
+fn write_openai_config(dir: &Path) {
+    const CONFIG: &str = r#"
+llms:
+  - provider_name: "default"
+    type: "openai"
+    model_name: "gpt-test"
+    base_url: "https://api.openai.com/v1"
+    api_key: "test-key"
+    context_size: 4096
+"#;
+
+    let path = dir.join(".config.yml");
+    fs::write(path, CONFIG).expect("write config");
 }

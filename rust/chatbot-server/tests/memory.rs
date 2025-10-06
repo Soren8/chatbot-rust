@@ -8,10 +8,8 @@ use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
-use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::json;
-use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
@@ -29,8 +27,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
+    let workspace = common::TestWorkspace::with_openai_provider();
 
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
@@ -46,7 +43,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
     let password = "Sup3rS3cret!";
     let hashed = hash(password, DEFAULT_COST).expect("hash password");
 
-    let users_json = data_dir.path().join("users.json");
+    let users_json = workspace.path().join("users.json");
     fs::write(
         &users_json,
         serde_json::to_string_pretty(&json!({
@@ -60,28 +57,6 @@ async fn memory_and_prompt_endpoints_round_trip() {
     .expect("write users.json");
 
     bridge::initialize_python().expect("python init");
-
-    Python::with_gil(|py| {
-        let code = std::ffi::CString::new(
-            r#"
-from app.config import Config
-
-Config.LLM_PROVIDERS = [{
-    'provider_name': 'default',
-    'type': 'openai',
-    'model_name': 'gpt-test',
-    'base_url': 'https://api.openai.com/v1',
-    'api_key': 'test-key',
-    'context_size': 4096,
-}]
-Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
-"#,
-        )
-        .expect("c string");
-
-        py.run(code.as_c_str(), None, None)
-            .expect("configure openai provider");
-    });
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -322,7 +297,7 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
     );
 
     // Ensure the encrypted memory and history files were created for the user.
-    let user_dir = data_dir.path().join("user_sets").join(username);
+    let user_dir = workspace.path().join("user_sets").join(username);
     assert!(user_dir.exists(), "user data directory missing");
     let memory_file = user_dir.join("default_memory.txt");
     let history_file = user_dir.join("default_history.json");

@@ -10,7 +10,6 @@ use once_cell::sync::Lazy;
 use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::json;
-use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
@@ -24,15 +23,6 @@ fn ensure_base_config(py: Python<'_>) {
         r#"
 from app.config import Config
 
-Config.LLM_PROVIDERS = [{
-    'provider_name': 'default',
-    'type': 'openai',
-    'model_name': 'gpt-test',
-    'base_url': 'https://api.openai.com/v1',
-    'api_key': 'test-key',
-    'context_size': 4096,
-}]
-Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
 Config.TTS_BASE_URL = 'http://tts.test'
 "#,
     )
@@ -51,8 +41,7 @@ async fn tts_returns_wav_audio() {
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
+    let _workspace = common::TestWorkspace::with_openai_provider();
 
     bridge::initialize_python().expect("python bridge init");
 
@@ -230,8 +219,7 @@ async fn tts_returns_error_when_service_fails() {
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
+    let _workspace = common::TestWorkspace::with_openai_provider();
 
     bridge::initialize_python().expect("python bridge init");
 

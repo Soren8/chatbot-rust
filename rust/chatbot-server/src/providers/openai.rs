@@ -5,10 +5,9 @@ use async_stream::try_stream;
 use futures_util::Stream;
 use futures_util::StreamExt;
 use reqwest::Client;
-use serde::Serialize;
 use serde_json::Value;
 
-use chatbot_core::bridge::ProviderConfig;
+use chatbot_core::config::ProviderConfig;
 
 use self::messages::ChatMessagePayload;
 use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};

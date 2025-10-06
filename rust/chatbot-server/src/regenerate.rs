@@ -9,8 +9,9 @@ use axum::{
     http::{header, Request, Response, StatusCode},
 };
 use bytes::Bytes;
-use chatbot_core::bridge::{
-    self, get_provider_config, regenerate_finalize, regenerate_prepare, RegenerateRequestData,
+use chatbot_core::{
+    bridge::{self, regenerate_finalize, regenerate_prepare, RegenerateRequestData},
+    config::get_provider_config,
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -85,24 +86,25 @@ pub async fn handle_regenerate(
 
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 
-    let provider_config = get_provider_config(if selected_model.is_empty() {
+    let provider_config = match get_provider_config(if selected_model.is_empty() {
         None
     } else {
         Some(selected_model.as_str())
-    })
-    .map_err(|err| {
-        error!(?err, "failed to load provider config");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
-        )
-    })?
-    .ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "requested model not found".to_string(),
-        )
-    })?;
+    }) {
+        Some(config) => config,
+        None => {
+            let model = if selected_model.is_empty() {
+                "<default>"
+            } else {
+                selected_model.as_str()
+            };
+            error!(model = %model, "requested model not found");
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "requested model not found".to_string(),
+            ));
+        }
+    };
 
     if selected_model.is_empty() {
         selected_model = provider_config.provider_name.clone();

@@ -10,7 +10,6 @@ use once_cell::sync::Lazy;
 use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::json;
-use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
@@ -28,32 +27,9 @@ async fn reset_chat_clears_history() {
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
+    let _workspace = common::TestWorkspace::with_openai_provider();
 
     bridge::initialize_python().expect("python bridge init");
-
-    Python::with_gil(|py| {
-        let code = std::ffi::CString::new(
-            r#"
-from app.config import Config
-
-Config.LLM_PROVIDERS = [{
-    'provider_name': 'default',
-    'type': 'openai',
-    'model_name': 'gpt-test',
-    'base_url': 'https://api.openai.com/v1',
-    'api_key': 'test-key',
-    'context_size': 4096,
-}]
-Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
-"#,
-        )
-        .expect("c string");
-
-        py.run(code.as_c_str(), None, None)
-            .expect("configure openai provider");
-    });
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);

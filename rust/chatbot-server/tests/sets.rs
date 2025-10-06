@@ -8,10 +8,8 @@ use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
-use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::json;
-use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
@@ -29,14 +27,13 @@ async fn set_management_flow() {
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
+    let workspace = common::TestWorkspace::with_openai_provider();
 
     let username = "testuser";
     let password = "Sup3rS3cret!";
     let hashed = hash(password, DEFAULT_COST).expect("hash password");
 
-    let users_json = data_dir.path().join("users.json");
+    let users_json = workspace.path().join("users.json");
     fs::write(
         &users_json,
         serde_json::to_string_pretty(&json!({
@@ -50,28 +47,6 @@ async fn set_management_flow() {
     .expect("write users.json");
 
     bridge::initialize_python().expect("python init");
-
-    Python::with_gil(|py| {
-        let code = std::ffi::CString::new(
-            r#"
-from app.config import Config
-
-Config.LLM_PROVIDERS = [{
-    'provider_name': 'default',
-    'type': 'openai',
-    'model_name': 'gpt-test',
-    'base_url': 'https://api.openai.com/v1',
-    'api_key': 'test-key',
-    'context_size': 4096,
-}]
-Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
-"#,
-        )
-        .expect("c string");
-
-        py.run(code.as_c_str(), None, None)
-            .expect("configure provider");
-    });
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -234,7 +209,7 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
         serde_json::from_slice(&sets_body).expect("sets json after create");
     assert!(sets_json.get(new_set_name).is_some(), "new set not present");
 
-    seed_plaintext_set(&data_dir.path().join("user_sets"), username, new_set_name);
+    seed_plaintext_set(&workspace.path().join("user_sets"), username, new_set_name);
 
     let load_response = app
         .clone()
@@ -299,7 +274,7 @@ Config.DEFAULT_LLM = Config.LLM_PROVIDERS[0]
         Some(&serde_json::Value::String("success".into()))
     );
 
-    let user_set_dir = data_dir.path().join("user_sets").join(username);
+    let user_set_dir = workspace.path().join("user_sets").join(username);
     assert!(!user_set_dir
         .join(format!("{}_memory.txt", new_set_name))
         .exists());

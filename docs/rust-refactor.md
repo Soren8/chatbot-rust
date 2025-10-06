@@ -34,11 +34,12 @@
         - [x] `/create_set`
         - [x] `/delete_set`
         - [x] `/load_set`
-    - [x] System prompts and memory endpoints
+- [x] System prompts and memory endpoints
         - [x] `/update_memory`
         - [x] `/update_system_prompt`
         - [x] `/delete_message`
-- [ ] Port configuration handling from `app/config.py` to Rust equivalent
+- [x] Port configuration handling from `app/config.py` to Rust equivalent
+    - Introduced `chatbot_core::config` for `.config.yml` loading, env substitution, and cached provider lookup with test reset helper.
 - [ ] Reimplement `app/chat_logic.py` core functionality in Rust
 - [ ] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations
   - Providers status:
