@@ -12,19 +12,43 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_key")
     HOST_DATA_DIR = os.getenv("HOST_DATA_DIR", "./data")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    _LEVEL_NAME_MAP = {
+        "CRITICAL": logging.CRITICAL,
+        "ERROR": logging.ERROR,
+        "WARNING": logging.WARNING,
+        "INFO": logging.INFO,
+        "DEBUG": logging.DEBUG,
+        "NOTSET": logging.NOTSET,
+    }
     
     @classmethod
     def configure_logging(cls):
         """Configure logging for the application"""
+        level = cls._resolve_log_level(cls.LOG_LEVEL)
         logging.basicConfig(
-            level=cls.LOG_LEVEL,
+            level=level,
             format='%(asctime)s [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         # Set all loggers to use configured level
-        logging.getLogger('gunicorn').setLevel(cls.LOG_LEVEL)
-        logging.getLogger('werkzeug').setLevel(cls.LOG_LEVEL)
-        logging.getLogger('app').setLevel(cls.LOG_LEVEL)
+        logging.getLogger('gunicorn').setLevel(level)
+        logging.getLogger('werkzeug').setLevel(level)
+        logging.getLogger('app').setLevel(level)
+    
+    @classmethod
+    def _resolve_log_level(cls, level):
+        """Return a valid logging level constant for the provided value"""
+        if isinstance(level, int):
+            return level
+        if isinstance(level, str):
+            normalized = level.strip()
+            if normalized.isdigit():
+                return int(normalized)
+            upper = normalized.upper()
+            if upper in cls._LEVEL_NAME_MAP:
+                return cls._LEVEL_NAME_MAP[upper]
+        logging.warning(f"Unknown log level {level!r}; defaulting to INFO")
+        return logging.INFO
     
     # TTS configuration
     TTS_BASE_URL = f"http://{os.getenv('TTS_HOST', 'localhost')}:{os.getenv('TTS_PORT', '5000')}"
