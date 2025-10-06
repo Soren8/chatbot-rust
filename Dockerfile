@@ -20,6 +20,7 @@ FROM deps AS runtime
 COPY app /app/app
 COPY tests /app/tests
 RUN mkdir -p /app/data
+RUN touch /app/.config.yml
 ENV PYTHONPATH="/app"
 ENV CHATBOT_STATIC_ROOT="/app/app/static"
 
@@ -73,6 +74,7 @@ COPY app /app/app
 COPY tests /app/tests
 COPY rust /app/rust
 RUN mkdir -p /app/data
+RUN touch /app/.config.yml
 ENV PYTHONPATH="/app"
 ENV CHATBOT_STATIC_ROOT="/app/app/static"
 
@@ -84,4 +86,3 @@ COPY --from=rust-build /build/rust/target/${RUST_BUILD_PROFILE}/chatbot-server /
 
 # Default to Axum server; bind address is configurable via CHATBOT_BIND_ADDR (see docker-compose)
 CMD ["chatbot-server"]
-
