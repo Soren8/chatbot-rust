@@ -49,4 +49,6 @@
 - Use logging instead of print statements for debugging
 - Skip running `python3 -m compileall`; it’s slow here and the user will run real functional tests.
 - Treat the task as complete only after all required tests pass and your changes are committed to git.
+- Update any relevant docs, checklists or todo lists at the end of a task. Only add content to docs, not checklists or todo lists.
+
 
