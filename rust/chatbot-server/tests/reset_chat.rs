@@ -66,7 +66,7 @@ async fn reset_chat_clears_history() {
 
     let cookie_value = common::extract_cookie(&set_cookie);
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let locals = pyo3::types::PyDict::new(py);
         locals
             .set_item("cookie", &cookie_value)
@@ -113,7 +113,7 @@ with app.test_request_context('/', headers={'Cookie': cookie}):
 
     assert_eq!(reset_response.status(), StatusCode::OK);
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let locals = pyo3::types::PyDict::new(py);
         locals
             .set_item("cookie", &cookie_value)

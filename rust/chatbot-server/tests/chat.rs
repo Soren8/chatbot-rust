@@ -67,7 +67,7 @@ async fn chat_endpoint_returns_stubbed_stream() {
 
     // Redirect Python stderr to an in-memory buffer so we can assert no
     // Python-side tracebacks or errors were written during the request.
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let io = py.import("io").expect("import io");
         let sys = py.import("sys").expect("import sys");
         let stringio = io.call_method0("StringIO").expect("StringIO");
@@ -79,7 +79,7 @@ async fn chat_endpoint_returns_stubbed_stream() {
     // `base64`), `chat_prepare` will raise a NameError and the server will
     // return a bridge error; fail the test early so CI surfaces this class
     // of bug immediately.
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge").expect("import rust_bridge");
         assert!(
             bridge.getattr("base64").is_ok(),
@@ -91,7 +91,7 @@ async fn chat_endpoint_returns_stubbed_stream() {
     // minimal payload to ensure it does not raise during normal setup. If
     // this call raises (for example due to a missing symbol), fail the
     // test so we catch regressions in the bridge code path.
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge").expect("import rust_bridge");
         let payload = pyo3::types::PyDict::new(py);
         payload
@@ -264,7 +264,7 @@ async fn chat_endpoint_returns_stubbed_stream() {
     // Inspect Python stderr for tracebacks that would indicate bridge-side
     // exceptions that may not appear in the HTTP body. Fail the test if any
     // such Python errors were recorded.
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let sys = py.import("sys").expect("import sys");
         let stderr = sys.getattr("stderr").expect("get stderr");
         let contents = stderr.call_method0("getvalue").expect("getvalue");

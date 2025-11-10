@@ -48,7 +48,7 @@ async fn tts_returns_wav_audio() {
 
     bridge::initialize_python().expect("python bridge init");
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         ensure_base_config(py);
 
         let code = std::ffi::CString::new(
@@ -158,7 +158,7 @@ tts.requests.post = _fake_post
         .expect("read wav body");
     assert!(!wav_bytes.is_empty(), "wav body should not be empty");
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let locals = pyo3::types::PyDict::new(py);
         let code = std::ffi::CString::new(
             r#"
@@ -227,7 +227,7 @@ async fn tts_returns_error_when_service_fails() {
 
     bridge::initialize_python().expect("python bridge init");
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         ensure_base_config(py);
 
         let code = std::ffi::CString::new(

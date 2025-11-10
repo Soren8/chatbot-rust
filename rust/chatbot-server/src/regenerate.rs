@@ -160,7 +160,7 @@ pub async fn handle_regenerate(
         return crate::build_response(py_response);
     }
 
-    let mut context = prepare.context.ok_or_else(|| {
+    let context = prepare.context.ok_or_else(|| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "missing chat context".to_string(),
@@ -283,7 +283,7 @@ pub async fn handle_regenerate(
 
     let body_stream = stream.map(|bytes| Ok::<Bytes, Infallible>(bytes));
 
-    let mut response = Response::builder()
+    let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header("X-Accel-Buffering", "no")

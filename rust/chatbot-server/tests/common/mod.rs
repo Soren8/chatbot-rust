@@ -48,7 +48,7 @@ pub fn ensure_pythonpath() {
 
 pub fn configure_python_env(base_dir: &Path) {
     ensure_pythonpath();
-    Python::with_gil(|py| -> PyResult<()> {
+    Python::attach(|py| -> PyResult<()> {
         let dir_str = base_dir.to_str().expect("utf8 base dir");
         let pathlib = py.import("pathlib")?;
         let path_cls = pathlib.getattr("Path")?;
@@ -101,7 +101,7 @@ pub fn configure_python_env(base_dir: &Path) {
 /// callers can gracefully skip integration tests.
 pub fn ensure_flask_available() -> bool {
     ensure_pythonpath();
-    Python::with_gil(|py| py.import("flask").is_ok())
+    Python::attach(|py| py.import("flask").is_ok())
 }
 
 /// Initialise tracing once for tests; additional calls become no-ops.

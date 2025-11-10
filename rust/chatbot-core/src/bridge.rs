@@ -16,13 +16,13 @@ pub struct PythonResponse {
 #[allow(deprecated)]
 pub fn initialize_python() -> PyResult<()> {
     // For now we simply ensure the interpreter spins up.
-    Python::with_gil(|_py| Ok(()))
+    Python::attach(|_py| Ok(()))
 }
 
 /// Placeholder helper illustrating how Rust will invoke Python callables.
 #[allow(deprecated)]
 pub fn call_python_function(module: &str, function: &str) -> PyResult<Py<PyAny>> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let module = py.import(module)?;
         let callable = module.getattr(function)?;
         let result = callable.call0()?;
@@ -39,7 +39,7 @@ pub fn proxy_request(
     cookie_header: Option<&str>,
     body: Option<&[u8]>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
 
         let kwargs = PyDict::new(py);
@@ -79,7 +79,7 @@ pub fn proxy_request(
 
 /// Validate a CSRF token against the Flask session state.
 pub fn validate_csrf_token(cookie_header: Option<&str>, token: &str) -> PyResult<bool> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let result = bridge.call_method("validate_csrf_token", (cookie_header, token), None)?;
         result.extract()
@@ -92,7 +92,7 @@ pub fn finalize_login(
     username: &str,
     encryption_key: &[u8],
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let key = PyBytes::new(py, encryption_key);
         let result = bridge.call_method("finalize_login", (cookie_header, username, key), None)?;
@@ -109,7 +109,7 @@ pub fn finalize_login(
 
 /// Clear Flask session state and redirect back to the home page.
 pub fn logout_user(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let result = bridge.call_method("logout_user", (cookie_header,), None)?;
         let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
@@ -125,7 +125,7 @@ pub fn logout_user(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
 
 /// Render the home page via Flask and return the complete response.
 pub fn render_home(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let result = bridge.call_method("render_home", (cookie_header,), None)?;
         let (status, header_items, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
@@ -251,7 +251,7 @@ pub fn chat_prepare(
     cookie_header: Option<&str>,
     payload: &ChatRequestData<'_>,
 ) -> PyResult<ChatPrepareResult> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let py_payload = PyDict::new(py);
         py_payload.set_item("message", payload.message)?;
@@ -312,7 +312,7 @@ pub fn chat_finalize(
     assistant_response: &str,
     encryption_key: Option<&[u8]>,
 ) -> PyResult<Vec<String>> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let result = bridge.call_method(
             "chat_finalize",
@@ -331,7 +331,7 @@ pub fn chat_finalize(
 }
 
 pub fn chat_release_lock(session_id: &str) -> PyResult<()> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         bridge.call_method("chat_release_lock", (session_id,), None)?;
         Ok(())
@@ -342,7 +342,7 @@ pub fn regenerate_prepare(
     cookie_header: Option<&str>,
     payload: &RegenerateRequestData<'_>,
 ) -> PyResult<RegeneratePrepareResult> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let py_payload = PyDict::new(py);
         py_payload.set_item("message", payload.message)?;
@@ -424,7 +424,7 @@ pub fn regenerate_finalize(
     insertion_index: Option<usize>,
     encryption_key: Option<&[u8]>,
 ) -> PyResult<Vec<String>> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let idx = insertion_index.map(|value| value as i64);
         let result = bridge.call_method(
@@ -450,7 +450,7 @@ pub fn generate_tts(
     content_type: Option<&str>,
     body: Option<&[u8]>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("csrf_token", csrf_token)?;
@@ -475,7 +475,7 @@ pub fn generate_tts(
 }
 
 pub fn reset_chat(cookie_header: Option<&str>, set_name: Option<&str>) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let payload = PyDict::new(py);
         if let Some(set_name) = set_name {
@@ -495,7 +495,7 @@ pub fn reset_chat(cookie_header: Option<&str>, set_name: Option<&str>) -> PyResu
 }
 
 pub fn get_sets(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let result = bridge.call_method("get_sets", (cookie_header,), None)?;
         let (status, headers, body_bytes): (u16, Vec<(String, String)>, Vec<u8>) =
@@ -514,7 +514,7 @@ pub fn create_set(
     csrf_token: &str,
     set_name: Option<&str>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let payload = PyDict::new(py);
         if let Some(set_name) = set_name {
@@ -541,7 +541,7 @@ pub fn delete_set(
     csrf_token: &str,
     set_name: Option<&str>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let payload = PyDict::new(py);
         if let Some(set_name) = set_name {
@@ -568,7 +568,7 @@ pub fn load_set(
     csrf_token: &str,
     set_name: Option<&str>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let payload = PyDict::new(py);
         if let Some(set_name) = set_name {
@@ -597,7 +597,7 @@ pub fn update_memory(
     set_name: Option<&str>,
     encrypted: Option<bool>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let payload = PyDict::new(py);
         if let Some(memory) = memory {
@@ -633,7 +633,7 @@ pub fn update_system_prompt(
     set_name: Option<&str>,
     encrypted: Option<bool>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let payload = PyDict::new(py);
         if let Some(system_prompt) = system_prompt {
@@ -672,7 +672,7 @@ pub fn delete_message(
     ai_message: Option<&str>,
     set_name: Option<&str>,
 ) -> PyResult<PythonResponse> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bridge = py.import("app.rust_bridge")?;
         let payload = PyDict::new(py);
         if let Some(user_message) = user_message {
