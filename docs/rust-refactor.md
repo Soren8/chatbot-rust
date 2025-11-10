@@ -50,7 +50,7 @@
 - [x] Update testing strategy (unit, integration, provider tests) for Rust codebase
   - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors
 - [ ] Document deployment changes, make note of `temp/` scratchpad usage, and update Docker setup
-- [ ] Plan deprecation timeline for remaining Python components
+- [ ] Remove remaining Python components
 
 ### Route-by-Route Migration Loop
 For each Flask endpoint (grouped where it makes sense):
