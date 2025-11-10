@@ -42,6 +42,9 @@ default_system_prompt: "Test system prompt"
         env::set_current_dir(dir.path()).expect("chdir test config dir");
         config::reset();
 
+        env::set_var("SECRET_KEY", "test_secret_key");
+        common::configure_python_env(dir.path());
+
         TestEnv { data_dir: dir }
     });
 

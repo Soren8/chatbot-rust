@@ -404,10 +404,58 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
+    use std::env;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct CwdGuard {
+        original: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn change_to(path: &Path) -> Self {
+            let original = env::current_dir().expect("current dir");
+            env::set_current_dir(path).expect("change dir");
+            Self { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.original);
+        }
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = env::var(key).ok();
+            env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                env::set_var(self.key, value);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn replaces_env_vars_in_yaml() {
+        let _lock = TEST_MUTEX.lock().expect("test mutex");
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
         let mut file = fs::File::create(&path).expect("create config");
@@ -417,26 +465,25 @@ mod tests {
         )
         .expect("write config");
 
-        env::set_var("MODEL", "injected-model");
-        let original_dir = env::current_dir().expect("cwd");
-        env::set_current_dir(dir.path()).expect("chdir temp");
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _model_guard = EnvVarGuard::set("MODEL", "injected-model");
 
         reset();
         let config = app_config();
         let provider = config.default_provider();
         assert_eq!(provider.model_name, "injected-model");
 
-        env::set_current_dir(&original_dir).expect("restore cwd");
+        reset();
     }
 
     #[test]
     fn returns_fallback_when_missing_file() {
+        let _lock = TEST_MUTEX.lock().expect("test mutex");
         let dir = tempfile::tempdir().expect("tempdir");
-        let original_dir = env::current_dir().expect("cwd");
-        env::set_current_dir(dir.path()).expect("chdir temp");
+        let _cwd_guard = CwdGuard::change_to(dir.path());
         reset();
         let provider_type = app_config().default_provider().provider_type.clone();
         assert_eq!(provider_type, "ollama");
-        env::set_current_dir(&original_dir).expect("restore cwd");
+        reset();
     }
 }

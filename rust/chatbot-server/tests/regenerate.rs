@@ -93,6 +93,9 @@ async fn regenerate_endpoint_streams_response() {
         .expect("POST /chat response");
 
     assert_eq!(chat_response.status(), StatusCode::OK);
+    let _ = to_bytes(chat_response.into_body(), 512 * 1024)
+        .await
+        .expect("read chat response body");
 
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
@@ -129,20 +132,28 @@ async fn regenerate_endpoint_streams_response() {
         .await
         .expect("POST /regenerate response");
 
-    assert_eq!(regen_response.status(), StatusCode::OK);
-    let content_type = regen_response
-        .headers()
+    let (regen_parts, regen_body) = regen_response.into_parts();
+    let status = regen_parts.status;
+    let content_type = regen_parts
+        .headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
+
+    let body_bytes = to_bytes(regen_body, 512 * 1024)
+        .await
+        .expect("read regenerate body");
+    if status != StatusCode::OK {
+        let body_text = std::str::from_utf8(&body_bytes).unwrap_or("<non-utf8 body>");
+        panic!(
+            "regenerate request failed: status={} body={}",
+            status, body_text
+        );
+    }
     assert!(
         content_type.starts_with("text/plain"),
         "expected text/plain content-type, got {content_type}"
     );
-
-    let body_bytes = to_bytes(regen_response.into_body(), 512 * 1024)
-        .await
-        .expect("read regenerate body");
     let body_text = std::str::from_utf8(&body_bytes).expect("regen utf8");
 
     assert!(body_text.contains("regen chunk 1"));

@@ -1,5 +1,5 @@
 use chatbot_core::config;
-use pyo3::prelude::*;
+use pyo3::{prelude::*, types::PyDict};
 use regex::Regex;
 use std::{env, fs, path::Path, path::PathBuf, sync::Once};
 use tempfile::TempDir;
@@ -44,6 +44,57 @@ pub fn ensure_pythonpath() {
         let joined = entries.join(":");
         env::set_var("PYTHONPATH", joined);
     });
+}
+
+pub fn configure_python_env(base_dir: &Path) {
+    ensure_pythonpath();
+    Python::with_gil(|py| -> PyResult<()> {
+        let dir_str = base_dir.to_str().expect("utf8 base dir");
+        let pathlib = py.import("pathlib")?;
+        let path_cls = pathlib.getattr("Path")?;
+        let base_dir_py: Py<PyAny> = path_cls.call1((dir_str,))?.into();
+
+        let user_manager = py.import("app.user_manager")?;
+        user_manager.setattr("BASE_DATA_DIR", base_dir_py.clone_ref(py))?;
+
+        let users_file: Py<PyAny> = base_dir_py
+            .call_method1(py, "joinpath", ("users.json",))?
+            .into();
+        user_manager.setattr("USERS_FILE", users_file.clone_ref(py))?;
+
+        let sets_dir: Py<PyAny> = base_dir_py
+            .call_method1(py, "joinpath", ("user_sets",))?
+            .into();
+        user_manager.setattr("SETS_DIR", sets_dir.clone_ref(py))?;
+
+        let salt_dir: Py<PyAny> = base_dir_py.call_method1(py, "joinpath", ("salts",))?.into();
+        user_manager.setattr("SALT_DIR", salt_dir.clone_ref(py))?;
+
+        let mkdir_kwargs = PyDict::new(py);
+        mkdir_kwargs.set_item("parents", true)?;
+        mkdir_kwargs.set_item("exist_ok", true)?;
+        for path in [&base_dir_py, &sets_dir, &salt_dir] {
+            let _ = path.call_method(py, "mkdir", (), Some(&mkdir_kwargs));
+        }
+
+        user_manager.call_method0("_ensure_users_file")?;
+
+        let config_module = py.import("app.config")?;
+        let config_class = config_module.getattr("Config")?;
+        config_class.setattr("HOST_DATA_DIR", dir_str)?;
+        if let Ok(secret) = env::var("SECRET_KEY") {
+            config_class.setattr("SECRET_KEY", secret)?;
+        }
+        config_class.call_method0("load_config")?;
+
+        if let Ok(routes) = py.import("app.routes") {
+            routes.setattr("MAX_REQUESTS_PER_MINUTE", 10_000)?;
+            let fresh_requests = PyDict::new(py);
+            routes.setattr("requests_per_ip", fresh_requests)?;
+        }
+        Ok(())
+    })
+    .expect("configure python env");
 }
 
 /// Ensure Flask is importable; returns false when the dependency is missing so
@@ -95,6 +146,7 @@ impl TestWorkspace {
         env::set_var("HOST_DATA_DIR", temp_dir.path());
 
         config::reset();
+        configure_python_env(temp_dir.path());
 
         Self {
             temp_dir,

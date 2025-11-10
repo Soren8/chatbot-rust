@@ -18,6 +18,8 @@ static META_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
 });
 
+static TTS_TEST_MUTEX: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
+
 fn ensure_base_config(py: Python<'_>) {
     let code = std::ffi::CString::new(
         r#"
@@ -39,6 +41,7 @@ async fn tts_returns_wav_audio() {
         return;
     }
     common::init_tracing();
+    let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
@@ -217,6 +220,7 @@ async fn tts_returns_error_when_service_fails() {
         return;
     }
     common::init_tracing();
+    let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
