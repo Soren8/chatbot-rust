@@ -57,6 +57,9 @@ This document outlines the high-level architecture and planned enhancements for 
 - **Rate Limiting & Concurrency**
   - [ ] Replace custom IP-based rate limiter with a battle-tested extension like (support per-user and global rate caps).
   - [ ] Hook `clean_old_sessions()` into a regular cleanup job or request hook to avoid stale session buildup.
+  - [ ] Consider switching to Sled for lightweight data storage concurrency
+    - Ensure the old data format can still be imported/exported
+    - Automatically import old data if it exists AND sled data doesn't
 
 - **Error Handling & Logging**
   - [ ] Standardize on JSON error responses with proper HTTP status codes rather than plain text.
