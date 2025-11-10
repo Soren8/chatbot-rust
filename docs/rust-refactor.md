@@ -41,7 +41,7 @@
 - [x] Port configuration handling from `app/config.py` to Rust equivalent
     - Introduced `chatbot_core::config` for `.config.yml` loading, env substitution, and cached provider lookup with test reset helper.
 - [x] Reimplement `app/chat_logic.py` core functionality in Rust
-- [ ] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations
+- [x] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations
   - Providers status:
     - [x] OpenAI — Rust implementation with streaming & test-chunk support
     - [x] Ollama — Rust implementation with streaming fallback to test chunks and parity coverage
