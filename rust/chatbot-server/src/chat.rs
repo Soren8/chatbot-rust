@@ -10,6 +10,7 @@ use axum::{
 use bytes::Bytes;
 use chatbot_core::{
     bridge::{self, chat_finalize, chat_prepare, ChatRequestData},
+    chat::{self, ChatMessageRole, strip_think_tags},
     config::get_provider_config,
 };
 use futures_util::StreamExt;
@@ -17,10 +18,7 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info};
 
-use crate::chat_utils::{
-    calculate_available_history_tokens, strip_think_tags, truncate_history, ChatLockGuard,
-    DEFAULT_CONTEXT_SIZE,
-};
+use crate::chat_utils::ChatLockGuard;
 use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
 
@@ -170,37 +168,29 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
     })?;
 
-    let context_size = context
-        .provider
-        .context_size
-        .unwrap_or(DEFAULT_CONTEXT_SIZE as u32) as usize;
-    let available_tokens = calculate_available_history_tokens(
-        context_size,
-        &context.system_prompt,
-        &context.memory_text,
-    );
-    let truncated_history = truncate_history(&context.history, available_tokens);
+    let prepared = chat::prepare_chat_messages(&context, payload.message.as_str());
 
-    let mut messages = Vec::new();
-    messages.push(ChatMessagePayload::system(context.system_prompt.clone()));
-
-    if !context.memory_text.trim().is_empty() {
-        let snippet = if context.memory_text.len() > 2000 {
-            context.memory_text[..2000].to_string()
-        } else {
-            context.memory_text.clone()
-        };
-        messages.push(ChatMessagePayload::system(format!("Memory:\n{}", snippet)));
+    if prepared.was_truncated() {
+        debug!(
+            original_history_tokens = prepared.original_history_tokens,
+            truncated_history_tokens = prepared.truncated_history_tokens,
+            "chat history token metrics"
+        );
     }
 
-    for (user, assistant) in truncated_history.iter() {
-        messages.push(ChatMessagePayload::user(user.clone()));
-        if !assistant.is_empty() {
-            messages.push(ChatMessagePayload::assistant(assistant.clone()));
-        }
-    }
-
-    messages.push(ChatMessagePayload::user(payload.message.clone()));
+    let messages = prepared
+        .messages
+        .iter()
+        .map(|message| match message.role {
+            ChatMessageRole::System => {
+                ChatMessagePayload::system(message.content.clone())
+            }
+            ChatMessageRole::User => ChatMessagePayload::user(message.content.clone()),
+            ChatMessageRole::Assistant => {
+                ChatMessagePayload::assistant(message.content.clone())
+            }
+        })
+        .collect::<Vec<_>>();
 
     let cookie_for_finalize = cookie_header.clone();
     let session_id = context.session_id.clone();

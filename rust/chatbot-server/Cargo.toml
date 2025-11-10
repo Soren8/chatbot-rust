@@ -37,3 +37,4 @@ futures-util = "0.3"
 tempfile = "3"
 tracing-appender = "0.2"
 pyo3 = { version = "0.26", features = ["auto-initialize"] }
+scopeguard = "1"
