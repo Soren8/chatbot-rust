@@ -30,6 +30,15 @@
 - Never reference `temp/` items in commit messages
 - Keep `temp/todo.md` updated as you progress
 
+## Refactoring guidelines
+- First write integration tests (in the new target language) that covers existing functionality if needed.
+- Make sure those tests pass.
+- Create a new stub for the refactored code any make modifications necessary to call it.
+- Ensure the appropriate tests now fails.
+- Replace the stub with new refactored code that covers all old functionality.
+- Ensure the appropriate tests now pass.
+- Delete the legacy code.
+
 ## Important Notes
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture. Follow any in-progress refactor trail they reference (currently `docs/rust-refactor.md`).
 - At session start, ask if the user wants frequent commits; default to frequent if unspecified.
@@ -40,3 +49,4 @@
 - Use logging instead of print statements for debugging
 - Skip running `python3 -m compileall`; it’s slow here and the user will run real functional tests.
 - Treat the task as complete only after all required tests pass and your changes are committed to git.
+
