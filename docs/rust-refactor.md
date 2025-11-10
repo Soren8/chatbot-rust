@@ -15,7 +15,7 @@
 - [x] Stand up Rust web server shell (Axum) with health check and placeholder UI route
 - [x] Proxy Axum endpoints to existing Flask routes for interim functionality
     - [x] TTS endpoint `/tts'
-- [ ] Migrate Flask routes to Axum handlers that delegate to Python logic via the bridge, following the Route-by-Route Migration Loop
+- [x] Migrate Flask routes to Axum handlers that delegate to Python logic via the bridge, following the Route-by-Route Migration Loop
     - [x] Auth endpoints
         - [x] `/signup`
         - [x] `/login`
@@ -45,7 +45,7 @@
   - Providers status:
     - [x] OpenAI — Rust implementation with streaming & test-chunk support
     - [ ] Ollama
-- [ ] Migrate data persistence layer (`data/`) to Rust-compatible solution
+- [ ] Migrate data persistence layer (`data/`) to Rust using Sled
 - [ ] Align logging and error handling with Rust tooling
 - [x] Update testing strategy (unit, integration, provider tests) for Rust codebase
   - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors
