@@ -137,9 +137,25 @@ pub struct TestWorkspace {
 
 impl TestWorkspace {
     pub fn with_openai_provider() -> Self {
+        const CONFIG: &str = r#"
+llms:
+  - provider_name: "default"
+    type: "openai"
+    model_name: "gpt-test"
+    base_url: "https://api.openai.com/v1"
+    api_key: "test-key"
+    context_size: 4096
+"#;
+
+        Self::with_config(CONFIG)
+    }
+
+    pub fn with_config(config: &str) -> Self {
         let original_cwd = env::current_dir().expect("missing current dir");
         let temp_dir = TempDir::new().expect("tempdir");
-        write_openai_config(temp_dir.path());
+
+        let config_path = temp_dir.path().join(".config.yml");
+        fs::write(config_path, config).expect("write config");
 
         env::set_current_dir(temp_dir.path()).expect("set current dir");
         let previous_host_data_dir = env::var("HOST_DATA_DIR").ok();
@@ -169,19 +185,4 @@ impl Drop for TestWorkspace {
             env::remove_var("HOST_DATA_DIR");
         }
     }
-}
-
-fn write_openai_config(dir: &Path) {
-    const CONFIG: &str = r#"
-llms:
-  - provider_name: "default"
-    type: "openai"
-    model_name: "gpt-test"
-    base_url: "https://api.openai.com/v1"
-    api_key: "test-key"
-    context_size: 4096
-"#;
-
-    let path = dir.join(".config.yml");
-    fs::write(path, CONFIG).expect("write config");
 }

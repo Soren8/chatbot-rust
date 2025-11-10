@@ -187,9 +187,7 @@ fn approximate_token_count(text: &str) -> f64 {
 fn approximate_history_tokens(history: &[(String, String)]) -> usize {
     history
         .iter()
-        .map(|(user, assistant)| {
-            ((user.len() + assistant.len()) as f64 / 4.0).floor() as usize
-        })
+        .map(|(user, assistant)| ((user.len() + assistant.len()) as f64 / 4.0).floor() as usize)
         .sum()
 }
 
@@ -200,7 +198,7 @@ fn take_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
-fn memory_snippet(memory: &str) -> String {
+pub fn memory_snippet(memory: &str) -> String {
     memory.chars().take(MEMORY_SNIPPET_CHAR_LIMIT).collect()
 }
 
@@ -266,7 +264,10 @@ mod tests {
         assert!(matches!(prepared.messages[0].role, ChatMessageRole::System));
         assert!(prepared.messages[1].content.starts_with("Memory:"));
         assert!(matches!(prepared.messages[2].role, ChatMessageRole::User));
-        assert!(matches!(prepared.messages[3].role, ChatMessageRole::Assistant));
+        assert!(matches!(
+            prepared.messages[3].role,
+            ChatMessageRole::Assistant
+        ));
         assert_eq!(prepared.messages.last().unwrap().content, "How are you?");
     }
 

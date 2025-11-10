@@ -24,9 +24,7 @@ fn python_chat_logic_helpers_match_expected_behavior() {
         let chat_logic = py.import("app.chat_logic")?;
 
         let calc_tokens = chat_logic.getattr("calculate_available_history_tokens")?;
-        let available: i32 = calc_tokens
-            .call1((1000, "abcd", "efgh"))?
-            .extract()?;
+        let available: i32 = calc_tokens.call1((1000, "abcd", "efgh"))?.extract()?;
         assert_eq!(available, 798);
 
         let truncate = chat_logic.getattr("truncate_history")?;
@@ -35,8 +33,7 @@ fn python_chat_logic_helpers_match_expected_behavior() {
             ("new".repeat(400), "reply".repeat(400)),
         ];
         let py_history = PyList::new(py, &history)?;
-        let truncated: Vec<(String, String)> =
-            truncate.call1((&py_history, 300))?.extract()?;
+        let truncated: Vec<(String, String)> = truncate.call1((&py_history, 300))?.extract()?;
 
         assert_eq!(truncated.len(), 1);
         assert_eq!(truncated[0].0, "new".repeat(400));

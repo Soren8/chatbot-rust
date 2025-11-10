@@ -44,7 +44,7 @@
 - [ ] Recreate provider abstractions (`app/llm/`) as Rust traits and implementations
   - Providers status:
     - [x] OpenAI — Rust implementation with streaming & test-chunk support
-    - [ ] Ollama
+    - [x] Ollama — Rust implementation with streaming fallback to test chunks and parity coverage
 - [ ] Migrate data persistence layer (`data/`) to Rust using Sled
     - Ensure the old data format can still be imported/exported
     - Automatically import old data if it exists AND sled data doesn't

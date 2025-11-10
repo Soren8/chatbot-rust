@@ -15,7 +15,7 @@ use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};
 pub mod messages {
     use serde::Serialize;
 
-    #[derive(Serialize)]
+    #[derive(Clone, Serialize)]
     pub struct ChatMessagePayload {
         pub role: String,
         pub content: String,

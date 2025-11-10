@@ -10,7 +10,7 @@ use axum::{
 use bytes::Bytes;
 use chatbot_core::{
     bridge::{self, chat_finalize, chat_prepare, ChatRequestData},
-    chat::{self, ChatMessageRole, strip_think_tags},
+    chat::{self, strip_think_tags, ChatMessageRole},
     config::get_provider_config,
 };
 use futures_util::StreamExt;
@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info};
 
 use crate::chat_utils::ChatLockGuard;
+use crate::providers::ollama::OllamaProvider;
 use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
 
@@ -104,8 +105,18 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         selected_model = provider_config.provider_name.clone();
     }
 
-    if provider_config.provider_type.to_lowercase() != "openai" {
-        info!(model = %selected_model, "deferring chat request to python bridge");
+    let provider_type = provider_config.provider_type.to_lowercase();
+    debug!(
+        model = %selected_model,
+        provider_type = %provider_type,
+        "resolved provider configuration for chat"
+    );
+    if provider_type != "openai" && provider_type != "ollama" {
+        info!(
+            model = %selected_model,
+            provider_type = %provider_type,
+            "deferring chat request to python bridge"
+        );
         let header_pairs = headers
             .iter()
             .filter_map(|(name, value)| {
@@ -162,11 +173,28 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
 
     let lock_guard = Arc::new(Mutex::new(ChatLockGuard::new(context.session_id.clone())));
 
-    let provider = OpenAiProvider::new(&context.provider).map_err(|err| {
-        error!(?err, "failed to construct OpenAI provider");
-        lock_guard.lock().unwrap().release_if_needed();
-        (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
-    })?;
+    enum ProviderKind {
+        OpenAi(OpenAiProvider),
+        Ollama(OllamaProvider),
+    }
+
+    let provider_kind = match provider_type.as_str() {
+        "openai" => OpenAiProvider::new(&context.provider)
+            .map(ProviderKind::OpenAi)
+            .map_err(|err| {
+                error!(?err, "failed to construct OpenAI provider");
+                lock_guard.lock().unwrap().release_if_needed();
+                (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
+            })?,
+        "ollama" => OllamaProvider::new(&context.provider)
+            .map(ProviderKind::Ollama)
+            .map_err(|err| {
+                error!(?err, "failed to construct Ollama provider");
+                lock_guard.lock().unwrap().release_if_needed();
+                (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
+            })?,
+        _ => unreachable!("provider_type should be filtered earlier"),
+    };
 
     let prepared = chat::prepare_chat_messages(&context, payload.message.as_str());
 
@@ -182,13 +210,9 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         .messages
         .iter()
         .map(|message| match message.role {
-            ChatMessageRole::System => {
-                ChatMessagePayload::system(message.content.clone())
-            }
+            ChatMessageRole::System => ChatMessagePayload::system(message.content.clone()),
             ChatMessageRole::User => ChatMessagePayload::user(message.content.clone()),
-            ChatMessageRole::Assistant => {
-                ChatMessagePayload::assistant(message.content.clone())
-            }
+            ChatMessageRole::Assistant => ChatMessagePayload::assistant(message.content.clone()),
         })
         .collect::<Vec<_>>();
 
@@ -202,15 +226,31 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         .map(|bytes| bytes.as_slice())
         .map(|slice| slice.to_vec());
 
-    let mut provider_stream = match provider.stream_chat(messages) {
-        Ok(stream) => stream,
-        Err(err) => {
-            error!(?err, "provider stream setup failed");
-            lock_guard.lock().unwrap().release_if_needed();
-            return Err((
-                StatusCode::BAD_GATEWAY,
-                "provider request failed".to_string(),
-            ));
+    let mut provider_stream = match provider_kind {
+        ProviderKind::OpenAi(provider) => match provider.stream_chat(messages.clone()) {
+            Ok(stream) => stream,
+            Err(err) => {
+                error!(?err, "provider stream setup failed");
+                lock_guard.lock().unwrap().release_if_needed();
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    "provider request failed".to_string(),
+                ));
+            }
+        },
+        ProviderKind::Ollama(provider) => {
+            let request = provider.build_request(&context, &prepared, payload.message.as_str());
+            match provider.stream_chat(request) {
+                Ok(stream) => stream,
+                Err(err) => {
+                    error!(?err, "provider stream setup failed");
+                    lock_guard.lock().unwrap().release_if_needed();
+                    return Err((
+                        StatusCode::BAD_GATEWAY,
+                        "provider request failed".to_string(),
+                    ));
+                }
+            }
         }
     };
 
