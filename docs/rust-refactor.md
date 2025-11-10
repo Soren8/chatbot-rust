@@ -46,6 +46,8 @@
     - [x] OpenAI — Rust implementation with streaming & test-chunk support
     - [ ] Ollama
 - [ ] Migrate data persistence layer (`data/`) to Rust using Sled
+    - Ensure the old data format can still be imported/exported
+    - Automatically import old data if it exists AND sled data doesn't
 - [ ] Align logging and error handling with Rust tooling
 - [x] Update testing strategy (unit, integration, provider tests) for Rust codebase
   - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors
