@@ -63,7 +63,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         )
         .route(
             "/login",
-            get(proxy_request_handler).post(login::handle_login_post),
+            get(login::handle_login_get).post(login::handle_login_post),
         )
         .route("/logout", get(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))

@@ -54,7 +54,7 @@
 - [ ] Port remaining proxied routes to native Rust handlers
     - [x] `/`
     - [x] `/signup`
-    - [ ] `/login`
+    - [x] `/login`
     - [ ] `/api/tts*`
 - [ ] Move chat preparation/finalization off the Python bridge
     - [ ] `chat_prepare`
