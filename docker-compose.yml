@@ -72,3 +72,4 @@ services:
       - ./temp/cargo-registry:/root/.cargo/registry
       - ./temp/cargo-git:/root/.cargo/git
       - ./temp/target-cache:/app/rust/target
+      - ./rust:/app/rust

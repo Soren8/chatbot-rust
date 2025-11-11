@@ -75,7 +75,6 @@ RUN pip install --no-cache-dir pytest
 WORKDIR /app
 COPY app /app/app
 COPY tests /app/tests
-COPY rust /app/rust
 RUN mkdir -p /app/data
 RUN touch /app/.config.yml
 ENV PYTHONPATH="/app"
