@@ -59,7 +59,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/", get(home::handle_home))
         .route(
             "/signup",
-            get(proxy_request_handler).post(signup::handle_signup_post),
+            get(signup::handle_signup_get).post(signup::handle_signup_post),
         )
         .route(
             "/login",

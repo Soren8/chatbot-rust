@@ -9,13 +9,13 @@ use chatbot_core::{
     config,
 };
 use minijinja::{context, AutoEscape, Environment};
-use std::sync::OnceLock;
 use serde::Serialize;
+use std::sync::OnceLock;
 use tracing::{error, warn};
 
 use crate::user_store::UserStore;
 
-const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net data:; style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net; media-src 'self' blob: data:";
+pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net data:; style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
 
 #[derive(Serialize)]

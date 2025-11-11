@@ -19,6 +19,90 @@ use urlencoding::encode;
 mod common;
 
 #[tokio::test]
+async fn signup_get_renders_form_with_security_headers() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping signup_get_renders_form_with_security_headers: flask not available");
+        return;
+    }
+    common::init_tracing();
+
+    env::set_var("SECRET_KEY", "test_secret_key");
+
+    let data_dir = TempDir::new().expect("temp data dir");
+    env::set_var("HOST_DATA_DIR", data_dir.path());
+    common::configure_python_env(data_dir.path());
+
+    let users_file = data_dir.path().join("users.json");
+    if !users_file.exists() {
+        std::fs::create_dir_all(data_dir.path()).expect("create host data dir");
+        std::fs::write(&users_file, "{}").expect("initialize users.json");
+    }
+
+    bridge::initialize_python().expect("python init");
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/signup")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /signup");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+
+    let set_cookie = headers
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie present");
+    assert!(
+        set_cookie.contains("session"),
+        "session cookie should include session id"
+    );
+
+    let csp = headers
+        .get("Content-Security-Policy")
+        .and_then(|value| value.to_str().ok())
+        .expect("CSP header present");
+    assert!(
+        csp.contains("default-src 'self'"),
+        "CSP header should include default-src"
+    );
+
+    for name in [
+        "X-Content-Type-Options",
+        "Referrer-Policy",
+        "X-Frame-Options",
+    ] {
+        assert!(
+            headers.get(name).is_some(),
+            "expected {name} header to be present"
+        );
+    }
+
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let body_str = std::str::from_utf8(&body).expect("utf8 response body");
+    assert!(
+        body_str.contains("<form action=\"/signup\" method=\"post\">"),
+        "signup form markup present"
+    );
+
+    let csrf = common::extract_csrf_token(body_str).expect("csrf token embedded in signup form");
+    assert!(
+        !csrf.is_empty(),
+        "csrf token extracted from signup form should not be empty"
+    );
+}
+
+#[tokio::test]
 async fn signup_flow_creates_user_record() {
     if !common::ensure_flask_available() {
         eprintln!("skipping signup_flow_creates_user_record: flask not available");
@@ -30,6 +114,7 @@ async fn signup_flow_creates_user_record() {
 
     let data_dir = TempDir::new().expect("temp data dir");
     env::set_var("HOST_DATA_DIR", data_dir.path());
+    common::configure_python_env(data_dir.path());
 
     bridge::initialize_python().expect("python init");
 

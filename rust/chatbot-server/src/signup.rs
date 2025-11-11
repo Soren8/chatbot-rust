@@ -1,15 +1,51 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::OnceLock};
 
 use axum::{
     body::{self, Body},
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::bridge;
+use chatbot_core::{bridge, config};
+use minijinja::{context, AutoEscape, Environment};
 use serde_urlencoded::from_bytes;
-use tracing::error;
+use tracing::{error, warn};
 
+use crate::home::SECURITY_CSP;
 use crate::user_store::{normalise_username, CreateOutcome, UserStore, UserStoreError};
+
+pub async fn handle_signup_get(
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let cookie_header = request
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_owned());
+
+    let bootstrap = bridge::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to bootstrap signup context via python bridge");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "bridge error".to_string(),
+        )
+    })?;
+
+    let config = config::app_config();
+    let sri = config.cdn_sri.clone();
+
+    let csrf_token = bootstrap.csrf_token;
+    let set_cookie = bootstrap.set_cookie;
+
+    let html = render_signup_template(&csrf_token, &sri).map_err(|err| {
+        error!(?err, "failed to render signup template");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "template error".to_string(),
+        )
+    })?;
+
+    build_signup_response(html, set_cookie)
+}
 
 pub async fn handle_signup_post(
     request: Request<Body>,
@@ -106,4 +142,74 @@ fn map_store_error(err: UserStoreError) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "Unable to create user".to_string(),
     )
+}
+
+fn render_signup_template(
+    csrf_token: &str,
+    sri: &HashMap<String, String>,
+) -> Result<String, minijinja::Error> {
+    let env = template_env();
+    let template = env.get_template("signup.html")?;
+    template.render(context! {
+        csrf_token => csrf_token,
+        sri => sri,
+    })
+}
+
+fn build_signup_response(
+    body: String,
+    set_cookie: Option<String>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )
+        .header("Content-Security-Policy", SECURITY_CSP)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Referrer-Policy", "no-referrer")
+        .header("X-Frame-Options", "DENY");
+
+    if let Some(cookie) = set_cookie {
+        match HeaderValue::from_str(&cookie) {
+            Ok(value) => {
+                builder = builder.header(header::SET_COOKIE, value);
+            }
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "discarding invalid Set-Cookie header from python bridge"
+                );
+            }
+        }
+    }
+
+    builder.body(Body::from(body)).map_err(|err| {
+        error!(?err, "failed to build signup response");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response build error".to_string(),
+        )
+    })
+}
+
+fn template_env() -> &'static Environment<'static> {
+    static ENV: OnceLock<Environment<'static>> = OnceLock::new();
+    ENV.get_or_init(|| {
+        let mut env = Environment::new();
+        env.set_auto_escape_callback(|name| {
+            if name.ends_with(".html") {
+                AutoEscape::Html
+            } else {
+                AutoEscape::None
+            }
+        });
+        env.add_template(
+            "signup.html",
+            include_str!("../../../app/templates/signup.html"),
+        )
+        .expect("signup.html template");
+        env
+    })
 }

@@ -53,7 +53,7 @@
 - [x] Fix slow tests
 - [ ] Port remaining proxied routes to native Rust handlers
     - [x] `/`
-    - [ ] `/signup`
+    - [x] `/signup`
     - [ ] `/login`
     - [ ] `/api/tts*`
 - [ ] Move chat preparation/finalization off the Python bridge
