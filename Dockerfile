@@ -62,6 +62,7 @@ WORKDIR /build/rust
 RUN cargo fetch
 
 COPY rust /build/rust
+COPY app/templates /build/app/templates
 RUN if [ "${RUST_BUILD_PROFILE}" = "debug" ]; then \
         cargo build -p chatbot-server; \
     else \
