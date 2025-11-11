@@ -60,6 +60,7 @@ This document outlines the high-level architecture and planned enhancements for 
   - [ ] Consider switching to Sled for lightweight data storage concurrency
     - Ensure the old data format can still be imported/exported
     - Automatically import old data if it exists AND sled data doesn't
+  - [ ] Enhance test concurrency
 
 - **Error Handling & Logging**
   - [ ] Standardize on JSON error responses with proper HTTP status codes rather than plain text.
