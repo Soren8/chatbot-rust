@@ -20,8 +20,6 @@ services:
       - ./temp/cargo-registry:/root/.cargo/registry
       - ./temp/cargo-git:/root/.cargo/git
       - ./temp/target-cache:/app/target
-      - ./:/app
-
     environment:
       # Core app/env settings (values come from host env or .env consumed by Compose)
       SECRET_KEY: ${SECRET_KEY}
@@ -47,8 +45,9 @@ services:
     command: >-
       bash -lc '
         set -uo pipefail
-        mkdir -p /app/test-logs
-        LOG_FILE=/app/test-logs/tests-$(date +%Y%m%d-%H%M%S).log
+        LOG_DIR=/var/log/chatbot-tests
+        mkdir -p "$${LOG_DIR}"
+        LOG_FILE="$${LOG_DIR}/tests-$(date +%Y%m%d-%H%M%S).log"
         exec > >(tee "$${LOG_FILE}") 2>&1
         echo "[tests] writing logs to $${LOG_FILE}"
         cargo test --manifest-path /app/Cargo.toml --workspace -- --nocapture
@@ -58,8 +57,8 @@ services:
       HOST_DATA_DIR: /app/data
       RUST_LOG: info
     volumes:
-      - ./temp/test-logs:/app/test-logs
+      - ./:/app
+      - ./temp/test-logs:/var/log/chatbot-tests
       - ./temp/cargo-registry:/root/.cargo/registry
       - ./temp/cargo-git:/root/.cargo/git
       - ./temp/target-cache:/app/target
-      - ./:/app
