@@ -12,3 +12,4 @@ provider-test.yml
 temp/
 rust/target/
 .cargo/
+.docker/
