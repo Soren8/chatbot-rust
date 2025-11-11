@@ -1,6 +1,6 @@
 # Chatbot Rust
 
-This repository hosts a containerized Rust-based chatbot web UI for pluggable LLM and TTS APIs. The project exposes an Axum-based HTTP server, manages chat history and sessions encrypted securely on disk. See design-privacy.md for details on storage privacy.
+This repository hosts a containerized Rust-based chatbot web application with a clean, responsive Bootstrap frontend. It runs a high-performance Axum-based HTTP server, supports pluggable local or remote LLM and TTS APIs, and manages chat history and sessions encrypted securely on disk. See design-privacy.md for details on storage privacy.
 
 It started off as a simple single-threaded Flask app to test out vibe coding, but has been refactored into concurrent Rust with test coverage and security hardening as tools have improved.
 
