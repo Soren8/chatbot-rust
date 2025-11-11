@@ -9,7 +9,7 @@ use chatbot_core::{
     config,
 };
 use minijinja::{context, AutoEscape, Environment};
-use once_cell::sync::OnceLock;
+use std::sync::OnceLock;
 use serde::Serialize;
 use tracing::{error, warn};
 
@@ -138,9 +138,12 @@ fn template_env() -> &'static Environment<'static> {
     static ENV: OnceLock<Environment<'static>> = OnceLock::new();
     ENV.get_or_init(|| {
         let mut env = Environment::new();
-        env.set_auto_escape_callback(|name| match name {
-            Some(name) if name.ends_with(".html") => AutoEscape::Html,
-            _ => AutoEscape::None,
+        env.set_auto_escape_callback(|name| {
+            if name.ends_with(".html") {
+                AutoEscape::Html
+            } else {
+                AutoEscape::None
+            }
         });
         env.add_template(
             "chat.html",

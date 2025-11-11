@@ -262,6 +262,7 @@ dependencies = [
  "chatbot-core",
  "chatbot-test-support",
  "futures-util",
+ "minijinja",
  "once_cell",
  "pbkdf2",
  "pyo3",
@@ -942,6 +943,16 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
+]
+
+[[package]]
+name = "minijinja"
+version = "1.0.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3287d827e6da221ea11aa173c66b82ab69db27a1b177e8439f730b478bf33a7b"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
