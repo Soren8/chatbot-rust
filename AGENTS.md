@@ -2,11 +2,8 @@
 
 ## Build & Run Commands
 
-- Run Rust integration tests: `docker compose run --rm tests cargo test --manifest-path rust/Cargo.toml --test <name>`
-- Start app (dev): `flask run` or `python -m app`
+- Run Rust integration tests: `docker compose run --rm tests cargo test --manifest-path rust/Cargo.toml`
 - Run in Docker: `docker compose up --build`
-- Run single test: `python chat_logic_test.py` or `python provider-test.py --provider [provider_name] --prompt "Your test prompt"`
-- Run tests in Docker: `docker compose up --build --exit-code-from tests tests` (reuses the app image with a test target)
 - Do not attempt to build, run, or test outside of the docker environment.
 
 ## Code Style Guidelines
