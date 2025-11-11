@@ -17,6 +17,11 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - ./temp/cargo-registry:/root/.cargo/registry
+      - ./temp/cargo-git:/root/.cargo/git
+      - ./temp/target-cache:/app/target
+      - ./:/app
+
     environment:
       # Core app/env settings (values come from host env or .env consumed by Compose)
       SECRET_KEY: ${SECRET_KEY}
