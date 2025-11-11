@@ -36,6 +36,7 @@ from app.routes import (
     ensure_full_history_loaded,
     save_user_chat_history,
     save_user_system_prompt,
+    _get_csrf_token,
     get_sets as flask_get_sets,
     create_set as flask_create_set,
     delete_set as flask_delete_set,
@@ -193,6 +194,28 @@ def render_home(cookie_header: Optional[str] = None):
         app.session_interface.save_session(app, session, response)
 
         return _response_to_triplet(response)
+
+
+def prepare_home_context(cookie_header: Optional[str] = None):
+    """Ensure a Flask session exists and return metadata needed by Rust."""
+
+    app = _get_app()
+
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context("/", method="GET", headers=headers or None):
+        session_id = _get_session_id()
+        username = session.get("username")
+        csrf_token = _get_csrf_token()
+
+        response = make_response("")
+        app.session_interface.save_session(app, session, response)
+
+        set_cookie = response.headers.get("Set-Cookie")
+
+        return session_id, username, csrf_token, set_cookie
 
 
 def logout_user(cookie_header: Optional[str] = None):

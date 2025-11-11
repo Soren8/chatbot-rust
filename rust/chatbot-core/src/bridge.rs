@@ -19,6 +19,14 @@ pub struct SessionContext {
     pub encryption_key: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct HomeBootstrap {
+    pub session_id: String,
+    pub username: Option<String>,
+    pub csrf_token: String,
+    pub set_cookie: Option<String>,
+}
+
 /// Initializes the embedded Python interpreter and imports core application modules.
 #[allow(deprecated)]
 pub fn initialize_python() -> PyResult<()> {
@@ -189,6 +197,26 @@ pub fn render_home(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
             status,
             headers: header_items,
             body: body_bytes,
+        })
+    })
+}
+
+pub fn prepare_home_context(cookie_header: Option<&str>) -> PyResult<HomeBootstrap> {
+    Python::attach(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let result = bridge.call_method("prepare_home_context", (cookie_header,), None)?;
+        let (session_id, username, csrf_token, set_cookie): (
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = result.extract()?;
+
+        Ok(HomeBootstrap {
+            session_id,
+            username,
+            csrf_token,
+            set_cookie,
         })
     })
 }

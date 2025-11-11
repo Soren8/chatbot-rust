@@ -207,6 +207,15 @@ impl UserStore {
         Ok(())
     }
 
+    pub(crate) fn user_tier(&self, username: &str) -> Result<String, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let users = self.load_users()?;
+        Ok(users
+            .get(&normalised)
+            .map(|record| record.tier.clone())
+            .unwrap_or_else(|| DEFAULT_TIER.to_string()))
+    }
+
     #[allow(dead_code)]
     pub(crate) fn data_dir(&self) -> &PathBuf {
         &self.base_dir

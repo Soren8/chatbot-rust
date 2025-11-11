@@ -32,6 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 tokio-stream = "0.1"
 async-stream = "0.3"
 futures-util = "0.3"
+minijinja = { version = "1.0", features = ["builtins"] }
 
 [dev-dependencies]
 tempfile = "3"

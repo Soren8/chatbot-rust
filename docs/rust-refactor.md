@@ -52,7 +52,7 @@
 - [x] Document deployment changes, make note of `temp/` scratchpad usage, and update Docker setup
 - [x] Fix slow tests
 - [ ] Port remaining proxied routes to native Rust handlers
-    - [ ] `/`
+    - [x] `/`
     - [ ] `/signup`
     - [ ] `/login`
     - [ ] `/api/tts*`
