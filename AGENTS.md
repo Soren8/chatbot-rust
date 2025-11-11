@@ -31,9 +31,7 @@
 ## Refactoring guidelines
 - First write integration tests (in the new target language) that covers existing functionality if needed.
 - Make sure those tests pass.
-- Create a new stub for the refactored code any make modifications necessary to call it.
-- Ensure the appropriate tests now fails.
-- Replace the stub with new refactored code that covers all old functionality.
+- Write new refactored code that covers all old functionality.
 - Ensure the appropriate tests now pass.
 - Delete the legacy code.
 
