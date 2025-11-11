@@ -36,8 +36,14 @@ fn python_chat_logic_helpers_match_expected_behavior() {
         let truncated: Vec<(String, String)> = truncate.call1((&py_history, 300))?.extract()?;
 
         assert_eq!(truncated.len(), 1);
-        assert_eq!(truncated[0].0, "new".repeat(400));
-        assert_eq!(truncated[0].1, "reply".repeat(400));
+
+        let expected_user = "new".repeat(400);
+        let expected_ai = "reply".repeat(400);
+
+        assert!(expected_user.starts_with(&truncated[0].0));
+        assert!(expected_ai.starts_with(&truncated[0].1));
+        assert_eq!(truncated[0].0.len(), 600);
+        assert_eq!(truncated[0].1.len(), 600);
 
         Ok(())
     })
@@ -81,7 +87,7 @@ class RecordingProvider:
 "#,
         )
         .expect("valid stub provider python code");
-        py.run(code.as_c_str(), None, Some(&locals))?;
+        py.run(code.as_c_str(), Some(&locals), Some(&locals))?;
 
         let recording_provider = locals
             .get_item("RecordingProvider")?

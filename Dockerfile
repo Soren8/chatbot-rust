@@ -45,15 +45,17 @@ ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 
 WORKDIR /build
-RUN mkdir -p rust/chatbot-core/src rust/chatbot-server/src
-# Provide placeholder targets so `cargo fetch` recognizes the workspace members.
+RUN mkdir -p rust/chatbot-core/src rust/chatbot-server/src rust/chatbot-test-support/src
+# Provide placeholder targets so `cargo fetch` recognises all workspace members.
 RUN printf 'fn main() {}\n' > rust/chatbot-server/src/main.rs \
     && printf '' > rust/chatbot-server/src/lib.rs \
-    && touch rust/chatbot-core/src/lib.rs
+    && touch rust/chatbot-core/src/lib.rs \
+    && touch rust/chatbot-test-support/src/lib.rs
 
 COPY rust/Cargo.toml rust/Cargo.lock ./rust/
 COPY rust/chatbot-core/Cargo.toml ./rust/chatbot-core/
 COPY rust/chatbot-server/Cargo.toml ./rust/chatbot-server/
+COPY rust/chatbot-test-support/Cargo.toml ./rust/chatbot-test-support/
 
 WORKDIR /build/rust
 RUN cargo fetch

@@ -1,0 +1,11 @@
+[package]
+name = "chatbot-test-support"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chatbot-core = { path = "../chatbot-core" }
+pyo3 = { version = "0.26", features = ["auto-initialize"] }
+regex = "1"
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "std"] }

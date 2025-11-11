@@ -33,7 +33,7 @@ struct DeleteMessageRequest {
     #[serde(default)]
     user_message: Option<String>,
     #[serde(default)]
-    _ai_message: Option<String>,
+    ai_message: Option<String>,
     #[serde(default)]
     set_name: Option<String>,
 }
@@ -260,6 +260,7 @@ pub async fn handle_delete_message(
 
     let user_message = payload.user_message.unwrap_or_default();
     let trimmed = user_message.trim();
+    let ai_trimmed = payload.ai_message.unwrap_or_default().trim().to_owned();
     if trimmed.is_empty() {
         return build_json_response(
             StatusCode::BAD_REQUEST,
@@ -293,10 +294,27 @@ pub async fn handle_delete_message(
         )
     })?;
 
-    if let Some(index) = history
-        .iter()
-        .position(|(user, _assistant)| user.trim() == trimmed)
-    {
+    let mut match_index = None;
+
+    if !ai_trimmed.is_empty() {
+        for (index, (user, assistant)) in history.iter().enumerate() {
+            if user.trim() == trimmed && assistant.trim() == ai_trimmed {
+                match_index = Some(index);
+                break;
+            }
+        }
+    }
+
+    if match_index.is_none() {
+        for (index, (user, _assistant)) in history.iter().enumerate() {
+            if user.trim() == trimmed {
+                match_index = Some(index);
+                break;
+            }
+        }
+    }
+
+    if let Some(index) = match_index {
         history.remove(index);
 
         bridge::session_set_history(&session.session_id, &history).map_err(|err| {

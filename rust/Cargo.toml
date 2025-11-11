@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "chatbot-core",
-    "chatbot-server"
+    "chatbot-server",
+    "chatbot-test-support"
 ]
 resolver = "2"
 
