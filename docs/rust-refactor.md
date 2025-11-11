@@ -46,10 +46,15 @@
     - [x] OpenAI — Rust implementation with streaming & test-chunk support
     - [x] Ollama — Rust implementation with streaming fallback to test chunks and parity coverage
   - [x] Migrate data persistence layer (`data/`) to Rust using write locks
-- [ ] Align logging and error handling with Rust tooling
+- [x] Align logging and error handling with Rust tooling
 - [x] Update testing strategy (unit, integration, provider tests) for Rust codebase
   - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors
-- [ ] Document deployment changes, make note of `temp/` scratchpad usage, and update Docker setup
+- [x] Document deployment changes, make note of `temp/` scratchpad usage, and update Docker setup
+- [ ] Fix slow tests
+- [ ] Replace Python bridge session/CSRF handling with Rust implementation
+- [ ] Port remaining proxied routes (`/`, `/signup`, `/login`, `/api/tts*`) to native Rust handlers
+- [ ] Move chat preparation/finalization off the Python bridge (`chat_prepare`, `chat_finalize`, `regenerate_prepare`)
+- [ ] Reimplement TTS generation in Rust to eliminate `app/tts.py` dependency
 - [ ] Remove remaining Python components
 
 ### Route-by-Route Migration Loop
