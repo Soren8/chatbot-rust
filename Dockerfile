@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+RUN /root/.cargo/bin/rustup component add rustfmt
 ENV PATH="/root/.cargo/bin:$PATH"
 ENV PYO3_PYTHON="/opt/venv/bin/python"
 
