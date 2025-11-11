@@ -11,7 +11,6 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
-    bridge,
     persistence::{DataPersistence, EncryptionMode},
     user_store::UserStore,
 };
@@ -43,17 +42,11 @@ fn update_session_cookie<B>(cookie_slot: &mut Option<String>, response: &Respons
 
 #[tokio::test]
 async fn regenerate_endpoint_streams_response() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping regenerate_endpoint_streams_response: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -214,19 +207,11 @@ async fn regenerate_endpoint_streams_response() {
 
 #[tokio::test]
 async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
-    if !common::ensure_flask_available() {
-        eprintln!(
-            "skipping regenerate_stream_replaces_history_entry_for_logged_in_user: flask not available"
-        );
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     const USERNAME: &str = "regen_user";
     const PASSWORD: &str = "R3genSecret!";

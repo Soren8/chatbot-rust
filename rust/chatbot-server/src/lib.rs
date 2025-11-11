@@ -1,4 +1,3 @@
-use anyhow::Error;
 use axum::{
     body::Body,
     http::{HeaderName, HeaderValue, StatusCode},
@@ -6,7 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chatbot_core::bridge::{self, PythonResponse};
+use chatbot_core::session::PythonResponse;
 use std::{env, path::PathBuf};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
@@ -33,8 +32,6 @@ pub async fn run() -> anyhow::Result<()> {
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(tracing_subscriber::fmt::layer())
         .init();
-
-    bridge::initialize_python().map_err(Error::from)?;
 
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
@@ -66,9 +63,6 @@ pub fn build_router(static_root: PathBuf) -> Router {
         )
         .route("/logout", get(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))
-        // Handle the primary `/tts` endpoint via the bridge so we can
-        // enforce CSRF and response semantics in Rust while still
-        // delegating audio generation to Python for now.
         .route("/tts", post(tts::handle_tts))
         .route("/api/tts", post(tts::handle_api_tts))
         .route("/api/tts/stream", post(tts::handle_api_tts_stream))

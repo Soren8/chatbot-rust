@@ -1,72 +1,51 @@
 use std::{
     env,
-    fs::File,
-    io::Write,
-    path::PathBuf,
     sync::{Mutex, OnceLock},
 };
 
 use axum::{
     body::{to_bytes, Body},
-    http::{header, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::{bridge, session};
+use chatbot_core::{
+    session,
+    user_store::{CreateOutcome, UserStore},
+};
 use chatbot_server::{build_router, resolve_static_root};
-use serde_json::json;
-use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-
-struct LoginEnv {
-    data_dir: tempfile::TempDir,
-}
 
 fn test_mutex() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn ensure_env() -> PathBuf {
-    static ENV_STATE: OnceLock<LoginEnv> = OnceLock::new();
-
-    let env_state = ENV_STATE.get_or_init(|| {
-        common::ensure_pythonpath();
-        common::init_tracing();
-        env::set_var("SECRET_KEY", "test_secret_key");
-
-        let dir = TempDir::new().expect("temp data dir");
-        env::set_var("HOST_DATA_DIR", dir.path());
-        common::configure_python_env(dir.path());
-
-        LoginEnv { data_dir: dir }
-    });
-
-    env::set_var("HOST_DATA_DIR", env_state.data_dir.path());
-    env_state.data_dir.path().to_path_buf()
-}
-
 fn build_app() -> axum::Router {
-    ensure_env();
-    bridge::initialize_python().expect("python init");
     let static_root = resolve_static_root();
     build_router(static_root)
 }
 
+fn setup_workspace() -> common::TestWorkspace {
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    common::TestWorkspace::with_openai_provider()
+}
+
+fn seed_user(username: &str, password: &str) {
+    let mut store = UserStore::new().expect("initialise user store");
+    let hashed = hash(password, DEFAULT_COST).expect("hash password");
+    match store.create_user(username, &hashed) {
+        Ok(CreateOutcome::Created) | Ok(CreateOutcome::AlreadyExists) => {}
+        Err(err) => panic!("failed to create test user: {err}"),
+    }
+}
+
 #[tokio::test]
 async fn login_get_renders_form_with_security_headers() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping login_get_renders_form_with_security_headers: flask not available");
-        return;
-    }
     common::init_tracing();
-
     let _guard = test_mutex().lock().unwrap();
-
-    let data_dir = ensure_env();
-    common::configure_python_env(data_dir.as_path());
-    std::fs::write(data_dir.join("users.json"), "{}").expect("reset users");
+    let _workspace = setup_workspace();
 
     let app = build_app();
 
@@ -131,30 +110,12 @@ async fn login_get_renders_form_with_security_headers() {
 
 #[tokio::test]
 async fn login_flow_sets_session_cookie() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping login_flow_sets_session_cookie: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
-
-    let data_dir = ensure_env();
-    common::configure_python_env(data_dir.as_path());
-
-    let password = "Sup3rS3cret!";
+    let _workspace = setup_workspace();
     let username = "testuser";
-    let hashed = hash(password, DEFAULT_COST).expect("hash password");
-
-    let users_json = data_dir.join("users.json");
-    let mut file = File::create(&users_json).expect("users.json create");
-    let payload = json!({
-        username: {
-            "password": hashed,
-            "tier": "free"
-        }
-    });
-    file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
-        .expect("write users");
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
 
     let app = build_app();
 
@@ -192,7 +153,7 @@ async fn login_flow_sets_session_cookie() {
     let post_response = app
         .oneshot(
             Request::builder()
-                .method("POST")
+                .method(Method::POST)
                 .uri("/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, common::extract_cookie(&set_cookie))
@@ -220,16 +181,9 @@ async fn login_flow_sets_session_cookie() {
 
 #[tokio::test]
 async fn csrf_token_is_stable_for_existing_session() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping csrf_token_is_stable_for_existing_session: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
-
-    let data_dir = ensure_env();
-    common::configure_python_env(data_dir.as_path());
-    std::fs::write(data_dir.join("users.json"), "{}").expect("reset users");
+    let _workspace = setup_workspace();
 
     let app = build_app();
 
@@ -288,30 +242,12 @@ async fn csrf_token_is_stable_for_existing_session() {
 
 #[tokio::test]
 async fn session_context_reflects_logged_in_user() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping session_context_reflects_logged_in_user: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
-
-    let data_dir = ensure_env();
-    common::configure_python_env(data_dir.as_path());
-
-    let password = "Sup3rS3cret!";
+    let _workspace = setup_workspace();
     let username = "sessionuser";
-    let hashed = hash(password, DEFAULT_COST).expect("hash password");
-
-    let users_json = data_dir.join("users.json");
-    let mut file = File::create(&users_json).expect("users.json create");
-    let payload = json!({
-        username: {
-            "password": hashed,
-            "tier": "free"
-        }
-    });
-    file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
-        .expect("write users");
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
 
     let app = build_app();
 
@@ -350,7 +286,7 @@ async fn session_context_reflects_logged_in_user() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
+                .method(Method::POST)
                 .uri("/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, common::extract_cookie(&initial_cookie))
@@ -392,30 +328,12 @@ async fn session_context_reflects_logged_in_user() {
 
 #[tokio::test]
 async fn logout_clears_session_username() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping logout_clears_session_username: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
-
-    let data_dir = ensure_env();
-    common::configure_python_env(data_dir.as_path());
-
-    let password = "Sup3rS3cret!";
+    let _workspace = setup_workspace();
     let username = "logoutuser";
-    let hashed = hash(password, DEFAULT_COST).expect("hash password");
-
-    let users_json = data_dir.join("users.json");
-    let mut file = File::create(&users_json).expect("users.json create");
-    let payload = json!({
-        username: {
-            "password": hashed,
-            "tier": "free"
-        }
-    });
-    file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
-        .expect("write users");
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
 
     let app = build_app();
 
@@ -454,7 +372,7 @@ async fn logout_clears_session_username() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
+                .method(Method::POST)
                 .uri("/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, common::extract_cookie(&initial_cookie))

@@ -1,46 +1,35 @@
-use std::{env, fs::File, io::Write};
+use std::env;
 
 use axum::{
     body::{to_bytes, Body},
-    http::{header, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
-use serde_json::json;
-use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
 
+fn setup_workspace() -> common::TestWorkspace {
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    common::TestWorkspace::with_openai_provider()
+}
+
 #[tokio::test]
 async fn logout_flow_clears_session_cookie() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping logout_flow_clears_session_cookie: flask not available");
-        return;
-    }
     common::init_tracing();
-    env::set_var("SECRET_KEY", "test_secret_key");
-
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
+    let _workspace = setup_workspace();
 
     let password = "Sup3rS3cret!";
     let username = "testuser";
     let hashed = hash(password, DEFAULT_COST).expect("hash password");
 
-    let users_json = data_dir.path().join("users.json");
-    let mut file = File::create(&users_json).expect("users.json create");
-    let payload = json!({
-        username: {
-            "password": hashed,
-            "tier": "free"
-        }
-    });
-    file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
-        .expect("write users");
-
-    bridge::initialize_python().expect("python init");
+    let mut store = chatbot_core::user_store::UserStore::new().expect("user store");
+    match store.create_user(username, &hashed) {
+        Ok(chatbot_core::user_store::CreateOutcome::Created)
+        | Ok(chatbot_core::user_store::CreateOutcome::AlreadyExists) => {}
+        Err(err) => panic!("failed to seed user: {err}"),
+    }
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -80,7 +69,7 @@ async fn logout_flow_clears_session_cookie() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
+                .method(Method::POST)
                 .uri("/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, common::extract_cookie(&get_set_cookie))

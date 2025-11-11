@@ -37,6 +37,4 @@ minijinja = { version = "1.0", features = ["builtins", "json"] }
 [dev-dependencies]
 tempfile = "3"
 tracing-appender = "0.2"
-pyo3 = { version = "0.26", features = ["auto-initialize"] }
-scopeguard = "1"
 chatbot-test-support = { path = "../chatbot-test-support" }

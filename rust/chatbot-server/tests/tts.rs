@@ -8,11 +8,9 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
-use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
 use futures_util::stream;
 use once_cell::sync::Lazy;
-use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::{json, Value};
 use tokio::{
@@ -29,24 +27,8 @@ static META_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
 
 static TTS_TEST_MUTEX: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
 
-fn set_python_tts_base(url: &str) {
-    Python::attach(|py| {
-        let code = format!(
-            "from app.config import Config\nConfig.TTS_BASE_URL = {url:?}\n",
-            url = url
-        );
-        let code = std::ffi::CString::new(code).expect("c string");
-        py.run(code.as_c_str(), None, None)
-            .expect("configure TTS base");
-    });
-}
-
 #[tokio::test]
 async fn tts_returns_wav_audio() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping tts_returns_wav_audio: flask not available");
-        return;
-    }
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
@@ -79,9 +61,6 @@ async fn tts_returns_wav_audio() {
     env::set_var("TTS_PORT", addr.port().to_string());
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
-    set_python_tts_base(&format!("http://{}", addr));
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -169,10 +148,6 @@ async fn tts_returns_wav_audio() {
 
 #[tokio::test]
 async fn tts_returns_error_when_service_fails() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping tts_returns_error_when_service_fails: flask not available");
-        return;
-    }
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
@@ -194,9 +169,6 @@ async fn tts_returns_error_when_service_fails() {
     env::set_var("TTS_PORT", addr.port().to_string());
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
-    set_python_tts_base(&format!("http://{}", addr));
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -271,10 +243,6 @@ async fn tts_returns_error_when_service_fails() {
 
 #[tokio::test]
 async fn tts_rejects_empty_text() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping tts_rejects_empty_text: flask not available");
-        return;
-    }
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
@@ -282,9 +250,6 @@ async fn tts_rejects_empty_text() {
     env::set_var("TTS_PORT", "65535");
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
-    set_python_tts_base("http://127.0.0.1:65535");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -347,10 +312,6 @@ async fn tts_rejects_empty_text() {
 
 #[tokio::test]
 async fn api_tts_generates_wav_audio() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping api_tts_generates_wav_audio: flask not available");
-        return;
-    }
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
@@ -383,8 +344,6 @@ async fn api_tts_generates_wav_audio() {
     env::set_var("TTS_PORT", addr.port().to_string());
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -433,10 +392,6 @@ async fn api_tts_generates_wav_audio() {
 
 #[tokio::test]
 async fn api_tts_returns_backend_error() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping api_tts_returns_backend_error: flask not available");
-        return;
-    }
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
@@ -458,8 +413,6 @@ async fn api_tts_returns_backend_error() {
     env::set_var("TTS_PORT", addr.port().to_string());
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -493,10 +446,6 @@ async fn api_tts_returns_backend_error() {
 
 #[tokio::test]
 async fn api_tts_stream_proxies_audio() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping api_tts_stream_proxies_audio: flask not available");
-        return;
-    }
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
@@ -543,8 +492,6 @@ async fn api_tts_stream_proxies_audio() {
     env::set_var("TTS_PORT", addr.port().to_string());
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -599,10 +546,6 @@ async fn api_tts_stream_proxies_audio() {
 
 #[tokio::test]
 async fn api_tts_rejects_empty_text() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping api_tts_rejects_empty_text: flask not available");
-        return;
-    }
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
@@ -610,8 +553,6 @@ async fn api_tts_rejects_empty_text() {
     env::set_var("TTS_PORT", "65535");
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);

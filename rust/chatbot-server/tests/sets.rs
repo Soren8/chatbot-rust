@@ -5,7 +5,6 @@ use axum::{
     http::{header, Method, Request, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -20,10 +19,6 @@ static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[tokio::test]
 async fn set_management_flow() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping set_management_flow: flask not available");
-        return;
-    }
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
@@ -45,8 +40,6 @@ async fn set_management_flow() {
         .expect("serialize users"),
     )
     .expect("write users.json");
-
-    bridge::initialize_python().expect("python init");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);

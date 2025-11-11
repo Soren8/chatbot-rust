@@ -4,7 +4,6 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Method, Request, StatusCode},
 };
-use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -34,15 +33,8 @@ default_llm: "ollama-test"
 
 #[tokio::test]
 async fn chat_endpoint_streams_via_rust_ollama() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping chat_endpoint_streams_via_rust_ollama: flask not available");
-        return;
-    }
-
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_config(OLLAMA_CONFIG);
-
-    bridge::initialize_python().expect("python bridge init");
 
     env::set_var(
         "CHATBOT_TEST_OLLAMA_CHUNKS",

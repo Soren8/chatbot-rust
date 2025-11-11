@@ -8,12 +8,10 @@ use std::{
 
 use axum::{
     body::{to_bytes, Body},
-    http::{header, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
 };
-use chatbot_core::bridge;
 use chatbot_server::{build_router, resolve_static_root};
 use serde_json::Value;
-use tempfile::TempDir;
 use tower::ServiceExt;
 use urlencoding::encode;
 
@@ -24,31 +22,23 @@ fn test_mutex() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn setup_workspace() -> common::TestWorkspace {
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    common::TestWorkspace::with_openai_provider()
+}
+
+fn build_app() -> axum::Router {
+    let static_root = resolve_static_root();
+    build_router(static_root)
+}
+
 #[tokio::test]
 async fn signup_get_renders_form_with_security_headers() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping signup_get_renders_form_with_security_headers: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
 
-    env::set_var("SECRET_KEY", "test_secret_key");
-
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
-    common::configure_python_env(data_dir.path());
-
-    let users_file = data_dir.path().join("users.json");
-    if !users_file.exists() {
-        std::fs::create_dir_all(data_dir.path()).expect("create host data dir");
-        std::fs::write(&users_file, "{}").expect("initialize users.json");
-    }
-
-    bridge::initialize_python().expect("python init");
-
-    let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let app = build_app();
 
     let response = app
         .clone()
@@ -111,23 +101,11 @@ async fn signup_get_renders_form_with_security_headers() {
 
 #[tokio::test]
 async fn signup_flow_creates_user_record() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping signup_flow_creates_user_record: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
 
-    env::set_var("SECRET_KEY", "test_secret_key");
-
-    let data_dir = TempDir::new().expect("temp data dir");
-    env::set_var("HOST_DATA_DIR", data_dir.path());
-    common::configure_python_env(data_dir.path());
-
-    bridge::initialize_python().expect("python init");
-
-    let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let app = build_app();
 
     let get_response = app
         .clone()
@@ -170,7 +148,7 @@ async fn signup_flow_creates_user_record() {
     let post_response = app
         .oneshot(
             Request::builder()
-                .method("POST")
+                .method(Method::POST)
                 .uri("/signup")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, common::extract_cookie(&set_cookie))
@@ -188,7 +166,7 @@ async fn signup_flow_creates_user_record() {
         .expect("redirect location");
     assert_eq!(location, "/login");
 
-    let users_file = data_dir.path().join("users.json");
+    let users_file = workspace.path().join("users.json");
     let users_reader = BufReader::new(File::open(&users_file).expect("users.json exists"));
     let users: Value = serde_json::from_reader(users_reader).expect("valid users json");
     assert!(users.get(&username).is_some(), "signup persisted user");

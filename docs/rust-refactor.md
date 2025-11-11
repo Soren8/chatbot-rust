@@ -62,7 +62,9 @@
     - [x] `regenerate_prepare`
 - [x] Reimplement TTS generation in Rust to eliminate `app/tts.py` dependency
 - [x] Replace Python bridge session/CSRF handling with Rust implementation
-- [ ] Remove remaining Python components
+- [x] Remove remaining Python components
+
+With the bridge retired, the legacy Flask modules, pytest suite, and related Docker/Python tooling have been removed. Static asset hardening checks now live in Rust integration tests (`rust/chatbot-server/tests/static_assets.rs`), and CI/Test Compose runs `cargo test` for coverage.
 
 ### Route-by-Route Migration Loop
 For each Flask endpoint (grouped where it makes sense):

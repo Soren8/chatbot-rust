@@ -24,8 +24,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-600}
       CHATBOT_BIND_ADDR: ${CHATBOT_BIND_ADDR:-0.0.0.0:80}
-      PYTHONPATH: /app
-      
+      CHATBOT_STATIC_ROOT: /app/static
+
       # TTS + provider config envs that .config.yml may reference
       TTS_HOST: ${TTS_HOST:-localhost}
       TTS_PORT: ${TTS_PORT:-5000}
@@ -46,27 +46,12 @@ services:
         LOG_FILE=/app/test-logs/tests-$(date +%Y%m%d-%H%M%S).log
         exec > >(tee "$${LOG_FILE}") 2>&1
         echo "[tests] writing logs to $${LOG_FILE}"
-        PY_STATUS=0
-        RUST_STATUS=0
-        /opt/venv/bin/python -m pytest -q
-        PY_STATUS=$?
         cargo test --manifest-path /app/rust/Cargo.toml --workspace -- --nocapture
-        RUST_STATUS=$?
-        echo "[tests] pytest exit code: $${PY_STATUS}"
-        echo "[tests] cargo exit code: $${RUST_STATUS}"
-        EXIT_CODE=$$PY_STATUS
-        if [ $$RUST_STATUS -ne 0 ]; then
-          EXIT_CODE=$$RUST_STATUS
-        fi
-        exit $$EXIT_CODE
       '
     environment:
       SECRET_KEY: test_secret_key_for_security_tests
       HOST_DATA_DIR: /app/data
-      PYTEST_ADDOPTS: -o cache_dir=/tmp/pytest_cache
-      PYTHONPATH: /app
       RUST_LOG: info
-      PYTHONUNBUFFERED: "1"
     volumes:
       - ./temp/test-logs:/app/test-logs
       - ./temp/cargo-registry:/root/.cargo/registry

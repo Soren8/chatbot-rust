@@ -4,7 +4,7 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
-use chatbot_core::{bridge, session};
+use chatbot_core::session;
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -19,16 +19,10 @@ static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[tokio::test]
 async fn reset_chat_clears_history() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping reset_chat_clears_history: flask not available");
-        return;
-    }
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);

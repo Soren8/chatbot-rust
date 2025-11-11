@@ -10,14 +10,13 @@ use axum::{
 };
 use bytes::Bytes;
 use chatbot_core::{
-    bridge,
     chat::{self, strip_think_tags, ChatMessageRole},
     config::get_provider_config,
     session::{self, RegenerateRequestData, SessionContext},
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::chat_utils::ChatLockGuard;
 use crate::providers::ollama::OllamaProvider;
@@ -47,7 +46,6 @@ pub async fn handle_regenerate(
     }
 
     let (parts, body) = request.into_parts();
-    let uri = parts.uri;
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 2 * 1024 * 1024).await.map_err(|err| {
@@ -112,36 +110,15 @@ pub async fn handle_regenerate(
 
     let provider_type = provider_config.provider_type.to_lowercase();
     if provider_type != "openai" && provider_type != "ollama" {
-        info!(
+        error!(
             model = %selected_model,
             provider_type = %provider_type,
-            "deferring regenerate request to python bridge"
+            "unsupported provider type for regenerate"
         );
-        let header_pairs = headers
-            .iter()
-            .filter_map(|(name, value)| {
-                value
-                    .to_str()
-                    .ok()
-                    .map(|v| (name.to_string(), v.to_owned()))
-            })
-            .collect::<Vec<_>>();
-        let py_response = bridge::proxy_request(
-            "POST",
-            "/regenerate",
-            uri.query(),
-            &header_pairs,
-            cookie_header.as_deref(),
-            Some(&body_bytes),
-        )
-        .map_err(|err| {
-            error!(?err, "python bridge error for /regenerate fallback");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
-            )
-        })?;
-        return crate::build_response(py_response);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "unsupported provider type".to_string(),
+        ));
     }
 
     let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {

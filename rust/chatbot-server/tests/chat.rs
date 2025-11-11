@@ -11,13 +11,11 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
-    bridge,
     persistence::{DataPersistence, EncryptionMode},
     user_store::UserStore,
 };
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
-use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::json;
 use tower::ServiceExt;
@@ -45,10 +43,6 @@ fn update_session_cookie<B>(cookie_slot: &mut Option<String>, response: &Respons
 
 #[tokio::test]
 async fn chat_endpoint_returns_stubbed_stream() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping chat_endpoint_returns_stubbed_stream: flask not available");
-        return;
-    }
     let _guard = test_mutex().lock().unwrap();
     // Initialize a tracing subscriber that captures logs into an in-memory
     // buffer so we can assert no internal server errors are logged during
@@ -79,8 +73,6 @@ async fn chat_endpoint_returns_stubbed_stream() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
 
-    bridge::initialize_python().expect("python bridge init");
-
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
         serde_json::to_string(&vec![
@@ -90,15 +82,6 @@ async fn chat_endpoint_returns_stubbed_stream() {
         ])
         .expect("chunk json"),
     );
-
-    // Redirect Python stderr to an in-memory buffer so we can assert no
-    // Python-side tracebacks or errors were written during the request.
-    Python::attach(|py| {
-        let io = py.import("io").expect("import io");
-        let sys = py.import("sys").expect("import sys");
-        let stringio = io.call_method0("StringIO").expect("StringIO");
-        sys.setattr("stderr", stringio).expect("redirect stderr");
-    });
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -139,23 +122,6 @@ async fn chat_endpoint_returns_stubbed_stream() {
         "set_name": "default",
         "model_name": "default",
     });
-
-    // As an additional guard, call the Python bridge proxy directly using the
-    // same cookie and body data the HTTP handler will use. This exercises the
-    // exact Python code path the running server uses and will raise a
-    // PyErr/NameError here if the bridge is broken, causing the test to
-    // fail.
-    let header_pairs: Vec<(String, String)> = vec![];
-    let body_bytes = serde_json::to_vec(&payload).expect("payload bytes");
-    chatbot_core::bridge::proxy_request(
-        "POST",
-        "/chat",
-        None,
-        &header_pairs,
-        Some(&common::extract_cookie(&set_cookie)),
-        Some(&body_bytes),
-    )
-    .expect("python bridge proxy_request should not raise");
 
     let chat_response = app
         .clone()
@@ -256,21 +222,6 @@ async fn chat_endpoint_returns_stubbed_stream() {
         error_count
     );
 
-    // Inspect Python stderr for tracebacks that would indicate bridge-side
-    // exceptions that may not appear in the HTTP body. Fail the test if any
-    // such Python errors were recorded.
-    Python::attach(|py| {
-        let sys = py.import("sys").expect("import sys");
-        let stderr = sys.getattr("stderr").expect("get stderr");
-        let contents = stderr.call_method0("getvalue").expect("getvalue");
-        let py_err_text: String = contents.extract().unwrap_or_default();
-        assert!(
-            !py_err_text.contains("Traceback"),
-            "python stderr contained traceback: {}",
-            py_err_text
-        );
-    });
-
     // Validate expected streamed chunks are present
     assert!(body_text.contains("Hello from test "));
     assert!(body_text.contains("<think>plan</think>"));
@@ -281,17 +232,11 @@ async fn chat_endpoint_returns_stubbed_stream() {
 
 #[tokio::test]
 async fn chat_stream_persists_history_for_logged_in_user() {
-    if !common::ensure_flask_available() {
-        eprintln!("skipping chat_stream_persists_history_for_logged_in_user: flask not available");
-        return;
-    }
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
-
-    bridge::initialize_python().expect("python bridge init");
 
     const USERNAME: &str = "persisted_user";
     const PASSWORD: &str = "S3cur3Pass!";

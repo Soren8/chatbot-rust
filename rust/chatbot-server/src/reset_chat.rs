@@ -65,14 +65,13 @@ pub async fn handle_reset_chat(
         return Err((StatusCode::BAD_REQUEST, "Invalid CSRF token".to_string()));
     }
 
-    let session_context =
-        session::session_context(cookie_header.as_deref()).map_err(|err| {
-            error!(?err, "failed to resolve session context for reset_chat");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
-        })?;
+    let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to resolve session context for reset_chat");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session error".to_string(),
+        )
+    })?;
 
     let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref()).map_err(
         |err| match err {
