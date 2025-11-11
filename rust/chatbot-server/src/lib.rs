@@ -1,9 +1,9 @@
 use anyhow::Error;
 use axum::{
-    body::{self, Body},
-    http::{header, HeaderName, HeaderValue, Method, Request, StatusCode},
+    body::Body,
+    http::{HeaderName, HeaderValue, StatusCode},
     response::Response,
-    routing::{any, get, post},
+    routing::{get, post},
     Router,
 };
 use chatbot_core::bridge::{self, PythonResponse};
@@ -71,8 +71,8 @@ pub fn build_router(static_root: PathBuf) -> Router {
         // enforce CSRF and response semantics in Rust while still
         // delegating audio generation to Python for now.
         .route("/tts", post(tts::handle_tts))
-        .route("/api/tts", any(proxy_request_handler))
-        .route("/api/tts/stream", any(proxy_request_handler))
+        .route("/api/tts", post(tts::handle_api_tts))
+        .route("/api/tts/stream", post(tts::handle_api_tts_stream))
         .route("/regenerate", post(regenerate::handle_regenerate))
         .route("/reset_chat", post(reset_chat::handle_reset_chat))
         .route("/get_sets", get(sets::handle_get_sets))
@@ -101,52 +101,6 @@ pub fn resolve_static_root() -> PathBuf {
 
 async fn favicon() -> StatusCode {
     StatusCode::NO_CONTENT
-}
-
-async fn proxy_request_handler(request: Request<Body>) -> Result<Response, (StatusCode, String)> {
-    let (parts, body) = request.into_parts();
-    let method = parts.method;
-    let uri = parts.uri;
-    let headers = parts.headers;
-
-    let body_bytes = read_body_bytes(method.clone(), body).await?;
-
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
-
-    let header_pairs = headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.to_string(), v.to_owned()))
-        })
-        .collect::<Vec<_>>();
-
-    match bridge::proxy_request(
-        method.as_str(),
-        uri.path(),
-        uri.query(),
-        &header_pairs,
-        cookie_header.as_deref(),
-        body_bytes.as_deref(),
-    ) {
-        Ok(py_response) => build_response(py_response),
-        Err(err) => {
-            error!(
-                ?err,
-                "Python bridge error while handling {path}",
-                path = uri.path()
-            );
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
-            ))
-        }
-    }
 }
 
 pub(crate) fn build_response(
@@ -203,22 +157,4 @@ pub(crate) fn build_response(
     }
 
     Ok(response)
-}
-
-async fn read_body_bytes(
-    method: Method,
-    body: Body,
-) -> Result<Option<Vec<u8>>, (StatusCode, String)> {
-    if method == Method::GET || method == Method::HEAD {
-        return Ok(None);
-    }
-
-    match body::to_bytes(body, 10 * 1024 * 1024).await {
-        Ok(bytes) if bytes.is_empty() => Ok(None),
-        Ok(bytes) => Ok(Some(bytes.to_vec())),
-        Err(err) => {
-            error!(?err, "failed to read request body");
-            Err((StatusCode::BAD_GATEWAY, "invalid request body".to_string()))
-        }
-    }
 }

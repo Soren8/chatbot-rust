@@ -55,7 +55,7 @@
     - [x] `/`
     - [x] `/signup`
     - [x] `/login`
-    - [ ] `/api/tts*`
+    - [x] `/api/tts*`
 - [ ] Move chat preparation/finalization off the Python bridge
     - [ ] `chat_prepare`
     - [ ] `chat_finalize`

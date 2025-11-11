@@ -1,11 +1,46 @@
+use std::time::Duration;
+
 use axum::{
     body::{self, Body},
     http::{header, Method, Request, Response, StatusCode},
 };
-use chatbot_core::bridge;
+use chatbot_core::{bridge, config};
+use once_cell::sync::Lazy;
+use regex::Regex;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tracing::{debug, error};
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
+const DEFAULT_VOICE_FILE: &str = "voices/default.wav";
+const SAMPLE_RATE_HZ: u32 = 22_050;
+const CHANNELS: u16 = 1;
+const BITS_PER_SAMPLE: u16 = 16;
+
+static THINK_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new("(?s)<think>.*?</think>").expect("valid think regex"));
+
+static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
+    Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("http client")
+});
+
+#[derive(Debug, Deserialize)]
+struct ApiTtsRequest {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    voice_file: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BackendRequest {
+    text: String,
+    voice_file: String,
+}
 
 pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
     if request.method() != Method::POST {
@@ -70,4 +105,253 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
 
     debug!("/tts request handled via Python bridge");
     crate::build_response(py_response)
+}
+
+pub async fn handle_api_tts(
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    if request.method() != Method::POST {
+        return Err((
+            StatusCode::METHOD_NOT_ALLOWED,
+            "Only POST allowed".to_string(),
+        ));
+    }
+
+    let (_, body) = request.into_parts();
+    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
+        error!(?err, "failed to read /api/tts body");
+        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+    })?;
+
+    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
+        error!(?err, "invalid JSON payload for /api/tts");
+        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+    })?;
+
+    let backend_request = match build_backend_request(payload) {
+        Ok(request) => request,
+        Err(message) => return json_error(StatusCode::BAD_REQUEST, &message),
+    };
+
+    let response = post_backend("/api/tts", &backend_request).await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.bytes().await.map_err(|err| {
+            error!(?err, "failed to read /api/tts backend error body");
+            (
+                StatusCode::BAD_GATEWAY,
+                "TTS backend response error".to_string(),
+            )
+        })?;
+        let message = extract_backend_error(status, &body);
+        return json_error(StatusCode::BAD_GATEWAY, &message);
+    }
+
+    let pcm_bytes = response.bytes().await.map_err(|err| {
+        error!(?err, "failed to read /api/tts backend body");
+        (
+            StatusCode::BAD_GATEWAY,
+            "TTS backend response error".to_string(),
+        )
+    })?;
+
+    let wav_bytes = pcm_to_wav(&pcm_bytes);
+
+    build_audio_response(wav_bytes)
+}
+
+pub async fn handle_api_tts_stream(
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    if request.method() != Method::POST {
+        return Err((
+            StatusCode::METHOD_NOT_ALLOWED,
+            "Only POST allowed".to_string(),
+        ));
+    }
+
+    let (_, body) = request.into_parts();
+    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
+        error!(?err, "failed to read /api/tts/stream body");
+        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+    })?;
+
+    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
+        error!(?err, "invalid JSON payload for /api/tts/stream");
+        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+    })?;
+
+    let backend_request = match build_backend_request(payload) {
+        Ok(request) => request,
+        Err(message) => return json_error(StatusCode::BAD_REQUEST, &message),
+    };
+
+    let response = post_backend("/api/tts/stream", &backend_request).await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.bytes().await.map_err(|err| {
+            error!(?err, "failed to read /api/tts/stream backend error body");
+            (
+                StatusCode::BAD_GATEWAY,
+                "TTS backend response error".to_string(),
+            )
+        })?;
+        let message = extract_backend_error(status, &body);
+        return json_error(StatusCode::BAD_GATEWAY, &message);
+    }
+
+    let stream = response.bytes_stream();
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "inline; filename=tts-stream.wav",
+        )
+        .body(Body::from_stream(stream))
+        .map_err(|err| {
+            error!(?err, "failed to build streaming TTS response");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
+        })
+}
+
+fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, String> {
+    let raw_text = payload.text.unwrap_or_default().trim().to_owned();
+
+    let cleaned = sanitize_text(&raw_text);
+
+    if cleaned.is_empty() {
+        return Err("No text provided".to_string());
+    }
+
+    let voice_file = payload
+        .voice_file
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        })
+        .unwrap_or_else(|| DEFAULT_VOICE_FILE.to_string());
+
+    Ok(BackendRequest {
+        text: cleaned,
+        voice_file,
+    })
+}
+
+fn sanitize_text(input: &str) -> String {
+    THINK_REGEX.replace_all(input, "").trim().to_string()
+}
+
+async fn post_backend(
+    path: &str,
+    payload: &BackendRequest,
+) -> Result<reqwest::Response, (StatusCode, String)> {
+    let config = config::app_config();
+    let base = config.tts_base_url.trim_end_matches('/');
+    let url = format!("{base}{path}");
+
+    HTTP_CLIENT
+        .post(url)
+        .json(payload)
+        .send()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to reach TTS backend");
+            (
+                StatusCode::BAD_GATEWAY,
+                "TTS backend unreachable".to_string(),
+            )
+        })
+}
+
+fn pcm_to_wav(pcm: &[u8]) -> Vec<u8> {
+    let data_len = pcm.len() as u32;
+    let chunk_size = 36 + data_len;
+    let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
+    let byte_rate = SAMPLE_RATE_HZ * block_align as u32;
+
+    let mut buffer = Vec::with_capacity(44 + pcm.len());
+    buffer.extend_from_slice(b"RIFF");
+    buffer.extend_from_slice(&chunk_size.to_le_bytes());
+    buffer.extend_from_slice(b"WAVE");
+    buffer.extend_from_slice(b"fmt ");
+    buffer.extend_from_slice(&16u32.to_le_bytes());
+    buffer.extend_from_slice(&1u16.to_le_bytes());
+    buffer.extend_from_slice(&CHANNELS.to_le_bytes());
+    buffer.extend_from_slice(&SAMPLE_RATE_HZ.to_le_bytes());
+    buffer.extend_from_slice(&byte_rate.to_le_bytes());
+    buffer.extend_from_slice(&block_align.to_le_bytes());
+    buffer.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
+    buffer.extend_from_slice(b"data");
+    buffer.extend_from_slice(&data_len.to_le_bytes());
+    buffer.extend_from_slice(pcm);
+    buffer
+}
+
+fn build_audio_response(bytes: Vec<u8>) -> Result<Response<Body>, (StatusCode, String)> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(header::CONTENT_DISPOSITION, "inline; filename=tts.wav")
+        .body(Body::from(bytes))
+        .map_err(|err| {
+            error!(?err, "failed to build audio response");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
+        })
+}
+
+fn json_error(status: StatusCode, message: &str) -> Result<Response<Body>, (StatusCode, String)> {
+    let payload = json!({ "error": message });
+    let body = serde_json::to_vec(&payload).map_err(|err| {
+        error!(?err, "failed to serialize error payload");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response serialization failed".to_string(),
+        )
+    })?;
+
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .map_err(|err| {
+            error!(?err, "failed to build error response");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
+        })
+}
+
+fn extract_backend_error(status: reqwest::StatusCode, body: &[u8]) -> String {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
+            if !error.trim().is_empty() {
+                return error.trim().to_string();
+            }
+        }
+    }
+
+    if let Ok(text) = std::str::from_utf8(body) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    status
+        .canonical_reason()
+        .unwrap_or("TTS backend error")
+        .to_string()
 }
