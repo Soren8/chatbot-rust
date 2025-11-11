@@ -41,7 +41,6 @@
 - Do not moralize about the user's language or tone.
 - Preserve the `.cargo/` directory; do not delete it because it caches Rust build artifacts used by other agents.
 - Always validate provider configurations before committing
-- Test chat functionality with provider-test.py before making significant changes
 - Use logging instead of print statements for debugging
 - Skip running `python3 -m compileall`; it’s slow here and the user will run real functional tests.
 - Treat the task as complete only after all required tests pass and your changes are committed to git.
