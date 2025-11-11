@@ -50,7 +50,7 @@
 - [x] Update testing strategy (unit, integration, provider tests) for Rust codebase
   - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors
 - [x] Document deployment changes, make note of `temp/` scratchpad usage, and update Docker setup
-- [ ] Fix slow tests
+- [x] Fix slow tests
 - [ ] Replace Python bridge session/CSRF handling with Rust implementation
 - [ ] Port remaining proxied routes (`/`, `/signup`, `/login`, `/api/tts*`) to native Rust handlers
 - [ ] Move chat preparation/finalization off the Python bridge (`chat_prepare`, `chat_finalize`, `regenerate_prepare`)

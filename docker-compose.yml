@@ -69,3 +69,6 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./temp/test-logs:/app/test-logs
+      - ./temp/cargo-registry:/root/.cargo/registry
+      - ./temp/cargo-git:/root/.cargo/git
+      - ./temp/target-cache:/app/rust/target
