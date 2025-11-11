@@ -1,0 +1,7 @@
+llms:
+  - provider_name: "default"
+    type: "openai"
+    model_name: "gpt-test"
+    base_url: "https://api.openai.com/v1"
+    api_key: "test-key"
+    context_size: 4096

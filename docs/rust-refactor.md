@@ -45,7 +45,7 @@
   - Providers status:
     - [x] OpenAI — Rust implementation with streaming & test-chunk support
     - [x] Ollama — Rust implementation with streaming fallback to test chunks and parity coverage
-- [ ] Migrate data persistence layer (`data/`) to Rust using write locks
+  - [x] Migrate data persistence layer (`data/`) to Rust using write locks
 - [ ] Align logging and error handling with Rust tooling
 - [x] Update testing strategy (unit, integration, provider tests) for Rust codebase
   - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors

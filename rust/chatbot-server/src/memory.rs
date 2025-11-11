@@ -1,10 +1,11 @@
 use axum::{
-    body,
-    body::Body,
+    body::{self, Body},
     http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::bridge;
+use chatbot_core::persistence::{DataPersistence, EncryptionMode, PersistenceError};
 use serde::Deserialize;
+use serde_json::json;
 use tracing::error;
 
 #[derive(Deserialize, Default)]
@@ -14,7 +15,7 @@ struct UpdateMemoryRequest {
     #[serde(default)]
     set_name: Option<String>,
     #[serde(default)]
-    encrypted: Option<bool>,
+    _encrypted: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -24,7 +25,7 @@ struct UpdateSystemPromptRequest {
     #[serde(default)]
     set_name: Option<String>,
     #[serde(default)]
-    encrypted: Option<bool>,
+    _encrypted: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -32,7 +33,7 @@ struct DeleteMessageRequest {
     #[serde(default)]
     user_message: Option<String>,
     #[serde(default)]
-    ai_message: Option<String>,
+    _ai_message: Option<String>,
     #[serde(default)]
     set_name: Option<String>,
 }
@@ -58,27 +59,81 @@ pub async fn handle_update_memory(
         })?
     };
 
+    let memory_text = payload.memory.unwrap_or_default();
+    if memory_text.trim().is_empty() {
+        return build_json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "Memory content is required"}),
+        );
+    }
+
+    let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
+        .map_err(persistence_error_to_http)?;
+
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers)?;
 
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
-    let py_response = bridge::update_memory(
-        cookie_header.as_deref(),
-        csrf_token,
-        payload.memory.as_deref(),
-        payload.set_name.as_deref(),
-        payload.encrypted,
-    )
-    .map_err(|err| {
-        error!(?err, "bridge error while updating memory");
+    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+
+    let session = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to obtain session context for update_memory");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "bridge error".to_string(),
         )
     })?;
 
-    crate::build_response(py_response)
+    if let Some(username) = session.username.as_deref() {
+        let key = session
+            .encryption_key
+            .as_ref()
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+
+        persistence
+            .store_memory(
+                username,
+                &set_name,
+                &memory_text,
+                EncryptionMode::Fernet(key.as_slice()),
+            )
+            .map_err(persistence_error_to_http)?;
+
+        bridge::session_set_memory(&session.session_id, &memory_text).map_err(|err| {
+            error!(?err, "failed to update python session memory");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "bridge error".to_string(),
+            )
+        })?;
+
+        build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "message": "Memory saved to disk",
+                "storage": "disk"
+            }),
+        )
+    } else {
+        bridge::session_set_memory(&session.session_id, &memory_text).map_err(|err| {
+            error!(?err, "failed to cache guest memory in python session");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "bridge error".to_string(),
+            )
+        })?;
+
+        build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "message": "Memory saved to session memory",
+                "storage": "session"
+            }),
+        )
+    }
 }
 
 pub async fn handle_update_system_prompt(
@@ -102,27 +157,84 @@ pub async fn handle_update_system_prompt(
         })?
     };
 
+    let system_prompt = payload.system_prompt.unwrap_or_default();
+    if system_prompt.trim().is_empty() {
+        return build_json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "System prompt is required"}),
+        );
+    }
+
+    let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
+        .map_err(persistence_error_to_http)?;
+
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers)?;
 
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
-    let py_response = bridge::update_system_prompt(
-        cookie_header.as_deref(),
-        csrf_token,
-        payload.system_prompt.as_deref(),
-        payload.set_name.as_deref(),
-        payload.encrypted,
-    )
-    .map_err(|err| {
-        error!(?err, "bridge error while updating system prompt");
+    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+
+    let session = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+        error!(
+            ?err,
+            "failed to obtain session context for update_system_prompt"
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "bridge error".to_string(),
         )
     })?;
 
-    crate::build_response(py_response)
+    if let Some(username) = session.username.as_deref() {
+        let key = session
+            .encryption_key
+            .as_ref()
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+
+        persistence
+            .store_system_prompt(
+                username,
+                &set_name,
+                &system_prompt,
+                EncryptionMode::Fernet(key.as_slice()),
+            )
+            .map_err(persistence_error_to_http)?;
+
+        bridge::session_set_system_prompt(&session.session_id, &system_prompt).map_err(|err| {
+            error!(?err, "failed to update python session system prompt");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "bridge error".to_string(),
+            )
+        })?;
+
+        build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "message": "System prompt saved to disk",
+                "storage": "disk"
+            }),
+        )
+    } else {
+        bridge::session_set_system_prompt(&session.session_id, &system_prompt).map_err(|err| {
+            error!(?err, "failed to cache guest system prompt");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "bridge error".to_string(),
+            )
+        })?;
+
+        build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "message": "System prompt saved to session memory",
+                "storage": "session"
+            }),
+        )
+    }
 }
 
 pub async fn handle_delete_message(
@@ -146,27 +258,78 @@ pub async fn handle_delete_message(
         })?
     };
 
+    let user_message = payload.user_message.unwrap_or_default();
+    let trimmed = user_message.trim();
+    if trimmed.is_empty() {
+        return build_json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"status": "error", "error": "user_message is required"}),
+        );
+    }
+
+    let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
+        .map_err(persistence_error_to_http)?;
+
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers)?;
 
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
-    let py_response = bridge::delete_message(
-        cookie_header.as_deref(),
-        csrf_token,
-        payload.user_message.as_deref(),
-        payload.ai_message.as_deref(),
-        payload.set_name.as_deref(),
-    )
-    .map_err(|err| {
-        error!(?err, "bridge error while deleting chat message");
+    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+
+    let session = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to obtain session context for delete_message");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "bridge error".to_string(),
         )
     })?;
 
-    crate::build_response(py_response)
+    let mut history = bridge::session_get_history(&session.session_id).map_err(|err| {
+        error!(?err, "failed to read python session history");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "bridge error".to_string(),
+        )
+    })?;
+
+    if let Some(index) = history
+        .iter()
+        .position(|(user, _assistant)| user.trim() == trimmed)
+    {
+        history.remove(index);
+
+        bridge::session_set_history(&session.session_id, &history).map_err(|err| {
+            error!(?err, "failed to update python session history");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "bridge error".to_string(),
+            )
+        })?;
+
+        if let Some(username) = session.username.as_deref() {
+            let key = session
+                .encryption_key
+                .as_ref()
+                .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+
+            persistence
+                .store_history(
+                    username,
+                    &set_name,
+                    &history,
+                    EncryptionMode::Fernet(key.as_slice()),
+                )
+                .map_err(persistence_error_to_http)?;
+        }
+
+        build_json_response(StatusCode::OK, json!({"status": "success"}))
+    } else {
+        build_json_response(
+            StatusCode::NOT_FOUND,
+            json!({"status": "error", "error": "message pair not found"}),
+        )
+    }
 }
 
 fn ensure_post(request: &Request<Body>) -> Result<(), (StatusCode, String)> {
@@ -210,4 +373,50 @@ fn validate_csrf(
     }
 
     Ok(())
+}
+
+fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
+    match err {
+        PersistenceError::InvalidUsername => {
+            (StatusCode::BAD_REQUEST, "invalid session".to_string())
+        }
+        PersistenceError::InvalidSetName => {
+            (StatusCode::BAD_REQUEST, "invalid set name".to_string())
+        }
+        PersistenceError::MissingEncryptionKey => {
+            (StatusCode::UNAUTHORIZED, "relogin required".to_string())
+        }
+        other => {
+            error!(?other, "persistence failure");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "persistence error".to_string(),
+            )
+        }
+    }
+}
+
+fn build_json_response(
+    status: StatusCode,
+    payload: serde_json::Value,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let body = serde_json::to_vec(&payload).map_err(|err| {
+        error!(?err, "failed to serialize JSON response");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response serialization failed".to_string(),
+        )
+    })?;
+
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .map_err(|err| {
+            error!(?err, "failed to build HTTP response");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
+        })
 }

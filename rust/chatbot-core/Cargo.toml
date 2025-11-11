@@ -18,6 +18,8 @@ regex = "1"
 serde_yaml = "0.9"
 dotenvy = "0.15"
 tracing = "0.1"
+thiserror = "1.0"
+fernet = { version = "0.2", default-features = false, features = ["openssl"] }
 
 [dev-dependencies]
 tempfile = "3"

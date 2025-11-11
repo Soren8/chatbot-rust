@@ -2,7 +2,7 @@ use crate::config::ProviderConfig;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyList};
 use pyo3::Py;
 use serde::Deserialize;
 
@@ -10,6 +10,13 @@ pub struct PythonResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionContext {
+    pub session_id: String,
+    pub username: Option<String>,
+    pub encryption_key: Option<Vec<u8>>,
 }
 
 /// Initializes the embedded Python interpreter and imports core application modules.
@@ -120,6 +127,53 @@ pub fn logout_user(cookie_header: Option<&str>) -> PyResult<PythonResponse> {
             headers: header_items,
             body: body_bytes,
         })
+    })
+}
+
+pub fn session_context(cookie_header: Option<&str>) -> PyResult<SessionContext> {
+    Python::attach(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let result = bridge.call_method("get_session_context", (cookie_header,), None)?;
+        let (session_id, username, encryption_key): (String, Option<String>, Option<Vec<u8>>) =
+            result.extract()?;
+        Ok(SessionContext {
+            session_id,
+            username,
+            encryption_key,
+        })
+    })
+}
+
+pub fn session_set_memory(session_id: &str, memory: &str) -> PyResult<()> {
+    Python::attach(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        bridge.call_method("set_session_memory", (session_id, memory), None)?;
+        Ok(())
+    })
+}
+
+pub fn session_set_system_prompt(session_id: &str, prompt: &str) -> PyResult<()> {
+    Python::attach(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        bridge.call_method("set_session_system_prompt", (session_id, prompt), None)?;
+        Ok(())
+    })
+}
+
+pub fn session_set_history(session_id: &str, history: &[(String, String)]) -> PyResult<()> {
+    Python::attach(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let py_history = PyList::new(py, history.iter().map(|(u, a)| (u.as_str(), a.as_str())))?;
+        bridge.call_method("set_session_history", (session_id, py_history), None)?;
+        Ok(())
+    })
+}
+
+pub fn session_get_history(session_id: &str) -> PyResult<Vec<(String, String)>> {
+    Python::attach(|py| {
+        let bridge = py.import("app.rust_bridge")?;
+        let result = bridge.call_method("get_session_history", (session_id,), None)?;
+        result.extract()
     })
 }
 

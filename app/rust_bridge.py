@@ -213,6 +213,60 @@ def logout_user(cookie_header: Optional[str] = None):
         return _response_to_triplet(response)
 
 
+def get_session_context(cookie_header: Optional[str] = None):
+    """Return a tuple of (session_id, username, encryption_key_bytes)."""
+
+    app = _get_app()
+    headers = {}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with app.test_request_context("/", method="GET", headers=headers or None):
+        session_id = _get_session_id()
+        username = session.get("username")
+        encryption_key = None
+        if username:
+            encryption_key = _get_user_encryption_key(username)
+        # Ensure the session store entry exists for downstream updates.
+        entry = sessions[session_id]
+        entry.setdefault("last_used", time.time())
+        return session_id, username, encryption_key
+
+
+def set_session_memory(session_id: str, memory: str):
+    store = sessions[session_id]
+    store["memory"] = memory
+    store["initialized"] = True
+    store["last_used"] = time.time()
+
+
+def set_session_system_prompt(session_id: str, prompt: str):
+    store = sessions[session_id]
+    store["system_prompt"] = prompt
+    store.setdefault("system_prompt_saved", prompt)
+    store["initialized"] = True
+    store["last_used"] = time.time()
+
+
+def set_session_history(session_id: str, history: Iterable[Iterable[str]]):
+    store = sessions[session_id]
+    formatted = []
+    for item in history:
+        try:
+            user, assistant = item
+        except Exception:
+            continue
+        formatted.append((user, assistant))
+    store["history"] = formatted
+    store["last_used"] = time.time()
+
+
+def get_session_history(session_id: str):
+    store = sessions.get(session_id, {})
+    history = store.get("history", [])
+    return list(history)
+
+
 def handle_request(
     method: str,
     path: str,
