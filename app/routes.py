@@ -21,7 +21,6 @@ from flask import (
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
-from app.tts import register_tts_routes
 from app.user_manager import (
     validate_user, create_user, load_user_memory, save_user_memory,
     load_user_system_prompt, save_user_system_prompt, get_user_sets,
@@ -36,7 +35,6 @@ from app.config import Config
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("main", __name__)
-_tts_routes_registered = False
 
 # Basic in-memory sessions if not using flask.session
 sessions = defaultdict(
@@ -118,12 +116,8 @@ def start_password_cleanup_thread():
     _encryption_cleanup_thread_started = True
 
 def register_routes(app):
-    global _tts_routes_registered
     # Store the config in the blueprint
     bp.config = app.config
-    if not _tts_routes_registered:
-        register_tts_routes(bp)
-        _tts_routes_registered = True
     app.register_blueprint(bp)
     # Start background password cleanup
     start_password_cleanup_thread()

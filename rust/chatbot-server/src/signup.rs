@@ -6,7 +6,7 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
-    bridge, config,
+    config, session,
     user_store::{normalise_username, CreateOutcome, UserStore, UserStoreError},
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -24,11 +24,11 @@ pub async fn handle_signup_get(
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
 
-    let bootstrap = bridge::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to bootstrap signup context via python bridge");
+    let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to bootstrap signup context");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 
@@ -82,11 +82,11 @@ pub async fn handle_signup_post(
     }
 
     let csrf_valid =
-        bridge::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token via python bridge");
+        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
+            error!(?err, "failed to validate CSRF token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
+                "session error".to_string(),
             )
         })?;
 
@@ -160,7 +160,7 @@ fn render_signup_template(
 
 fn build_signup_response(
     body: String,
-    set_cookie: Option<String>,
+    set_cookie: String,
 ) -> Result<Response<Body>, (StatusCode, String)> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
@@ -173,17 +173,15 @@ fn build_signup_response(
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");
 
-    if let Some(cookie) = set_cookie {
-        match HeaderValue::from_str(&cookie) {
-            Ok(value) => {
-                builder = builder.header(header::SET_COOKIE, value);
-            }
-            Err(err) => {
-                warn!(
-                    ?err,
-                    "discarding invalid Set-Cookie header from python bridge"
-                );
-            }
+    match HeaderValue::from_str(&set_cookie) {
+        Ok(value) => {
+            builder = builder.header(header::SET_COOKIE, value);
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                "discarding invalid Set-Cookie header from session manager"
+            );
         }
     }
 

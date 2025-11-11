@@ -68,11 +68,11 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         csrf_token.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing CSRF token".to_string()))?;
 
     let csrf_valid =
-        bridge::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
+        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
+                "session error".to_string(),
             )
         })?;
 
@@ -145,11 +145,11 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         return crate::build_response(py_response);
     }
 
-    let session_context = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+    let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to resolve session context");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 

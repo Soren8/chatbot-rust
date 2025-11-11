@@ -11,7 +11,7 @@ use axum::{
     http::{header, Request, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::bridge;
+use chatbot_core::{bridge, session};
 use chatbot_server::{build_router, resolve_static_root};
 use serde_json::json;
 use tempfile::TempDir;
@@ -216,4 +216,294 @@ async fn login_flow_sets_session_cookie() {
         .and_then(|value| value.to_str().ok())
         .expect("set-cookie on login");
     assert!(set_cookie.starts_with("session="));
+}
+
+#[tokio::test]
+async fn csrf_token_is_stable_for_existing_session() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping csrf_token_is_stable_for_existing_session: flask not available");
+        return;
+    }
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    let data_dir = ensure_env();
+    common::configure_python_env(data_dir.as_path());
+    std::fs::write(data_dir.join("users.json"), "{}").expect("reset users");
+
+    let app = build_app();
+
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("first GET /login");
+
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let set_cookie = first_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie present")
+        .to_owned();
+    let first_body = to_bytes(first_response.into_body(), 64 * 1024)
+        .await
+        .expect("read first body");
+    let first_csrf =
+        common::extract_csrf_token(std::str::from_utf8(&first_body).expect("utf8 body"))
+            .expect("csrf token in first response");
+
+    let cookie_header = common::extract_cookie(&set_cookie);
+
+    let second_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .header(header::COOKIE, &cookie_header)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("second GET /login");
+
+    assert_eq!(second_response.status(), StatusCode::OK);
+    let second_body = to_bytes(second_response.into_body(), 64 * 1024)
+        .await
+        .expect("read second body");
+    let second_csrf =
+        common::extract_csrf_token(std::str::from_utf8(&second_body).expect("utf8 body"))
+            .expect("csrf token in second response");
+
+    assert_eq!(
+        first_csrf, second_csrf,
+        "csrf token should remain stable within a session"
+    );
+}
+
+#[tokio::test]
+async fn session_context_reflects_logged_in_user() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping session_context_reflects_logged_in_user: flask not available");
+        return;
+    }
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    let data_dir = ensure_env();
+    common::configure_python_env(data_dir.as_path());
+
+    let password = "Sup3rS3cret!";
+    let username = "sessionuser";
+    let hashed = hash(password, DEFAULT_COST).expect("hash password");
+
+    let users_json = data_dir.join("users.json");
+    let mut file = File::create(&users_json).expect("users.json create");
+    let payload = json!({
+        username: {
+            "password": hashed,
+            "tier": "free"
+        }
+    });
+    file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
+        .expect("write users");
+
+    let app = build_app();
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /login");
+    assert_eq!(get_response.status(), StatusCode::OK);
+
+    let initial_cookie = get_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie present")
+        .to_owned();
+    let body = to_bytes(get_response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
+        .expect("csrf token present");
+
+    let payload = format!(
+        "username={}&password={}&csrf_token={}",
+        urlencoding::encode(username),
+        urlencoding::encode(password),
+        urlencoding::encode(&csrf)
+    );
+
+    let post_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, common::extract_cookie(&initial_cookie))
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+
+    assert_eq!(post_response.status(), StatusCode::FOUND);
+    let login_cookie = post_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("set-cookie after login")
+        .to_owned();
+
+    let cookie_header = common::extract_cookie(&login_cookie);
+    let session =
+        session::session_context(Some(&cookie_header)).expect("session context after login");
+
+    assert_eq!(
+        session.username.as_deref(),
+        Some(username),
+        "username should be stored in session context"
+    );
+    assert_eq!(
+        session.session_id, username,
+        "session id should track the username after login"
+    );
+    let encryption_key = session
+        .encryption_key
+        .expect("encryption key present after login");
+    assert!(
+        !encryption_key.is_empty(),
+        "encryption key bytes should not be empty"
+    );
+}
+
+#[tokio::test]
+async fn logout_clears_session_username() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping logout_clears_session_username: flask not available");
+        return;
+    }
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    let data_dir = ensure_env();
+    common::configure_python_env(data_dir.as_path());
+
+    let password = "Sup3rS3cret!";
+    let username = "logoutuser";
+    let hashed = hash(password, DEFAULT_COST).expect("hash password");
+
+    let users_json = data_dir.join("users.json");
+    let mut file = File::create(&users_json).expect("users.json create");
+    let payload = json!({
+        username: {
+            "password": hashed,
+            "tier": "free"
+        }
+    });
+    file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
+        .expect("write users");
+
+    let app = build_app();
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /login");
+    assert_eq!(get_response.status(), StatusCode::OK);
+
+    let initial_cookie = get_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie present")
+        .to_owned();
+    let body = to_bytes(get_response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
+        .expect("csrf token present");
+
+    let payload = format!(
+        "username={}&password={}&csrf_token={}",
+        urlencoding::encode(username),
+        urlencoding::encode(password),
+        urlencoding::encode(&csrf)
+    );
+
+    let post_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, common::extract_cookie(&initial_cookie))
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+    assert_eq!(post_response.status(), StatusCode::FOUND);
+    let login_cookie = post_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("login set-cookie")
+        .to_owned();
+    let cookie_header = common::extract_cookie(&login_cookie);
+
+    let logout_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/logout")
+                .header(header::COOKIE, &cookie_header)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /logout");
+
+    assert_eq!(logout_response.status(), StatusCode::FOUND);
+    let logout_cookie = logout_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("logout set-cookie");
+    assert!(
+        logout_cookie.contains("session="),
+        "logout should include session cookie"
+    );
+
+    let logout_cookie_header = common::extract_cookie(logout_cookie);
+    let session_after_logout = session::session_context(Some(&logout_cookie_header))
+        .expect("session context after logout");
+
+    assert!(
+        session_after_logout.username.is_none(),
+        "username should be cleared after logout"
+    );
+    assert!(
+        session_after_logout.encryption_key.is_none(),
+        "encryption key should be cleared after logout"
+    );
 }

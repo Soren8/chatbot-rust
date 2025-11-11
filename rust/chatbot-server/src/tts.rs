@@ -4,7 +4,7 @@ use axum::{
     body::{self, Body},
     http::{header, Method, Request, Response, StatusCode},
 };
-use chatbot_core::{bridge, config};
+use chatbot_core::{config, session};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::Client;
@@ -61,11 +61,11 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing CSRF token".to_string()))?;
 
     let csrf_valid =
-        bridge::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
+        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token for /tts");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
+                "session error".to_string(),
             )
         })?;
 
@@ -76,35 +76,73 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+        .map(|value| value.to_ascii_lowercase());
+
+    let is_json = content_type
+        .as_deref()
+        .map(|value| value.contains("application/json"))
+        .unwrap_or(false);
+
+    if !is_json {
+        return json_error(StatusCode::BAD_REQUEST, "JSON body required");
+    }
 
     let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
         error!(?err, "failed to read TTS request body");
         (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
     })?;
 
-    let body_slice = if body_bytes.is_empty() {
-        None
-    } else {
-        Some(body_bytes.as_ref())
+    if body_bytes.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "No text provided");
+    }
+
+    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
+        error!(?err, "invalid JSON payload for /tts");
+        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+    })?;
+
+    let raw_text = match payload.text {
+        Some(text) if !text.is_empty() => text,
+        _ => return json_error(StatusCode::BAD_REQUEST, "No text provided"),
     };
 
-    let py_response = bridge::generate_tts(
-        cookie_header.as_deref(),
-        csrf_token,
-        content_type.as_deref(),
-        body_slice,
-    )
-    .map_err(|err| {
-        error!(?err, "python bridge error generating TTS audio");
+    let cleaned = sanitize_text(&raw_text);
+    if cleaned.is_empty() {
+        debug!("sanitized /tts payload resulted in empty text");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed");
+    }
+
+    let backend_request = BackendRequest {
+        text: cleaned,
+        voice_file: DEFAULT_VOICE_FILE.to_string(),
+    };
+
+    let response = match post_backend("/api/tts", &backend_request).await {
+        Ok(response) => response,
+        Err((status, message)) => {
+            error!(?status, ?message, "failed to reach TTS backend for /tts");
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed");
+        }
+    };
+
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|err| {
+        error!(?err, "failed to read /tts backend response body");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "response read error".to_string(),
         )
     })?;
 
-    debug!("/tts request handled via Python bridge");
-    crate::build_response(py_response)
+    if !status.is_success() {
+        let message = extract_backend_error(status, &bytes);
+        error!(?status, message, "TTS backend returned error for /tts");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed");
+    }
+
+    let wav_bytes = pcm_to_wav(&bytes);
+
+    build_audio_response(wav_bytes)
 }
 
 pub async fn handle_api_tts(

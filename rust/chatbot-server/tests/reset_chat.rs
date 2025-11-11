@@ -4,10 +4,9 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
-use chatbot_core::bridge;
+use chatbot_core::{bridge, session};
 use chatbot_server::{build_router, resolve_static_root};
 use once_cell::sync::Lazy;
-use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::json;
 use tower::ServiceExt;
@@ -66,31 +65,14 @@ async fn reset_chat_clears_history() {
 
     let cookie_value = common::extract_cookie(&set_cookie);
 
-    Python::attach(|py| {
-        let locals = pyo3::types::PyDict::new(py);
-        locals
-            .set_item("cookie", &cookie_value)
-            .expect("set cookie");
-        locals
-            .set_item("history", vec![("user", "assistant"), ("second", "reply")])
-            .expect("set history");
+    let session_context =
+        session::session_context(Some(&cookie_value)).expect("session context for seeding");
 
-        let code = std::ffi::CString::new(
-            r#"
-from app.rust_bridge import _get_app
-from app.routes import sessions, _get_session_id
-
-app = _get_app()
-with app.test_request_context('/', headers={'Cookie': cookie}):
-    session_id = _get_session_id()
-    sessions[session_id]['history'] = history
-"#,
-        )
-        .expect("c string");
-
-        py.run(code.as_c_str(), None, Some(&locals))
-            .expect("seed history");
-    });
+    let seeded_history = vec![
+        ("user".to_string(), "assistant".to_string()),
+        ("second".to_string(), "reply".to_string()),
+    ];
+    session::update_session_history(&session_context.session_id, &seeded_history);
 
     let reset_payload = json!({"set_name": "default"});
 
@@ -113,34 +95,9 @@ with app.test_request_context('/', headers={'Cookie': cookie}):
 
     assert_eq!(reset_response.status(), StatusCode::OK);
 
-    Python::attach(|py| {
-        let locals = pyo3::types::PyDict::new(py);
-        locals
-            .set_item("cookie", &cookie_value)
-            .expect("set cookie");
-
-        let code = std::ffi::CString::new(
-            r#"
-from app.rust_bridge import _get_app
-from app.routes import sessions, _get_session_id
-
-app = _get_app()
-with app.test_request_context('/', headers={'Cookie': cookie}):
-    session_id = _get_session_id()
-    history_len = len(sessions[session_id]['history'])
-"#,
-        )
-        .expect("c string");
-
-        py.run(code.as_c_str(), None, Some(&locals))
-            .expect("inspect history");
-
-        let history_len: usize = locals
-            .get_item("history_len")
-            .expect("history_len lookup")
-            .expect("history_len missing")
-            .extract()
-            .expect("extract history_len");
-        assert_eq!(history_len, 0, "history not cleared by reset_chat");
-    });
+    let history_after = session::session_history(&session_context.session_id);
+    assert!(
+        history_after.is_empty(),
+        "history not cleared by reset_chat"
+    );
 }

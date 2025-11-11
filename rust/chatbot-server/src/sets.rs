@@ -2,8 +2,10 @@ use axum::{
     body::{self, Body},
     http::{header, Method, Request, Response, StatusCode},
 };
-use chatbot_core::bridge;
-use chatbot_core::persistence::{DataPersistence, EncryptionMode, PersistenceError};
+use chatbot_core::{
+    persistence::{DataPersistence, EncryptionMode, PersistenceError},
+    session,
+};
 use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
@@ -26,11 +28,11 @@ pub async fn handle_get_sets(
 
     let cookie_header = extract_cookie(request.headers());
 
-    let session = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for get_sets");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 
@@ -93,11 +95,11 @@ pub async fn handle_create_set(
     let csrf_token = extract_csrf(&headers)?;
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
-    let session = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for create_set");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 
@@ -172,11 +174,11 @@ pub async fn handle_delete_set(
     let csrf_token = extract_csrf(&headers)?;
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
-    let session = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for delete_set");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 
@@ -252,11 +254,11 @@ pub async fn handle_load_set(
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
 
-    let session = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for load_set");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 
@@ -302,32 +304,9 @@ pub async fn handle_load_set(
         Err(err) => return Err(persistence_error_to_http(err)),
     };
 
-    bridge::session_set_memory(&session.session_id, &loaded.memory).map_err(|err| {
-        error!(?err, "failed to update session memory during load_set");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
-        )
-    })?;
-    bridge::session_set_system_prompt(&session.session_id, &loaded.system_prompt).map_err(
-        |err| {
-            error!(
-                ?err,
-                "failed to update session system prompt during load_set"
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
-            )
-        },
-    )?;
-    bridge::session_set_history(&session.session_id, &loaded.history).map_err(|err| {
-        error!(?err, "failed to update session history during load_set");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
-        )
-    })?;
+    session::update_session_memory(&session.session_id, &loaded.memory);
+    session::update_session_system_prompt(&session.session_id, &loaded.system_prompt);
+    session::update_session_history(&session.session_id, &loaded.history);
 
     let history_json = loaded
         .history
@@ -364,11 +343,11 @@ fn validate_csrf(
     cookie_header: Option<&str>,
     csrf_token: &str,
 ) -> Result<(), (StatusCode, String)> {
-    let valid = bridge::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
+    let valid = session::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
         error!(?err, "failed to validate CSRF token for sets endpoint");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 

@@ -4,11 +4,7 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{
-    bridge::{self, HomeBootstrap},
-    config,
-    user_store::UserStore,
-};
+use chatbot_core::{config, session, user_store::UserStore};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -30,11 +26,11 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
 
-    let bootstrap = bridge::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to prepare home context via python bridge");
+    let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to prepare home context");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 
@@ -155,7 +151,7 @@ fn template_env() -> &'static Environment<'static> {
 
 fn build_response(
     body: String,
-    bootstrap: HomeBootstrap,
+    bootstrap: session::HomeBootstrap,
 ) -> Result<Response<Body>, (StatusCode, String)> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
@@ -170,12 +166,10 @@ fn build_response(
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");
 
-    if let Some(cookie) = bootstrap.set_cookie.as_deref() {
-        if let Ok(value) = HeaderValue::from_str(cookie) {
-            builder = builder.header(header::SET_COOKIE, value);
-        } else {
-            warn!("discarding invalid Set-Cookie header from python bridge");
-        }
+    if let Ok(value) = HeaderValue::from_str(&bootstrap.set_cookie) {
+        builder = builder.header(header::SET_COOKIE, value);
+    } else {
+        warn!("discarding invalid Set-Cookie header from session manager");
     }
 
     builder.body(Body::from(body)).map_err(|err| {

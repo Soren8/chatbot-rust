@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{env, net::SocketAddr, sync::Arc, thread::JoinHandle};
 
 use axum::{
     body::Body,
@@ -18,7 +18,6 @@ use serde_json::{json, Value};
 use tokio::{
     net::TcpListener,
     sync::{oneshot, Mutex as AsyncMutex},
-    task::JoinHandle,
 };
 use tower::ServiceExt;
 
@@ -30,18 +29,16 @@ static META_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
 
 static TTS_TEST_MUTEX: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
 
-fn ensure_base_config(py: Python<'_>) {
-    let code = std::ffi::CString::new(
-        r#"
-from app.config import Config
-
-Config.TTS_BASE_URL = 'http://tts.test'
-"#,
-    )
-    .expect("c string");
-
-    py.run(code.as_c_str(), None, None)
-        .expect("configure base config");
+fn set_python_tts_base(url: &str) {
+    Python::attach(|py| {
+        let code = format!(
+            "from app.config import Config\nConfig.TTS_BASE_URL = {url:?}\n",
+            url = url
+        );
+        let code = std::ffi::CString::new(code).expect("c string");
+        py.run(code.as_c_str(), None, None)
+            .expect("configure TTS base");
+    });
 }
 
 #[tokio::test]
@@ -53,45 +50,38 @@ async fn tts_returns_wav_audio() {
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
+    let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
+    let pcm = Arc::new(vec![0_u8, 1, 2, 3]);
+
+    let router = Router::new().route(
+        "/api/tts",
+        post({
+            let captured = captured.clone();
+            let pcm = pcm.clone();
+            move |Json(payload): Json<Value>| {
+                let captured = captured.clone();
+                let pcm = pcm.clone();
+                async move {
+                    captured.lock().await.push(payload);
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/octet-stream")],
+                        pcm.as_slice().to_vec(),
+                    )
+                }
+            }
+        }),
+    );
+
+    let (addr, shutdown, handle) = spawn_tts_backend(router).await;
+
+    env::set_var("TTS_HOST", addr.ip().to_string());
+    env::set_var("TTS_PORT", addr.port().to_string());
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     bridge::initialize_python().expect("python bridge init");
-
-    Python::attach(|py| {
-        ensure_base_config(py);
-
-        let code = std::ffi::CString::new(
-            r#"
-from app import tts
-import requests
-
-class _FakeResponse:
-    def __init__(self, status_code=200, content=b'\x00\x01', payload=None):
-        self.status_code = status_code
-        self.content = content
-        self._payload = payload or {}
-
-    def json(self):
-        return self._payload
-
-def _fake_post(url, json=None, timeout=None):
-    tts._TEST_LAST_TTS_PAYLOAD = {
-        'url': url,
-        'json': json,
-        'timeout': timeout,
-    }
-    return _FakeResponse()
-
-requests.post = _fake_post
-tts.requests.post = _fake_post
-"#,
-        )
-        .expect("c string");
-
-        py.run(code.as_c_str(), None, None)
-            .expect("install tts stub");
-    });
+    set_python_tts_base(&format!("http://{}", addr));
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -168,59 +158,13 @@ tts.requests.post = _fake_post
         .expect("read wav body");
     assert!(!wav_bytes.is_empty(), "wav body should not be empty");
 
-    Python::attach(|py| {
-        let locals = pyo3::types::PyDict::new(py);
-        let code = std::ffi::CString::new(
-            r#"
-from app import tts
-payload = getattr(tts, '_TEST_LAST_TTS_PAYLOAD', None)
-"#,
-        )
-        .expect("c string");
+    let captured_payloads = captured.lock().await;
+    let payload = captured_payloads.first().expect("backend payload captured");
+    assert_eq!(payload["text"], "Hello");
+    assert_eq!(payload["voice_file"], "voices/default.wav");
 
-        py.run(code.as_c_str(), None, Some(&locals))
-            .expect("read stub payload");
-
-        let payload_any = locals
-            .get_item("payload")
-            .expect("payload lookup")
-            .expect("payload None");
-        let payload_dict = payload_any
-            .downcast::<pyo3::types::PyDict>()
-            .expect("payload dict");
-
-        let url: String = payload_dict
-            .get_item("url")
-            .expect("url lookup")
-            .expect("url missing")
-            .extract()
-            .expect("extract url");
-        assert_eq!(url, "http://tts.test/api/tts");
-
-        let json_any = payload_dict
-            .get_item("json")
-            .expect("json lookup")
-            .expect("json missing");
-        let json_dict = json_any
-            .downcast::<pyo3::types::PyDict>()
-            .expect("json dict");
-
-        let text: String = json_dict
-            .get_item("text")
-            .expect("text lookup")
-            .expect("text missing")
-            .extract()
-            .expect("extract text");
-        assert_eq!(text, "Hello");
-
-        let timeout: i64 = payload_dict
-            .get_item("timeout")
-            .expect("timeout lookup")
-            .expect("timeout missing")
-            .extract()
-            .expect("extract timeout");
-        assert_eq!(timeout, 30);
-    });
+    shutdown.send(()).ok();
+    handle.join().expect("join backend thread");
 }
 
 #[tokio::test]
@@ -232,40 +176,27 @@ async fn tts_returns_error_when_service_fails() {
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
+    let router = Router::new().route(
+        "/api/tts",
+        post(|Json(_payload): Json<Value>| async move {
+            let body = serde_json::to_vec(&json!({"error": "backend unavailable"})).unwrap();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+        }),
+    );
+
+    let (addr, shutdown, handle) = spawn_tts_backend(router).await;
+
+    env::set_var("TTS_HOST", addr.ip().to_string());
+    env::set_var("TTS_PORT", addr.port().to_string());
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     bridge::initialize_python().expect("python bridge init");
-
-    Python::attach(|py| {
-        ensure_base_config(py);
-
-        let code = std::ffi::CString::new(
-            r#"
-from app import tts
-import requests
-
-class _FakeResponse:
-    def __init__(self, status_code=500, content=b'', payload=None):
-        self.status_code = status_code
-        self.content = content
-        self._payload = payload or {'error': 'backend unavailable'}
-
-    def json(self):
-        return self._payload
-
-def _fake_post(url, json=None, timeout=None):
-    return _FakeResponse()
-
-requests.post = _fake_post
-tts.requests.post = _fake_post
-"#,
-        )
-        .expect("c string");
-
-        py.run(code.as_c_str(), None, None)
-            .expect("install failing tts stub");
-    });
+    set_python_tts_base(&format!("http://{}", addr));
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -332,6 +263,85 @@ tts.requests.post = _fake_post
         .await
         .expect("read error body");
     let payload: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json body");
+    assert_eq!(payload["error"], "TTS generation failed");
+
+    shutdown.send(()).ok();
+    handle.join().expect("join backend thread");
+}
+
+#[tokio::test]
+async fn tts_rejects_empty_text() {
+    if !common::ensure_flask_available() {
+        eprintln!("skipping tts_rejects_empty_text: flask not available");
+        return;
+    }
+    common::init_tracing();
+    let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
+
+    env::set_var("TTS_HOST", "127.0.0.1");
+    env::set_var("TTS_PORT", "65535");
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
+    bridge::initialize_python().expect("python bridge init");
+    set_python_tts_base("http://127.0.0.1:65535");
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let home_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / response");
+
+    let set_cookie = home_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie present")
+        .to_owned();
+
+    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
+        .await
+        .expect("read home body");
+    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
+    let csrf_token = META_TOKEN_RE
+        .captures(body_text)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+        .expect("csrf token in page");
+
+    let cookie_value = common::extract_cookie(&set_cookie);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tts")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::COOKIE, &cookie_value)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": "    "})).expect("payload bytes"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /tts response");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read error body");
+    let payload: Value = serde_json::from_slice(&body_bytes).expect("json body");
     assert_eq!(payload["error"], "TTS generation failed");
 }
 
@@ -418,7 +428,7 @@ async fn api_tts_generates_wav_audio() {
     assert_eq!(payload["voice_file"], "voices/default.wav");
 
     shutdown.send(()).ok();
-    let _ = handle.await;
+    handle.join().expect("join backend thread");
 }
 
 #[tokio::test]
@@ -478,7 +488,7 @@ async fn api_tts_returns_backend_error() {
     assert_eq!(payload["error"], "backend offline");
 
     shutdown.send(()).ok();
-    let _ = handle.await;
+    handle.join().expect("join backend thread");
 }
 
 #[tokio::test]
@@ -584,7 +594,7 @@ async fn api_tts_stream_proxies_audio() {
     assert_eq!(payload["voice_file"], "voices/alt.wav");
 
     shutdown.send(()).ok();
-    let _ = handle.await;
+    handle.join().expect("join backend thread");
 }
 
 #[tokio::test]
@@ -635,13 +645,21 @@ async fn spawn_tts_backend(router: Router) -> (SocketAddr, oneshot::Sender<()>, 
         .await
         .expect("bind tts stub");
     let addr = listener.local_addr().expect("stub addr");
+    let std_listener = listener.into_std().expect("listener into std");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        let server = axum::serve(listener, router).with_graceful_shutdown(async {
-            let _ = shutdown_rx.await;
+    let handle = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let listener = TcpListener::from_std(std_listener).expect("listener from std");
+            let server = axum::serve(listener, router).with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            });
+            let _ = server.await;
         });
-        let _ = server.await;
     });
 
     (addr, shutdown_tx, handle)

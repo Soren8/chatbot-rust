@@ -60,8 +60,8 @@
     - [x] `chat_prepare`
     - [x] `chat_finalize`
     - [x] `regenerate_prepare`
-- [ ] Reimplement TTS generation in Rust to eliminate `app/tts.py` dependency
-- [ ] Replace Python bridge session/CSRF handling with Rust implementation
+- [x] Reimplement TTS generation in Rust to eliminate `app/tts.py` dependency
+- [x] Replace Python bridge session/CSRF handling with Rust implementation
 - [ ] Remove remaining Python components
 
 ### Route-by-Route Migration Loop

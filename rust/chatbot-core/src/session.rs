@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -6,9 +7,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
+use rand::{rngs::OsRng, RngCore};
 use serde_json::json;
+use thiserror::Error;
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -29,6 +33,32 @@ pub struct SessionContext {
     pub session_id: String,
     pub username: Option<String>,
     pub encryption_key: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HomeBootstrap {
+    pub session_id: String,
+    pub username: Option<String>,
+    pub csrf_token: String,
+    pub set_cookie: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoginFinalize {
+    pub session_id: String,
+    pub set_cookie: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LogoutFinalize {
+    pub session_id: String,
+    pub set_cookie: String,
+}
+
+#[derive(Debug, Error)]
+pub enum SessionError {
+    #[error("invalid session")]
+    InvalidSession,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +102,254 @@ pub struct RegenerateRequestData<'a> {
     pub model_name: Option<&'a str>,
     pub encrypted: bool,
     pub pair_index: Option<i32>,
+}
+
+const SESSION_COOKIE_NAME: &str = "session";
+const SESSION_GUEST_PREFIX: &str = "guest_";
+const CSRF_TOKEN_BYTES: usize = 32;
+const COOKIE_TOKEN_BYTES: usize = 32;
+const GUEST_TOKEN_BYTES: usize = 16;
+
+#[derive(Clone)]
+struct HttpSessionRecord {
+    guest_id: String,
+    username: Option<String>,
+    csrf_token: String,
+    encryption_key: Option<Vec<u8>>,
+    last_used: Instant,
+}
+
+struct HttpSessionStore {
+    sessions: Mutex<HashMap<String, HttpSessionRecord>>,
+    timeout: Duration,
+}
+
+impl HttpSessionStore {
+    fn global() -> &'static HttpSessionStore {
+        static STORE: Lazy<HttpSessionStore> = Lazy::new(|| {
+            let config = config::app_config();
+            let timeout = Duration::from_secs(std::cmp::max(60, config.session_timeout));
+            HttpSessionStore {
+                sessions: Mutex::new(HashMap::new()),
+                timeout,
+            }
+        });
+        &STORE
+    }
+
+    fn clean_expired(&self, sessions: &mut HashMap<String, HttpSessionRecord>, now: Instant) {
+        let timeout = self.timeout;
+        sessions.retain(|_, record| now.duration_since(record.last_used) <= timeout);
+    }
+
+    fn new_record(&self, now: Instant) -> (String, HttpSessionRecord) {
+        let cookie_value = random_token(COOKIE_TOKEN_BYTES);
+        let guest_id = random_token(GUEST_TOKEN_BYTES);
+        let csrf_token = random_token(CSRF_TOKEN_BYTES);
+
+        (
+            cookie_value,
+            HttpSessionRecord {
+                guest_id,
+                username: None,
+                csrf_token,
+                encryption_key: None,
+                last_used: now,
+            },
+        )
+    }
+
+    fn ensure_record(
+        &self,
+        sessions: &mut HashMap<String, HttpSessionRecord>,
+        cookie_header: Option<&str>,
+        now: Instant,
+    ) -> (String, bool) {
+        if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+            if let Some(record) = sessions.get_mut(&cookie_value) {
+                if now.duration_since(record.last_used) <= self.timeout {
+                    record.last_used = now;
+                    return (cookie_value, false);
+                }
+            }
+            sessions.remove(&cookie_value);
+        }
+
+        let (cookie_value, mut record) = self.new_record(now);
+        record.last_used = now;
+        sessions.insert(cookie_value.clone(), record);
+        (cookie_value, true)
+    }
+
+    fn build_set_cookie(&self, value: &str) -> String {
+        let max_age = self.timeout.as_secs().clamp(60, 31_536_000);
+        format!(
+            "{SESSION_COOKIE_NAME}={value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        )
+    }
+}
+
+fn random_token(size: usize) -> String {
+    let mut bytes = vec![0u8; size];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn extract_session_cookie(header: Option<&str>) -> Option<String> {
+    let header = header?;
+    for part in header.split(';') {
+        let trimmed = part.trim();
+        if let Some(value) = trimmed.strip_prefix(SESSION_COOKIE_NAME) {
+            if let Some(rest) = value.strip_prefix('=') {
+                if !rest.is_empty() {
+                    return Some(rest.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn session_identifier(record: &HttpSessionRecord) -> String {
+    match record.username.as_deref() {
+        Some(username) => username.to_string(),
+        None => format!("{SESSION_GUEST_PREFIX}{}", record.guest_id),
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (l, r) in left.iter().zip(right.iter()) {
+        diff |= l ^ r;
+    }
+    diff == 0
+}
+
+pub fn prepare_home_context(cookie_header: Option<&str>) -> Result<HomeBootstrap, SessionError> {
+    let store = HttpSessionStore::global();
+    let mut sessions = store.sessions.lock().unwrap();
+    let now = Instant::now();
+    store.clean_expired(&mut sessions, now);
+
+    let (cookie_value, _) = store.ensure_record(&mut sessions, cookie_header, now);
+    let snapshot = sessions
+        .get(&cookie_value)
+        .expect("session record should exist")
+        .clone();
+    drop(sessions);
+
+    let session_id = session_identifier(&snapshot);
+    let username = snapshot.username.clone();
+    let csrf_token = snapshot.csrf_token.clone();
+    let set_cookie = store.build_set_cookie(&cookie_value);
+
+    Ok(HomeBootstrap {
+        session_id,
+        username,
+        csrf_token,
+        set_cookie,
+    })
+}
+
+pub fn validate_csrf_token(cookie_header: Option<&str>, token: &str) -> Result<bool, SessionError> {
+    if token.is_empty() {
+        return Ok(false);
+    }
+
+    let store = HttpSessionStore::global();
+    let mut sessions = store.sessions.lock().unwrap();
+    let now = Instant::now();
+    store.clean_expired(&mut sessions, now);
+
+    if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+        if let Some(record) = sessions.get_mut(&cookie_value) {
+            if now.duration_since(record.last_used) > store.timeout {
+                sessions.remove(&cookie_value);
+                return Ok(false);
+            }
+            record.last_used = now;
+            return Ok(constant_time_eq(
+                record.csrf_token.as_bytes(),
+                token.as_bytes(),
+            ));
+        }
+    }
+
+    Ok(false)
+}
+
+pub fn session_context(cookie_header: Option<&str>) -> Result<SessionContext, SessionError> {
+    let store = HttpSessionStore::global();
+    let mut sessions = store.sessions.lock().unwrap();
+    let now = Instant::now();
+    store.clean_expired(&mut sessions, now);
+
+    let (cookie_value, _) = store.ensure_record(&mut sessions, cookie_header, now);
+    let snapshot = sessions
+        .get(&cookie_value)
+        .expect("session record should exist")
+        .clone();
+    drop(sessions);
+
+    let session_id = session_identifier(&snapshot);
+
+    Ok(SessionContext {
+        session_id,
+        username: snapshot.username.clone(),
+        encryption_key: snapshot.encryption_key.clone(),
+    })
+}
+
+pub fn finalize_login(
+    cookie_header: Option<&str>,
+    username: &str,
+    encryption_key: &[u8],
+) -> Result<LoginFinalize, SessionError> {
+    let store = HttpSessionStore::global();
+    let mut sessions = store.sessions.lock().unwrap();
+    let now = Instant::now();
+    store.clean_expired(&mut sessions, now);
+
+    let (cookie_value, _) = store.ensure_record(&mut sessions, cookie_header, now);
+    let record = sessions
+        .get_mut(&cookie_value)
+        .expect("session record should exist");
+    record.username = Some(username.to_string());
+    record.encryption_key = Some(encryption_key.to_vec());
+    record.last_used = now;
+    let session_id = session_identifier(record);
+    let set_cookie = store.build_set_cookie(&cookie_value);
+    drop(sessions);
+
+    Ok(LoginFinalize {
+        session_id,
+        set_cookie,
+    })
+}
+
+pub fn logout_user(cookie_header: Option<&str>) -> Result<LogoutFinalize, SessionError> {
+    let store = HttpSessionStore::global();
+    let mut sessions = store.sessions.lock().unwrap();
+    let now = Instant::now();
+    store.clean_expired(&mut sessions, now);
+
+    if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+        sessions.remove(&cookie_value);
+    }
+
+    let (cookie_value, record) = store.new_record(now);
+    let session_id = session_identifier(&record);
+    let set_cookie = store.build_set_cookie(&cookie_value);
+    sessions.insert(cookie_value, record);
+    drop(sessions);
+
+    Ok(LogoutFinalize {
+        session_id,
+        set_cookie,
+    })
 }
 
 struct SessionData {

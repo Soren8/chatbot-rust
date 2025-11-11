@@ -5,7 +5,7 @@ use axum::{
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    bridge, config,
+    config, session,
     user_store::{normalise_username, UserStore, UserStoreError},
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -25,11 +25,11 @@ pub async fn handle_login_get(
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
 
-    let bootstrap = bridge::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to bootstrap login context via python bridge");
+    let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to bootstrap login context");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
+            "session error".to_string(),
         )
     })?;
 
@@ -77,11 +77,11 @@ pub async fn handle_login_post(
     }
 
     let csrf_valid =
-        bridge::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token via python bridge");
+        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
+            error!(?err, "failed to validate CSRF token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
+                "session error".to_string(),
             )
         })?;
 
@@ -108,16 +108,39 @@ pub async fn handle_login_post(
         .derive_encryption_key(&username, password)
         .map_err(map_store_error)?;
 
-    let py_response = bridge::finalize_login(cookie_header.as_deref(), &username, &encryption_key)
+    let finalize = session::finalize_login(cookie_header.as_deref(), &username, &encryption_key)
         .map_err(|err| {
-            error!(?err, "failed to finalize login via python bridge");
+            error!(?err, "failed to finalize login");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "bridge error".to_string(),
+                "session error".to_string(),
             )
         })?;
 
-    crate::build_response(py_response)
+    let mut response = Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, HeaderValue::from_static("/"));
+
+    match HeaderValue::from_str(&finalize.set_cookie) {
+        Ok(value) => {
+            response = response.header(header::SET_COOKIE, value);
+        }
+        Err(err) => {
+            error!(?err, "invalid Set-Cookie header from session finalize");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session error".to_string(),
+            ));
+        }
+    }
+
+    response.body(Body::empty()).map_err(|err| {
+        error!(?err, "failed to build login redirect response");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response build error".to_string(),
+        )
+    })
 }
 
 fn invalid_credentials() -> Result<Response<Body>, (StatusCode, String)> {
@@ -146,7 +169,7 @@ fn render_login_template(
 
 fn build_login_response(
     body: String,
-    set_cookie: Option<String>,
+    set_cookie: String,
 ) -> Result<Response<Body>, (StatusCode, String)> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
@@ -159,17 +182,15 @@ fn build_login_response(
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");
 
-    if let Some(cookie) = set_cookie {
-        match HeaderValue::from_str(&cookie) {
-            Ok(value) => {
-                builder = builder.header(header::SET_COOKIE, value);
-            }
-            Err(err) => {
-                warn!(
-                    ?err,
-                    "discarding invalid Set-Cookie header from python bridge"
-                );
-            }
+    match HeaderValue::from_str(&set_cookie) {
+        Ok(value) => {
+            builder = builder.header(header::SET_COOKIE, value);
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                "discarding invalid Set-Cookie header from session manager"
+            );
         }
     }
 
