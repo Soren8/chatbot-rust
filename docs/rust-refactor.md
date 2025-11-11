@@ -64,7 +64,13 @@
 - [x] Replace Python bridge session/CSRF handling with Rust implementation
 - [x] Remove remaining Python components
 
-With the bridge retired, the legacy Flask modules, pytest suite, and related Docker/Python tooling have been removed. Static asset hardening checks now live in Rust integration tests (`rust/chatbot-server/tests/static_assets.rs`), and CI/Test Compose runs `cargo test` for coverage.
+With the bridge retired, the legacy Flask modules, pytest suite, and related Docker/Python tooling have been removed. Static asset hardening checks now live in Rust integration tests (`chatbot-server/tests/static_assets.rs`), and the GitHub workflow focuses on secret scanning while local/Compose-based jobs continue to run `cargo test` for coverage.
+
+## Repository Layout Update
+- The Cargo workspace now lives at the repository root (`Cargo.toml`, `Cargo.lock`, and the `chatbot-*` crates sit alongside `docs/` and `.github/scripts/`).
+- HTML templates previously stored under `app/templates/` now live in `/static/templates/` and are embedded via `include_str!`.
+- Static assets moved from `app/static/` to `/static/` (templates included under `/static/templates/`); Docker images expose them via `CHATBOT_STATIC_ROOT=/app/static`.
+- The `app/` package and remaining Python bridge modules have been removed; tests and tooling operate solely through Rust.
 
 ### Route-by-Route Migration Loop
 For each Flask endpoint (grouped where it makes sense):
@@ -98,6 +104,7 @@ For each Flask endpoint (grouped where it makes sense):
 - No dedicated background worker modules; everything flows through Flask synchronously.
 
 ## Item 2: Proposed Rust Project Structure
+> The structure outlined below reflects the initial workspace layout during early migration; the current organization is described in **Repository Layout Update** above.
 - `rust/` directory at repo root housing the new codebase alongside Python app.
 - `rust/Cargo.toml`: workspace manifest with a primary crate named `chatbot_core` (lib) and optional binary `chatbot_server`.
 - `rust/src/lib.rs`: library entry exposing bridge helpers and shared logic for both the Axum server and future Rust crates.

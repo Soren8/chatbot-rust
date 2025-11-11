@@ -18,23 +18,23 @@ ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 
 WORKDIR /build
-RUN mkdir -p rust/chatbot-core/src rust/chatbot-server/src rust/chatbot-test-support/src
-RUN printf 'fn main() {}\n' > rust/chatbot-server/src/main.rs \
-    && printf '' > rust/chatbot-server/src/lib.rs \
-    && touch rust/chatbot-core/src/lib.rs \
-    && touch rust/chatbot-test-support/src/lib.rs
+RUN mkdir -p chatbot-core/src chatbot-server/src chatbot-test-support/src
+RUN printf 'fn main() {}\n' > chatbot-server/src/main.rs \
+    && printf '' > chatbot-server/src/lib.rs \
+    && touch chatbot-core/src/lib.rs \
+    && touch chatbot-test-support/src/lib.rs
 
-COPY rust/Cargo.toml rust/Cargo.lock ./rust/
-COPY rust/chatbot-core/Cargo.toml ./rust/chatbot-core/
-COPY rust/chatbot-server/Cargo.toml ./rust/chatbot-server/
-COPY rust/chatbot-test-support/Cargo.toml ./rust/chatbot-test-support/
+COPY Cargo.toml Cargo.lock ./
+COPY chatbot-core/Cargo.toml ./chatbot-core/
+COPY chatbot-server/Cargo.toml ./chatbot-server/
+COPY chatbot-test-support/Cargo.toml ./chatbot-test-support/
 
-WORKDIR /build/rust
 RUN cargo fetch
 
-COPY rust /build/rust
-COPY app/templates /build/app/templates
-COPY app/static /build/app/static
+COPY chatbot-core /build/chatbot-core
+COPY chatbot-server /build/chatbot-server
+COPY chatbot-test-support /build/chatbot-test-support
+COPY static /build/static
 
 RUN if [ "${RUST_BUILD_PROFILE}" = "debug" ]; then \
         cargo build -p chatbot-server; \
@@ -45,12 +45,14 @@ RUN if [ "${RUST_BUILD_PROFILE}" = "debug" ]; then \
 # Test image with cargo available
 FROM rust-tools AS test
 WORKDIR /app
-COPY rust /app/rust
-COPY app/templates /app/app/templates
-COPY app/static /app/app/static
+COPY Cargo.toml Cargo.lock /app/
+COPY chatbot-core /app/chatbot-core
+COPY chatbot-server /app/chatbot-server
+COPY chatbot-test-support /app/chatbot-test-support
+COPY static /app/static
 RUN mkdir -p /app/data
 RUN touch /app/.config.yml
-ENV CHATBOT_STATIC_ROOT="/app/app/static"
+ENV CHATBOT_STATIC_ROOT="/app/static"
 
 # Production image with Axum binary
 FROM debian:bookworm-slim AS prod
@@ -60,8 +62,8 @@ ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=rust-build /build/rust/target/${RUST_BUILD_PROFILE}/chatbot-server /usr/local/bin/chatbot-server
-COPY app/static /app/static
+COPY --from=rust-build /build/target/${RUST_BUILD_PROFILE}/chatbot-server /usr/local/bin/chatbot-server
+COPY static /app/static
 ENV CHATBOT_STATIC_ROOT="/app/static"
 
 # Default to Axum server; bind address is configurable via CHATBOT_BIND_ADDR

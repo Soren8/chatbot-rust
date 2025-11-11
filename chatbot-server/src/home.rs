@@ -142,7 +142,7 @@ fn template_env() -> &'static Environment<'static> {
         });
         env.add_template(
             "chat.html",
-            include_str!("../../../app/templates/chat.html"),
+            include_str!("../../static/templates/chat.html"),
         )
         .expect("chat.html template");
         env

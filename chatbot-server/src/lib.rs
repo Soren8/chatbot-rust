@@ -87,8 +87,6 @@ pub fn resolve_static_root() -> PathBuf {
 
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("..")
-        .join("app")
         .join("static")
 }
 

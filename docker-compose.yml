@@ -46,7 +46,7 @@ services:
         LOG_FILE=/app/test-logs/tests-$(date +%Y%m%d-%H%M%S).log
         exec > >(tee "$${LOG_FILE}") 2>&1
         echo "[tests] writing logs to $${LOG_FILE}"
-        cargo test --manifest-path /app/rust/Cargo.toml --workspace -- --nocapture
+        cargo test --manifest-path /app/Cargo.toml --workspace -- --nocapture
       '
     environment:
       SECRET_KEY: test_secret_key_for_security_tests
@@ -56,5 +56,5 @@ services:
       - ./temp/test-logs:/app/test-logs
       - ./temp/cargo-registry:/root/.cargo/registry
       - ./temp/cargo-git:/root/.cargo/git
-      - ./temp/target-cache:/app/rust/target
-      - ./rust:/app/rust
+      - ./temp/target-cache:/app/target
+      - ./:/app

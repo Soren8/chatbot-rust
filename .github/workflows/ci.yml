@@ -1,24 +1,16 @@
-name: CI
+name: Secret Scan
 
 on:
   push:
   pull_request:
 
 jobs:
-  test:
+  secret-scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run cargo tests
-        env:
-          SECRET_KEY: test_secret_key_for_ci
-        run: cargo test --workspace -- --nocapture
-
       - name: Verify no secrets in served assets
         run: |
-          bash scripts/verify_no_secrets.sh
+          bash .github/scripts/verify_no_secrets.sh
