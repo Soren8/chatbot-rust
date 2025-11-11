@@ -1,4 +1,4 @@
-use crate::bridge::ChatContext;
+use crate::session::ChatContext;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tracing::{debug, warn};

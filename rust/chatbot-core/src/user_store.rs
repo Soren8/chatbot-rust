@@ -17,15 +17,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 
-const DEFAULT_TIER: &str = "free";
+pub const DEFAULT_TIER: &str = "free";
 const SALT_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const PBKDF2_ITERATIONS: u32 = 100_000;
 
-pub(crate) static USERNAME_REGEX: Lazy<Regex> =
+pub static USERNAME_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").unwrap());
 
-pub(crate) fn normalise_username(input: &str) -> Result<String, String> {
+pub fn normalise_username(input: &str) -> Result<String, String> {
     let candidate = input.trim();
     if candidate.is_empty() {
         return Err("Username and password required.".to_string());
@@ -49,24 +49,25 @@ fn default_tier() -> String {
     DEFAULT_TIER.to_string()
 }
 
-pub(crate) struct UserStore {
+pub struct UserStore {
     base_dir: PathBuf,
     users_file: PathBuf,
     salts_dir: PathBuf,
 }
 
-pub(crate) enum CreateOutcome {
+pub enum CreateOutcome {
     Created,
     AlreadyExists,
 }
 
-pub(crate) enum UserStoreError {
+#[derive(Debug)]
+pub enum UserStoreError {
     Io(std::io::Error),
     Json(serde_json::Error),
     Crypto(String),
 }
 
-impl fmt::Debug for UserStoreError {
+impl fmt::Display for UserStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UserStoreError::Io(err) => write!(f, "io error: {err}"),
@@ -75,6 +76,8 @@ impl fmt::Debug for UserStoreError {
         }
     }
 }
+
+impl std::error::Error for UserStoreError {}
 
 impl From<std::io::Error> for UserStoreError {
     fn from(err: std::io::Error) -> Self {
@@ -89,7 +92,7 @@ impl From<serde_json::Error> for UserStoreError {
 }
 
 impl UserStore {
-    pub(crate) fn new() -> Result<Self, UserStoreError> {
+    pub fn new() -> Result<Self, UserStoreError> {
         let base = env::var("HOST_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./data"));
@@ -115,7 +118,7 @@ impl UserStore {
         })
     }
 
-    pub(crate) fn create_user(
+    pub fn create_user(
         &mut self,
         username: &str,
         hashed_password: &str,
@@ -138,11 +141,7 @@ impl UserStore {
         Ok(CreateOutcome::Created)
     }
 
-    pub(crate) fn validate_user(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<bool, UserStoreError> {
+    pub fn validate_user(&self, username: &str, password: &str) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
         if let Some(record) = users.get(&normalised) {
@@ -153,7 +152,7 @@ impl UserStore {
         }
     }
 
-    pub(crate) fn derive_encryption_key(
+    pub fn derive_encryption_key(
         &self,
         username: &str,
         password: &str,
@@ -178,6 +177,19 @@ impl UserStore {
         pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
         let encoded = STANDARD.encode(derived);
         Ok(encoded.into_bytes())
+    }
+
+    pub fn user_tier(&self, username: &str) -> Result<String, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let users = self.load_users()?;
+        Ok(users
+            .get(&normalised)
+            .map(|record| record.tier.clone())
+            .unwrap_or_else(|| DEFAULT_TIER.to_string()))
+    }
+
+    pub fn data_dir(&self) -> &PathBuf {
+        &self.base_dir
     }
 
     fn load_users(&self) -> Result<HashMap<String, UserRecord>, UserStoreError> {
@@ -205,19 +217,5 @@ impl UserStore {
         let json = serde_json::to_string_pretty(users)?;
         file.write_all(json.as_bytes())?;
         Ok(())
-    }
-
-    pub(crate) fn user_tier(&self, username: &str) -> Result<String, UserStoreError> {
-        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let users = self.load_users()?;
-        Ok(users
-            .get(&normalised)
-            .map(|record| record.tier.clone())
-            .unwrap_or_else(|| DEFAULT_TIER.to_string()))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn data_dir(&self) -> &PathBuf {
-        &self.base_dir
     }
 }

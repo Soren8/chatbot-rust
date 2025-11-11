@@ -2,6 +2,7 @@ use std::{
     env,
     fs::File,
     io::BufReader,
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -18,6 +19,11 @@ use urlencoding::encode;
 
 mod common;
 
+fn test_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 #[tokio::test]
 async fn signup_get_renders_form_with_security_headers() {
     if !common::ensure_flask_available() {
@@ -25,6 +31,7 @@ async fn signup_get_renders_form_with_security_headers() {
         return;
     }
     common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
 
     env::set_var("SECRET_KEY", "test_secret_key");
 
@@ -109,6 +116,7 @@ async fn signup_flow_creates_user_record() {
         return;
     }
     common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
 
     env::set_var("SECRET_KEY", "test_secret_key");
 

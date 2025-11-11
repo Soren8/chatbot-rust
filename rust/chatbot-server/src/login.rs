@@ -4,15 +4,15 @@ use axum::{
     body::{self, Body},
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{bridge, config};
+use chatbot_core::{
+    bridge, config,
+    user_store::{normalise_username, UserStore, UserStoreError},
+};
 use minijinja::{context, AutoEscape, Environment};
 use serde_urlencoded::from_bytes;
 use tracing::{error, warn};
 
-use crate::{
-    home::SECURITY_CSP,
-    user_store::{normalise_username, UserStore, UserStoreError},
-};
+use crate::home::SECURITY_CSP;
 
 const INVALID_CREDENTIALS: &str = "Invalid credentials";
 

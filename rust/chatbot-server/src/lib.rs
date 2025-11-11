@@ -27,7 +27,6 @@ mod sets;
 mod signup;
 pub mod test_instrumentation;
 mod tts;
-mod user_store;
 
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::registry()

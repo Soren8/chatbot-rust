@@ -7,9 +7,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use chatbot_core::{
-    bridge::ChatContext,
     chat::{self, PreparedChatMessages},
     config::ProviderConfig,
+    session::ChatContext,
 };
 
 #[derive(Clone)]

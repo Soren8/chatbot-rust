@@ -9,9 +9,10 @@ use axum::{
 };
 use bytes::Bytes;
 use chatbot_core::{
-    bridge::{self, chat_finalize, chat_prepare, ChatRequestData},
+    bridge,
     chat::{self, strip_think_tags, ChatMessageRole},
     config::get_provider_config,
+    session::{self, ChatRequestData, SessionContext},
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -144,6 +145,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         return crate::build_response(py_response);
     }
 
+    let session_context = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to resolve session context");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "bridge error".to_string(),
+        )
+    })?;
+
     let request_data = ChatRequestData {
         message: payload.message.as_str(),
         system_prompt: payload.system_prompt.as_deref(),
@@ -152,13 +161,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         encrypted: payload.encrypted.unwrap_or(false),
     };
 
-    let prepare = chat_prepare(cookie_header.as_deref(), &request_data).map_err(|err| {
-        error!(?err, "chat_prepare bridge call failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
-        )
-    })?;
+    let prepare = session::chat_prepare(&session_context, &request_data, &provider_config);
 
     if let Some(py_response) = prepare.error {
         return crate::build_response(py_response);
@@ -216,15 +219,9 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         })
         .collect::<Vec<_>>();
 
-    let cookie_for_finalize = cookie_header.clone();
-    let session_id = context.session_id.clone();
+    let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
     let user_message = payload.message.clone();
-    let encryption_key = context
-        .encryption_key
-        .as_ref()
-        .map(|bytes| bytes.as_slice())
-        .map(|slice| slice.to_vec());
 
     let mut provider_stream = match provider_kind {
         ProviderKind::OpenAi(provider) => match provider.stream_chat(messages.clone()) {
@@ -279,12 +276,10 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
 
         let clean_response = strip_think_tags(&response_text);
         match finalize_chat(
-            cookie_for_finalize.as_deref(),
-            &session_id,
+            &session_context_for_finalize,
             &set_name,
             &user_message,
             &clean_response,
-            encryption_key.as_deref(),
         ) {
             Ok(extra_chunks) => {
                 stream_lock.lock().unwrap().mark_released();
@@ -326,20 +321,15 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
 }
 
 fn finalize_chat(
-    cookie_header: Option<&str>,
-    session_id: &str,
+    session: &SessionContext,
     set_name: &str,
     user_message: &str,
     assistant_response: &str,
-    encryption_key: Option<&[u8]>,
 ) -> Result<Vec<String>> {
-    chat_finalize(
-        cookie_header,
-        session_id,
+    Ok(session::chat_finalize(
+        session,
         set_name,
         user_message,
         assistant_response,
-        encryption_key,
-    )
-    .map_err(|err| err.into())
+    ))
 }

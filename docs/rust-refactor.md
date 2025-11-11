@@ -51,15 +51,15 @@
   - Integration tests now detect Python tracebacks, server-side 5xx, and bridge errors
 - [x] Document deployment changes, make note of `temp/` scratchpad usage, and update Docker setup
 - [x] Fix slow tests
-- [ ] Port remaining proxied routes to native Rust handlers
+- [x] Port remaining proxied routes to native Rust handlers
     - [x] `/`
     - [x] `/signup`
     - [x] `/login`
     - [x] `/api/tts*`
-- [ ] Move chat preparation/finalization off the Python bridge
-    - [ ] `chat_prepare`
-    - [ ] `chat_finalize`
-    - [ ] `regenerate_prepare`)
+- [x] Move chat preparation/finalization off the Python bridge
+    - [x] `chat_prepare`
+    - [x] `chat_finalize`
+    - [x] `regenerate_prepare`
 - [ ] Reimplement TTS generation in Rust to eliminate `app/tts.py` dependency
 - [ ] Replace Python bridge session/CSRF handling with Rust implementation
 - [ ] Remove remaining Python components

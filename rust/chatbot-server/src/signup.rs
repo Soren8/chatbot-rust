@@ -5,13 +5,15 @@ use axum::{
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::{bridge, config};
+use chatbot_core::{
+    bridge, config,
+    user_store::{normalise_username, CreateOutcome, UserStore, UserStoreError},
+};
 use minijinja::{context, AutoEscape, Environment};
 use serde_urlencoded::from_bytes;
 use tracing::{error, warn};
 
 use crate::home::SECURITY_CSP;
-use crate::user_store::{normalise_username, CreateOutcome, UserStore, UserStoreError};
 
 pub async fn handle_signup_get(
     request: Request<Body>,

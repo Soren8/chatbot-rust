@@ -1,5 +1,4 @@
-use chatbot_core::bridge::chat_release_lock;
-use tracing::error;
+use chatbot_core::session;
 
 pub struct ChatLockGuard {
     session_id: String,
@@ -20,9 +19,7 @@ impl ChatLockGuard {
 
     pub fn release_if_needed(&mut self) {
         if !self.released {
-            if let Err(err) = chat_release_lock(&self.session_id) {
-                error!(?err, "failed to release chat lock");
-            }
+            session::release_session_lock(&self.session_id);
             self.released = true;
         }
     }

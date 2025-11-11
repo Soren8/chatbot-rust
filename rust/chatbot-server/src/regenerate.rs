@@ -10,9 +10,10 @@ use axum::{
 };
 use bytes::Bytes;
 use chatbot_core::{
-    bridge::{self, regenerate_finalize, regenerate_prepare, RegenerateRequestData},
+    bridge,
     chat::{self, strip_think_tags, ChatMessageRole},
     config::get_provider_config,
+    session::{self, RegenerateRequestData, SessionContext},
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -143,6 +144,14 @@ pub async fn handle_regenerate(
         return crate::build_response(py_response);
     }
 
+    let session_context = bridge::session_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to resolve session context");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "bridge error".to_string(),
+        )
+    })?;
+
     let request_data = RegenerateRequestData {
         message: payload.message.as_str(),
         system_prompt: payload.system_prompt.as_deref(),
@@ -152,13 +161,7 @@ pub async fn handle_regenerate(
         pair_index: payload.pair_index,
     };
 
-    let prepare = regenerate_prepare(cookie_header.as_deref(), &request_data).map_err(|err| {
-        error!(?err, "regenerate_prepare bridge call failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bridge error".to_string(),
-        )
-    })?;
+    let prepare = session::regenerate_prepare(&session_context, &request_data, &provider_config);
 
     if let Some(py_response) = prepare.error {
         return crate::build_response(py_response);
@@ -218,15 +221,9 @@ pub async fn handle_regenerate(
         })
         .collect::<Vec<_>>();
 
-    let cookie_for_finalize = cookie_header.clone();
-    let session_id = context.session_id.clone();
+    let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
     let user_message = payload.message.clone();
-    let encryption_key = context
-        .encryption_key
-        .as_ref()
-        .map(|bytes| bytes.as_slice())
-        .map(|slice| slice.to_vec());
 
     let mut provider_stream = match provider_kind {
         ProviderKind::OpenAi(provider) => match provider.stream_chat(messages.clone()) {
@@ -281,13 +278,11 @@ pub async fn handle_regenerate(
 
         let clean_response = strip_think_tags(&response_text);
         match regenerate_finalize(
-            cookie_for_finalize.as_deref(),
-            &session_id,
+            &session_context_for_finalize,
             &set_name,
             &user_message,
             &clean_response,
             insertion_index,
-            encryption_key.as_deref(),
         ) {
             Ok(extra_chunks) => {
                 stream_lock.lock().unwrap().mark_released();
@@ -326,4 +321,20 @@ pub async fn handle_regenerate(
 
     debug!("/regenerate request handled via Rust path");
     Ok(response)
+}
+
+fn regenerate_finalize(
+    session: &SessionContext,
+    set_name: &str,
+    user_message: &str,
+    assistant_response: &str,
+    insertion_index: Option<usize>,
+) -> Result<Vec<String>> {
+    Ok(session::regenerate_finalize(
+        session,
+        set_name,
+        user_message,
+        assistant_response,
+        insertion_index,
+    ))
 }
