@@ -187,9 +187,9 @@ function appendMessage(message, className, pairIndex) {
   }
 
   $chatContent.append($messageElement);
-  const $chatBox = $('#chat-box');
-  if (typeof __autoScroll !== 'undefined' ? __autoScroll : ($chatBox.scrollTop() + $chatBox.innerHeight() >= $chatBox[0].scrollHeight - 50)) {
-    $chatBox.scrollTop($chatBox[0].scrollHeight);
+  const $scrollTarget = $('#chat-content');
+  if (typeof __autoScroll !== 'undefined' ? __autoScroll : ($scrollTarget.scrollTop() + $scrollTarget.innerHeight() >= $scrollTarget[0].scrollHeight - 50)) {
+    $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
   }
   return $messageElement;
 }
@@ -237,6 +237,9 @@ window.regenerateMessage = function regenerateMessage(button) {
   const $targetAI = $('.ai-message').eq(pairIndex);
   const $target = $targetAI.length ? $targetAI : $aiMessageElement;
   $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`);
+  // Initial scroll to bottom when regeneration starts
+  const $scrollTarget = $('#chat-content');
+  if ($scrollTarget.length) $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
 
   fetch('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
@@ -314,11 +317,11 @@ window.regenerateMessage = function regenerateMessage(button) {
           return;
         }
         buffer += decoder.decode(value, {stream:true});
+        const $scrollTarget = $('#chat-content');
+        const nearBottom = $scrollTarget.length && ($scrollTarget.scrollTop() + $scrollTarget.innerHeight() >= $scrollTarget[0].scrollHeight - 50);
         processBuffer();
-        const $chatBox = $('#chat-box');
-        if ($chatBox.length) {
-          const nearBottom = ($chatBox.scrollTop() + $chatBox.innerHeight() >= $chatBox[0].scrollHeight - 50);
-          if (nearBottom) $chatBox.scrollTop($chatBox[0].scrollHeight);
+        if (nearBottom) {
+          $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
         }
         read();
       }).catch(()=>{});
@@ -393,7 +396,7 @@ $(document).ready(function() {
               appendMessage(userMsg, 'user-message');
               appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${escapeHTML(aiMsg)}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
             });
-            setTimeout(function() { try { $('#chat-box').scrollTop($('#chat-box')[0].scrollHeight); } catch (e) {} }, 0);
+            setTimeout(function() { try { $('#chat-content').scrollTop($('#chat-content')[0].scrollHeight); } catch (e) {} }, 0);
           }
           appendMessage('<strong>System:</strong> Loaded set: ' + escapeHTML(setName), 'system-message');
         })
@@ -471,6 +474,9 @@ $(document).ready(function() {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
         appendMessage(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`, 'ai-message');
+        // Initial scroll to bottom when AI starts responding
+        const $scrollTarget = $('#chat-content');
+        $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
         const $targetElement = $('.ai-message:last-child');
         const $messageTextElement = $targetElement.find('.ai-message-text');
         const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
@@ -544,9 +550,12 @@ $(document).ready(function() {
               return;
             }
             const chunk = decoder.decode(value, { stream: true });
+            const $scrollTarget = $('#chat-content');
+            const nearBottom = $scrollTarget.length && ($scrollTarget.scrollTop() + $scrollTarget.innerHeight() >= $scrollTarget[0].scrollHeight - 50);
             processChunk(chunk);
-            const $chatBox = $('#chat-box');
-            $chatBox.scrollTop($chatBox[0].scrollHeight);
+            if (nearBottom) {
+              $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
+            }
             return readStream();
           }).catch(()=>{});
         }
