@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM debian:bookworm-slim AS rust-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -29,18 +31,30 @@ COPY chatbot-core/Cargo.toml ./chatbot-core/
 COPY chatbot-server/Cargo.toml ./chatbot-server/
 COPY chatbot-test-support/Cargo.toml ./chatbot-test-support/
 
-RUN cargo fetch
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo fetch
 
 COPY chatbot-core /build/chatbot-core
 COPY chatbot-server /build/chatbot-server
 COPY chatbot-test-support /build/chatbot-test-support
 COPY static /build/static
 
-RUN if [ "${RUST_BUILD_PROFILE}" = "debug" ]; then \
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/target-cache \
+    sh -ec '\
+      export CARGO_TARGET_DIR=/build/target-cache; \
+      if [ "$RUST_BUILD_PROFILE" = "debug" ]; then \
         cargo build -p chatbot-server; \
-    else \
-        cargo build --profile "${RUST_BUILD_PROFILE}" -p chatbot-server; \
-    fi
+        profile_dir=debug; \
+      else \
+        cargo build --profile "$RUST_BUILD_PROFILE" -p chatbot-server; \
+        profile_dir="$RUST_BUILD_PROFILE"; \
+      fi; \
+      mkdir -p "/build/target/$profile_dir"; \
+      cp "/build/target-cache/$profile_dir/chatbot-server" "/build/target/$profile_dir/chatbot-server" \
+    '
 
 # Test image with cargo available
 FROM rust-tools AS test
