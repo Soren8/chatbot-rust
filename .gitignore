@@ -1,5 +1,6 @@
 git-diff.patch
 __pycache__/*
+app/__pycache__/*
 data/*
 .env
 .aider*
@@ -11,3 +12,5 @@ temp/
 target/
 .cargo/
 .docker/
+.gemini/
+
