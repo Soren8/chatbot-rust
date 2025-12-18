@@ -1,6 +1,6 @@
 use std::{pin::Pin, time::Duration};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use async_stream::try_stream;
 use futures_util::Stream;
 use futures_util::StreamExt;
@@ -109,7 +109,7 @@ impl OpenAiProvider {
     pub fn stream_chat(
         &self,
         messages: Vec<ChatMessagePayload>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
         if let Some(ref chunks) = self.test_chunks {
             let chunks = chunks.clone();
             let stream = tokio_stream::iter(chunks.into_iter().map(Ok));
@@ -118,9 +118,9 @@ impl OpenAiProvider {
 
         let api_key = self
             .api_key
-            .as_ref()
-            .ok_or_else(|| anyhow!("OpenAI API key is not configured"))?
-            .clone();
+            .as_deref()
+            .unwrap_or("no-key-required")
+            .to_string();
 
         let provider = if self.allowed_providers.is_empty() {
             None

@@ -1,7 +1,7 @@
 llms:
   - provider_name: "Local Ollama (Free Tier)"
     type: "ollama" 
-    base_url: "http://${OLLAMA_HOST}:${OLLAMA_PORT}"
+    base_url: "http://${LOCAL_HOST}:${LOCAL_PORT}"
     model_name: "dolphin3.1-8b"
     context_size: 8192
     tier: "free"
@@ -26,6 +26,12 @@ llms:
       ### User:
       {{ prompt }}
       ### Assistant:
+
+  - provider_name: "Local LMStudio (Free Tier)"
+    type: "openai"
+    base_url: "http://${LOCAL_HOST}:${LOCAL_PORT}/v1"
+    model_name: "local-model"
+    tier: "free"
 
   - provider_name: "GPT-4 (Premium)"
     type: "openai"
