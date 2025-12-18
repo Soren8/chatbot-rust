@@ -22,7 +22,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct PythonResponse {
+pub struct ServiceResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -78,7 +78,7 @@ pub struct ChatContext {
 
 pub struct ChatPrepareResult {
     pub context: Option<ChatContext>,
-    pub error: Option<PythonResponse>,
+    pub error: Option<ServiceResponse>,
 }
 
 pub struct ChatRequestData<'a> {
@@ -92,7 +92,7 @@ pub struct ChatRequestData<'a> {
 pub struct RegeneratePrepareResult {
     pub context: Option<ChatContext>,
     pub insertion_index: Option<usize>,
-    pub error: Option<PythonResponse>,
+    pub error: Option<ServiceResponse>,
 }
 
 pub struct RegenerateRequestData<'a> {
@@ -440,33 +440,33 @@ impl SessionStore {
     }
 }
 
-fn build_json_response(status: u16, payload: serde_json::Value) -> PythonResponse {
+fn build_json_response(status: u16, payload: serde_json::Value) -> ServiceResponse {
     let body = serde_json::to_vec(&payload).unwrap_or_else(|err| {
         error!(?err, "failed to serialise error payload");
         json!({"error": "internal server error"})
             .to_string()
             .into_bytes()
     });
-    PythonResponse {
+    ServiceResponse {
         status,
         headers: vec![("Content-Type".to_string(), "application/json".to_string())],
         body,
     }
 }
 
-fn invalid_request(message: &str) -> PythonResponse {
+fn invalid_request(message: &str) -> ServiceResponse {
     build_json_response(400, json!({ "error": message }))
 }
 
-fn forbidden(message: &str) -> PythonResponse {
+fn forbidden(message: &str) -> ServiceResponse {
     build_json_response(403, json!({ "error": message }))
 }
 
-fn unauthorized(message: &str) -> PythonResponse {
+fn unauthorized(message: &str) -> ServiceResponse {
     build_json_response(401, json!({ "error": message }))
 }
 
-fn server_error(message: &str) -> PythonResponse {
+fn server_error(message: &str) -> ServiceResponse {
     build_json_response(500, json!({ "error": message }))
 }
 
@@ -479,7 +479,7 @@ pub fn release_session_lock(session_id: &str) {
 
 // Additional chat/regenerate logic will be implemented here.
 
-fn normalise_set_name(candidate: Option<&str>) -> Result<String, PythonResponse> {
+fn normalise_set_name(candidate: Option<&str>) -> Result<String, ServiceResponse> {
     DataPersistence::normalise_set_name(candidate).map_err(|_| invalid_request("invalid set name"))
 }
 
@@ -491,7 +491,7 @@ fn initialise_session_data(
     data: &mut SessionData,
     session: &SessionContext,
     set_name: &str,
-) -> Result<(), PythonResponse> {
+) -> Result<(), ServiceResponse> {
     if let Some(username) = session.username.as_deref() {
         let username =
             normalise_username(username).map_err(|_| invalid_request("invalid session"))?;
@@ -533,7 +533,7 @@ fn persist_system_prompt(
     session: &SessionContext,
     set_name: &str,
     prompt: &str,
-) -> Result<(), PythonResponse> {
+) -> Result<(), ServiceResponse> {
     let Some(username) = session.username.as_deref() else {
         return Ok(());
     };
@@ -560,7 +560,7 @@ fn persist_system_prompt(
 fn ensure_model_allowed(
     provider: &ProviderConfig,
     username: Option<&str>,
-) -> Result<(), PythonResponse> {
+) -> Result<(), ServiceResponse> {
     let tier = provider
         .tier
         .as_deref()
@@ -599,12 +599,12 @@ fn resolve_test_chunks(provider: &ProviderConfig) -> Option<Vec<String>> {
     provider.test_chunks.clone()
 }
 
-fn map_persistence_error(context: &str, err: &PersistenceError) -> PythonResponse {
+fn map_persistence_error(context: &str, err: &PersistenceError) -> ServiceResponse {
     error!(?err, "{context}");
     server_error("internal error while accessing chat history")
 }
 
-fn map_store_error(context: &str, err: &UserStoreError) -> PythonResponse {
+fn map_store_error(context: &str, err: &UserStoreError) -> ServiceResponse {
     error!(?err, "{context}");
     server_error("internal error while accessing user store")
 }
@@ -670,7 +670,7 @@ fn build_chat_context(
     provider: &ProviderConfig,
     set_name: &str,
     entry: &Arc<SessionEntry>,
-) -> Result<ChatContext, PythonResponse> {
+) -> Result<ChatContext, ServiceResponse> {
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 
@@ -807,7 +807,7 @@ fn build_regenerate_context(
     provider: &ProviderConfig,
     set_name: &str,
     entry: &Arc<SessionEntry>,
-) -> Result<(ChatContext, Option<usize>), PythonResponse> {
+) -> Result<(ChatContext, Option<usize>), ServiceResponse> {
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 

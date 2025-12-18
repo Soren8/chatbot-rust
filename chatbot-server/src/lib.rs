@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chatbot_core::session::PythonResponse;
+use chatbot_core::session::ServiceResponse;
 use std::{env, path::PathBuf};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
@@ -28,8 +28,13 @@ pub mod test_instrumentation;
 mod tts;
 
 pub async fn run() -> anyhow::Result<()> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(env::var("LOG_LEVEL").unwrap_or_else(|_| "info".into()))
+        });
+
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -95,9 +100,9 @@ async fn favicon() -> StatusCode {
 }
 
 pub(crate) fn build_response(
-    py_response: PythonResponse,
+    service_response: ServiceResponse,
 ) -> Result<Response, (StatusCode, String)> {
-    let status = StatusCode::from_u16(py_response.status).map_err(|_| {
+    let status = StatusCode::from_u16(service_response.status).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "invalid status".to_string(),
@@ -106,7 +111,7 @@ pub(crate) fn build_response(
 
     let mut response = Response::builder()
         .status(status)
-        .body(Body::from(py_response.body))
+        .body(Body::from(service_response.body))
         .map_err(|err| {
             error!(?err, "failed to build response body");
             (
@@ -117,14 +122,14 @@ pub(crate) fn build_response(
 
     {
         let headers = response.headers_mut();
-        for (name, value) in py_response.headers {
+        for (name, value) in service_response.headers {
             if name.eq_ignore_ascii_case("transfer-encoding") {
                 continue;
             }
             let header_name = match HeaderName::from_bytes(name.as_bytes()) {
                 Ok(name) => name,
                 Err(err) => {
-                    error!(?err, "invalid header name from python bridge: {name}");
+                    error!(?err, "invalid header name: {name}");
                     continue;
                 }
             };
@@ -143,7 +148,7 @@ pub(crate) fn build_response(
 
     // Record server-side errors for test instrumentation so integration
     // tests can assert no 500s were emitted during their run.
-    if py_response.status >= 500 {
+    if service_response.status >= 500 {
         test_instrumentation::record_error();
     }
 

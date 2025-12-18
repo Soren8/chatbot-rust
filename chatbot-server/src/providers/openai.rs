@@ -86,7 +86,7 @@ impl OpenAiProvider {
         // If the provider-level config does not include test chunks, allow overriding
         // via the `CHATBOT_TEST_OPENAI_CHUNKS` environment variable so tests can
         // stub out network calls without requiring the provider configuration to
-        // be mutated in Python.
+        // be mutated.
         let mut test_chunks = config.test_chunks.clone();
         if test_chunks.is_none() {
             if let Ok(env_val) = std::env::var("CHATBOT_TEST_OPENAI_CHUNKS") {

@@ -8,7 +8,7 @@
 
 ## Code Style Guidelines
 - **Imports**: Standard library first, then third-party, then local modules
-- **Error Handling**: Use try/except with specific exception types, log errors appropriately
+- **Error Handling**: Use `anyhow` or `thiserror` for error handling, log errors appropriately with `tracing`
 - **Dead code**: Prefer deleting unused code over commenting it out
 - **History**: Do not add comments about how code used to be; use git history
 
@@ -18,7 +18,7 @@
 - Keep `temp/todo.md` updated as you progress
 
 ## Refactoring guidelines
-- First write concise, focused integration tests (in the new target language) that covers existing functionality if needed.
+- First write concise, focused integration tests that cover existing functionality if needed.
 - Make sure those tests pass.
 - Write new refactored code that covers all old functionality.
 - Ensure the appropriate tests now pass.
@@ -32,7 +32,6 @@
 - Keep Docker build caches under `temp/.docker/`; create that directory inside `temp/` when needed so the repository root stays free of sandbox artefacts.
 - Store test run artifacts under `temp/test-logs/`; do not create a top-level `test-logs/` directory.
 - Always validate provider configurations before committing
-- Use logging instead of print statements for debugging
-- Skip running `python3 -m compileall`; it’s slow here and the user will run real functional tests.
+- Use logging (via `tracing`) instead of print statements for debugging
 - Treat the task as complete only after all required tests pass and your changes are committed to git.
 - Update any relevant docs, checklists or todo lists at the end of a task. Only add content to docs, not checklists or todo lists.

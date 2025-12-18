@@ -24,8 +24,7 @@ services:
       # Core app/env settings (values come from host env or .env consumed by Compose)
       SECRET_KEY: ${SECRET_KEY}
       HOST_DATA_DIR: ${HOST_DATA_DIR:-/app/data}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-600}
+      RUST_LOG: ${LOG_LEVEL:-info}
       CHATBOT_BIND_ADDR: ${CHATBOT_BIND_ADDR:-0.0.0.0:80}
       CHATBOT_STATIC_ROOT: /app/static
 
