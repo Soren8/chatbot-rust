@@ -57,8 +57,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
 
     let csrf_token = headers
         .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing CSRF token".to_string()))?;
+        .and_then(|value| value.to_str().ok());
 
     let csrf_valid =
         session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
@@ -70,7 +69,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid CSRF token".to_string()));
+        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
     }
 
     let content_type = headers

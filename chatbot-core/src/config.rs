@@ -73,6 +73,7 @@ pub struct AppConfig {
     pub tts_base_url: String,
     pub default_system_prompt: String,
     pub session_timeout: u64,
+    pub csrf: bool,
     pub cdn_sri: HashMap<String, String>,
     provider_order: Vec<String>,
     providers_by_name: HashMap<String, ProviderConfig>,
@@ -145,6 +146,60 @@ struct RawConfig {
     default_system_prompt: Option<String>,
     #[serde(default)]
     session_timeout: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    csrf: Option<bool>,
+}
+
+fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct BoolVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for BoolVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("boolean or string ('on'/'off', 'true'/'false')")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Some(value))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value.to_lowercase().as_str() {
+                "on" | "true" => Ok(Some(true)),
+                "off" | "false" => Ok(Some(false)),
+                _ => Err(serde::de::Error::custom(format!(
+                    "invalid boolean string: {}",
+                    value
+                ))),
+            }
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(BoolVisitor)
 }
 
 fn load_app_config() -> AppConfig {
@@ -207,10 +262,16 @@ fn load_app_config() -> AppConfig {
     });
 
     let session_timeout = raw_config.session_timeout.unwrap_or(3600);
+    let csrf = if let Ok(env_csrf) = env::var("CSRF") {
+        env_csrf.to_lowercase() == "on" || env_csrf.to_lowercase() == "true"
+    } else {
+        raw_config.csrf.unwrap_or(true)
+    };
 
     info!(
         providers = providers_by_name.len(),
         default_provider = %default_provider_name,
+        csrf_enabled = csrf,
         "configuration loaded"
     );
 
@@ -221,6 +282,7 @@ fn load_app_config() -> AppConfig {
         tts_base_url,
         default_system_prompt,
         session_timeout,
+        csrf,
         cdn_sri,
         provider_order,
         providers_by_name,
@@ -472,6 +534,43 @@ mod tests {
         let config = app_config();
         let provider = config.default_provider();
         assert_eq!(provider.model_name, "injected-model");
+
+        reset();
+    }
+
+    #[test]
+    fn loads_csrf_config() {
+        let _lock = TEST_MUTEX.lock().expect("test mutex");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        
+        // Test with boolean false
+        {
+            let mut file = fs::File::create(&path).expect("create config");
+            writeln!(file, "csrf: false").expect("write config");
+            let _cwd_guard = CwdGuard::change_to(dir.path());
+            reset();
+            let config = app_config();
+            assert!(!config.csrf);
+        }
+
+        // Test with string "off"
+        {
+            let mut file = fs::File::create(&path).expect("create config");
+            writeln!(file, "csrf: 'off'").expect("write config");
+            let _cwd_guard = CwdGuard::change_to(dir.path());
+            reset();
+            let config = app_config();
+            assert!(!config.csrf);
+        }
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+
+        // Test environment variable override
+        let _csrf_guard = EnvVarGuard::set("CSRF", "on");
+        reset();
+        let config = app_config();
+        assert!(config.csrf);
 
         reset();
     }

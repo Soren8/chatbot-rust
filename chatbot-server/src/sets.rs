@@ -92,7 +92,7 @@ pub async fn handle_create_set(
     let set_name_raw = payload.set_name.unwrap_or_default();
 
     let cookie_header = extract_cookie(&headers);
-    let csrf_token = extract_csrf(&headers)?;
+    let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
@@ -171,7 +171,7 @@ pub async fn handle_delete_set(
     let set_name_raw = payload.set_name.unwrap_or_default();
 
     let cookie_header = extract_cookie(&headers);
-    let csrf_token = extract_csrf(&headers)?;
+    let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
@@ -249,7 +249,7 @@ pub async fn handle_load_set(
     let set_name_raw = payload.set_name.unwrap_or_default();
 
     let cookie_header = extract_cookie(&headers);
-    let csrf_token = extract_csrf(&headers)?;
+    let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
@@ -332,16 +332,15 @@ fn extract_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(|s| s.to_owned())
 }
 
-fn extract_csrf(headers: &axum::http::HeaderMap) -> Result<&str, (StatusCode, String)> {
+fn extract_csrf(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
         .get("X-CSRF-Token")
         .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing CSRF token".to_string()))
 }
 
 fn validate_csrf(
     cookie_header: Option<&str>,
-    csrf_token: &str,
+    csrf_token: Option<&str>,
 ) -> Result<(), (StatusCode, String)> {
     let valid = session::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
         error!(?err, "failed to validate CSRF token for sets endpoint");
@@ -352,7 +351,7 @@ fn validate_csrf(
     })?;
 
     if !valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid CSRF token".to_string()));
+        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
     }
 
     Ok(())

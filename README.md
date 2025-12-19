@@ -7,7 +7,7 @@ It started off as a simple single-threaded Flask app to test out vibe coding, bu
 Not a single line of code in this repository was written manually. Human work included: model/agent selections, design guidance, code review, testing, bug reporting, small edits, etc.
 
 ## Features
-- Axum server with CSRF-protected routes for chat, authentication, set management, and TTS.
+- Axum server with configurable CSRF-protected routes (enabled by default) for chat, authentication, set management, and TTS.
 - `chatbot-core` crate encapsulating chat logic, provider abstractions, persistence, and session management.
 - Static assets rendered with Minijinja and served from `static/`.
 - Async provider implementations (OpenAI, Ollama) with streaming support and configurable defaults.

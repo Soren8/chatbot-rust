@@ -42,3 +42,4 @@ llms:
 default_llm: "Local Ollama (Free Tier)"
 default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
 session_timeout: 3600
+csrf: on # Set to 'off' only for development (localhost over HTTP); this also disables the 'Secure' flag on session cookies.

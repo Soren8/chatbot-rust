@@ -49,9 +49,6 @@ pub async fn handle_reset_chat(
         .get("X-CSRF-Token")
         .and_then(|value| value.to_str().ok());
 
-    let csrf_token =
-        csrf_token.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing CSRF token".to_string()))?;
-
     let csrf_valid =
         session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token for reset_chat");
@@ -62,7 +59,7 @@ pub async fn handle_reset_chat(
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid CSRF token".to_string()));
+        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
     }
 
     let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {

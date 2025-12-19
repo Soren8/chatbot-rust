@@ -72,7 +72,7 @@ pub async fn handle_signup_post(
 
     let username_raw = form.get("username").map(|s| s.trim()).unwrap_or("");
     let password = form.get("password").map(|s| s.as_str()).unwrap_or("");
-    let csrf_token = form.get("csrf_token").map(|s| s.as_str()).unwrap_or("");
+    let csrf_token = form.get("csrf_token").map(|s| s.as_str());
 
     if username_raw.is_empty() || password.is_empty() {
         return Err((
@@ -91,7 +91,7 @@ pub async fn handle_signup_post(
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid CSRF token".to_string()));
+        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
     }
 
     let username = match normalise_username(username_raw) {

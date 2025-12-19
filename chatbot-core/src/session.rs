@@ -183,8 +183,13 @@ impl HttpSessionStore {
 
     fn build_set_cookie(&self, value: &str) -> String {
         let max_age = self.timeout.as_secs().clamp(60, 31_536_000);
+        let secure = if config::app_config().csrf {
+            " Secure;"
+        } else {
+            ""
+        };
         format!(
-            "{SESSION_COOKIE_NAME}={value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+            "{SESSION_COOKIE_NAME}={value}; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age={max_age}"
         )
     }
 }
@@ -254,7 +259,15 @@ pub fn prepare_home_context(cookie_header: Option<&str>) -> Result<HomeBootstrap
     })
 }
 
-pub fn validate_csrf_token(cookie_header: Option<&str>, token: &str) -> Result<bool, SessionError> {
+pub fn validate_csrf_token(cookie_header: Option<&str>, token: Option<&str>) -> Result<bool, SessionError> {
+    if !config::app_config().csrf {
+        return Ok(true);
+    }
+
+    let Some(token) = token else {
+        return Ok(false);
+    };
+
     if token.is_empty() {
         return Ok(false);
     }
