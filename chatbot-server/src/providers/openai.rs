@@ -6,6 +6,7 @@ use futures_util::Stream;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
+use tracing::debug;
 
 use chatbot_core::config::ProviderConfig;
 
@@ -166,6 +167,7 @@ impl OpenAiProvider {
                     yield chunk;
                 }
                 if outcome.done {
+                    debug!("OpenAI SSE stream marked [DONE]");
                     return;
                 }
             }

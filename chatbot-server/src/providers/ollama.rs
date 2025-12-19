@@ -5,6 +5,7 @@ use async_stream::try_stream;
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use chatbot_core::{
     chat::{self, PreparedChatMessages},
@@ -171,6 +172,7 @@ impl OllamaProvider {
                             if let Some(piece) = piece {
                                 yield piece;
                             }
+                            debug!("Ollama stream marked done");
                             return;
                         }
                     }

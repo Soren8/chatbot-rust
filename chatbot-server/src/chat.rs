@@ -251,7 +251,10 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             }
         }
 
+        debug!(full_response = %response_text, "full response from provider completed");
+
         let clean_response = strip_think_tags(&response_text);
+
         match finalize_chat(
             &session_context_for_finalize,
             &set_name,

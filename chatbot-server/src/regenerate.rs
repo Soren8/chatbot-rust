@@ -244,7 +244,7 @@ pub async fn handle_regenerate(
                 }
                 Err(err) => {
                     encountered_error = true;
-                    error!(?err, "error while reading provider stream");
+                    error!(?err, "error while reading provider stream (regenerate)");
                     let msg = format!("\n[Error] {err}\n");
                     response_text.push_str(&msg);
                     yield Bytes::from(msg.into_bytes());
@@ -253,7 +253,10 @@ pub async fn handle_regenerate(
             }
         }
 
+        debug!(full_response = %response_text, "full response from provider (regenerate) completed");
+
         let clean_response = strip_think_tags(&response_text);
+
         match regenerate_finalize(
             &session_context_for_finalize,
             &set_name,
