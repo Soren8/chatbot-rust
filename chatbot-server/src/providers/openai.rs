@@ -157,16 +157,20 @@ impl OpenAiProvider {
             let mut buffer = String::new();
             let mut body_stream = response.bytes_stream();
 
+            let mut currently_thinking = false;
             while let Some(chunk) = body_stream.next().await {
                 let bytes = chunk.context("OpenAI stream read error")?;
                 let piece = String::from_utf8_lossy(&bytes);
                 buffer.push_str(&piece);
 
-                let outcome = extract_sse_payloads(&mut buffer)?;
+                let outcome = extract_sse_payloads(&mut buffer, &mut currently_thinking)?;
                 for chunk in outcome.chunks {
                     yield chunk;
                 }
                 if outcome.done {
+                    if currently_thinking {
+                        yield "</think>".to_string();
+                    }
                     debug!("OpenAI SSE stream marked [DONE]");
                     return;
                 }
@@ -174,9 +178,12 @@ impl OpenAiProvider {
 
             if !buffer.is_empty() {
                 buffer.push('\n');
-                let outcome = extract_sse_payloads(&mut buffer)?;
+                let outcome = extract_sse_payloads(&mut buffer, &mut currently_thinking)?;
                 for chunk in outcome.chunks {
                     yield chunk;
+                }
+                if currently_thinking {
+                    yield "</think>".to_string();
                 }
             }
         };
@@ -190,7 +197,10 @@ struct ExtractionOutcome {
     done: bool,
 }
 
-fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
+fn extract_sse_payloads(
+    buffer: &mut String,
+    currently_thinking: &mut bool,
+) -> Result<ExtractionOutcome> {
     let mut chunks = Vec::new();
     let mut done = false;
 
@@ -214,14 +224,33 @@ fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
 
             let value: Value =
                 serde_json::from_str(data).context("failed to decode OpenAI stream chunk")?;
-            if let Some(content) = value
+            debug!(full_json = ?value, "received OpenAI SSE payload");
+
+            let delta = value
                 .get("choices")
                 .and_then(|choices| choices.get(0))
-                .and_then(|choice| choice.get("delta"))
-                .and_then(|delta| delta.get("content"))
-                .and_then(Value::as_str)
-            {
-                chunks.push(content.to_string());
+                .and_then(|choice| choice.get("delta"));
+
+            if let Some(delta) = delta {
+                if let Some(reasoning) = delta
+                    .get("reasoning_content")
+                    .or_else(|| delta.get("reasoning"))
+                    .and_then(Value::as_str)
+                {
+                    if !*currently_thinking {
+                        chunks.push("<think>".to_string());
+                        *currently_thinking = true;
+                    }
+                    chunks.push(reasoning.to_string());
+                } else if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                    if *currently_thinking {
+                        chunks.push("</think>".to_string());
+                        *currently_thinking = false;
+                    }
+                    if !content.is_empty() {
+                        chunks.push(content.to_string());
+                    }
+                }
             }
         } else {
             break;

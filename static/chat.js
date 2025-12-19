@@ -265,6 +265,7 @@ window.regenerateMessage = function regenerateMessage(button) {
       if (!content) return;
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
       $thinkingWrap.show();
+      $thinkingWrap.find('.toggle-thinking').show();
       $thinkingContent.text($thinkingContent.text() + content);
     }
     function processBuffer() {
@@ -493,6 +494,7 @@ $(document).ready(function() {
           if (!content) return;
           if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
           $thinkingContainerWrapper.show();
+          $thinkingContainerWrapper.find('.toggle-thinking').show();
           $thinkingContentElement.text($thinkingContentElement.text() + content);
         }
         function processChunk(chunk) {
