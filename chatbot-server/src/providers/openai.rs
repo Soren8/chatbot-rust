@@ -117,6 +117,8 @@ impl OpenAiProvider {
             return Ok(Box::pin(stream));
         }
 
+        let mut is_implicit_model = self.model.contains("nemotron-3-nano-30b-a3b")
+            || self.model.contains("apriel-1.6-15b-thinker");
         let api_key = self
             .api_key
             .as_deref()
@@ -158,17 +160,24 @@ impl OpenAiProvider {
             let mut body_stream = response.bytes_stream();
 
             let mut currently_thinking = false;
+            let mut has_sent_any_content = false;
+
             while let Some(chunk) = body_stream.next().await {
                 let bytes = chunk.context("OpenAI stream read error")?;
                 let piece = String::from_utf8_lossy(&bytes);
                 buffer.push_str(&piece);
 
-                let outcome = extract_sse_payloads(&mut buffer, &mut currently_thinking)?;
+                let outcome = extract_sse_payloads(
+                    &mut buffer,
+                    &mut currently_thinking,
+                    &mut has_sent_any_content,
+                    &mut is_implicit_model,
+                )?;
                 for chunk in outcome.chunks {
                     yield chunk;
                 }
                 if outcome.done {
-                    if currently_thinking {
+                    if currently_thinking && !is_implicit_model {
                         yield "</think>".to_string();
                     }
                     debug!("OpenAI SSE stream marked [DONE]");
@@ -178,11 +187,16 @@ impl OpenAiProvider {
 
             if !buffer.is_empty() {
                 buffer.push('\n');
-                let outcome = extract_sse_payloads(&mut buffer, &mut currently_thinking)?;
+                let outcome = extract_sse_payloads(
+                    &mut buffer,
+                    &mut currently_thinking,
+                    &mut has_sent_any_content,
+                    &mut is_implicit_model,
+                )?;
                 for chunk in outcome.chunks {
                     yield chunk;
                 }
-                if currently_thinking {
+                if currently_thinking && !is_implicit_model {
                     yield "</think>".to_string();
                 }
             }
@@ -200,6 +214,8 @@ struct ExtractionOutcome {
 fn extract_sse_payloads(
     buffer: &mut String,
     currently_thinking: &mut bool,
+    has_sent_any_content: &mut bool,
+    is_implicit_model: &mut bool,
 ) -> Result<ExtractionOutcome> {
     let mut chunks = Vec::new();
     let mut done = false;
@@ -226,6 +242,19 @@ fn extract_sse_payloads(
                 serde_json::from_str(data).context("failed to decode OpenAI stream chunk")?;
             debug!(full_json = ?value, "received OpenAI SSE payload");
 
+            let model_response = value.get("model").and_then(Value::as_str).unwrap_or("");
+            if !*is_implicit_model
+                && (model_response.contains("nemotron-3-nano-30b-a3b")
+                    || model_response.contains("apriel-1.6-15b-thinker"))
+            {
+                *is_implicit_model = true;
+            }
+
+            if *is_implicit_model && !*has_sent_any_content && !*currently_thinking {
+                chunks.push("<think>".to_string());
+                *currently_thinking = true;
+            }
+
             let delta = value
                 .get("choices")
                 .and_then(|choices| choices.get(0))
@@ -241,14 +270,18 @@ fn extract_sse_payloads(
                         chunks.push("<think>".to_string());
                         *currently_thinking = true;
                     }
-                    chunks.push(reasoning.to_string());
+                    if !reasoning.is_empty() {
+                        chunks.push(reasoning.to_string());
+                        *has_sent_any_content = true;
+                    }
                 } else if let Some(content) = delta.get("content").and_then(Value::as_str) {
-                    if *currently_thinking {
+                    if *currently_thinking && !*is_implicit_model {
                         chunks.push("</think>".to_string());
                         *currently_thinking = false;
                     }
                     if !content.is_empty() {
                         chunks.push(content.to_string());
+                        *has_sent_any_content = true;
                     }
                 }
             }

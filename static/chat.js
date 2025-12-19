@@ -269,20 +269,23 @@ window.regenerateMessage = function regenerateMessage(button) {
       $thinkingContent.text($thinkingContent.text() + content);
     }
     function processBuffer() {
+      const openTag = '<think>';
+      const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
+
       while (buffer.length > 0) {
         if (state === 'visible') {
-          const tagStart = buffer.indexOf('<think>');
+          const tagStart = buffer.indexOf(openTag);
           if (tagStart !== -1) {
             const visiblePart = buffer.substring(0, tagStart);
             appendVisible(visiblePart);
-            buffer = buffer.substring(tagStart + '<think>'.length);
+            buffer = buffer.substring(tagStart + openTag.length);
             state = 'thinking';
             continue;
           } else {
             let flushableEnd = buffer.length;
-            for (let i = 1; i <= buffer.length && i <= '<think>'.length; i++) {
+            for (let i = 1; i <= buffer.length && i <= openTag.length; i++) {
               const suffix = buffer.substring(buffer.length - i);
-              if ('<think>'.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
+              if (openTag.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
             }
             const visiblePart = buffer.substring(0, flushableEnd);
             appendVisible(visiblePart);
@@ -290,18 +293,32 @@ window.regenerateMessage = function regenerateMessage(button) {
             break;
           }
         } else {
-          const tagEnd = buffer.indexOf('</think>');
-          if (tagEnd !== -1) {
-            const thinkingPart = buffer.substring(0, tagEnd);
+          let firstCloseTagIndex = -1;
+          let actualCloseTag = '';
+
+          for (const tag of closeTags) {
+            const idx = buffer.indexOf(tag);
+            if (idx !== -1 && (firstCloseTagIndex === -1 || idx < firstCloseTagIndex)) {
+              firstCloseTagIndex = idx;
+              actualCloseTag = tag;
+            }
+          }
+
+          if (firstCloseTagIndex !== -1) {
+            const thinkingPart = buffer.substring(0, firstCloseTagIndex);
             appendThinking(thinkingPart);
-            buffer = buffer.substring(tagEnd + '</think>'.length);
+            buffer = buffer.substring(firstCloseTagIndex + actualCloseTag.length);
             state = 'visible';
             continue;
           } else {
             let flushableEnd = buffer.length;
-            for (let i = 1; i <= buffer.length && i <= '</think>'.length; i++) {
+            const maxTagLen = Math.max(...closeTags.map(t => t.length));
+            for (let i = 1; i <= buffer.length && i <= maxTagLen; i++) {
               const suffix = buffer.substring(buffer.length - i);
-              if ('</think>'.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
+              if (closeTags.some(tag => tag.startsWith(suffix))) {
+                flushableEnd = buffer.length - i;
+                break;
+              }
             }
             const thinkingPart = buffer.substring(0, flushableEnd);
             appendThinking(thinkingPart);
@@ -499,20 +516,23 @@ $(document).ready(function() {
         }
         function processChunk(chunk) {
           buffer += chunk;
+          const openTag = '<think>';
+          const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
+
           while (buffer.length > 0) {
             if (state === 'visible') {
-              const tagStart = buffer.indexOf('<think>');
+              const tagStart = buffer.indexOf(openTag);
               if (tagStart !== -1) {
                 const visiblePart = buffer.substring(0, tagStart);
                 appendVisible(visiblePart);
-                buffer = buffer.substring(tagStart + '<think>'.length);
+                buffer = buffer.substring(tagStart + openTag.length);
                 state = 'thinking';
                 continue;
               } else {
                 let flushableEnd = buffer.length;
-                for (let i = 1; i <= buffer.length && i <= '<think>'.length; i++) {
+                for (let i = 1; i <= buffer.length && i <= openTag.length; i++) {
                   const suffix = buffer.substring(buffer.length - i);
-                  if ('<think>'.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
+                  if (openTag.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
                 }
                 const visiblePart = buffer.substring(0, flushableEnd);
                 appendVisible(visiblePart);
@@ -520,18 +540,32 @@ $(document).ready(function() {
                 break;
               }
             } else if (state === 'thinking') {
-              const tagEnd = buffer.indexOf('</think>');
-              if (tagEnd !== -1) {
-                const thinkingPart = buffer.substring(0, tagEnd);
+              let firstCloseTagIndex = -1;
+              let actualCloseTag = '';
+
+              for (const tag of closeTags) {
+                const idx = buffer.indexOf(tag);
+                if (idx !== -1 && (firstCloseTagIndex === -1 || idx < firstCloseTagIndex)) {
+                  firstCloseTagIndex = idx;
+                  actualCloseTag = tag;
+                }
+              }
+
+              if (firstCloseTagIndex !== -1) {
+                const thinkingPart = buffer.substring(0, firstCloseTagIndex);
                 appendThinking(thinkingPart);
-                buffer = buffer.substring(tagEnd + '</think>'.length);
+                buffer = buffer.substring(firstCloseTagIndex + actualCloseTag.length);
                 state = 'visible';
                 continue;
               } else {
                 let flushableEnd = buffer.length;
-                for (let i = 1; i <= buffer.length && i <= '</think>'.length; i++) {
+                const maxTagLen = Math.max(...closeTags.map(t => t.length));
+                for (let i = 1; i <= buffer.length && i <= maxTagLen; i++) {
                   const suffix = buffer.substring(buffer.length - i);
-                  if ('</think>'.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
+                  if (closeTags.some(tag => tag.startsWith(suffix))) {
+                    flushableEnd = buffer.length - i;
+                    break;
+                  }
                 }
                 const thinkingPart = buffer.substring(0, flushableEnd);
                 appendThinking(thinkingPart);
