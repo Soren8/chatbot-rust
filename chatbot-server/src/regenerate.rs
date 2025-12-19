@@ -253,10 +253,7 @@ pub async fn handle_regenerate(
             }
         }
 
-        debug!(full_response = %response_text, "full response from provider (regenerate) completed");
-
         let clean_response = strip_think_tags(&response_text);
-
         match regenerate_finalize(
             &session_context_for_finalize,
             &set_name,

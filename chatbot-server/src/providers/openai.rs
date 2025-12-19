@@ -240,7 +240,6 @@ fn extract_sse_payloads(
 
             let value: Value =
                 serde_json::from_str(data).context("failed to decode OpenAI stream chunk")?;
-            debug!(full_json = ?value, "received OpenAI SSE payload");
 
             let model_response = value.get("model").and_then(Value::as_str).unwrap_or("");
             if !*is_implicit_model
