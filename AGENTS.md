@@ -33,5 +33,6 @@
 - Store test run artifacts under `temp/test-logs/`; do not create a top-level `test-logs/` directory.
 - Always validate provider configurations before committing
 - Use logging (via `tracing`) instead of print statements for debugging
+- When asked a question, provide the answer and then stop; do not begin modifying code or implementing changes until the user explicitly provides a "proceed" instruction.
 - Treat the task as complete only after all required tests pass and your changes are committed to git.
 - Update any relevant docs, checklists or todo lists at the end of a task. Only add content to docs, not checklists or todo lists.
