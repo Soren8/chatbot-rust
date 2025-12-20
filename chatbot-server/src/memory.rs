@@ -352,7 +352,7 @@ fn validate_csrf(
     })?;
 
     if !valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
+        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
     Ok(())

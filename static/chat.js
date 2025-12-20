@@ -33,6 +33,17 @@ try {
   } catch (_) {}
 } catch (e) { /* no-op */ }
 
+const originalFetch = window.fetch;
+window.fetch = function() {
+  return originalFetch.apply(this, arguments).then(response => {
+    if (response.status === 401) {
+      window.location.href = '/login';
+      throw new Error('Session expired');
+    }
+    return response;
+  });
+};
+
 try {
   var appRoot = document.getElementById('app-root');
   if (appRoot && appRoot.dataset) {

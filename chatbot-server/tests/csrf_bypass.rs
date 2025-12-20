@@ -121,8 +121,8 @@ llms:
         .await
         .expect("POST /chat response");
 
-    // It should return 400 Bad Request because CSRF is enabled but missing
-    assert_eq!(chat_response.status(), StatusCode::BAD_REQUEST);
+    // It should return 401 Unauthorized because CSRF is enabled but missing
+    assert_eq!(chat_response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

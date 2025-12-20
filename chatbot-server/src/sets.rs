@@ -40,7 +40,7 @@ pub async fn handle_get_sets(
         Some(value) => value,
         None => {
             return build_json_response(
-                StatusCode::FORBIDDEN,
+                StatusCode::UNAUTHORIZED,
                 json!({"error": "Not authenticated"}),
             );
         }
@@ -107,7 +107,7 @@ pub async fn handle_create_set(
         Some(value) => value,
         None => {
             return build_json_response(
-                StatusCode::FORBIDDEN,
+                StatusCode::UNAUTHORIZED,
                 json!({"error": "Not authenticated"}),
             );
         }
@@ -186,7 +186,7 @@ pub async fn handle_delete_set(
         Some(value) => value,
         None => {
             return build_json_response(
-                StatusCode::FORBIDDEN,
+                StatusCode::UNAUTHORIZED,
                 json!({"error": "Not authenticated"}),
             );
         }
@@ -266,7 +266,7 @@ pub async fn handle_load_set(
         Some(value) => value,
         None => {
             return build_json_response(
-                StatusCode::FORBIDDEN,
+                StatusCode::UNAUTHORIZED,
                 json!({"error": "Not authenticated"}),
             );
         }
@@ -351,7 +351,7 @@ fn validate_csrf(
     })?;
 
     if !valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
+        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
     Ok(())

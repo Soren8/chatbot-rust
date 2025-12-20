@@ -59,7 +59,7 @@ pub async fn handle_reset_chat(
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
+        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
     let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {

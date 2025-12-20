@@ -77,7 +77,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
+        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
     let content_type = headers

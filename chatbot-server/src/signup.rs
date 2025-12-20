@@ -91,7 +91,11 @@ pub async fn handle_signup_post(
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
+        return Ok(Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header(header::LOCATION, "/login")
+            .body(Body::empty())
+            .unwrap());
     }
 
     let username = match normalise_username(username_raw) {

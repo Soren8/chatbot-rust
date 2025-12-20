@@ -531,6 +531,9 @@ fn initialise_session_data(
         data.history = loaded.history;
         data.encrypted = loaded.encrypted;
     } else {
+        if set_name != "default" {
+            return Err(unauthorized("Login required for custom sets"));
+        }
         data.memory.clear();
         data.system_prompt = resolve_default_prompt();
         data.history.clear();

@@ -71,7 +71,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
     })?;
 
     if !csrf_valid {
-        return Err((StatusCode::BAD_REQUEST, "Invalid or missing CSRF token".to_string()));
+        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
