@@ -140,6 +140,7 @@ pub fn reset() {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct RawConfig {
     #[serde(default)]
     llms: Vec<ProviderConfig>,
@@ -151,9 +152,9 @@ struct RawConfig {
     session_timeout: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     csrf: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible", alias = "saveThoughts")]
     save_thoughts: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    #[serde(default, deserialize_with = "deserialize_bool_flexible", alias = "sendThoughts")]
     send_thoughts: Option<bool>,
 }
 
@@ -286,6 +287,12 @@ fn load_app_config() -> AppConfig {
 
     let save_thoughts = raw_config.save_thoughts.unwrap_or(true);
     let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
+
+    info!(
+        effective_save = save_thoughts,
+        effective_send = send_thoughts,
+        "effective config values for thinking tokens"
+    );
 
     info!(
         providers = providers_by_name.len(),
@@ -605,6 +612,27 @@ mod tests {
         reset();
         let provider_type = app_config().default_provider().provider_type.clone();
         assert_eq!(provider_type, "ollama");
+        reset();
+    }
+
+    #[test]
+    fn parses_thinking_config() {
+        let _lock = TEST_MUTEX.lock().expect("test mutex");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "save_thoughts: false\nsend_thoughts: true"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        reset();
+        let config = app_config();
+        
+        assert_eq!(config.save_thoughts, false);
+        assert_eq!(config.send_thoughts, true);
         reset();
     }
 }

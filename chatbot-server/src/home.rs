@@ -41,6 +41,13 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
     let default_prompt = config.default_system_prompt.clone();
     let save_thoughts = config.save_thoughts;
     let send_thoughts = config.send_thoughts;
+    
+    tracing::debug!(
+        save_thoughts,
+        send_thoughts,
+        "rendering home template with config"
+    );
+
     let sri = config.cdn_sri.clone();
     let available_models = build_available_models(config.provider_names(), &user_tier, &config);
 
@@ -187,4 +194,39 @@ fn build_response(
             "response build error".to_string(),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_template_with_config() {
+        let logged_in = true;
+        let user_tier = "free";
+        let available_models = vec![FrontendModel {
+            provider_name: "test-model".to_string(),
+            tier: "free".to_string(),
+        }];
+        let default_prompt = "system prompt";
+        let csrf_token = "csrf";
+        let sri = HashMap::new();
+        let save_thoughts = true;
+        let send_thoughts = true;
+
+        let rendered = render_template(
+            logged_in,
+            user_tier,
+            &available_models,
+            default_prompt,
+            csrf_token,
+            sri,
+            save_thoughts,
+            send_thoughts,
+        )
+        .expect("render template");
+
+        assert!(rendered.contains(r#""saveThoughts": true"#));
+        assert!(rendered.contains(r#""sendThoughts": true"#));
+    }
 }

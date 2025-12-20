@@ -3,15 +3,21 @@ try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
     const tpl = document.getElementById('app-data');
     if (tpl) {
-      const cfg = JSON.parse(tpl.textContent || '{}');
+      const rawText = (tpl.textContent || tpl.innerHTML || '').trim();
+      console.debug('Raw app-data text:', rawText);
+      const cfg = JSON.parse(rawText || '{}');
+      console.debug('Parsed config object:', cfg);
       window.APP_DATA = {
         userTier: (cfg && cfg.userTier) || 'free',
         availableModels: (cfg && cfg.availableModels) || [],
         loggedIn: !!(cfg && cfg.loggedIn),
+        saveThoughts: cfg && cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
+        sendThoughts: cfg && cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
       };
+      console.debug('Initialized APP_DATA:', { save: window.APP_DATA.saveThoughts, send: window.APP_DATA.sendThoughts });
       window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
     } else {
-      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false };
+      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false };
       window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || '';
     }
   }
