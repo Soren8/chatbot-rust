@@ -51,13 +51,13 @@ fn build_app() -> axum::Router {
 }
 
 fn extract_app_data(body: &str) -> Value {
-    const MARKER: &str = "<template id=\"app-data\" type=\"application/json\">";
+    const MARKER: &str = "<script id=\"app-data\" type=\"application/json\">";
     let start = body.find(MARKER).expect("app-data marker present");
     let json_start = start + MARKER.len();
     let end = body[json_start..]
-        .find("</template>")
+        .find("</script>")
         .map(|rel| json_start + rel)
-        .expect("closing template tag");
+        .expect("closing script tag");
     let payload = body[json_start..end].trim();
     serde_json::from_str(payload).expect("app-data json")
 }
