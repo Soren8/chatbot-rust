@@ -24,6 +24,12 @@
 - Ensure the appropriate tests now pass.
 - Delete the legacy code.
 
+## Bug Fixing Protocol
+- When a bug is reported:
+  1. Write a new test case that reproduces the bug (it should fail).
+  2. Implement the fix.
+  3. Run the test again to confirm it passes.
+
 ## Important Notes
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Git commit at the completion of each full task.
