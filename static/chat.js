@@ -221,7 +221,11 @@ window.playTTS = function playTTS(button) {
   if (!messageText) return;
   $(button).prop('disabled', true).text('...');
   fetch('/tts', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text: messageText }) })
-    .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.blob(); })
+    .then(r => { 
+      if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+      if (!r.ok) throw new Error('Network response was not ok'); 
+      return r.blob(); 
+    })
     .then(blob => {
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
@@ -257,6 +261,7 @@ window.regenerateMessage = function regenerateMessage(button) {
     body: JSON.stringify({ message: userText, system_prompt: $('#user-system-prompt').val(), set_name: $('#set-selector').val() || 'default', model_name: $('#modelSelect').val(), pair_index: pairIndex })
   })
   .then(response => {
+    if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
     if (!response.ok) throw new Error('Network response was not ok');
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
@@ -382,6 +387,7 @@ $(document).ready(function() {
       if (aiMessageElement) aiMessageElement.remove();
       userMessageElement.remove();
       fetch('/delete_message', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ user_message: userText, ai_message: aiText, set_name: $('#set-selector').val() || 'default' }) })
+        .then(r => { if (r.status === 401) { window.location.href = '/login'; } })
         .catch(()=>{});
     }
   });
@@ -498,7 +504,11 @@ $(document).ready(function() {
     appendMessage('<strong>You:</strong> ' + escapeHTML(message), 'user-message');
     const requestData = { message, system_prompt: systemPrompt, set_name: activeSet, model_name: $('#modelSelect').val() };
     fetch('/chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(requestData) })
-      .then(response => { if (!response.ok) return response.text().then(t => { throw new Error(t || 'Network response was not ok'); }); return response; })
+      .then(response => { 
+        if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+        if (!response.ok) return response.text().then(t => { throw new Error(t || 'Network response was not ok'); }); 
+        return response; 
+      })
       .then(response => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
