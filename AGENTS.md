@@ -22,7 +22,7 @@
 - Make sure those tests pass.
 - Write new refactored code that covers all old functionality.
 - Ensure the appropriate tests now pass.
-- Delete the legacy code.
+- Delete the legacy code (but NEVER delete tests). Tests created during feature implementation or bug fixing are permanent artifacts.
 
 ## Bug Fixing Protocol
 - When a bug is reported:
@@ -42,3 +42,4 @@
 - When asked a question, provide the answer and then stop; do not begin modifying code or implementing changes until the user explicitly provides a "proceed" instruction.
 - Treat the task as complete only after all required tests pass and your changes are committed to git.
 - Update any relevant docs, checklists or todo lists at the end of a task. Only add content to docs, not checklists or todo lists.
+- NEVER add cache busting mechanisms (e.g., query parameters on script tags) unless the user explicitly asks for it. Assume the user knows how to clear their cache.
