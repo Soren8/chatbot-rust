@@ -866,13 +866,19 @@ fn build_regenerate_context(
 
     let test_chunks = resolve_test_chunks(provider);
 
+    let history = if let Some(index) = insertion_index {
+        data.history.iter().take(index).cloned().collect()
+    } else {
+        data.history.clone()
+    };
+
     let context = ChatContext {
         session_id: session.session_id.clone(),
         username: session.username.clone(),
         set_name: set_name.to_owned(),
         memory_text: data.memory.clone(),
         system_prompt: data.system_prompt.clone(),
-        history: data.history.clone(),
+        history,
         encrypted: request.encrypted,
         model_name,
         provider: provider.clone(),
@@ -991,4 +997,71 @@ pub fn session_history(session_id: &str) -> Vec<(String, String)> {
             data.history.clone()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regenerate_truncates_future_context() {
+        let session_id = "test-session-regen";
+        let history = vec![
+            ("User1".to_string(), "AI1".to_string()),
+            ("User2".to_string(), "AI2".to_string()),
+            ("User3".to_string(), "AI3".to_string()),
+        ];
+        
+        // Setup initial state
+        SessionStore::global().entry(session_id);
+        update_session_history(session_id, &history);
+        
+        let session = SessionContext {
+            session_id: session_id.to_string(),
+            username: None,
+            encryption_key: None,
+        };
+        
+        let provider = ProviderConfig {
+            provider_name: "default".to_string(),
+            provider_type: "openai".to_string(),
+            tier: None,
+            model_name: "default".to_string(),
+            context_size: Some(4096),
+            base_url: "http://localhost".to_string(),
+            api_key: None,
+            template: None,
+            allowed_providers: vec![],
+            request_timeout: None,
+            test_chunks: None,
+        };
+
+        let request = RegenerateRequestData {
+            message: "User2",
+            system_prompt: None,
+            set_name: Some("default"),
+            model_name: None,
+            encrypted: false,
+            pair_index: Some(1),
+        };
+
+        let result = regenerate_prepare(&session, &request, &provider);
+        assert!(result.error.is_none(), "regenerate_prepare failed: {:?}", result.error);
+        
+        let context = result.context.expect("context should be present");
+        
+        // The context sent to LLM should ONLY contain history BEFORE index 1
+        assert_eq!(context.history.len(), 1, "Context history should have 1 item");
+        assert_eq!(context.history[0].0, "User1");
+        
+        // The stored session history should contain everything except the removed item (User2)
+        // So it should have User1 and User3
+        let stored_history = session_history(session_id);
+        assert_eq!(stored_history.len(), 2, "Stored history should have 2 items");
+        assert_eq!(stored_history[0].0, "User1");
+        assert_eq!(stored_history[1].0, "User3");
+        
+        // Cleanup
+        release_session_lock(session_id);
+    }
 }
