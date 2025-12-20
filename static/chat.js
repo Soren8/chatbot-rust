@@ -398,6 +398,51 @@ $(document).ready(function() {
 
   // Load sets for logged-in users
   if (window.APP_DATA.loggedIn) {
+    function formatAiMessage(text) {
+      if (!text) return '';
+      let html = '';
+      let buffer = text;
+      let state = 'visible';
+      const openTag = '<think>';
+      const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
+
+      while (buffer.length > 0) {
+        if (state === 'visible') {
+          const idx = buffer.indexOf(openTag);
+          if (idx !== -1) {
+            html += escapeHTML(buffer.substring(0, idx));
+            buffer = buffer.substring(idx + openTag.length);
+            state = 'thinking';
+            html += '<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">';
+          } else {
+            html += escapeHTML(buffer);
+            buffer = '';
+          }
+        } else {
+          let firstCloseIdx = -1;
+          let usedTagLen = 0;
+          for (const tag of closeTags) {
+            const idx = buffer.indexOf(tag);
+            if (idx !== -1 && (firstCloseIdx === -1 || idx < firstCloseIdx)) {
+              firstCloseIdx = idx;
+              usedTagLen = tag.length;
+            }
+          }
+          if (firstCloseIdx !== -1) {
+            html += escapeHTML(buffer.substring(0, firstCloseIdx));
+            buffer = buffer.substring(firstCloseIdx + usedTagLen);
+            state = 'visible';
+            html += '</div></div>';
+          } else {
+            html += escapeHTML(buffer);
+            buffer = '';
+            html += '</div></div>';
+          }
+        }
+      }
+      return html;
+    }
+
     function loadSets() {
       return fetch('/get_sets', { headers: withCsrf() })
         .then(r => r.json())
@@ -429,7 +474,8 @@ $(document).ready(function() {
           if (data.history && data.history.length > 0) {
             data.history.forEach(([userMsg, aiMsg]) => {
               appendMessage(userMsg, 'user-message');
-              appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${escapeHTML(aiMsg)}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
+              const formattedAi = formatAiMessage(aiMsg);
+              appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${formattedAi}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
             });
             setTimeout(function() { try { $('#chat-content').scrollTop($('#chat-content')[0].scrollHeight); } catch (e) {} }, 0);
           }

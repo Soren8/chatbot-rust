@@ -9,7 +9,7 @@ const MIN_PARTIAL_HISTORY_TOKENS: f64 = 100.0;
 const MEMORY_SNIPPET_CHAR_LIMIT: usize = 2_000;
 
 static THINK_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<think>.*?</think>").expect("valid think regex"));
+    Lazy::new(|| Regex::new(r"(?s)<think>.*?(?:</think>|\[BEGIN FINAL RESPONSE\])").expect("valid think regex"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatMessageRole {
@@ -274,6 +274,18 @@ mod tests {
     #[test]
     fn strip_think_tags_removes_sections() {
         let text = "Hello<think>secret</think>world";
+        assert_eq!(strip_think_tags(text), "Helloworld");
+    }
+
+    #[test]
+    fn strip_think_tags_removes_alt_sections() {
+        let text = "Hello<think>secret[BEGIN FINAL RESPONSE]world";
+        assert_eq!(strip_think_tags(text), "Helloworld");
+    }
+
+    #[test]
+    fn strip_think_tags_removes_multiline() {
+        let text = "Hello<think>\nsecret\n</think>world";
         assert_eq!(strip_think_tags(text), "Helloworld");
     }
 }
