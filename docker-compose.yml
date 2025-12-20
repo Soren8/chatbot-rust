@@ -5,6 +5,7 @@ services:
       target: prod
       args:
         RUST_BUILD_PROFILE: ${RUST_BUILD_PROFILE:-debug}
+    restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
