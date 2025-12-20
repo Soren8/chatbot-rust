@@ -99,6 +99,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Whisper Large v3 turbo.
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro_tts.
+  - [x] Fish Speech API support.
 
 - **Documentation**
   - [ ] Host a `/docs` page or integrate with tooling like Redoc to expose interactive docs.
