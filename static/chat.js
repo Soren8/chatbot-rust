@@ -443,7 +443,7 @@ $(document).ready(function() {
       return html;
     }
 
-    function loadSets() {
+    function loadSets(shouldTriggerChange = true) {
       return fetch('/get_sets', { headers: withCsrf() })
         .then(r => r.json())
         .then(data => {
@@ -452,7 +452,9 @@ $(document).ready(function() {
           $.each(data, function(setName) {
             $('<option>').val(setName).text(setName).appendTo($selector);
           });
-          $selector.trigger('change');
+          if (shouldTriggerChange) {
+            $selector.trigger('change');
+          }
         });
     }
 
@@ -493,7 +495,10 @@ $(document).ready(function() {
           .then(r => r.json())
           .then(data => {
             if (data.status === 'success') {
-              loadSets().then(() => { $('#set-selector').val(setName); $('#set-selector').trigger('change'); });
+              loadSets(false).then(() => { 
+                $('#set-selector').val(setName); 
+                $('#set-selector').trigger('change'); 
+              });
               appendMessage('<strong>System:</strong> Created new set: ' + escapeHTML(setName), 'system-message');
             } else {
               appendMessage('<strong>Error:</strong> ' + data.error, 'error-message');
