@@ -10,7 +10,7 @@ use axum::{
 use bytes::Bytes;
 use chatbot_core::{
     chat::{self, strip_think_tags, ChatMessageRole},
-    config::get_provider_config,
+    config::{app_config, get_provider_config},
     session::{self, ChatRequestData, SessionContext},
 };
 use futures_util::StreamExt;
@@ -34,6 +34,10 @@ struct ChatRequest {
     model_name: Option<String>,
     #[serde(default)]
     encrypted: Option<bool>,
+    #[serde(default)]
+    save_thoughts: Option<bool>,
+    #[serde(default)]
+    send_thoughts: Option<bool>,
 }
 
 pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
@@ -126,12 +130,17 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         )
     })?;
 
+    let app_config = app_config();
+    let save_thoughts = payload.save_thoughts.unwrap_or(app_config.save_thoughts);
+    let send_thoughts = payload.send_thoughts.unwrap_or(app_config.send_thoughts);
+
     let request_data = ChatRequestData {
         message: payload.message.as_str(),
         system_prompt: payload.system_prompt.as_deref(),
         set_name: payload.set_name.as_deref(),
         model_name: Some(selected_model.as_str()),
         encrypted: payload.encrypted.unwrap_or(false),
+        send_thoughts,
     };
 
     let prepare = session::chat_prepare(&session_context, &request_data, &provider_config);
@@ -248,11 +257,17 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         }
 
         let clean_response = strip_think_tags(&response_text);
+        let final_response = if save_thoughts {
+            &response_text
+        } else {
+            &clean_response
+        };
+
         match finalize_chat(
             &session_context_for_finalize,
             &set_name,
             &user_message,
-            &clean_response,
+            final_response,
         ) {
             Ok(extra_chunks) => {
                 stream_lock.lock().unwrap().mark_released();

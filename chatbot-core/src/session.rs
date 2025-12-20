@@ -74,6 +74,7 @@ pub struct ChatContext {
     pub provider: ProviderConfig,
     pub encryption_key: Option<Vec<u8>>,
     pub test_chunks: Option<Vec<String>>,
+    pub send_thoughts: bool,
 }
 
 pub struct ChatPrepareResult {
@@ -87,6 +88,7 @@ pub struct ChatRequestData<'a> {
     pub set_name: Option<&'a str>,
     pub model_name: Option<&'a str>,
     pub encrypted: bool,
+    pub send_thoughts: bool,
 }
 
 pub struct RegeneratePrepareResult {
@@ -102,6 +104,7 @@ pub struct RegenerateRequestData<'a> {
     pub model_name: Option<&'a str>,
     pub encrypted: bool,
     pub pair_index: Option<i32>,
+    pub send_thoughts: bool,
 }
 
 const SESSION_COOKIE_NAME: &str = "session";
@@ -722,6 +725,7 @@ fn build_chat_context(
         provider: provider.clone(),
         encryption_key: session.encryption_key.clone(),
         test_chunks,
+        send_thoughts: request.send_thoughts,
     })
 }
 
@@ -884,6 +888,7 @@ fn build_regenerate_context(
         provider: provider.clone(),
         encryption_key: session.encryption_key.clone(),
         test_chunks,
+        send_thoughts: request.send_thoughts,
     };
 
     Ok((context, insertion_index))
@@ -1043,6 +1048,7 @@ mod tests {
             model_name: None,
             encrypted: false,
             pair_index: Some(1),
+            send_thoughts: false,
         };
 
         let result = regenerate_prepare(&session, &request, &provider);

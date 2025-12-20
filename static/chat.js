@@ -258,7 +258,15 @@ window.regenerateMessage = function regenerateMessage(button) {
 
   fetch('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ message: userText, system_prompt: $('#user-system-prompt').val(), set_name: $('#set-selector').val() || 'default', model_name: $('#modelSelect').val(), pair_index: pairIndex })
+    body: JSON.stringify({
+      message: userText,
+      system_prompt: $('#user-system-prompt').val(),
+      set_name: $('#set-selector').val() || 'default',
+      model_name: $('#modelSelect').val(),
+      pair_index: pairIndex,
+      save_thoughts: $('#check-save-thoughts').is(':checked'),
+      send_thoughts: $('#check-send-thoughts').is(':checked')
+    })
   })
   .then(response => {
     if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
@@ -368,6 +376,12 @@ window.regenerateMessage = function regenerateMessage(button) {
 // Main ready block
 $(document).ready(function() {
   disablePremiumModels();
+
+  // Initialize checkboxes
+  if (window.APP_DATA) {
+    $('#check-save-thoughts').prop('checked', window.APP_DATA.saveThoughts);
+    $('#check-send-thoughts').prop('checked', window.APP_DATA.sendThoughts);
+  }
 
   // Validate model tier on selection change (replacing inline onchange)
   $('#modelSelect').on('change', validateModelTier);
@@ -553,7 +567,14 @@ $(document).ready(function() {
     const activeSet = ($('#set-selector').val() || 'default');
     $userInputElement.val('');
     appendMessage('<strong>You:</strong> ' + escapeHTML(message), 'user-message');
-    const requestData = { message, system_prompt: systemPrompt, set_name: activeSet, model_name: $('#modelSelect').val() };
+    const requestData = {
+      message,
+      system_prompt: systemPrompt,
+      set_name: activeSet,
+      model_name: $('#modelSelect').val(),
+      save_thoughts: $('#check-save-thoughts').is(':checked'),
+      send_thoughts: $('#check-send-thoughts').is(':checked')
+    };
     fetch('/chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(requestData) })
       .then(response => { 
         if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
@@ -724,6 +745,8 @@ window.toggleThinking = function toggleThinking(button) {
           userTier: cfg.userTier || 'free',
           availableModels: cfg.availableModels || [],
           loggedIn: !!cfg.loggedIn,
+          saveThoughts: cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
+          sendThoughts: cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
         };
         window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || cfg.defaultSystemPrompt || '';
       } catch (e) {

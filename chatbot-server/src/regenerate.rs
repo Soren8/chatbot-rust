@@ -11,7 +11,7 @@ use axum::{
 use bytes::Bytes;
 use chatbot_core::{
     chat::{self, strip_think_tags, ChatMessageRole},
-    config::get_provider_config,
+    config::{app_config, get_provider_config},
     session::{self, RegenerateRequestData, SessionContext},
 };
 use futures_util::StreamExt;
@@ -36,6 +36,10 @@ struct RegenerateRequest {
     encrypted: Option<bool>,
     #[serde(default)]
     pair_index: Option<i32>,
+    #[serde(default)]
+    save_thoughts: Option<bool>,
+    #[serde(default)]
+    send_thoughts: Option<bool>,
 }
 
 pub async fn handle_regenerate(
@@ -126,6 +130,10 @@ pub async fn handle_regenerate(
         )
     })?;
 
+    let app_config = app_config();
+    let save_thoughts = payload.save_thoughts.unwrap_or(app_config.save_thoughts);
+    let send_thoughts = payload.send_thoughts.unwrap_or(app_config.send_thoughts);
+
     let request_data = RegenerateRequestData {
         message: payload.message.as_str(),
         system_prompt: payload.system_prompt.as_deref(),
@@ -133,6 +141,7 @@ pub async fn handle_regenerate(
         model_name: Some(selected_model.as_str()),
         encrypted: payload.encrypted.unwrap_or(false),
         pair_index: payload.pair_index,
+        send_thoughts,
     };
 
     let prepare = session::regenerate_prepare(&session_context, &request_data, &provider_config);
@@ -251,11 +260,17 @@ pub async fn handle_regenerate(
         }
 
         let clean_response = strip_think_tags(&response_text);
+        let final_response = if save_thoughts {
+            &response_text
+        } else {
+            &clean_response
+        };
+
         match regenerate_finalize(
             &session_context_for_finalize,
             &set_name,
             &user_message,
-            &clean_response,
+            final_response,
             insertion_index,
         ) {
             Ok(extra_chunks) => {

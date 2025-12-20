@@ -75,6 +75,8 @@ pub struct AppConfig {
     pub default_system_prompt: String,
     pub session_timeout: u64,
     pub csrf: bool,
+    pub save_thoughts: bool,
+    pub send_thoughts: bool,
     pub cdn_sri: HashMap<String, String>,
     provider_order: Vec<String>,
     providers_by_name: HashMap<String, ProviderConfig>,
@@ -149,6 +151,10 @@ struct RawConfig {
     session_timeout: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     csrf: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    save_thoughts: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    send_thoughts: Option<bool>,
 }
 
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -278,6 +284,9 @@ fn load_app_config() -> AppConfig {
         raw_config.csrf.unwrap_or(true)
     };
 
+    let save_thoughts = raw_config.save_thoughts.unwrap_or(true);
+    let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
+
     info!(
         providers = providers_by_name.len(),
         default_provider = %default_provider_name,
@@ -294,6 +303,8 @@ fn load_app_config() -> AppConfig {
         default_system_prompt,
         session_timeout,
         csrf,
+        save_thoughts,
+        send_thoughts,
         cdn_sri,
         provider_order,
         providers_by_name,

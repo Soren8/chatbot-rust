@@ -39,6 +39,8 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
 
     let config = config::app_config();
     let default_prompt = config.default_system_prompt.clone();
+    let save_thoughts = config.save_thoughts;
+    let send_thoughts = config.send_thoughts;
     let sri = config.cdn_sri.clone();
     let available_models = build_available_models(config.provider_names(), &user_tier, &config);
 
@@ -49,6 +51,8 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
         &default_prompt,
         &bootstrap.csrf_token,
         sri,
+        save_thoughts,
+        send_thoughts,
     )
     .map_err(|err| {
         error!(?err, "failed to render home template");
@@ -116,6 +120,8 @@ fn render_template(
     default_prompt: &str,
     csrf_token: &str,
     sri: HashMap<String, String>,
+    save_thoughts: bool,
+    send_thoughts: bool,
 ) -> Result<String, minijinja::Error> {
     let env = template_env();
     let template = env.get_template("chat.html")?;
@@ -126,6 +132,8 @@ fn render_template(
         default_system_prompt => default_prompt,
         csrf_token => csrf_token,
         sri => sri,
+        save_thoughts => save_thoughts,
+        send_thoughts => send_thoughts,
     })
 }
 

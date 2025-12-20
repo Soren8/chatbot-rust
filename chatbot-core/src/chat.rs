@@ -124,7 +124,16 @@ pub fn prepare_chat_messages(
         &context.memory_text,
     );
 
-    let truncated_history = truncate_history(&context.history, available_tokens);
+    let history_processed: Vec<(String, String)> = if context.send_thoughts {
+        context.history.clone()
+    } else {
+        context.history
+            .iter()
+            .map(|(u, a)| (u.clone(), strip_think_tags(a)))
+            .collect()
+    };
+
+    let truncated_history = truncate_history(&history_processed, available_tokens);
 
     let original_pairs = context.history.len();
     let truncated_pairs = truncated_history.len();
@@ -231,6 +240,7 @@ mod tests {
             },
             encryption_key: None,
             test_chunks: None,
+            send_thoughts: false,
         }
     }
 
@@ -287,5 +297,26 @@ mod tests {
     fn strip_think_tags_removes_multiline() {
         let text = "Hello<think>\nsecret\n</think>world";
         assert_eq!(strip_think_tags(text), "Helloworld");
+    }
+
+    #[test]
+    fn prepare_chat_messages_strips_thinking_when_disabled() {
+        let history = vec![("User".into(), "Hello<think>thought</think>World".into())];
+        let mut context = mock_context(history, "");
+        context.send_thoughts = false;
+
+        let prepared = prepare_chat_messages(&context, "Next");
+        // User message is at index 1 (0 is system)
+        // Assistant message is at index 2
+        // Wait, mock_context adds system prompt.
+        // messages[0] = system
+        // messages[1] = user
+        // messages[2] = assistant
+
+        assert_eq!(prepared.messages[2].content, "HelloWorld");
+
+        context.send_thoughts = true;
+        let prepared_with_thoughts = prepare_chat_messages(&context, "Next");
+        assert_eq!(prepared_with_thoughts.messages[2].content, "Hello<think>thought</think>World");
     }
 }
