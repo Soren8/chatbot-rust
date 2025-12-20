@@ -71,6 +71,7 @@ pub struct AppConfig {
     pub host_data_dir: PathBuf,
     pub log_level: String,
     pub tts_base_url: String,
+    pub tts_provider: String,
     pub default_system_prompt: String,
     pub session_timeout: u64,
     pub csrf: bool,
@@ -214,6 +215,15 @@ fn load_app_config() -> AppConfig {
     let tts_host = env::var("TTS_HOST").unwrap_or_else(|_| "localhost".to_string());
     let tts_port = env::var("TTS_PORT").unwrap_or_else(|_| "5000".to_string());
     let tts_base_url = format!("http://{tts_host}:{tts_port}");
+    let tts_provider = env::var("TTS_PROVIDER")
+        .unwrap_or_else(|_| "kokoro".to_string())
+        .split('#')
+        .next()
+        .unwrap_or("kokoro")
+        .trim()
+        .to_lowercase();
+
+    debug!(tts_provider = %tts_provider, "loaded TTS provider configuration");
 
     let cdn_sri = build_cdn_sri_map();
 
@@ -280,6 +290,7 @@ fn load_app_config() -> AppConfig {
         host_data_dir,
         log_level,
         tts_base_url,
+        tts_provider,
         default_system_prompt,
         session_timeout,
         csrf,
