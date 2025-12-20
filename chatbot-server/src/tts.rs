@@ -42,6 +42,14 @@ struct BackendRequest {
     voice_file: String,
 }
 
+#[derive(Debug, Serialize)]
+struct FishSpeechRequest {
+    text: String,
+    reference_id: String,
+    streaming: bool,
+    format: String,
+}
+
 pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
     if request.method() != Method::POST {
         return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
@@ -111,6 +119,13 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed");
     }
 
+    let config = config::app_config();
+    debug!(provider = %config.tts_provider, "handling /tts request");
+    if config.tts_provider == "fish" {
+        return handle_fish_speech(cleaned).await;
+    }
+
+    debug!("using default/kokoro backend for /tts");
     let backend_request = BackendRequest {
         text: cleaned,
         voice_file: DEFAULT_VOICE_FILE.to_string(),
@@ -170,6 +185,13 @@ pub async fn handle_api_tts(
         Err(message) => return json_error(StatusCode::BAD_REQUEST, &message),
     };
 
+    let config = config::app_config();
+    debug!(provider = %config.tts_provider, "handling /api/tts request");
+    if config.tts_provider == "fish" {
+        return handle_fish_speech(backend_request.text).await;
+    }
+
+    debug!("using default/kokoro backend for /api/tts");
     let response = post_backend("/api/tts", &backend_request).await?;
     if !response.status().is_success() {
         let status = response.status();
@@ -223,6 +245,18 @@ pub async fn handle_api_tts_stream(
         Err(message) => return json_error(StatusCode::BAD_REQUEST, &message),
     };
 
+    let config = config::app_config();
+    if config.tts_provider == "fish" {
+         // Fish speech streaming might be handled differently, but for now we reuse the handler
+         // If Fish Speech supports streaming response with the same payload, we can just use handle_fish_speech
+         // but that function waits for full bytes.
+         // For now, let's just use the non-streaming handler for Fish as the request has "streaming: true" in body but we might consume it fully or stream it.
+         // The prompt example said "streaming: true", so maybe it returns chunked encoding.
+         // Let's implement a specific stream handler for Fish if needed, or just pipe the response.
+         // Given the constraints and simplicity, I'll pipe the response.
+         return handle_fish_speech_stream(backend_request.text).await;
+    }
+
     let response = post_backend("/api/tts/stream", &backend_request).await?;
     if !response.status().is_success() {
         let status = response.status();
@@ -255,6 +289,108 @@ pub async fn handle_api_tts_stream(
             )
         })
 }
+
+async fn handle_fish_speech(text: String) -> Result<Response<Body>, (StatusCode, String)> {
+    let request = FishSpeechRequest {
+        text,
+        reference_id: "default".to_string(),
+        streaming: false, // For non-stream endpoint, we probably want the full file
+        format: "wav".to_string(),
+    };
+
+    let config = config::app_config();
+    let base = config.tts_base_url.trim_end_matches('/');
+    let url = format!("{base}/v1/tts");
+
+    debug!(url = %url, ?request, "sending request to fish speech backend");
+
+    let response = HTTP_CLIENT
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to reach Fish Speech backend");
+            (
+                StatusCode::BAD_GATEWAY,
+                "TTS backend unreachable".to_string(),
+            )
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let bytes = response.bytes().await.unwrap_or_default();
+        let message = extract_backend_error(status, &bytes);
+        error!(?status, message, "Fish Speech backend returned error");
+        return json_error(StatusCode::BAD_GATEWAY, &message);
+    }
+
+    let bytes = response.bytes().await.map_err(|err| {
+        error!(?err, "failed to read Fish Speech response body");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response read error".to_string(),
+        )
+    })?;
+
+    // Fish Speech returns WAV directly, so we don't need pcm_to_wav
+    build_audio_response(bytes.to_vec())
+}
+
+async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (StatusCode, String)> {
+    let request = FishSpeechRequest {
+        text,
+        reference_id: "default".to_string(),
+        streaming: true,
+        format: "wav".to_string(),
+    };
+
+    let config = config::app_config();
+    let base = config.tts_base_url.trim_end_matches('/');
+    let url = format!("{base}/v1/tts");
+
+    debug!(url = %url, ?request, "sending request to fish speech backend");
+
+    let response = HTTP_CLIENT
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to reach Fish Speech backend");
+            (
+                StatusCode::BAD_GATEWAY,
+                "TTS backend unreachable".to_string(),
+            )
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let bytes = response.bytes().await.unwrap_or_default();
+        let message = extract_backend_error(status, &bytes);
+        error!(?status, message, "Fish Speech backend returned error");
+        return json_error(StatusCode::BAD_GATEWAY, &message);
+    }
+
+    let stream = response.bytes_stream();
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "inline; filename=tts-stream.wav",
+        )
+        .body(Body::from_stream(stream))
+        .map_err(|err| {
+            error!(?err, "failed to build streaming TTS response");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
+        })
+}
+
 
 fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, String> {
     let raw_text = payload.text.unwrap_or_default().trim().to_owned();
