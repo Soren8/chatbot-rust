@@ -286,6 +286,41 @@ impl DataPersistence {
         Ok(())
     }
 
+    pub fn rename_set(
+        &self,
+        username: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), PersistenceError> {
+        let username = Self::normalise_username(username)?;
+        let old_name = Self::normalise_set_name(Some(old_name))?;
+        let new_name = Self::normalise_custom_set_name(new_name)?;
+
+        if old_name == DEFAULT_SET_NAME {
+            return Err(PersistenceError::InvalidSetName);
+        }
+
+        let mut sets = self.read_sets(&username)?;
+        if !sets.contains_key(&old_name) || sets.contains_key(&new_name) {
+            return Err(PersistenceError::InvalidSetName);
+        }
+
+        let metadata = sets.remove(&old_name).unwrap();
+        sets.insert(new_name.clone(), metadata);
+        self.write_sets(&username, &sets)?;
+
+        let suffixes = ["_memory.txt", "_prompt.txt", "_history.json"];
+        for suffix in suffixes {
+            let old_path = self.file_path(&username, &old_name, suffix)?;
+            let new_path = self.file_path(&username, &new_name, suffix)?;
+            if old_path.exists() {
+                fs::rename(old_path, new_path)?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn store_memory(
         &self,
         username: &str,

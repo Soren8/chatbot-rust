@@ -16,6 +16,12 @@ struct SetNameRequest {
     set_name: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct RenameSetRequest {
+    old_name: String,
+    new_name: String,
+}
+
 pub async fn handle_get_sets(
     request: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
@@ -213,6 +219,66 @@ pub async fn handle_delete_set(
             json!({
                 "status": "error",
                 "error": "Cannot delete set"
+            }),
+        ),
+        Err(err) => Err(persistence_error_to_http(err)),
+    }
+}
+
+pub async fn handle_rename_set(
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    if request.method() != Method::POST {
+        return Err((
+            StatusCode::METHOD_NOT_ALLOWED,
+            "Only POST allowed".to_string(),
+        ));
+    }
+
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+
+    let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
+        error!(?err, "failed to read /rename_set body");
+        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+    })?;
+
+    let payload: RenameSetRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
+        error!(?err, "invalid JSON payload for /rename_set");
+        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+    })?;
+
+    let cookie_header = extract_cookie(&headers);
+    let csrf_token = extract_csrf(&headers);
+    validate_csrf(cookie_header.as_deref(), csrf_token)?;
+
+    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
+        error!(?err, "failed to obtain session context for rename_set");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session error".to_string(),
+        )
+    })?;
+
+    let username = match session.username.as_deref() {
+        Some(value) => value,
+        None => {
+            return build_json_response(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": "Not authenticated"}),
+            );
+        }
+    };
+
+    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+
+    match persistence.rename_set(username, &payload.old_name, &payload.new_name) {
+        Ok(()) => build_json_response(StatusCode::OK, json!({"status": "success"})),
+        Err(PersistenceError::InvalidSetName) => build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "error",
+                "error": "Invalid set name or set already exists"
             }),
         ),
         Err(err) => Err(persistence_error_to_http(err)),

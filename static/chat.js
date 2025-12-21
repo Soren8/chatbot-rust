@@ -561,6 +561,7 @@ $(document).ready(function() {
             if (data.status === 'success') {
               loadSets(false).then(() => { 
                 $('#set-selector').val(setName); 
+                // Trigger change to load the newly created set
                 $('#set-selector').trigger('change'); 
               });
               appendMessage('<strong>System:</strong> Created new set: ' + escapeHTML(setName), 'system-message');
@@ -568,6 +569,36 @@ $(document).ready(function() {
               appendMessage('<strong>Error:</strong> ' + data.error, 'error-message');
             }
           });
+      }
+    });
+
+    $('#rename-set').on('click', function() {
+      const oldName = $('#set-selector').val();
+      if (oldName === 'default') {
+        appendMessage('<strong>Error:</strong> Cannot rename default set', 'error-message');
+        return;
+      }
+      const newName = prompt('Enter new name for set:', oldName);
+      if (newName && newName !== oldName) {
+        fetch('/rename_set', {
+          method: 'POST',
+          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ old_name: oldName, new_name: newName })
+        })
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'success') {
+            loadSets(false).then(() => {
+              $('#set-selector').val(newName);
+              appendMessage('<strong>System:</strong> Renamed set to: ' + escapeHTML(newName), 'system-message');
+            });
+          } else {
+            appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to rename set'), 'error-message');
+          }
+        })
+        .catch(err => {
+          appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+        });
       }
     });
 
