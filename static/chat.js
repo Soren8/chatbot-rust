@@ -799,6 +799,8 @@ $(document).ready(function() {
     $('#user-memory').val('');
   }
 
+  $('#user-input').focus();
+
   $(window).trigger('resize');
 });
 
