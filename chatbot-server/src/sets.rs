@@ -53,8 +53,13 @@ pub async fn handle_get_sets(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+    let encryption_mode = session
+        .encryption_key
+        .as_ref()
+        .map(|key| EncryptionMode::Fernet(key.as_slice()));
+
     let sets = persistence
-        .list_sets(username)
+        .list_sets(username, encryption_mode)
         .map_err(persistence_error_to_http)?;
 
     let payload = serde_json::to_value(sets).map_err(|err| {
@@ -120,6 +125,10 @@ pub async fn handle_create_set(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+    let encryption_mode = session
+        .encryption_key
+        .as_ref()
+        .map(|key| EncryptionMode::Fernet(key.as_slice()));
 
     let set_name = match DataPersistence::normalise_custom_set_name(&set_name_raw) {
         Ok(value) => value,
@@ -134,7 +143,7 @@ pub async fn handle_create_set(
         }
     };
 
-    match persistence.create_set(username, &set_name) {
+    match persistence.create_set(username, &set_name, encryption_mode) {
         Ok(_) => build_json_response(StatusCode::OK, json!({"status": "success"})),
         Err(PersistenceError::InvalidSetName) => build_json_response(
             StatusCode::OK,
@@ -199,6 +208,11 @@ pub async fn handle_delete_set(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+    let encryption_mode = session
+        .encryption_key
+        .as_ref()
+        .map(|key| EncryptionMode::Fernet(key.as_slice()));
+
     let set_name = match DataPersistence::normalise_set_name(Some(&set_name_raw)) {
         Ok(value) => value,
         Err(_) => {
@@ -212,7 +226,7 @@ pub async fn handle_delete_set(
         }
     };
 
-    match persistence.delete_set(username, &set_name) {
+    match persistence.delete_set(username, &set_name, encryption_mode) {
         Ok(()) => build_json_response(StatusCode::OK, json!({"status": "success"})),
         Err(PersistenceError::InvalidSetName) => build_json_response(
             StatusCode::OK,
@@ -271,8 +285,12 @@ pub async fn handle_rename_set(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+    let encryption_mode = session
+        .encryption_key
+        .as_ref()
+        .map(|key| EncryptionMode::Fernet(key.as_slice()));
 
-    match persistence.rename_set(username, &payload.old_name, &payload.new_name) {
+    match persistence.rename_set(username, &payload.old_name, &payload.new_name, encryption_mode) {
         Ok(()) => build_json_response(StatusCode::OK, json!({"status": "success"})),
         Err(PersistenceError::InvalidSetName) => build_json_response(
             StatusCode::OK,

@@ -305,7 +305,7 @@ fn seed_plaintext_set(root: &PathBuf, username: &str, set_name: &str) {
     let sets_path = user_dir.join("sets.json");
     let mut sets: serde_json::Value = if sets_path.exists() {
         let data = fs::read_to_string(&sets_path).expect("read sets");
-        serde_json::from_str(&data).expect("parse sets")
+        serde_json::from_str(&data).unwrap_or(json!({}))
     } else {
         json!({})
     };

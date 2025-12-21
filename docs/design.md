@@ -60,8 +60,10 @@ This document captures the current architecture of the project and the potential
   - [x] Store all API keys and sensitive settings in environment variables only; avoid checking secrets into Git.
   - [ ] Validate `.config.yml` against a schema to catch missing or invalid fields.
   - [ ] Implement hybrid chat-history encryption:
-    - [x] Derive a per-user data key from a user-supplied passphrase.
-    - [ ] Allow optional registration of multiple hardware authenticators (Touch ID, YubiKey, WebAuthn) for seamless unlock on trusted devices with fallback to the passphrase on new or unregistered devices.
+        - [x] Derive a per-user data key from a user-supplied passphrase.
+        - [x] Encrypt set names and metadata on disk to prevent leakage of conversation identifiers.
+        - [ ] Allow optional registration of multiple hardware authenticators
+     (Touch ID, YubiKey, WebAuthn) for seamless unlock on trusted devices with fallback to the passphrase on new or unregistered devices.
 
 - **Rate Limiting & Concurrency**
   - [ ] Replace the bespoke rate limiter with a production-ready alternative and support per-user + global caps.

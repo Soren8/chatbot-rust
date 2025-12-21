@@ -48,10 +48,19 @@ pub enum PersistenceError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetData {
+    pub memory: String,
+    pub system_prompt: String,
+    pub history: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetMetadata {
     pub created: f64,
     #[serde(default)]
     pub encrypted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<SetData>,
 }
 
 impl SetMetadata {
@@ -59,6 +68,7 @@ impl SetMetadata {
         Self {
             created: current_timestamp(),
             encrypted,
+            data: None,
         }
     }
 }
@@ -71,6 +81,7 @@ pub struct LoadedSet {
     pub encrypted: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum EncryptionMode<'a> {
     Plaintext,
     Fernet(&'a [u8]),
@@ -147,45 +158,167 @@ impl DataPersistence {
         Ok(user_dir.join("sets.json"))
     }
 
-    fn read_sets(&self, username: &str) -> Result<HashMap<String, SetMetadata>, PersistenceError> {
+    fn read_sets(
+        &self,
+        username: &str,
+        encryption: Option<EncryptionMode<'_>>,
+    ) -> Result<HashMap<String, SetMetadata>, PersistenceError> {
         let path = self.sets_file(username)?;
         if !path.exists() {
             let mut map = HashMap::new();
             map.insert(DEFAULT_SET_NAME.to_string(), SetMetadata::new(false));
-            self.write_sets(username, &map)?;
+            self.write_sets(username, &map, encryption)?;
             return Ok(map);
         }
 
-        let contents = fs::read_to_string(&path)?;
-        if contents.trim().is_empty() {
+        let bytes = fs::read(&path)?;
+        if bytes.is_empty() {
             let mut map = HashMap::new();
             map.insert(DEFAULT_SET_NAME.to_string(), SetMetadata::new(false));
-            self.write_sets(username, &map)?;
+            self.write_sets(username, &map, encryption)?;
             return Ok(map);
         }
+
+        let mut is_plaintext = false;
+        let contents = match encryption.as_ref() {
+            Some(mode @ EncryptionMode::Fernet(_)) => match self.decrypt(&bytes, mode.borrow()) {
+                Ok(decrypted) => decrypted,
+                Err(_) => {
+                    is_plaintext = true;
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+            },
+            _ => {
+                is_plaintext = true;
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+        };
 
         let raw: HashMap<String, SetMetadata> = serde_json::from_str(&contents)?;
         let mut sanitised = HashMap::new();
-        for (name, meta) in raw.into_iter() {
+        let mut needs_migration = is_plaintext && encryption.is_some();
+        let mut migrated_files = Vec::new();
+
+        for (name, mut meta) in raw.into_iter() {
             if let Ok(valid) = Self::normalise_set_name(Some(&name)) {
+                if meta.data.is_none() {
+                    if let Ok((data, files)) =
+                        self.migrate_set_data(username, &valid, encryption.as_ref())
+                    {
+                        meta.data = Some(data);
+                        migrated_files.extend(files);
+                        needs_migration = true;
+                    }
+                }
                 sanitised.insert(valid, meta);
             }
         }
+
         if !sanitised.contains_key(DEFAULT_SET_NAME) {
             sanitised.insert(DEFAULT_SET_NAME.to_string(), SetMetadata::new(false));
+            needs_migration = true;
         }
-        self.write_sets(username, &sanitised)?;
+
+        if needs_migration {
+            self.write_sets(username, &sanitised, encryption)?;
+            for file in migrated_files {
+                let _ = fs::remove_file(file);
+            }
+        }
+
         Ok(sanitised)
+    }
+
+    fn migrate_set_data(
+        &self,
+        username: &str,
+        set_name: &str,
+        encryption: Option<&EncryptionMode<'_>>,
+    ) -> Result<(SetData, Vec<PathBuf>), PersistenceError> {
+        let mut migrated_files = Vec::new();
+
+        let memory_path = self.file_path(username, set_name, "_memory.txt")?;
+        let prompt_path = self.file_path(username, set_name, "_prompt.txt")?;
+        let history_path = self.file_path(username, set_name, "_history.json")?;
+
+        let sets = self.read_sets_internal(username)?;
+        let metadata = sets.get(set_name);
+        let encrypted = metadata.map(|meta| meta.encrypted).unwrap_or(false);
+
+        let file_encryption = if encrypted {
+            encryption
+                .map(|m| m.borrow())
+                .ok_or(PersistenceError::MissingEncryptionKey)?
+        } else {
+            EncryptionMode::Plaintext
+        };
+
+        let memory = if memory_path.exists() {
+            let bytes = fs::read(&memory_path)?;
+            migrated_files.push(memory_path);
+            self.decrypt(&bytes, file_encryption.borrow())?
+        } else {
+            String::new()
+        };
+
+        let prompt = if prompt_path.exists() {
+            let bytes = fs::read(&prompt_path)?;
+            migrated_files.push(prompt_path);
+            self.decrypt(&bytes, file_encryption.borrow())?
+        } else {
+            self.default_system_prompt.clone()
+        };
+
+        let history = if history_path.exists() {
+            let bytes = fs::read(&history_path)?;
+            migrated_files.push(history_path);
+            let decrypted = self.decrypt(&bytes, file_encryption.borrow())?;
+            Self::parse_history(&decrypted)?
+        } else {
+            Vec::new()
+        };
+
+        Ok((
+            SetData {
+                memory,
+                system_prompt: prompt,
+                history,
+            },
+            migrated_files,
+        ))
+    }
+
+    fn read_sets_internal(
+        &self,
+        username: &str,
+    ) -> Result<HashMap<String, SetMetadata>, PersistenceError> {
+        let path = self.sets_file(username)?;
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+        let bytes = fs::read(&path)?;
+        if bytes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        // This is only used for metadata check during migration, so we try to parse it as JSON.
+        // If it's encrypted, it will fail, but that's okay because we only migrate if it's plaintext.
+        let contents = String::from_utf8_lossy(&bytes);
+        Ok(serde_json::from_str(&contents).unwrap_or_default())
     }
 
     fn write_sets(
         &self,
         username: &str,
         sets: &HashMap<String, SetMetadata>,
+        encryption: Option<EncryptionMode<'_>>,
     ) -> Result<(), PersistenceError> {
         let path = self.sets_file(username)?;
         let data = serde_json::to_string_pretty(sets)?;
-        fs::write(path, data)?;
+        let payload = match encryption {
+            Some(mode) => self.encrypt(&data, mode)?,
+            None => data.into_bytes(),
+        };
+        fs::write(path, payload)?;
         Ok(())
     }
 
@@ -247,43 +380,51 @@ impl DataPersistence {
     pub fn list_sets(
         &self,
         username: &str,
+        encryption: Option<EncryptionMode<'_>>,
     ) -> Result<HashMap<String, SetMetadata>, PersistenceError> {
-        self.read_sets(username)
+        let mut sets = self.read_sets(username, encryption)?;
+        // Strip data before returning metadata
+        for meta in sets.values_mut() {
+            meta.data = None;
+        }
+        Ok(sets)
     }
 
-    pub fn create_set(&self, username: &str, set_name: &str) -> Result<(), PersistenceError> {
+    pub fn create_set(
+        &self,
+        username: &str,
+        set_name: &str,
+        encryption: Option<EncryptionMode<'_>>,
+    ) -> Result<(), PersistenceError> {
         let username = Self::normalise_username(username)?;
         let set_name = Self::normalise_custom_set_name(set_name)?;
 
-        let mut sets = self.read_sets(&username)?;
+        let mut sets = self.read_sets(&username, encryption)?;
         if sets.contains_key(&set_name) {
             return Err(PersistenceError::InvalidSetName);
         }
-        sets.insert(set_name.clone(), SetMetadata::new(false));
-        self.write_sets(&username, &sets)
+        let encrypted_flag = encryption.map(|e| matches!(e, EncryptionMode::Fernet(_))).unwrap_or(false);
+        sets.insert(set_name.clone(), SetMetadata::new(encrypted_flag));
+        self.write_sets(&username, &sets, encryption)
     }
 
-    pub fn delete_set(&self, username: &str, set_name: &str) -> Result<(), PersistenceError> {
+    pub fn delete_set(
+        &self,
+        username: &str,
+        set_name: &str,
+        encryption: Option<EncryptionMode<'_>>,
+    ) -> Result<(), PersistenceError> {
         let username = Self::normalise_username(username)?;
         let set_name = Self::normalise_set_name(Some(set_name))?;
         if set_name == DEFAULT_SET_NAME {
             return Err(PersistenceError::InvalidSetName);
         }
 
-        let mut sets = self.read_sets(&username)?;
+        let mut sets = self.read_sets(&username, encryption)?;
         if sets.remove(&set_name).is_none() {
             return Err(PersistenceError::InvalidSetName);
         }
-        self.write_sets(&username, &sets)?;
-
-        let memory_path = self.file_path(&username, &set_name, "_memory.txt")?;
-        let prompt_path = self.file_path(&username, &set_name, "_prompt.txt")?;
-        let history_path = self.file_path(&username, &set_name, "_history.json")?;
-        let _ = fs::remove_file(memory_path);
-        let _ = fs::remove_file(prompt_path);
-        let _ = fs::remove_file(history_path);
-
-        Ok(())
+        self.write_sets(&username, &sets, encryption)
     }
 
     pub fn rename_set(
@@ -291,6 +432,7 @@ impl DataPersistence {
         username: &str,
         old_name: &str,
         new_name: &str,
+        encryption: Option<EncryptionMode<'_>>,
     ) -> Result<(), PersistenceError> {
         let username = Self::normalise_username(username)?;
         let old_name = Self::normalise_set_name(Some(old_name))?;
@@ -300,25 +442,14 @@ impl DataPersistence {
             return Err(PersistenceError::InvalidSetName);
         }
 
-        let mut sets = self.read_sets(&username)?;
+        let mut sets = self.read_sets(&username, encryption)?;
         if !sets.contains_key(&old_name) || sets.contains_key(&new_name) {
             return Err(PersistenceError::InvalidSetName);
         }
 
         let metadata = sets.remove(&old_name).unwrap();
         sets.insert(new_name.clone(), metadata);
-        self.write_sets(&username, &sets)?;
-
-        let suffixes = ["_memory.txt", "_prompt.txt", "_history.json"];
-        for suffix in suffixes {
-            let old_path = self.file_path(&username, &old_name, suffix)?;
-            let new_path = self.file_path(&username, &new_name, suffix)?;
-            if old_path.exists() {
-                fs::rename(old_path, new_path)?;
-            }
-        }
-
-        Ok(())
+        self.write_sets(&username, &sets, encryption)
     }
 
     pub fn store_memory(
@@ -332,14 +463,19 @@ impl DataPersistence {
         let set_name = Self::normalise_set_name(Some(set_name))?;
         let encrypted_flag = matches!(encryption, EncryptionMode::Fernet(_));
 
-        let mut sets = self.read_sets(&username)?;
-        sets.insert(set_name.clone(), SetMetadata::new(encrypted_flag));
-        self.write_sets(&username, &sets)?;
-
-        let path = self.file_path(&username, &set_name, "_memory.txt")?;
-        let payload = self.encrypt(memory, encryption)?;
-        fs::write(path, payload)?;
-        Ok(())
+        let mut sets = self.read_sets(&username, Some(encryption))?;
+        let mut metadata = sets.get(&set_name).cloned().unwrap_or_else(|| SetMetadata::new(encrypted_flag));
+        let mut data = metadata.data.unwrap_or_else(|| SetData {
+            memory: String::new(),
+            system_prompt: self.default_system_prompt.clone(),
+            history: Vec::new(),
+        });
+        data.memory = memory.to_string();
+        metadata.data = Some(data);
+        metadata.encrypted = encrypted_flag;
+        
+        sets.insert(set_name, metadata);
+        self.write_sets(&username, &sets, Some(encryption))
     }
 
     pub fn store_system_prompt(
@@ -353,14 +489,19 @@ impl DataPersistence {
         let set_name = Self::normalise_set_name(Some(set_name))?;
         let encrypted_flag = matches!(encryption, EncryptionMode::Fernet(_));
 
-        let mut sets = self.read_sets(&username)?;
-        sets.insert(set_name.clone(), SetMetadata::new(encrypted_flag));
-        self.write_sets(&username, &sets)?;
-
-        let path = self.file_path(&username, &set_name, "_prompt.txt")?;
-        let payload = self.encrypt(prompt, encryption)?;
-        fs::write(path, payload)?;
-        Ok(())
+        let mut sets = self.read_sets(&username, Some(encryption))?;
+        let mut metadata = sets.get(&set_name).cloned().unwrap_or_else(|| SetMetadata::new(encrypted_flag));
+        let mut data = metadata.data.unwrap_or_else(|| SetData {
+            memory: String::new(),
+            system_prompt: self.default_system_prompt.clone(),
+            history: Vec::new(),
+        });
+        data.system_prompt = prompt.to_string();
+        metadata.data = Some(data);
+        metadata.encrypted = encrypted_flag;
+        
+        sets.insert(set_name, metadata);
+        self.write_sets(&username, &sets, Some(encryption))
     }
 
     pub fn store_history(
@@ -374,15 +515,19 @@ impl DataPersistence {
         let set_name = Self::normalise_set_name(Some(set_name))?;
         let encrypted_flag = matches!(encryption, EncryptionMode::Fernet(_));
 
-        let mut sets = self.read_sets(&username)?;
-        sets.insert(set_name.clone(), SetMetadata::new(encrypted_flag));
-        self.write_sets(&username, &sets)?;
-
-        let path = self.file_path(&username, &set_name, "_history.json")?;
-        let json = serde_json::to_string(history)?;
-        let payload = self.encrypt(&json, encryption)?;
-        fs::write(path, payload)?;
-        Ok(())
+        let mut sets = self.read_sets(&username, Some(encryption))?;
+        let mut metadata = sets.get(&set_name).cloned().unwrap_or_else(|| SetMetadata::new(encrypted_flag));
+        let mut data = metadata.data.unwrap_or_else(|| SetData {
+            memory: String::new(),
+            system_prompt: self.default_system_prompt.clone(),
+            history: Vec::new(),
+        });
+        data.history = history.to_vec();
+        metadata.data = Some(data);
+        metadata.encrypted = encrypted_flag;
+        
+        sets.insert(set_name, metadata);
+        self.write_sets(&username, &sets, Some(encryption))
     }
 
     pub fn load_set(
@@ -393,45 +538,20 @@ impl DataPersistence {
     ) -> Result<LoadedSet, PersistenceError> {
         let username = Self::normalise_username(username)?;
         let set_name = Self::normalise_set_name(Some(set_name))?;
-        let sets = self.read_sets(&username)?;
-        let metadata = sets.get(&set_name);
-        let encrypted = metadata.map(|meta| meta.encrypted).unwrap_or(false);
-
-        let file_encryption = if encrypted {
-            encryption.ok_or(PersistenceError::MissingEncryptionKey)?
-        } else {
-            EncryptionMode::Plaintext
-        };
-
-        let memory_path = self.file_path(&username, &set_name, "_memory.txt")?;
-        let memory = if memory_path.exists() {
-            let bytes = fs::read(&memory_path)?;
-            self.decrypt(&bytes, file_encryption.borrow())?
-        } else {
-            String::new()
-        };
-
-        let prompt_path = self.file_path(&username, &set_name, "_prompt.txt")?;
-        let system_prompt = if prompt_path.exists() {
-            let bytes = fs::read(&prompt_path)?;
-            self.decrypt(&bytes, file_encryption.borrow())?
-        } else {
-            self.default_system_prompt.clone()
-        };
-
-        let history_path = self.file_path(&username, &set_name, "_history.json")?;
-        let history = if history_path.exists() {
-            let bytes = fs::read(&history_path)?;
-            let decrypted = self.decrypt(&bytes, file_encryption.borrow())?;
-            Self::parse_history(&decrypted)?
-        } else {
-            Vec::new()
-        };
+        let sets = self.read_sets(&username, encryption)?;
+        let metadata = sets.get(&set_name).ok_or(PersistenceError::InvalidSetName)?;
+        
+        let encrypted = metadata.encrypted;
+        let data = metadata.data.as_ref().cloned().unwrap_or_else(|| SetData {
+            memory: String::new(),
+            system_prompt: self.default_system_prompt.clone(),
+            history: Vec::new(),
+        });
 
         Ok(LoadedSet {
-            memory,
-            system_prompt,
-            history,
+            memory: data.memory,
+            system_prompt: data.system_prompt,
+            history: data.history,
             encrypted,
         })
     }

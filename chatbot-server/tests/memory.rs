@@ -289,11 +289,14 @@ async fn memory_and_prompt_endpoints_round_trip() {
         "history should be empty after deletion",
     );
 
-    // Ensure the encrypted memory and history files were created for the user.
+    // Ensure the encrypted sets.json exists and individual files are GONE.
     let user_dir = workspace.path().join("user_sets").join(username);
     assert!(user_dir.exists(), "user data directory missing");
+    let sets_json = user_dir.join("sets.json");
+    assert!(sets_json.exists(), "sets.json missing");
+    
     let memory_file = user_dir.join("default_memory.txt");
     let history_file = user_dir.join("default_history.json");
-    assert!(memory_file.exists(), "memory file missing");
-    assert!(history_file.exists(), "history file missing");
+    assert!(!memory_file.exists(), "old memory file should NOT exist");
+    assert!(!history_file.exists(), "old history file should NOT exist");
 }
