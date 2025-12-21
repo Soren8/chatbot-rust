@@ -206,21 +206,21 @@ function appendMessage(message, className, pairIndex) {
 let currentAbortController = null;
 
 function setGeneratingState(isGenerating) {
-  const $sendBtn = $('#send-button, #stop-button');
+  const $btn = $('#send-button');
   if (isGenerating) {
-    $sendBtn.removeClass('btn-outline-primary').addClass('btn-danger').text('Stop').attr('id', 'stop-button');
+    $btn.removeClass('btn-outline-primary').addClass('btn-danger').text('Stop').addClass('is-generating');
   } else {
-    $sendBtn.removeClass('btn-danger').addClass('btn-outline-primary').text('Send').attr('id', 'send-button');
+    $btn.removeClass('btn-danger').addClass('btn-outline-primary').text('Send').removeClass('is-generating');
   }
 }
 
-$(document).on('click', '#stop-button', function() {
+function handleStopClick() {
   if (currentAbortController) {
     currentAbortController.abort();
     currentAbortController = null;
     setGeneratingState(false);
   }
-});
+}
 
 window.playTTS = function playTTS(button) {
   if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
@@ -767,8 +767,14 @@ $(document).ready(function() {
       });
   }
 
-  $('#user-input').on('keypress', function(e) { if (e.key === 'Enter') { e.preventDefault(); sendMessage(); } });
-  $('#send-button').on('click', function() { sendMessage(); });
+  $('#user-input').on('keypress', function(e) { if (e.key === 'Enter') { e.preventDefault(); if (!$('#send-button').hasClass('is-generating')) sendMessage(); } });
+  $('#send-button').on('click', function() {
+    if ($(this).hasClass('is-generating')) {
+      handleStopClick();
+    } else {
+      sendMessage();
+    }
+  });
 
   $('#reset-chat').on('click', function() {
     const setName = $('#set-selector').val() || 'default';
