@@ -104,36 +104,29 @@ $(function() {
   } catch (e) { console.debug('settings collapse init error', e); }
 });
 
-// Mobile input helper to keep input visible when keyboard shows
-$(function() {
-  try {
-    var $input = $('#user-input');
-    var $chatBox = $('#chat-box');
-    if (!$input.length || !$chatBox.length) return;
-
-    function updateInputHeight() {
-      try {
-        var h = $input[0].getBoundingClientRect().height || 56;
-        $(':root').css('--chat-input-height', h + 'px');
-        $chatBox.css('padding-bottom', 'calc(' + h + 'px + env(safe-area-inset-bottom, 0))');
-      } catch (e) {}
-    }
-
-    $input.on('focus', function() {
-      updateInputHeight();
-      setTimeout(function() { try { $input[0].scrollIntoView({block: 'center'}); } catch (e) {} }, 300);
-    });
-
-    $(window).on('resize', updateInputHeight);
-    updateInputHeight();
-  } catch (e) { console.debug('mobile input helper error', e); }
-});
-
 // Global helpers and state
 function escapeHTML(str) {
   var div = document.createElement('div');
   div.appendChild(document.createTextNode(str));
   return div.innerHTML;
+}
+
+// Scroll helpers for the chat content container
+function isAtBottom() {
+  const container = document.getElementById('chat-content');
+  if (!container) return false;
+  const threshold = 30; // pixels from bottom to be considered "at bottom"
+  return (container.scrollTop + container.clientHeight) >= (container.scrollHeight - threshold);
+}
+
+function scrollToBottom() {
+  const container = document.getElementById('chat-content');
+  if (!container) return;
+  // Use scrollTo for more reliable behavior in some browsers
+  container.scrollTo({
+    top: container.scrollHeight,
+    behavior: 'instant'
+  });
 }
 
 let CURRENT_AUDIO = null;
@@ -204,9 +197,8 @@ function appendMessage(message, className, pairIndex) {
   }
 
   $chatContent.append($messageElement);
-  const $scrollTarget = $('#chat-content');
-  if (typeof __autoScroll !== 'undefined' ? __autoScroll : ($scrollTarget.scrollTop() + $scrollTarget.innerHeight() >= $scrollTarget[0].scrollHeight - 50)) {
-    $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
+  if (typeof __autoScroll !== 'undefined' ? __autoScroll : isAtBottom()) {
+    scrollToBottom();
   }
   return $messageElement;
 }
@@ -259,8 +251,7 @@ window.regenerateMessage = function regenerateMessage(button) {
   const $target = $targetAI.length ? $targetAI : $aiMessageElement;
   $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`);
   // Initial scroll to bottom when regeneration starts
-  const $scrollTarget = $('#chat-content');
-  if ($scrollTarget.length) $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
+  scrollToBottom();
 
   fetch('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
@@ -365,11 +356,10 @@ window.regenerateMessage = function regenerateMessage(button) {
           return;
         }
         buffer += decoder.decode(value, {stream:true});
-        const $scrollTarget = $('#chat-content');
-        const nearBottom = $scrollTarget.length && ($scrollTarget.scrollTop() + $scrollTarget.innerHeight() >= $scrollTarget[0].scrollHeight - 50);
+        const nearBottom = isAtBottom();
         processBuffer();
         if (nearBottom) {
-          $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
+          scrollToBottom();
         }
         read();
       }).catch(()=>{});
@@ -499,7 +489,7 @@ $(document).ready(function() {
               const formattedAi = formatAiMessage(aiMsg);
               appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${formattedAi}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
             });
-            setTimeout(function() { try { $('#chat-content').scrollTop($('#chat-content')[0].scrollHeight); } catch (e) {} }, 0);
+            setTimeout(function() { scrollToBottom(); }, 0);
           }
           appendMessage('<strong>System:</strong> Loaded set: ' + escapeHTML(setName), 'system-message');
         })
@@ -592,8 +582,7 @@ $(document).ready(function() {
         const decoder = new TextDecoder('utf-8');
         appendMessage(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`, 'ai-message');
         // Initial scroll to bottom when AI starts responding
-        const $scrollTarget = $('#chat-content');
-        $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
+        scrollToBottom();
         const $targetElement = $('.ai-message:last-child');
         const $messageTextElement = $targetElement.find('.ai-message-text');
         const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
@@ -685,11 +674,10 @@ $(document).ready(function() {
               return;
             }
             const chunk = decoder.decode(value, { stream: true });
-            const $scrollTarget = $('#chat-content');
-            const nearBottom = $scrollTarget.length && ($scrollTarget.scrollTop() + $scrollTarget.innerHeight() >= $scrollTarget[0].scrollHeight - 50);
+            const nearBottom = isAtBottom();
             processChunk(chunk);
             if (nearBottom) {
-              $scrollTarget.scrollTop($scrollTarget[0].scrollHeight);
+              scrollToBottom();
             }
             return readStream();
           }).catch(()=>{});

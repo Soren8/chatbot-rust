@@ -172,9 +172,6 @@
     background-color: #4a4a4a;
 }
 
-/* Make certain select controls narrower and right-aligned */
-/* Removed .select-right in favor of grid columns for consistent select widths */
-
 /* Upgrade button */
 .upgrade-btn {
     margin-left: 8px;
@@ -270,238 +267,45 @@ a:hover, a:focus {
     border-radius: 5px;
 }
 
-/* Responsive adjustments */
-@media (max-width: 768px) {
+/* On mobile, ensure side padding is minimal for messages */
+@media (max-width: 767.98px) {
     .message {
-        max-width: 100%;
-    }
-    
-    .regenerate-container {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 5px;
-    }
-    
-    .delete-button, .play-button, .regenerate-button {
-        min-width: 40px;
-        padding: 6px 10px;
-        font-size: 12px;
-    }
-    
-    .delete-icon {
-        font-size: 20px !important;
-    }
-}
-
-/* Mobile tweaks: keep control buttons inline, slightly larger, and right-justified */
-@media (max-width: 767.98px) {
-    .regenerate-container {
-        flex-direction: row !important;
-        justify-content: flex-end !important;
-        align-items: center !important;
-        gap: 8px !important;
-        width: 100%;
-    }
-
-    .regenerate-button, .play-button, .delete-button {
-        padding: 10px 14px !important;
-        min-width: 72px !important;
-        font-size: 16px !important;
-    }
-
-    .delete-icon {
-        font-size: 20px !important;
-    }
-}
-
-@media (max-width: 576px) {
-    .message {
-        max-width: 100%;
-    }
-    
-    .regenerate-container {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 5px;
-    }
-    
-    .delete-button, .play-button, .regenerate-button {
-        min-width: 36px;
-        padding: 5px 8px;
-        font-size: 11px;
-    }
-    
-    .delete-icon {
-        font-size: 18px !important;
-    }
-}
-
-/* Ensure chat area has usable height on small screens when settings are open */
-@media (max-width: 767.98px) {
-    /* Make the messages container tall enough (~20 text lines) so users don't see a single-line chat */
-    #chat-content {
-        min-height: 24em;
-    }
-    /* Ensure the chat card respects that minimum */
-    #chat-box {
-        min-height: 24em;
-    }
-}
-
-/* On md+ make settings panel content stretch vertically and let the two cards share space */
-@media (min-width: 768px) {
-    #settingsCollapse {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-    }
-    /* container that holds the two cards */
-    .settings-cards {
-        flex: 1 1 auto;
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-        min-height: 0;
-    }
-    .settings-cards .card {
-        flex: 1 1 0;
-        min-height: 0;
-        display: flex;
-        flex-direction: column;
-    }
-    .settings-cards .card .card-body {
-        overflow: auto;
-    }
-    /* Make textarea fill available card-body space and keep Save button at bottom */
-    .settings-cards .card .card-body {
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-    }
-    .settings-cards .card .card-body textarea {
-        flex: 1 1 auto;
-        min-height: 0;
-        width: 100%;
-        resize: none;
-        margin-bottom: 0.5rem;
-    }
-    .settings-cards .card .card-body .btn {
-        flex: 0 0 auto;
-    }
-}
-
-/* On small screens do not force fixed heights; on md+ keep full-height layout */
-@media (min-width: 768px) {
-    #settings-col, #settingsCollapse, #chat-area, #chat-box {
-        height: 100%;
-    }
-}
-
-/* Ensure chat-box retains a reasonable minimum height even when settings are open */
-#chat-box {
-    min-height: max(220px, 30vh);
-}
-
-/* Remove extra bottom padding to keep chat content flush with the chat box */
-#chat-box, #chat-content {
-    padding-bottom: 0 !important;
-}
-
-/* On small screens reserve extra padding so the fixed input doesn't overlap last messages */
-@media (max-width: 767.98px) {
-    /* Reserve space on the chat-area instead of the chat-box so the fixed input doesn't overlap
-       and to avoid extra space inside the chat card itself. */
-    #chat-area {
-        padding-bottom: calc(var(--chat-input-height, 56px) + env(safe-area-inset-bottom, 0) + 12px) !important;
-    }
-    /* Ensure the chat-box uses any remaining space without extra internal padding */
-    #chat-box {
-        padding-bottom: 0 !important;
-    }
-}
-
-/* Mobile: pin the input to the bottom and reserve space in the chat box so virtual keyboard and browser chrome don't hide it */
-:root { --chat-input-height: 56px; }
-
-@media (max-width: 767.98px) {
-    #chat-area .input-group {
-        position: fixed;
-        left: 0;
-        right: 0;
-        bottom: env(safe-area-inset-bottom, 0);
-        padding: 0.5rem;
-        background: rgba(0,0,0,0.04);
-        z-index: 1050;
-    }
-
-    /* Reserve space so chat messages are not covered by the pinned input */
-    #chat-box {
-        padding-bottom: calc(var(--chat-input-height) + env(safe-area-inset-bottom, 0));
-    }
-}
-
-/* Prevent the chat content from growing without bound. Limit to roughly 100 lines. */
-#chat-content {
-    max-height: 120em; /* ~100 lines at ~1.2em line-height */
-    overflow: auto;
-}
-
-/* On small screens, allow the chat to grow naturally (avoid nested scrolling). */
-@media (max-width: 767.98px) {
-    #chat-content {
-        max-height: none;
-        /* Let the page scroll instead of producing an inner scrollbar */
-        overflow: visible;
+        max-width: 95%;
     }
 }
 
 /* Make chat area and input use dark backgrounds (mobile-friendly, not blinding white) */
-#chat-box, #chat-box .card-body {
+#chat-box, .card-body {
     background-color: #1e1f21; /* dark gray */
     color: #e6e6e6;
 }
 
-#chat-area .form-control, #user-input {
+.form-control, .form-select {
     background-color: #2a2a2a;
     color: #e6e6e6;
     border-color: #444;
 }
 
-#chat-area .form-control::placeholder, #user-input::placeholder {
+.form-control:focus, .form-select:focus {
+    background-color: #2a2a2a;
+    color: #fff;
+    border-color: var(--bs-primary);
+    box-shadow: 0 0 0 0.25rem rgba(var(--bs-primary-rgb), 0.25);
+}
+
+.form-control::placeholder {
     color: #9aa0a6;
 }
 
 /* Settings panel cards and controls should also use dark backgrounds */
-.settings-cards .card,
-.settings-cards .card .card-body,
-.settings-cards .card .card-header {
+.card, .card-header {
     background-color: #1e1f21; /* dark gray */
     color: #e6e6e6;
     border-color: #2a2a2a;
 }
 
-.settings-cards .card .card-header {
+.card-header {
     background-color: #242526;
-}
-
-.settings-cards .card .card-body textarea,
-.settings-cards .card .card-body .form-control {
-    background-color: #2a2a2a;
-    color: #e6e6e6;
-    border-color: #444;
-}
-
-/* Ensure select controls match dark inputs inside settings and chat areas */
-#settingsCollapse .form-select,
-#chat-area .form-select {
-    background-color: #2a2a2a;
-    color: #e6e6e6;
-    border-color: #444;
-}
-#settingsCollapse .form-select option,
-#chat-area .form-select option {
-    background-color: #2a2a2a;
-    color: #e6e6e6;
 }
 
 /* Make outline-light buttons on the navbar stay transparent/dark on mobile */
@@ -515,35 +319,32 @@ a:hover, a:focus {
     background-color: rgba(255,255,255,0.05);
 }
 
-/* Fix flexbox overflow on initial load: ensure containers can shrink/grow and allow children to fill available height */
-.container-fluid.flex-grow-1.d-flex {
-    flex: 1 1 auto;
-    min-height: 0;
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+    width: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #1e1f21;
+}
+::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #444;
 }
 
-#chat-area {
-    flex: 1 1 auto;
-    min-height: 0;
+/* Root layout ensuring no double scrollbars and full viewport utilization */
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
 }
 
-/* Prefer Bootstrap utilities but provide fallback sizing for chat layout */
-#chat-box {
+body {
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-}
-
-#chat-content {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-}
-
-/* Ensure body fills the viewport, supporting WebKit safe-area handling */
-body {
     height: 100vh;
-    height: -webkit-fill-available;
-    min-height: -webkit-fill-available;
+    height: 100dvh;
 }
