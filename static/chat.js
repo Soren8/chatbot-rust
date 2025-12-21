@@ -239,7 +239,9 @@ window.playTTS = function playTTS(button) {
     CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
   }
   const $messageElement = $(button).closest('.message');
-  const messageText = $messageElement.find('.ai-message-text').text() || '';
+  const $textClone = $messageElement.find('.ai-message-text').clone();
+  $textClone.find('.thinking-container').remove();
+  const messageText = $textClone.text().trim() || '';
   if (!messageText) return;
   $(button).prop('disabled', true).text('...');
   fetch('/tts', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text: messageText }) })

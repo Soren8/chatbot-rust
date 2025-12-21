@@ -204,6 +204,12 @@
     z-index: 1;
 }
 
+/* Ensure navbar stays on top of fixed content on mobile */
+.navbar {
+    position: relative;
+    z-index: 1040;
+}
+
 /* Make navbar links use Bootstrap primary color (sign in/out etc.) */
 .navbar .nav-link { /* keep default navbar link behavior intact */ }
 
