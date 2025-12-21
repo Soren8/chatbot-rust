@@ -172,34 +172,6 @@
     background-color: #4a4a4a;
 }
 
-/* Upgrade button */
-.upgrade-btn {
-    margin-left: 8px;
-    padding: 4px 12px;
-    background-color: #3a5e50;
-    border: none;
-    border-radius: 4px;
-    color: #d0d0d0;
-    cursor: pointer;
-}
-
-/* Premium alert banner */
-.premium-alert-banner {
-    background: #fff3e0;
-    border: 1px solid #ffb74d;
-    padding: 10px;
-    margin: 10px 0;
-    border-radius: 4px;
-    color: #ef6c00;
-    text-align: center;
-}
-
-.premium-alert-banner a {
-    color: #d32f2f;
-    font-weight: bold;
-    text-decoration: underline;
-}
-
 /* Center the navbar brand while keeping left/right controls visible */
 .navbar-brand-center {
     position: absolute;
@@ -267,10 +239,193 @@ a:hover, a:focus {
     border-radius: 5px;
 }
 
-/* On mobile, ensure side padding is minimal for messages */
-@media (max-width: 767.98px) {
+/* Responsive adjustments */
+@media (max-width: 768px) {
     .message {
-        max-width: 95%;
+        max-width: 100%;
+    }
+    
+    .regenerate-container {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+    }
+    
+    .delete-button, .play-button, .regenerate-button {
+        min-width: 40px;
+        padding: 6px 10px;
+        font-size: 12px;
+    }
+    
+    .delete-icon {
+        font-size: 20px !important;
+    }
+}
+
+/* Mobile tweaks: keep control buttons inline, slightly larger, and right-justified */
+@media (max-width: 767.98px) {
+    .regenerate-container {
+        flex-direction: row !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        gap: 8px !important;
+        width: 100%;
+    }
+
+    .regenerate-button, .play-button, .delete-button {
+        padding: 10px 14px !important;
+        min-width: 72px !important;
+        font-size: 16px !important;
+    }
+
+    .delete-icon {
+        font-size: 20px !important;
+    }
+}
+
+@media (max-width: 576px) {
+    .message {
+        max-width: 100%;
+    }
+    
+    .regenerate-container {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+    }
+    
+    .delete-button, .play-button, .regenerate-button {
+        min-width: 36px;
+        padding: 5px 8px;
+        font-size: 11px;
+    }
+    
+    .delete-icon {
+        font-size: 18px !important;
+    }
+}
+
+/* On md+ make settings panel content stretch vertically and let the two cards share space */
+@media (min-width: 768px) {
+    #settingsCollapse {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+    /* container that holds the two cards */
+    .settings-cards {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        min-height: 0;
+    }
+    .settings-cards .card {
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+    .settings-cards .card .card-body {
+        overflow: auto;
+    }
+    /* Make textarea fill available card-body space and keep Save button at bottom */
+    .settings-cards .card .card-body {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+    .settings-cards .card .card-body textarea {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        resize: none;
+        margin-bottom: 0.5rem;
+    }
+    .settings-cards .card .card-body .btn {
+        flex: 0 0 auto;
+    }
+}
+
+/* On small screens do not force fixed heights; on md+ keep full-height layout */
+@media (min-width: 768px) {
+    #settings-col, #settingsCollapse, #chat-area {
+        height: 100%;
+        overflow: hidden;
+    }
+    
+    #chat-box {
+        height: 100%;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+}
+
+/* Root layout ensuring no double scrollbars and full viewport utilization */
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Mobile specific overrides */
+@media (max-width: 767.98px) {
+    body {
+        height: 100dvh;
+        overflow: hidden;
+    }
+
+    .container-fluid.flex-grow-1 {
+        height: 100dvh;
+        margin-top: 0 !important;
+        padding-top: 56px !important; /* Navbar height */
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+    }
+
+    #chat-area {
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        padding: 0 !important;
+    }
+
+    #chat-box {
+        flex: 1 1 auto;
+        min-height: 0;
+        margin-bottom: 0 !important;
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    #chat-content {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        height: 100%;
+        max-height: none;
+    }
+
+    #chat-area .input-group {
+        padding: 12px 8px;
+        background-color: #1e1f21;
+        border-top: 1px solid #333;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0));
     }
 }
 
@@ -290,7 +445,6 @@ a:hover, a:focus {
     background-color: #2a2a2a;
     color: #fff;
     border-color: var(--bs-primary);
-    box-shadow: 0 0 0 0.25rem rgba(var(--bs-primary-rgb), 0.25);
 }
 
 .form-control::placeholder {
@@ -332,19 +486,4 @@ a:hover, a:focus {
 }
 ::-webkit-scrollbar-thumb:hover {
     background: #444;
-}
-
-/* Root layout ensuring no double scrollbars and full viewport utilization */
-html, body {
-    height: 100%;
-    margin: 0;
-    padding: 0;
-    overflow: hidden;
-}
-
-body {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
 }
