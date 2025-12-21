@@ -186,14 +186,19 @@ function appendMessage(message, className, pairIndex) {
   if (className && className.indexOf('user-message') !== -1) {
     try {
       const $deleteContainer = $('<div>').addClass('regenerate-container');
+      const $editBtn = $('<button>')
+        .attr('type', 'button')
+        .addClass('edit-button')
+        .attr('title', 'Edit message')
+        .html('<i class="bi bi-pencil-fill"></i>');
       const $deleteBtn = $('<button>')
         .attr('type', 'button')
         .addClass('delete-button')
         .attr('title', 'Delete message')
         .html('<span class="delete-icon"><i class="bi bi-trash-fill"></i></span>');
-      $deleteContainer.append($deleteBtn);
+      $deleteContainer.append($editBtn).append($deleteBtn);
       $messageElement.append($deleteContainer);
-    } catch (e) { console.debug('Failed to add delete button:', e); }
+    } catch (e) { console.debug('Failed to add buttons:', e); }
   }
 
   $chatContent.append($messageElement);
@@ -266,8 +271,11 @@ window.regenerateMessage = function regenerateMessage(button) {
     const prevText = ($previousUserMessage.find('.user-message-text').text() || '').trim();
     pairIndex = userMsgNodes.findIndex(n => (n.querySelector('.user-message-text') || {}).textContent?.trim() === prevText);
   }
-  const $targetAI = $('.ai-message').eq(pairIndex);
-  const $target = $targetAI.length ? $targetAI : $aiMessageElement;
+  window.performRegeneration($aiMessageElement[0], userText, pairIndex);
+};
+
+window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex) {
+  const $target = $(aiMessageElement);
   $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`);
   // Initial scroll to bottom when regeneration starts
   scrollToBottom();
@@ -400,13 +408,13 @@ window.regenerateMessage = function regenerateMessage(button) {
         if (err.name === 'AbortError') {
           $target.find('.ai-message-text').append(' [Stopped]');
         } else {
-          $aiMessageElement.html(`<strong>AI:</strong> <span class="error-message">Error: ${err.message}</span>`);
+          $target.html(`<strong>AI:</strong> <span class="error-message">Error: ${err.message}</span>`);
         }
         try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
         setGeneratingState(false);
         currentAbortController = null;
       });
-    }
+};
 // Main ready block
 $(document).ready(function() {
   disablePremiumModels();
@@ -436,11 +444,33 @@ $(document).ready(function() {
     scrollToBottom();
   });
 
-  // Delegation for play and delete
+  // Delegation for play, delete, and edit
   $(document).on('click', function(event) {
     const target = event.target;
     const playBtn = target.closest && target.closest('.play-button');
     if (playBtn) { window.playTTS(playBtn); return; }
+
+    const editBtn = target.closest && target.closest('.edit-button');
+    if (editBtn) {
+      const $messageElement = $(editBtn).closest('.message.user-message');
+      const $textSpan = $messageElement.find('.user-message-text');
+      const originalText = $messageElement.attr('data-original') || $textSpan.text().replace(/^You:\s*/, '').trim();
+
+      if ($messageElement.find('.edit-textarea').length > 0) return;
+
+      const $textarea = $('<textarea>').addClass('edit-textarea form-control').val(originalText);
+      const $actions = $('<div>').addClass('edit-actions mt-2');
+      const $saveBtn = $('<button>').addClass('btn btn-sm btn-primary save-edit').text('Save');
+      const $cancelBtn = $('<button>').addClass('btn btn-sm btn-secondary cancel-edit ms-2').text('Cancel');
+
+      $actions.append($saveBtn).append($cancelBtn);
+      $textSpan.hide();
+      $messageElement.find('.regenerate-container').hide();
+      $messageElement.prepend($textarea).append($actions);
+      $textarea.focus();
+      return;
+    }
+
     const deleteBtn = target.closest && target.closest('.delete-button');
     if (deleteBtn) {
       const userMessageElement = deleteBtn.closest('.message.user-message');
@@ -453,6 +483,38 @@ $(document).ready(function() {
       fetch('/delete_message', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ user_message: userText, ai_message: aiText, set_name: $('#set-selector').val() || 'default' }) })
         .then(r => { if (r.status === 401) { window.location.href = '/login'; } })
         .catch(()=>{});
+    }
+
+    const saveEditBtn = target.closest && target.closest('.save-edit');
+    if (saveEditBtn) {
+      const $messageElement = $(saveEditBtn).closest('.message.user-message');
+      const newText = $messageElement.find('.edit-textarea').val().trim();
+      if (!newText) return;
+
+      const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
+      const pairIndex = userMsgNodes.indexOf($messageElement[0]);
+
+      $messageElement.attr('data-original', newText);
+      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${escapeHTML(newText)}`).show();
+      $messageElement.find('.edit-textarea').remove();
+      $messageElement.find('.edit-actions').remove();
+      $messageElement.find('.regenerate-container').show();
+
+      const $aiMessageElement = $messageElement.next('.message.ai-message');
+      if ($aiMessageElement.length > 0) {
+        window.performRegeneration($aiMessageElement[0], newText, pairIndex);
+      }
+      return;
+    }
+
+    const cancelEditBtn = target.closest && target.closest('.cancel-edit');
+    if (cancelEditBtn) {
+      const $messageElement = $(cancelEditBtn).closest('.message.user-message');
+      $messageElement.find('.edit-textarea').remove();
+      $messageElement.find('.edit-actions').remove();
+      $messageElement.find('.user-message-text').show();
+      $messageElement.find('.regenerate-container').show();
+      return;
     }
   });
 

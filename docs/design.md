@@ -19,6 +19,7 @@ This document captures the current architecture of the project and the potential
 - **UI/UX Improvements**
   - [ ] Lower friction for new chats by assigning a temporary title (e.g., "New Chat") that is automatically replaced with a contextual name based on chat content.
   - [x] Ability to delete chats from history.
+  - [x] Ability to edit old chat entries.
 
 - **Authentication & Security**
   - [ ] Outsource authentication to Keycloak or Authentik (or other OIDC-compliant systems).
