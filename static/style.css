@@ -487,3 +487,29 @@ body {
 ::-webkit-scrollbar-thumb:hover {
     background: #444;
 }
+
+#scroll-to-bottom {
+    position: absolute;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 1000;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: none; /* Controlled by JS, but will be flex when shown */
+    align-items: center;
+    justify-content: center;
+    border-radius: 50% !important;
+    opacity: 0.7;
+    transition: opacity 0.2s, transform 0.2s;
+    border: none;
+}
+
+#scroll-to-bottom:hover {
+    opacity: 1;
+    transform: scale(1.1);
+}
+
+#scroll-to-bottom:active {
+    transform: scale(0.9);
+}

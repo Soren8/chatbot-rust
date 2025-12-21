@@ -382,6 +382,22 @@ $(document).ready(function() {
   // Validate model tier on selection change (replacing inline onchange)
   $('#modelSelect').on('change', validateModelTier);
 
+  // Scroll to bottom button logic
+  const $chatContent = $('#chat-content');
+  const $scrollToBottomBtn = $('#scroll-to-bottom');
+
+  $chatContent.on('scroll', function() {
+    if (isAtBottom()) {
+      $scrollToBottomBtn.fadeOut(200);
+    } else if ($scrollToBottomBtn.is(':hidden')) {
+      $scrollToBottomBtn.css('display', 'flex').hide().fadeIn(200);
+    }
+  });
+
+  $scrollToBottomBtn.on('click', function() {
+    scrollToBottom();
+  });
+
   // Delegation for play and delete
   $(document).on('click', function(event) {
     const target = event.target;
