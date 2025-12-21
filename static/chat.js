@@ -203,6 +203,25 @@ function appendMessage(message, className, pairIndex) {
   return $messageElement;
 }
 
+let currentAbortController = null;
+
+function setGeneratingState(isGenerating) {
+  const $sendBtn = $('#send-button, #stop-button');
+  if (isGenerating) {
+    $sendBtn.removeClass('btn-outline-primary').addClass('btn-danger').text('Stop').attr('id', 'stop-button');
+  } else {
+    $sendBtn.removeClass('btn-danger').addClass('btn-outline-primary').text('Send').attr('id', 'send-button');
+  }
+}
+
+$(document).on('click', '#stop-button', function() {
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+    setGeneratingState(false);
+  }
+});
+
 window.playTTS = function playTTS(button) {
   if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
     try { CURRENT_AUDIO.pause(); CURRENT_AUDIO.currentTime = 0; } catch (e) {}
@@ -253,8 +272,13 @@ window.regenerateMessage = function regenerateMessage(button) {
   // Initial scroll to bottom when regeneration starts
   scrollToBottom();
 
+  if (currentAbortController) currentAbortController.abort();
+  currentAbortController = new AbortController();
+  setGeneratingState(true);
+
   fetch('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
+    signal: currentAbortController.signal,
     body: JSON.stringify({
       message: userText,
       system_prompt: $('#user-system-prompt').val(),
@@ -349,26 +373,40 @@ window.regenerateMessage = function regenerateMessage(button) {
         }
       }
     }
-    function read() {
-      reader.read().then(({done, value}) => {
-        if (done) {
-          try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
-          return;
-        }
-        buffer += decoder.decode(value, {stream:true});
-        const nearBottom = isAtBottom();
-        processBuffer();
-        if (nearBottom) {
-          scrollToBottom();
+            function read() {
+          reader.read().then(({done, value}) => {
+            if (done) {
+              try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+              setGeneratingState(false);
+              currentAbortController = null;
+              return;
+            }
+            buffer += decoder.decode(value, {stream:true});
+            const nearBottom = isAtBottom();
+            processBuffer();
+            if (nearBottom) {
+              scrollToBottom();
+            }
+            read();
+          }).catch(err => {
+            try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+            setGeneratingState(false);
+            currentAbortController = null;
+          });
         }
         read();
-      }).catch(()=>{});
+      })
+      .catch(err => {
+        if (err.name === 'AbortError') {
+          $target.find('.ai-message-text').append(' [Stopped]');
+        } else {
+          $aiMessageElement.html(`<strong>AI:</strong> <span class="error-message">Error: ${err.message}</span>`);
+        }
+        try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+        setGeneratingState(false);
+        currentAbortController = null;
+      });
     }
-    read();
-  })
-  .catch(err => { $aiMessageElement.html(`<strong>AI:</strong> <span class="error-message">Error: ${err.message}</span>`); });
-}
-
 // Main ready block
 $(document).ready(function() {
   disablePremiumModels();
@@ -587,7 +625,17 @@ $(document).ready(function() {
       save_thoughts: $('#check-save-thoughts').is(':checked'),
       send_thoughts: $('#check-send-thoughts').is(':checked')
     };
-    fetch('/chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(requestData) })
+
+    if (currentAbortController) currentAbortController.abort();
+    currentAbortController = new AbortController();
+    setGeneratingState(true);
+
+    fetch('/chat', {
+      method: 'POST',
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
+      signal: currentAbortController.signal,
+      body: JSON.stringify(requestData)
+    })
       .then(response => { 
         if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
         if (!response.ok) return response.text().then(t => { throw new Error(t || 'Network response was not ok'); }); 
@@ -687,6 +735,8 @@ $(document).ready(function() {
                 buffer = '';
               }
               try { $targetElement.find('.regenerate-button, .play-button').prop('disabled', false); $targetElement.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+              setGeneratingState(false);
+              currentAbortController = null;
               return;
             }
             const chunk = decoder.decode(value, { stream: true });
@@ -696,11 +746,25 @@ $(document).ready(function() {
               scrollToBottom();
             }
             return readStream();
-          }).catch(()=>{});
+          }).catch(err => {
+            try { $targetElement.find('.regenerate-button, .play-button').prop('disabled', false); $targetElement.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+            setGeneratingState(false);
+            currentAbortController = null;
+          });
         }
         readStream();
       })
-      .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
+      .catch(error => {
+        if (error.name === 'AbortError') {
+          const $lastAI = $('.ai-message:last-child');
+          $lastAI.find('.ai-message-text').append(' [Stopped]');
+          try { $lastAI.find('.regenerate-button, .play-button').prop('disabled', false); $lastAI.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+        } else {
+          appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
+        }
+        setGeneratingState(false);
+        currentAbortController = null;
+      });
   }
 
   $('#user-input').on('keypress', function(e) { if (e.key === 'Enter') { e.preventDefault(); sendMessage(); } });
