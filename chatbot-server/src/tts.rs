@@ -14,7 +14,7 @@ use tracing::{debug, error};
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const DEFAULT_VOICE_FILE: &str = "voices/default.wav";
-const SAMPLE_RATE_HZ: u32 = 22_050;
+const SAMPLE_RATE_HZ: u32 = 24_000;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
 
