@@ -556,6 +556,68 @@ body {
     background-color: rgba(255,255,255,0.05);
 }
 
+/* Code block styling */
+.code-block-container {
+    position: relative;
+    margin: 1rem 0;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #444;
+}
+
+.code-block-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #2a2a2a;
+    padding: 0 12px;
+    font-size: 0.8em;
+    color: #9aa0a6;
+}
+
+.copy-code-button {
+    background: none;
+    border: none;
+    color: #9aa0a6;
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: 4px;
+    transition: background-color 0.2s, color 0.2s;
+    font-size: 0.9em;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.copy-code-button:hover {
+    background-color: #3c4043;
+    color: #fff;
+}
+
+.copy-code-button.copied {
+    color: #4bb543;
+}
+
+.ai-message pre {
+    margin: 0;
+    padding: 0 12px 12px 12px;
+    background-color: #0d1117 !important; /* Match github-dark */
+    overflow-x: auto;
+}
+
+.ai-message code {
+    font-family: SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace;
+    font-size: 0.9em;
+}
+
+/* Inline code */
+:not(pre) > code {
+    background-color: rgba(255, 255, 255, 0.1);
+    padding: 2px 4px;
+    border-radius: 4px;
+    font-family: SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace;
+}
+
 /* Custom scrollbar for dark theme */
 ::-webkit-scrollbar {
     width: 8px;

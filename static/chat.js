@@ -13,6 +13,7 @@ try {
         loggedIn: !!(cfg && cfg.loggedIn),
         saveThoughts: cfg && cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
         sendThoughts: cfg && cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
+        renderMarkdown: cfg && cfg.renderMarkdown !== undefined ? cfg.renderMarkdown : true,
         lastSet: (cfg && cfg.lastSet) || null,
         lastModel: (cfg && cfg.lastModel) || null,
       };
@@ -24,7 +25,7 @@ try {
       });
       window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
     } else {
-      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false };
+      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true };
       window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || '';
     }
   }
@@ -125,6 +126,75 @@ function escapeHTML(str) {
   return div.innerHTML;
 }
 
+// Configure marked with highlight.js
+if (typeof marked !== 'undefined') {
+  console.debug('Initializing marked with highlight.js');
+  const renderer = new marked.Renderer();
+  
+  // Custom code block rendering with header and copy button
+  renderer.code = function(args) {
+    // Handle both object (new marked) and positional (old marked) arguments
+    let text, lang;
+    if (typeof args === 'object' && !Array.isArray(args)) {
+      text = args.text;
+      lang = args.lang;
+    } else {
+      text = arguments[0];
+      lang = arguments[1];
+    }
+
+    const language = lang || 'plaintext';
+    let highlighted;
+    
+    console.debug('Rendering code block:', { language, textLength: text.length });
+
+    if (typeof hljs !== 'undefined') {
+      try {
+        const langObj = hljs.getLanguage(language);
+        if (langObj) {
+          highlighted = hljs.highlight(text, { language }).value;
+          console.debug('Highlight.js success for:', language);
+        } else {
+          highlighted = hljs.highlightAuto(text).value;
+          console.debug('Highlight.js auto-highlighting used');
+        }
+      } catch (e) {
+        console.error('Highlight.js error:', e);
+        highlighted = escapeHTML(text);
+      }
+    } else {
+      console.warn('Highlight.js (hljs) is not defined');
+      highlighted = escapeHTML(text);
+    }
+
+    return `<div class="code-block-container"><div class="code-block-header"><span>${language}</span><button class="copy-code-button" type="button" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button></div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`;
+  };
+
+  marked.use({ 
+    renderer,
+    gfm: true,
+    breaks: true
+  });
+  console.debug('Marked configured with custom renderer');
+} else {
+  console.warn('Marked library not found');
+}
+
+function renderMarkdown(text) {
+  if (window.APP_DATA && window.APP_DATA.renderMarkdown === false) {
+    return escapeHTML(text).replace(/\n/g, '<br>');
+  }
+  if (typeof marked !== 'undefined') {
+    try {
+      return marked.parse(text);
+    } catch (e) {
+      console.error('Markdown parsing error:', e);
+      return escapeHTML(text).replace(/\n/g, '<br>');
+    }
+  }
+  return escapeHTML(text).replace(/\n/g, '<br>');
+}
+
 // Scroll helpers for the chat content container
 function isAtBottom() {
   const container = document.getElementById('chat-content');
@@ -187,7 +257,7 @@ function appendMessage(message, className, pairIndex) {
       tmp.innerHTML = message;
       originalText = (tmp.textContent || tmp.innerText || '').replace(/^\s*You:\s*/, '').trim();
     }
-    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${escapeHTML(originalText)}</span>`);
+    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${renderMarkdown(originalText)}</span>`);
     $messageElement.attr('data-original', originalText);
   } else {
     $messageElement.html(message);
@@ -324,18 +394,22 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
     let buffer = '';
     let state = 'visible';
     let hasWrittenToDOM = false;
+    let fullVisibleText = '';
+    let fullThinkingText = '';
 
     function appendVisible(content) {
       if (!content) return;
-      if (!hasWrittenToDOM) { $msgText.text(content); hasWrittenToDOM = true; }
-      else { $msgText.text($msgText.text() + content); }
+      fullVisibleText += content;
+      $msgText.html(renderMarkdown(fullVisibleText));
+      hasWrittenToDOM = true;
     }
     function appendThinking(content) {
       if (!content) return;
-      if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
+      fullThinkingText += content;
       $thinkingWrap.show();
       $thinkingWrap.find('.toggle-thinking').show();
-      $thinkingContent.text($thinkingContent.text() + content);
+      $thinkingContent.text(fullThinkingText);
+      if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
     }
     function processBuffer() {
       const openTag = '<think>';
@@ -504,12 +578,29 @@ $(document).ready(function() {
   if (window.APP_DATA) {
     $('#check-save-thoughts').prop('checked', window.APP_DATA.saveThoughts);
     $('#check-send-thoughts').prop('checked', window.APP_DATA.sendThoughts);
+    $('#check-render-markdown').prop('checked', window.APP_DATA.renderMarkdown);
   }
 
   // Validate model tier on selection change (replacing inline onchange)
   $('#modelSelect').on('change', function() {
       validateModelTier();
       savePreferences();
+  });
+
+  $('#check-render-markdown').on('change', function() {
+    window.APP_DATA.renderMarkdown = $(this).is(':checked');
+    savePreferences();
+    // Re-render all AI messages
+    $('.ai-message').each(function() {
+      const $msgText = $(this).find('.ai-message-text');
+      const $thinkingContent = $(this).find('.thinking-content');
+      
+      // We need the original text. We don't store it explicitly in the DOM for AI messages 
+      // currently in a clean way without parsing thinking tags again.
+      // For now, let's just trigger a reload of the current set to re-render everything
+      // as that's the most reliable way without adding more data attributes.
+    });
+    $('#set-selector').trigger('change');
   });
 
   // Restore last model if available
@@ -527,13 +618,16 @@ $(document).ready(function() {
       
       const currentModel = $('#modelSelect').val();
       const currentSet = $('#set-selector').val();
+      const renderMarkdown = $('#check-render-markdown').is(':checked');
 
       window.APP_DATA.lastModel = currentModel;
       window.APP_DATA.lastSet = currentSet;
+      window.APP_DATA.renderMarkdown = renderMarkdown;
 
       const preferences = {
           last_model: currentModel,
-          last_set: currentSet
+          last_set: currentSet,
+          render_markdown: renderMarkdown
       };
 
       fetch('/update_preferences', {
@@ -596,7 +690,7 @@ $(document).ready(function() {
       const pairIndex = userMsgNodes.indexOf($messageElement[0]);
 
       $messageElement.attr('data-original', newText);
-      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${escapeHTML(newText)}`).show();
+      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${renderMarkdown(newText)}`).show();
       $messageElement.find('.edit-textarea').remove();
       $messageElement.find('.edit-actions').remove();
       $messageElement.find('.regenerate-container').show();
@@ -623,6 +717,24 @@ $(document).ready(function() {
   $(document).on('click', '.regenerate-button', function() { window.regenerateMessage(this); });
   $(document).on('click', '.toggle-thinking', function() { window.toggleThinking(this); });
 
+  // Copy code block logic
+  $(document).on('click', '.copy-code-button', function() {
+    const $btn = $(this);
+    const $container = $btn.closest('.code-block-container');
+    const code = $container.find('pre code').text();
+
+    navigator.clipboard.writeText(code).then(() => {
+      const originalHtml = $btn.html();
+      $btn.addClass('copied').html('<i class="bi bi-check2"></i>');
+      setTimeout(() => {
+        $btn.removeClass('copied').html(originalHtml);
+      }, 2000);
+    }).catch(err => {
+      console.error('Failed to copy code:', err);
+      alert('Failed to copy code to clipboard');
+    });
+  });
+
   // Load sets for logged-in users
   if (window.APP_DATA.loggedIn) {
     function formatAiMessage(text) {
@@ -637,12 +749,12 @@ $(document).ready(function() {
         if (state === 'visible') {
           const idx = buffer.indexOf(openTag);
           if (idx !== -1) {
-            html += escapeHTML(buffer.substring(0, idx));
+            html += renderMarkdown(buffer.substring(0, idx));
             buffer = buffer.substring(idx + openTag.length);
             state = 'thinking';
             html += '<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">';
           } else {
-            html += escapeHTML(buffer);
+            html += renderMarkdown(buffer);
             buffer = '';
           }
         } else {
@@ -656,12 +768,12 @@ $(document).ready(function() {
             }
           }
           if (firstCloseIdx !== -1) {
-            html += escapeHTML(buffer.substring(0, firstCloseIdx));
+            html += escapeHTML(buffer.substring(0, firstCloseIdx)).replace(/\n/g, '<br>');
             buffer = buffer.substring(firstCloseIdx + usedTagLen);
             state = 'visible';
             html += '</div></div>';
           } else {
-            html += escapeHTML(buffer);
+            html += escapeHTML(buffer).replace(/\n/g, '<br>');
             buffer = '';
             html += '</div></div>';
           }
@@ -890,17 +1002,22 @@ $(document).ready(function() {
         let buffer = '';
         let state = 'visible';
         let hasWrittenToDOM = false;
+        let fullVisibleText = '';
+        let fullThinkingText = '';
+
         function appendVisible(content) {
           if (!content) return;
-          if (!hasWrittenToDOM) { $messageTextElement.text(content); hasWrittenToDOM = true; }
-          else { $messageTextElement.text($messageTextElement.text() + content); }
+          fullVisibleText += content;
+          $messageTextElement.html(renderMarkdown(fullVisibleText));
+          hasWrittenToDOM = true;
         }
         function appendThinking(content) {
           if (!content) return;
-          if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
+          fullThinkingText += content;
           $thinkingContainerWrapper.show();
           $thinkingContainerWrapper.find('.toggle-thinking').show();
-          $thinkingContentElement.text($thinkingContentElement.text() + content);
+          $thinkingContentElement.text(fullThinkingText);
+          if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
         }
         function processChunk(chunk) {
           buffer += chunk;
@@ -1066,6 +1183,7 @@ window.toggleThinking = function toggleThinking(button) {
           loggedIn: !!cfg.loggedIn,
           saveThoughts: cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
           sendThoughts: cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
+          renderMarkdown: cfg.renderMarkdown !== undefined ? cfg.renderMarkdown : true,
         };
         window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || cfg.defaultSystemPrompt || '';
       } catch (e) {

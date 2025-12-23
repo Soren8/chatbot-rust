@@ -47,6 +47,12 @@ struct UserRecord {
     last_set: Option<String>,
     #[serde(default)]
     last_model: Option<String>,
+    #[serde(default = "default_render_markdown")]
+    render_markdown: bool,
+}
+
+fn default_render_markdown() -> bool {
+    true
 }
 
 fn default_tier() -> String {
@@ -140,6 +146,7 @@ impl UserStore {
                 tier: DEFAULT_TIER.to_string(),
                 last_set: None,
                 last_model: None,
+                render_markdown: true,
             },
         );
 
@@ -199,6 +206,7 @@ impl UserStore {
         username: &str,
         last_set: Option<String>,
         last_model: Option<String>,
+        render_markdown: Option<bool>,
     ) -> Result<(), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let mut users = self.load_users()?;
@@ -209,6 +217,9 @@ impl UserStore {
             }
             if let Some(model) = last_model {
                 record.last_model = Some(model);
+            }
+            if let Some(render) = render_markdown {
+                record.render_markdown = render;
             }
         } else {
             return Err(UserStoreError::Crypto("User not found".into()));
@@ -221,14 +232,18 @@ impl UserStore {
     pub fn user_preferences(
         &self,
         username: &str,
-    ) -> Result<(Option<String>, Option<String>), UserStoreError> {
+    ) -> Result<(Option<String>, Option<String>, bool), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
 
         if let Some(record) = users.get(&normalised) {
-            Ok((record.last_set.clone(), record.last_model.clone()))
+            Ok((
+                record.last_set.clone(),
+                record.last_model.clone(),
+                record.render_markdown,
+            ))
         } else {
-            Ok((None, None))
+            Ok((None, None, true))
         }
     }
 
