@@ -35,7 +35,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
     })?;
 
     let logged_in = bootstrap.username.is_some();
-    let user_tier = resolve_user_tier(bootstrap.username.as_deref());
+    let user_details = resolve_user_details(bootstrap.username.as_deref());
 
     let config = config::app_config();
     let default_prompt = config.default_system_prompt.clone();
@@ -49,11 +49,11 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
     );
 
     let sri = config.cdn_sri.clone();
-    let available_models = build_available_models(config.provider_names(), &user_tier, &config);
+    let available_models = build_available_models(config.provider_names(), &user_details.tier, &config);
 
     let html = render_template(
         logged_in,
-        &user_tier,
+        &user_details,
         &available_models,
         &default_prompt,
         &bootstrap.csrf_token,
@@ -72,26 +72,36 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
     build_response(html, bootstrap)
 }
 
-fn resolve_user_tier(username: Option<&str>) -> String {
+struct UserDetails {
+    tier: String,
+    last_set: Option<String>,
+    last_model: Option<String>,
+}
+
+fn resolve_user_details(username: Option<&str>) -> UserDetails {
     match username {
         Some(name) => {
             let store = match UserStore::new() {
                 Ok(store) => store,
                 Err(err) => {
-                    warn!(?err, "failed to open user store when resolving tier");
-                    return FREE_TIER.to_string();
+                    warn!(?err, "failed to open user store when resolving details");
+                    return UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None };
                 }
             };
 
-            match store.user_tier(name) {
-                Ok(tier) => tier,
-                Err(err) => {
-                    warn!(?err, "failed to load user tier; defaulting to free");
-                    FREE_TIER.to_string()
-                }
-            }
+            let tier = store.user_tier(name).unwrap_or_else(|err| {
+                warn!(?err, "failed to load user tier; defaulting to free");
+                FREE_TIER.to_string()
+            });
+
+            let (last_set, last_model) = store.user_preferences(name).unwrap_or_else(|err| {
+                 warn!(?err, "failed to load user preferences");
+                 (None, None)
+            });
+
+            UserDetails { tier, last_set, last_model }
         }
-        None => FREE_TIER.to_string(),
+        None => UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None },
     }
 }
 
@@ -122,7 +132,7 @@ fn build_available_models(
 
 fn render_template(
     logged_in: bool,
-    user_tier: &str,
+    user_details: &UserDetails,
     available_models: &[FrontendModel],
     default_prompt: &str,
     csrf_token: &str,
@@ -134,7 +144,9 @@ fn render_template(
     let template = env.get_template("chat.html")?;
     template.render(context! {
         logged_in => logged_in,
-        user_tier => user_tier,
+        user_tier => user_details.tier,
+        last_set => user_details.last_set,
+        last_model => user_details.last_model,
         available_llms => available_models,
         default_system_prompt => default_prompt,
         csrf_token => csrf_token,
@@ -203,7 +215,11 @@ mod tests {
     #[test]
     fn renders_template_with_config() {
         let logged_in = true;
-        let user_tier = "free";
+        let user_details = UserDetails {
+            tier: "free".to_string(),
+            last_set: None,
+            last_model: None,
+        };
         let available_models = vec![FrontendModel {
             provider_name: "test-model".to_string(),
             tier: "free".to_string(),
@@ -216,7 +232,7 @@ mod tests {
 
         let rendered = render_template(
             logged_in,
-            user_tier,
+            &user_details,
             &available_models,
             default_prompt,
             csrf_token,

@@ -19,6 +19,7 @@ mod home;
 mod login;
 mod logout;
 mod memory;
+mod preferences;
 mod providers;
 mod regenerate;
 mod reset_chat;
@@ -84,6 +85,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(memory::handle_update_system_prompt),
         )
         .route("/delete_message", post(memory::handle_delete_message))
+        .route(
+            "/update_preferences",
+            post(preferences::handle_update_preferences),
+        )
 }
 
 pub fn resolve_static_root() -> PathBuf {

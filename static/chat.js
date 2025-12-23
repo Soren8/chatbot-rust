@@ -13,8 +13,15 @@ try {
         loggedIn: !!(cfg && cfg.loggedIn),
         saveThoughts: cfg && cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
         sendThoughts: cfg && cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
+        lastSet: (cfg && cfg.lastSet) || null,
+        lastModel: (cfg && cfg.lastModel) || null,
       };
-      console.debug('Initialized APP_DATA:', { save: window.APP_DATA.saveThoughts, send: window.APP_DATA.sendThoughts });
+      console.debug('Initialized APP_DATA:', { 
+          save: window.APP_DATA.saveThoughts, 
+          send: window.APP_DATA.sendThoughts,
+          set: window.APP_DATA.lastSet,
+          model: window.APP_DATA.lastModel
+      });
       window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
     } else {
       window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false };
@@ -435,7 +442,35 @@ $(document).ready(function() {
   }
 
   // Validate model tier on selection change (replacing inline onchange)
-  $('#modelSelect').on('change', validateModelTier);
+  $('#modelSelect').on('change', function() {
+      validateModelTier();
+      savePreferences();
+  });
+
+  // Restore last model if available
+  if (window.APP_DATA.lastModel) {
+      const $modelSelect = $('#modelSelect');
+      if ($modelSelect.find(`option[value="${window.APP_DATA.lastModel}"]`).length > 0) {
+          $modelSelect.val(window.APP_DATA.lastModel);
+          previousModel = window.APP_DATA.lastModel;
+          validateModelTier();
+      }
+  }
+
+  function savePreferences() {
+      if (!window.APP_DATA.loggedIn) return;
+      
+      const preferences = {
+          last_model: $('#modelSelect').val(),
+          last_set: $('#set-selector').val()
+      };
+
+      fetch('/update_preferences', {
+          method: 'POST',
+          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(preferences)
+      }).catch(err => console.debug('Failed to save preferences:', err));
+  }
 
   // Scroll to bottom button logic
   const $chatContent = $('#chat-content');
@@ -584,9 +619,21 @@ $(document).ready(function() {
         .then(data => {
           const $selector = $('#set-selector');
           $selector.empty();
+          let setExists = false;
           $.each(data, function(setName) {
             $('<option>').val(setName).text(setName).appendTo($selector);
+            if (window.APP_DATA.lastSet && setName === window.APP_DATA.lastSet) {
+                setExists = true;
+            }
           });
+          
+          if (setExists) {
+              $selector.val(window.APP_DATA.lastSet);
+          } else if (window.APP_DATA.lastSet) {
+              // If last set was deleted or invalid, fallback to default but don't persist yet
+              console.debug('Last set not found, falling back to default');
+          }
+
           if (shouldTriggerChange) {
             $selector.trigger('change');
           }
@@ -595,6 +642,7 @@ $(document).ready(function() {
 
     $('#set-selector').on('change', function() {
       const setName = $(this).val();
+      savePreferences();
       fetch('/load_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
         .then(async r => {
           if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }

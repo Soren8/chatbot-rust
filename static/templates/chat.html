@@ -148,7 +148,9 @@
         "loggedIn": {{ logged_in | tojson }},
         "defaultSystemPrompt": {{ default_system_prompt | tojson }},
         "saveThoughts": {{ save_thoughts | tojson }},
-        "sendThoughts": {{ send_thoughts | tojson }}
+        "sendThoughts": {{ send_thoughts | tojson }},
+        "lastSet": {{ last_set | tojson }},
+        "lastModel": {{ last_model | tojson }}
     }
     </script>
     <script src="/static/chat.js"></script>

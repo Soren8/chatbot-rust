@@ -43,6 +43,10 @@ struct UserRecord {
     password: String,
     #[serde(default = "default_tier")]
     tier: String,
+    #[serde(default)]
+    last_set: Option<String>,
+    #[serde(default)]
+    last_model: Option<String>,
 }
 
 fn default_tier() -> String {
@@ -134,6 +138,8 @@ impl UserStore {
             UserRecord {
                 password: hashed_password.to_string(),
                 tier: DEFAULT_TIER.to_string(),
+                last_set: None,
+                last_model: None,
             },
         );
 
@@ -186,6 +192,44 @@ impl UserStore {
             .get(&normalised)
             .map(|record| record.tier.clone())
             .unwrap_or_else(|| DEFAULT_TIER.to_string()))
+    }
+
+    pub fn update_user_preferences(
+        &mut self,
+        username: &str,
+        last_set: Option<String>,
+        last_model: Option<String>,
+    ) -> Result<(), UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let mut users = self.load_users()?;
+
+        if let Some(record) = users.get_mut(&normalised) {
+            if let Some(set) = last_set {
+                record.last_set = Some(set);
+            }
+            if let Some(model) = last_model {
+                record.last_model = Some(model);
+            }
+        } else {
+            return Err(UserStoreError::Crypto("User not found".into()));
+        }
+
+        self.save_users(&users)?;
+        Ok(())
+    }
+
+    pub fn user_preferences(
+        &self,
+        username: &str,
+    ) -> Result<(Option<String>, Option<String>), UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let users = self.load_users()?;
+
+        if let Some(record) = users.get(&normalised) {
+            Ok((record.last_set.clone(), record.last_model.clone()))
+        } else {
+            Ok((None, None))
+        }
     }
 
     pub fn data_dir(&self) -> &PathBuf {
