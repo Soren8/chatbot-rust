@@ -422,6 +422,11 @@ body {
         bottom: 0;
     }
 
+    #settings-col {
+        max-height: 100%;
+        overflow-y: auto;
+    }
+
     #chat-area {
         height: 100%;
         overflow: hidden;
