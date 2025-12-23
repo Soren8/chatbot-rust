@@ -44,3 +44,4 @@
 - Treat the task as complete only after all required tests pass and your changes are committed to git.
 - Update any relevant docs, checklists or todo lists at the end of a task. Only add content to docs, not checklists or todo lists.
 - NEVER add cache busting mechanisms (e.g., query parameters on script tags) unless the user explicitly asks for it. Assume the user knows how to clear their cache.
+- The `/tts` endpoint uses a two-step "Pre-sign" pattern for browser compatibility: a `POST` to `/tts` submits text and receives a token, followed by a `GET /tts_stream/{token}` for native browser streaming.

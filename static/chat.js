@@ -313,39 +313,108 @@ function handleStopClick() {
 
 window.playTTS = function playTTS(button) {
   if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
-    try { CURRENT_AUDIO.pause(); CURRENT_AUDIO.currentTime = 0; } catch (e) {}
+    if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
     if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
     CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null; return;
   }
   if (CURRENT_AUDIO) {
-    try { CURRENT_AUDIO.pause(); CURRENT_AUDIO.currentTime = 0; } catch (e) {}
+    if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
     if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
     CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
   }
+
   const $messageElement = $(button).closest('.message');
   const $textClone = $messageElement.find('.ai-message-text').clone();
   $textClone.find('.thinking-container').remove();
   const messageText = $textClone.text().trim() || '';
   if (!messageText) return;
-  $(button).prop('disabled', true).text('...');
-  fetch('/tts', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text: messageText }) })
-    .then(r => { 
-      if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-      if (!r.ok) throw new Error('Network response was not ok'); 
-      return r.blob(); 
-    })
-    .then(blob => {
-      const audioUrl = URL.createObjectURL(blob);
-      const audio = new Audio(audioUrl);
-      CURRENT_AUDIO = audio; CURRENT_AUDIO_BUTTON = button;
-      $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
-      audio.play().catch(()=>{});
-      audio.addEventListener('ended', () => { if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class=\"bi bi-play-fill\"></i>'); try { URL.revokeObjectURL(audioUrl); } catch (e) {} CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null; });
-      audio.addEventListener('pause', () => { if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class=\"bi bi-play-fill\"></i>'); });
-    })
-    .catch(err => { $(button).prop('disabled', false).html('<i class="bi bi-play-fill"></i>').removeClass('playing'); alert('Error playing audio: ' + err.message); });
-}
 
+  const sentences = messageText.match(/[^.!?]+[.!?]*|[^.!?]+/g) || [messageText];
+  let isStopped = false;
+  let currentIndex = 0;
+  
+  // Use a single AudioContext for sample-accurate scheduling
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  let nextStartTime = 0;
+
+  CURRENT_AUDIO = {
+    stop: () => {
+      isStopped = true;
+      if (audioCtx.state !== 'closed') audioCtx.close();
+    }
+  };
+  CURRENT_AUDIO_BUTTON = button;
+
+  $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
+
+  function playNext() {
+    if (isStopped || currentIndex >= sentences.length) {
+      if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
+        // Wait for playback to actually finish
+        const checkEnd = setInterval(() => {
+            if (isStopped || audioCtx.currentTime >= nextStartTime) {
+                clearInterval(checkEnd);
+                if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
+                    $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+                    CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+                }
+            }
+        }, 100);
+      }
+      return;
+    }
+
+    const text = sentences[currentIndex].trim();
+    if (!text) { currentIndex++; playNext(); return; }
+
+    // Step 1: Get Token
+    fetch('/tts', {
+      method: 'POST',
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ text: text })
+    })
+    .then(r => {
+      if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+      if (!r.ok) throw new Error('Network response was not ok');
+      return r.json();
+    })
+    .then(data => {
+      if (isStopped) return;
+      // Step 2: Fetch full WAV
+      return fetch(`/tts_stream/${data.token}`);
+    })
+    .then(r => r.arrayBuffer())
+    .then(arrayBuffer => {
+      if (isStopped || !arrayBuffer) return;
+      // Step 3: Decode full WAV
+      return audioCtx.decodeAudioData(arrayBuffer);
+    })
+    .then(audioBuffer => {
+      if (isStopped || !audioBuffer) return;
+      
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+      
+      const now = audioCtx.currentTime;
+      // Schedule strictly after the previous one finishes
+      if (nextStartTime < now) nextStartTime = now + 0.1; // Initial buffer or catch-up
+      
+      source.start(nextStartTime);
+      nextStartTime += audioBuffer.duration;
+      
+      currentIndex++;
+      playNext();
+    })
+    .catch(err => {
+      console.error('TTS error:', err);
+      currentIndex++;
+      playNext();
+    });
+  }
+
+  playNext();
+}
 window.regenerateMessage = function regenerateMessage(button) {
   const $aiMessageElement = $(button).closest('.message');
   const $previousUserMessage = $aiMessageElement.prev('.message.user-message');

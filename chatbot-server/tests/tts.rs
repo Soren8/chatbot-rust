@@ -34,26 +34,45 @@ async fn tts_returns_wav_audio() {
 
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
     let pcm = Arc::new(vec![0_u8, 1, 2, 3]);
-
-    let router = Router::new().route(
-        "/api/tts",
-        post({
-            let captured = captured.clone();
-            let pcm = pcm.clone();
-            move |Json(payload): Json<Value>| {
+    let router = Router::new()
+        .route(
+            "/api/tts",
+            post({
                 let captured = captured.clone();
                 let pcm = pcm.clone();
-                async move {
-                    captured.lock().await.push(payload);
-                    (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "application/octet-stream")],
-                        pcm.as_slice().to_vec(),
-                    )
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let pcm = pcm.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/octet-stream")],
+                            pcm.as_slice().to_vec(),
+                        )
+                    }
                 }
-            }
-        }),
-    );
+            }),
+        )
+        .route(
+            "/api/tts/stream",
+            post({
+                let captured = captured.clone();
+                let pcm = pcm.clone();
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let pcm = pcm.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/octet-stream")],
+                            pcm.as_slice().to_vec(),
+                        )
+                    }
+                }
+            }),
+        );
 
     let (addr, shutdown, handle) = spawn_tts_backend(router).await;
 
@@ -122,17 +141,45 @@ async fn tts_returns_wav_audio() {
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()),
+        Some("application/json"),
+    );
+
+    let body_bytes = axum::body::to_bytes(tts_response.into_body(), 256 * 1024)
+        .await
+        .expect("read tts token body");
+    let tts_data: Value = serde_json::from_slice(&body_bytes).expect("valid json token");
+    let token = tts_data["token"].as_str().expect("token field present");
+
+    // Step 2: GET /tts_stream/{token}
+    let stream_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream response");
+
+    assert_eq!(stream_response.status(), StatusCode::OK);
+    assert_eq!(
+        stream_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
         Some("audio/wav"),
     );
 
-    let disposition = tts_response
+    let disposition = stream_response
         .headers()
         .get("Content-Disposition")
         .and_then(|value| value.to_str().ok())
         .expect("content disposition header");
     assert!(disposition.contains("tts.wav"));
 
-    let wav_bytes = axum::body::to_bytes(tts_response.into_body(), 512 * 1024)
+    let wav_bytes = axum::body::to_bytes(stream_response.into_body(), 512 * 1024)
         .await
         .expect("read wav body");
     assert!(!wav_bytes.is_empty(), "wav body should not be empty");
@@ -151,17 +198,29 @@ async fn tts_returns_error_when_service_fails() {
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
-    let router = Router::new().route(
-        "/api/tts",
-        post(|Json(_payload): Json<Value>| async move {
-            let body = serde_json::to_vec(&json!({"error": "backend unavailable"})).unwrap();
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "application/json")],
-                body,
-            )
-        }),
-    );
+    let router = Router::new()
+        .route(
+            "/api/tts",
+            post(|Json(_payload): Json<Value>| async move {
+                let body = serde_json::to_vec(&json!({"error": "backend unavailable"})).unwrap();
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }),
+        )
+        .route(
+            "/api/tts/stream",
+            post(|Json(_payload): Json<Value>| async move {
+                let body = serde_json::to_vec(&json!({"error": "backend unavailable"})).unwrap();
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }),
+        );
 
     let (addr, shutdown, handle) = spawn_tts_backend(router).await;
 
@@ -222,16 +281,36 @@ async fn tts_returns_error_when_service_fails() {
         .await
         .expect("POST /tts response");
 
-    assert_eq!(tts_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(tts_response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(tts_response.into_body(), 128 * 1024)
+        .await
+        .expect("read tts token body");
+    let tts_data: Value = serde_json::from_slice(&body_bytes).expect("valid json token");
+    let token = tts_data["token"].as_str().expect("token field present");
 
-    let content_type = tts_response
+    // Step 2: GET /tts_stream/{token} should fail
+    let stream_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream response");
+
+    assert_eq!(stream_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let content_type = stream_response
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .expect("content type");
     assert!(content_type.contains("application/json"));
 
-    let body_bytes = axum::body::to_bytes(tts_response.into_body(), 128 * 1024)
+    let body_bytes = axum::body::to_bytes(stream_response.into_body(), 128 * 1024)
         .await
         .expect("read error body");
     let payload: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json body");
@@ -318,25 +397,45 @@ async fn api_tts_generates_wav_audio() {
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
     let pcm = Arc::new(vec![0_u8, 1, 2, 3, 4, 5]);
 
-    let router = Router::new().route(
-        "/api/tts",
-        post({
-            let captured = captured.clone();
-            let pcm = pcm.clone();
-            move |Json(payload): Json<Value>| {
+    let router = Router::new()
+        .route(
+            "/api/tts",
+            post({
                 let captured = captured.clone();
                 let pcm = pcm.clone();
-                async move {
-                    captured.lock().await.push(payload);
-                    (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "application/octet-stream")],
-                        pcm.as_slice().to_vec(),
-                    )
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let pcm = pcm.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/octet-stream")],
+                            pcm.as_slice().to_vec(),
+                        )
+                    }
                 }
-            }
-        }),
-    );
+            }),
+        )
+        .route(
+            "/api/tts/stream",
+            post({
+                let captured = captured.clone();
+                let pcm = pcm.clone();
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let pcm = pcm.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/octet-stream")],
+                            pcm.as_slice().to_vec(),
+                        )
+                    }
+                }
+            }),
+        );
 
     let (addr, shutdown, handle) = spawn_tts_backend(router).await;
 
@@ -395,17 +494,29 @@ async fn api_tts_returns_backend_error() {
     common::init_tracing();
     let _lock = TTS_TEST_MUTEX.lock().expect("tts mutex");
 
-    let router = Router::new().route(
-        "/api/tts",
-        post(|Json(_payload): Json<Value>| async move {
-            let body = serde_json::to_vec(&json!({"error": "backend offline"})).unwrap();
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "application/json")],
-                body,
-            )
-        }),
-    );
+    let router = Router::new()
+        .route(
+            "/api/tts",
+            post(|Json(_payload): Json<Value>| async move {
+                let body = serde_json::to_vec(&json!({"error": "backend offline"})).unwrap();
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }),
+        )
+        .route(
+            "/api/tts/stream",
+            post(|Json(_payload): Json<Value>| async move {
+                let body = serde_json::to_vec(&json!({"error": "backend offline"})).unwrap();
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }),
+        );
 
     let (addr, shutdown, handle) = spawn_tts_backend(router).await;
 
@@ -455,36 +566,67 @@ async fn api_tts_stream_proxies_audio() {
         Bytes::from_static(b"chunk-2"),
     ]);
 
-    let router = Router::new().route(
-        "/api/tts/stream",
-        post({
-            let captured = captured.clone();
-            let chunks = chunks.clone();
-            move |Json(payload): Json<Value>| {
+    let router = Router::new()
+        .route(
+            "/api/tts",
+            post({
                 let captured = captured.clone();
                 let chunks = chunks.clone();
-                async move {
-                    captured.lock().await.push(payload);
-                    let chunk_items = chunks.iter().cloned().collect::<Vec<_>>();
-                    let stream = stream::iter(
-                        chunk_items
-                            .into_iter()
-                            .map(Result::<_, std::convert::Infallible>::Ok),
-                    );
-                    let mut response = Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "application/octet-stream")
-                        .body(Body::from_stream(stream))
-                        .unwrap();
-                    response.headers_mut().insert(
-                        header::CONTENT_DISPOSITION,
-                        header::HeaderValue::from_static("inline; filename=backend.wav"),
-                    );
-                    response
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let chunks = chunks.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        let chunk_items = chunks.iter().cloned().collect::<Vec<_>>();
+                        let stream = stream::iter(
+                            chunk_items
+                                .into_iter()
+                                .map(Result::<_, std::convert::Infallible>::Ok),
+                        );
+                        let mut response = Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "application/octet-stream")
+                            .body(Body::from_stream(stream))
+                            .unwrap();
+                        response.headers_mut().insert(
+                            header::CONTENT_DISPOSITION,
+                            header::HeaderValue::from_static("inline; filename=backend.wav"),
+                        );
+                        response
+                    }
                 }
-            }
-        }),
-    );
+            }),
+        )
+        .route(
+            "/api/tts/stream",
+            post({
+                let captured = captured.clone();
+                let chunks = chunks.clone();
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let chunks = chunks.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        let chunk_items = chunks.iter().cloned().collect::<Vec<_>>();
+                        let stream = stream::iter(
+                            chunk_items
+                                .into_iter()
+                                .map(Result::<_, std::convert::Infallible>::Ok),
+                        );
+                        let mut response = Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "application/octet-stream")
+                            .body(Body::from_stream(stream))
+                            .unwrap();
+                        response.headers_mut().insert(
+                            header::CONTENT_DISPOSITION,
+                            header::HeaderValue::from_static("inline; filename=backend.wav"),
+                        );
+                        response
+                    }
+                }
+            }),
+        );
 
     let (addr, shutdown, handle) = spawn_tts_backend(router).await;
 
@@ -533,7 +675,11 @@ async fn api_tts_stream_proxies_audio() {
     let body_bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
         .await
         .expect("read streaming body");
-    assert_eq!(body_bytes.as_ref(), b"chunk-1chunk-2");
+    // Should have 44 bytes header + chunks
+    assert!(body_bytes.len() > 44);
+    assert_eq!(&body_bytes[0..4], b"RIFF");
+    assert_eq!(&body_bytes[8..12], b"WAVE");
+    assert_eq!(&body_bytes[44..], b"chunk-1chunk-2");
 
     let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("stream backend payload");

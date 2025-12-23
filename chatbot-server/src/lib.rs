@@ -70,6 +70,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/logout", get(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))
+        .route("/tts_stream/:token", get(tts::handle_tts_stream))
         .route("/api/tts", post(tts::handle_api_tts))
         .route("/api/tts/stream", post(tts::handle_api_tts_stream))
         .route("/regenerate", post(regenerate::handle_regenerate))

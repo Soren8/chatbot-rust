@@ -34,25 +34,45 @@ async fn tts_strips_markdown_formatting() {
     // Mock PCM data (valid WAV requires minimal data)
     let pcm = Arc::new(vec![0_u8; 100]);
 
-    let router = Router::new().route(
-        "/api/tts",
-        post({
-            let captured = captured.clone();
-            let pcm = pcm.clone();
-            move |Json(payload): Json<Value>| {
+    let router = Router::new()
+        .route(
+            "/api/tts",
+            post({
                 let captured = captured.clone();
                 let pcm = pcm.clone();
-                async move {
-                    captured.lock().await.push(payload);
-                    (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "application/octet-stream")],
-                        pcm.as_slice().to_vec(),
-                    )
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let pcm = pcm.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/octet-stream")],
+                            pcm.as_slice().to_vec(),
+                        )
+                    }
                 }
-            }
-        }),
-    );
+            }),
+        )
+        .route(
+            "/api/tts/stream",
+            post({
+                let captured = captured.clone();
+                let pcm = pcm.clone();
+                move |Json(payload): Json<Value>| {
+                    let captured = captured.clone();
+                    let pcm = pcm.clone();
+                    async move {
+                        captured.lock().await.push(payload);
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/octet-stream")],
+                            pcm.as_slice().to_vec(),
+                        )
+                    }
+                }
+            }),
+        );
 
     let (addr, shutdown, handle) = spawn_tts_backend(router).await;
 
@@ -120,10 +140,28 @@ async fn tts_strips_markdown_formatting() {
 
     assert_eq!(tts_response.status(), StatusCode::OK);
 
+    let body_bytes = axum::body::to_bytes(tts_response.into_body(), 128 * 1024)
+        .await
+        .expect("read tts token body");
+    let tts_data: Value = serde_json::from_slice(&body_bytes).expect("valid json token");
+    let token = tts_data["token"].as_str().expect("token field present");
+
+    // Trigger Step 2: GET /tts_stream/{token}
+    let _stream_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream response");
+
     let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("backend payload captured");
     
-    // This assertion should fail until we implement the fix
     assert_eq!(payload["text"], expected_text, "Markdown should be stripped");
 
     shutdown.send(()).ok();
