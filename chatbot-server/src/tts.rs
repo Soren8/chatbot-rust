@@ -420,7 +420,23 @@ fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, Strin
 }
 
 fn sanitize_text(input: &str) -> String {
-    THINK_REGEX.replace_all(input, "").trim().to_string()
+    let no_think = THINK_REGEX.replace_all(input, "");
+    
+    let mut options = pulldown_cmark::Options::empty();
+    options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+    let parser = pulldown_cmark::Parser::new_ext(&no_think, options);
+    
+    let mut cleaned = String::with_capacity(no_think.len());
+    for event in parser {
+        match event {
+            pulldown_cmark::Event::Text(t) => cleaned.push_str(&t),
+            pulldown_cmark::Event::Code(t) => cleaned.push_str(&t),
+            pulldown_cmark::Event::SoftBreak | pulldown_cmark::Event::HardBreak => cleaned.push(' '),
+            _ => {}
+        }
+    }
+    
+    cleaned.trim().to_string()
 }
 
 async fn post_backend(

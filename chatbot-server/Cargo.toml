@@ -33,6 +33,7 @@ tokio-stream = "0.1"
 async-stream = "0.3"
 futures-util = "0.3"
 minijinja = { version = "1.0", features = ["builtins", "json"] }
+pulldown-cmark = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
