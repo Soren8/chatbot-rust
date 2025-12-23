@@ -15,6 +15,7 @@ struct UpdatePreferencesRequest {
     last_set: Option<String>,
     last_model: Option<String>,
     render_markdown: Option<bool>,
+    autoplay_tts: Option<bool>,
 }
 
 pub async fn handle_update_preferences(
@@ -69,7 +70,7 @@ pub async fn handle_update_preferences(
             (StatusCode::INTERNAL_SERVER_ERROR, "store error".to_string())
         })?;
 
-        store.update_user_preferences(&username, payload.last_set, payload.last_model, payload.render_markdown).map_err(|err| {
+        store.update_user_preferences(&username, payload.last_set, payload.last_model, payload.render_markdown, payload.autoplay_tts).map_err(|err| {
             error!(?err, "failed to update preferences");
             (StatusCode::INTERNAL_SERVER_ERROR, "store error".to_string())
         })?;

@@ -77,6 +77,7 @@ struct UserDetails {
     last_set: Option<String>,
     last_model: Option<String>,
     render_markdown: bool,
+    autoplay_tts: bool,
 }
 
 fn resolve_user_details(username: Option<&str>) -> UserDetails {
@@ -86,7 +87,7 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                 Ok(store) => store,
                 Err(err) => {
                     warn!(?err, "failed to open user store when resolving details");
-                    return UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None, render_markdown: true };
+                    return UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None, render_markdown: true, autoplay_tts: false };
                 }
             };
 
@@ -95,14 +96,14 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                 FREE_TIER.to_string()
             });
 
-            let (last_set, last_model, render_markdown) = store.user_preferences(name).unwrap_or_else(|err| {
+            let (last_set, last_model, render_markdown, autoplay_tts) = store.user_preferences(name).unwrap_or_else(|err| {
                  warn!(?err, "failed to load user preferences");
-                 (None, None, true)
+                 (None, None, true, false)
             });
 
-            UserDetails { tier, last_set, last_model, render_markdown }
+            UserDetails { tier, last_set, last_model, render_markdown, autoplay_tts }
         }
-        None => UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None, render_markdown: true },
+        None => UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None, render_markdown: true, autoplay_tts: false },
     }
 }
 
@@ -149,6 +150,7 @@ fn render_template(
         last_set => user_details.last_set,
         last_model => user_details.last_model,
         render_markdown => user_details.render_markdown,
+        autoplay_tts => user_details.autoplay_tts,
         available_llms => available_models,
         default_system_prompt => default_prompt,
         csrf_token => csrf_token,

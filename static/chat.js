@@ -14,6 +14,7 @@ try {
         saveThoughts: cfg && cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
         sendThoughts: cfg && cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
         renderMarkdown: cfg && cfg.renderMarkdown !== undefined ? cfg.renderMarkdown : true,
+        autoplayTTS: cfg && cfg.autoplayTTS !== undefined ? cfg.autoplayTTS : false,
         lastSet: (cfg && cfg.lastSet) || null,
         lastModel: (cfg && cfg.lastModel) || null,
       };
@@ -25,7 +26,7 @@ try {
       });
       window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
     } else {
-      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true };
+      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true, autoplayTTS: false };
       window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || '';
     }
   }
@@ -324,18 +325,15 @@ window.playTTS = function playTTS(button) {
   }
 
   const $messageElement = $(button).closest('.message');
-  const $textClone = $messageElement.find('.ai-message-text').clone();
-  $textClone.find('.thinking-container').remove();
-  const messageText = $textClone.text().trim() || '';
-  if (!messageText) return;
-
-  const sentences = messageText.match(/[^.!?]+[.!?]*|[^.!?]+/g) || [messageText];
+  
   let isStopped = false;
-  let currentIndex = 0;
+  let nextStartTime = 0;
+  let processedText = '';
+  let sentenceQueue = [];
+  let isFetching = false;
   
   // Use a single AudioContext for sample-accurate scheduling
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  let nextStartTime = 0;
 
   CURRENT_AUDIO = {
     stop: () => {
@@ -347,73 +345,123 @@ window.playTTS = function playTTS(button) {
 
   $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
 
-  function playNext() {
-    if (isStopped || currentIndex >= sentences.length) {
-      if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
-        // Wait for playback to actually finish
-        const checkEnd = setInterval(() => {
-            if (isStopped || audioCtx.currentTime >= nextStartTime) {
-                clearInterval(checkEnd);
-                if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
-                    $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-                    CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
-                }
-            }
-        }, 100);
-      }
-      return;
+  function getPendingText() {
+    const $textClone = $messageElement.find('.ai-message-text').clone();
+    $textClone.find('.thinking-container').remove();
+    $textClone.find('.regenerate-container').remove();
+    let fullText = $textClone.text().trim();
+    if (fullText === 'Thinking...') return '';
+    if (fullText.startsWith(processedText)) {
+      return fullText.substring(processedText.length);
     }
-
-    const text = sentences[currentIndex].trim();
-    if (!text) { currentIndex++; playNext(); return; }
-
-    // Step 1: Get Token
-    fetch('/tts', {
-      method: 'POST',
-      headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ text: text })
-    })
-    .then(r => {
-      if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-      if (!r.ok) throw new Error('Network response was not ok');
-      return r.json();
-    })
-    .then(data => {
-      if (isStopped) return;
-      // Step 2: Fetch full WAV
-      return fetch(`/tts_stream/${data.token}`);
-    })
-    .then(r => r.arrayBuffer())
-    .then(arrayBuffer => {
-      if (isStopped || !arrayBuffer) return;
-      // Step 3: Decode full WAV
-      return audioCtx.decodeAudioData(arrayBuffer);
-    })
-    .then(audioBuffer => {
-      if (isStopped || !audioBuffer) return;
-      
-      const source = audioCtx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioCtx.destination);
-      
-      const now = audioCtx.currentTime;
-      // If we are starting or have fallen behind, start immediately
-      if (nextStartTime < now) nextStartTime = now;
-      
-      source.start(nextStartTime);
-      nextStartTime += audioBuffer.duration;
-      
-      currentIndex++;
-      playNext();
-    })
-    .catch(err => {
-      console.error('TTS error:', err);
-      currentIndex++;
-      playNext();
-    });
+    return '';
   }
 
-  playNext();
+  function discoverSentences() {
+    if (isStopped) return;
+    const pending = getPendingText();
+    if (!pending) return;
+
+    // Look for sentence terminators
+    const matches = pending.match(/[^.!?]+[.!?]+/g);
+    if (matches) {
+      matches.forEach(s => {
+        sentenceQueue.push(s);
+        processedText += s;
+      });
+    }
+  }
+
+  function processQueue() {
+    if (isStopped || isFetching) return;
+    
+    if (sentenceQueue.length === 0) {
+      discoverSentences();
+    }
+
+    if (sentenceQueue.length === 0) {
+      // Check if generation is finished or still in 'Thinking...' phase
+      const currentRawText = $messageElement.find('.ai-message-text').text().trim();
+      const stillThinking = currentRawText === 'Thinking...';
+      const stillGenerating = stillThinking || (window.currentAbortController !== null);
+      
+      if (!stillGenerating) {
+        const remaining = getPendingText();
+        if (remaining.trim()) {
+          sentenceQueue.push(remaining);
+          processedText += remaining;
+        } else {
+          // Truly finished
+          const checkEnd = setInterval(() => {
+            if (isStopped || audioCtx.currentTime >= nextStartTime) {
+              clearInterval(checkEnd);
+              if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
+                $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+                CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+              }
+            }
+          }, 100);
+          return;
+        }
+      } else {
+        // Still generating or still thinking, poll again soon
+        setTimeout(processQueue, 200);
+        return;
+      }
+    }
+
+    if (sentenceQueue.length > 0) {
+      const text = sentenceQueue.shift().trim();
+      if (!text) { setTimeout(processQueue, 10); return; }
+
+      isFetching = true;
+      // Step 1: Get Token
+      fetch('/tts', {
+        method: 'POST',
+        headers: withCsrf({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ text: text })
+      })
+      .then(r => {
+        if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+        if (!r.ok) throw new Error('Network response was not ok');
+        return r.json();
+      })
+      .then(data => {
+        if (isStopped) return;
+        // Step 2: Fetch full WAV
+        return fetch(`/tts_stream/${data.token}`).then(r => r.arrayBuffer());
+      })
+      .then(arrayBuffer => {
+        if (isStopped || !arrayBuffer) return;
+        // Step 3: Decode full WAV
+        return audioCtx.decodeAudioData(arrayBuffer);
+      })
+      .then(audioBuffer => {
+        if (isStopped || !audioBuffer) return;
+        
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+        
+        const now = audioCtx.currentTime;
+        // If we are starting or have fallen behind, start immediately
+        if (nextStartTime < now) nextStartTime = now;
+        
+        source.start(nextStartTime);
+        nextStartTime += audioBuffer.duration;
+        
+        isFetching = false;
+        processQueue();
+      })
+      .catch(err => {
+        console.error('TTS error:', err);
+        isFetching = false;
+        processQueue();
+      });
+    }
+  }
+
+  processQueue();
 }
 window.regenerateMessage = function regenerateMessage(button) {
   const $aiMessageElement = $(button).closest('.message');
@@ -431,7 +479,13 @@ window.regenerateMessage = function regenerateMessage(button) {
 
 window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex) {
   const $target = $(aiMessageElement);
-  $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`);
+  $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button"><i class="bi bi-play-fill"></i></button></div>`);
+  
+  if (window.APP_DATA.autoplayTTS) {
+    const playBtn = $target.find('.play-button')[0];
+    if (playBtn) setTimeout(() => window.playTTS(playBtn), 50);
+  }
+
   // Initial scroll to bottom when regeneration starts
   scrollToBottom();
 
@@ -648,12 +702,18 @@ $(document).ready(function() {
     $('#check-save-thoughts').prop('checked', window.APP_DATA.saveThoughts);
     $('#check-send-thoughts').prop('checked', window.APP_DATA.sendThoughts);
     $('#check-render-markdown').prop('checked', window.APP_DATA.renderMarkdown);
+    $('#check-autoplay-tts').prop('checked', window.APP_DATA.autoplayTTS);
   }
 
   // Validate model tier on selection change (replacing inline onchange)
   $('#modelSelect').on('change', function() {
       validateModelTier();
       savePreferences();
+  });
+
+  $('#check-autoplay-tts').on('change', function() {
+    window.APP_DATA.autoplayTTS = $(this).is(':checked');
+    savePreferences();
   });
 
   $('#check-render-markdown').on('change', function() {
@@ -688,15 +748,18 @@ $(document).ready(function() {
       const currentModel = $('#modelSelect').val();
       const currentSet = $('#set-selector').val();
       const renderMarkdown = $('#check-render-markdown').is(':checked');
+      const autoplayTTS = $('#check-autoplay-tts').is(':checked');
 
       window.APP_DATA.lastModel = currentModel;
       window.APP_DATA.lastSet = currentSet;
       window.APP_DATA.renderMarkdown = renderMarkdown;
+      window.APP_DATA.autoplayTTS = autoplayTTS;
 
       const preferences = {
           last_model: currentModel,
           last_set: currentSet,
-          render_markdown: renderMarkdown
+          render_markdown: renderMarkdown,
+          autoplay_tts: autoplayTTS
       };
 
       fetch('/update_preferences', {
@@ -1061,10 +1124,17 @@ $(document).ready(function() {
       .then(response => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
-        appendMessage(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button" disabled><i class="bi bi-play-fill"></i></button></div>`, 'ai-message');
+        appendMessage(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button"><i class="bi bi-play-fill"></i></button></div>`, 'ai-message');
+        
+        const $targetElement = $('.ai-message:last-child');
+
+        if (window.APP_DATA.autoplayTTS) {
+          const playBtn = $targetElement.find('.play-button')[0];
+          if (playBtn) setTimeout(() => window.playTTS(playBtn), 50);
+        }
+
         // Initial scroll to bottom when AI starts responding
         scrollToBottom();
-        const $targetElement = $('.ai-message:last-child');
         const $messageTextElement = $targetElement.find('.ai-message-text');
         const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
         const $thinkingContentElement = $targetElement.find('.thinking-content');
