@@ -224,6 +224,7 @@ mod tests {
             last_set: None,
             last_model: None,
             render_markdown: true,
+            autoplay_tts: false,
         };
         let available_models = vec![FrontendModel {
             provider_name: "test-model".to_string(),

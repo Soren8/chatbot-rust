@@ -597,6 +597,9 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
             function read() {
           reader.read().then(({done, value}) => {
             if (done) {
+              const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
+              $target.attr('data-original', finalAiOriginal);
+              
               try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
@@ -637,9 +640,12 @@ function handleDeleteMessage(buttonElement) {
   
   const aiMessageElement = userMessageElement.next('.ai-message');
   
-  const userText = (userMessageElement.find('.user-message-text').text() || userMessageElement.text() || '').replace(/^\s*You:\s*/, '').trim();
-  const aiText = aiMessageElement.length ? (aiMessageElement.find('.ai-message-text').text() || '').trim() : '';
+  // Use data-original if available, fallback to text parsing (fragile)
+  const userText = (userMessageElement.attr('data-original') || userMessageElement.find('.user-message-text').text() || userMessageElement.text() || '').replace(/^\s*You:\s*/, '').trim();
+  const aiText = (aiMessageElement.attr('data-original') || (aiMessageElement.find('.ai-message-text').text() || '').trim());
   
+  console.debug('Deleting message pair:', { userText, aiText });
+
   if (aiMessageElement.length) aiMessageElement.remove();
   userMessageElement.remove();
   
@@ -652,8 +658,18 @@ function handleDeleteMessage(buttonElement) {
       set_name: $('#set-selector').val() || 'default' 
     }) 
   })
-  .then(r => { if (r.status === 401) { window.location.href = '/login'; } })
-  .catch(()=>{});
+  .then(r => { 
+    if (r.status === 401) { window.location.href = '/login'; }
+    return r.json();
+  })
+  .then(data => {
+    if (data && data.status === 'error') {
+      console.error('Server failed to delete message:', data.error);
+    }
+  })
+  .catch(err => {
+    console.error('Error deleting message:', err);
+  });
 }
 
 // Long press logic for delete button
@@ -962,7 +978,8 @@ $(document).ready(function() {
             data.history.forEach(([userMsg, aiMsg]) => {
               appendMessage(userMsg, 'user-message');
               const formattedAi = formatAiMessage(aiMsg);
-              appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${formattedAi}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
+              const $aiMsg = appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${formattedAi}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
+              $aiMsg.attr('data-original', aiMsg);
             });
             setTimeout(function() { scrollToBottom(); }, 0);
           }
@@ -1226,6 +1243,10 @@ $(document).ready(function() {
                 if (state === 'thinking') appendThinking(buffer); else appendVisible(buffer);
                 buffer = '';
               }
+              
+              const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
+              $targetElement.attr('data-original', finalAiOriginal);
+
               try { $targetElement.find('.regenerate-button, .play-button').prop('disabled', false); $targetElement.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
