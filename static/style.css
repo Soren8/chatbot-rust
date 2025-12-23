@@ -400,19 +400,26 @@ body {
 
 /* Mobile specific overrides */
 @media (max-width: 767.98px) {
+    html {
+        overflow: hidden;
+    }
+
     .navbar {
         position: fixed;
         top: 0;
+        left: 0;
+        right: 0;
         width: 100%;
+        z-index: 1050;
     }
 
     body {
-        height: 100dvh;
+        height: 100%;
         overflow: hidden;
     }
 
     .container-fluid.flex-grow-1 {
-        height: 100dvh;
+        height: 100%;
         margin-top: 0 !important;
         padding-top: 56px !important; /* Navbar height */
         position: fixed;
