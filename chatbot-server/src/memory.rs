@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
+const MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
+
 #[derive(Deserialize, Default)]
 struct UpdateMemoryRequest {
     #[serde(default)]
@@ -47,7 +49,7 @@ pub async fn handle_update_memory(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 256 * 1024).await.map_err(|err| {
+    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /update_memory body");
         (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
     })?;
@@ -133,7 +135,7 @@ pub async fn handle_update_system_prompt(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 256 * 1024).await.map_err(|err| {
+    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /update_system_prompt body");
         (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
     })?;
@@ -222,7 +224,7 @@ pub async fn handle_delete_message(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 256 * 1024).await.map_err(|err| {
+    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /delete_message body");
         (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
     })?;

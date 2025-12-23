@@ -6,7 +6,6 @@ use tracing::{debug, warn};
 pub const SYSTEM_PROMPT_BUFFER: f64 = 0.2;
 pub const DEFAULT_CONTEXT_SIZE: usize = 8_192;
 const MIN_PARTIAL_HISTORY_TOKENS: f64 = 100.0;
-const MEMORY_SNIPPET_CHAR_LIMIT: usize = 2_000;
 
 static THINK_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)<think>.*?(?:</think>|\[BEGIN FINAL RESPONSE\])").expect("valid think regex"));
@@ -208,7 +207,7 @@ fn take_chars(text: &str, limit: usize) -> String {
 }
 
 pub fn memory_snippet(memory: &str) -> String {
-    memory.chars().take(MEMORY_SNIPPET_CHAR_LIMIT).collect()
+    memory.to_string()
 }
 
 #[cfg(test)]
