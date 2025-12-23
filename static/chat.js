@@ -40,9 +40,16 @@ try {
 } catch (e) { /* no-op */ }
 
 const originalFetch = window.fetch;
-window.fetch = function() {
+window.fetch = function(input, init) {
   return originalFetch.apply(this, arguments).then(response => {
     if (response.status === 401) {
+      let url = input;
+      if (input instanceof Request) {
+        url = input.url;
+      }
+      if (typeof url === 'string' && (url.includes('/update_memory') || url.includes('/update_system_prompt'))) {
+        return response;
+      }
       window.location.href = '/login';
       throw new Error('Session expired');
     }
@@ -684,18 +691,40 @@ $(document).ready(function() {
   $('#save-system-prompt').on('click', function() {
     const sysPromptText = $('#user-system-prompt').val();
     const setName = $('#set-selector').val() || 'default';
-    fetch('/update_system_prompt', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ system_prompt: sysPromptText, set_name: setName }) })
-      .then(r => { if (!r.ok) throw new Error('Network response was not ok'); return r.json(); })
-      .then(data => { if (data.status === 'success') appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message'); else appendMessage('<strong>Error:</strong> Failed to save system prompt.', 'error-message'); })
+    fetch('/update_system_prompt', {
+      method: 'POST',
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        system_prompt: sysPromptText,
+        set_name: setName,
+        logged_in: window.APP_DATA && window.APP_DATA.loggedIn
+      })
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'success') appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message');
+        else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save system prompt.'), 'error-message');
+      })
       .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
   });
 
   $('#save-memory').on('click', function() {
     const memText = $('#user-memory').val();
     const setName = $('#set-selector').val() || 'default';
-    fetch('/update_memory', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ memory: memText, set_name: setName }) })
+    fetch('/update_memory', {
+      method: 'POST',
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        memory: memText,
+        set_name: setName,
+        logged_in: window.APP_DATA && window.APP_DATA.loggedIn
+      })
+    })
       .then(r => r.json())
-      .then(data => { if (data.status === 'success') appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message'); else appendMessage('<strong>Error:</strong> Failed to save memory.', 'error-message'); })
+      .then(data => {
+        if (data.status === 'success') appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message');
+        else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save memory.'), 'error-message');
+      })
       .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
   });
 

@@ -20,6 +20,8 @@ struct UpdateMemoryRequest {
     set_name: Option<String>,
     #[serde(default)]
     _encrypted: Option<bool>,
+    #[serde(default)]
+    logged_in: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -30,6 +32,8 @@ struct UpdateSystemPromptRequest {
     set_name: Option<String>,
     #[serde(default)]
     _encrypted: Option<bool>,
+    #[serde(default)]
+    logged_in: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -88,6 +92,13 @@ pub async fn handle_update_memory(
             "session error".to_string(),
         )
     })?;
+
+    if payload.logged_in.unwrap_or(false) && session.username.is_none() {
+        return build_json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "Session expired"}),
+        );
+    }
 
     if let Some(username) = session.username.as_deref() {
         let key = session
@@ -177,6 +188,13 @@ pub async fn handle_update_system_prompt(
             "session error".to_string(),
         )
     })?;
+
+    if payload.logged_in.unwrap_or(false) && session.username.is_none() {
+        return build_json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "Session expired"}),
+        );
+    }
 
     if let Some(username) = session.username.as_deref() {
         let key = session
