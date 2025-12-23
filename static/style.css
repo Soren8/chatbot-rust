@@ -618,6 +618,29 @@ body {
     font-family: SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace;
 }
 
+/* Table styling */
+.ai-message table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0;
+    border: 1px solid #444;
+}
+
+.ai-message th, .ai-message td {
+    border: 1px solid #444;
+    padding: 8px 12px;
+    text-align: left;
+}
+
+.ai-message th {
+    background-color: rgba(255, 255, 255, 0.05);
+    font-weight: 600;
+}
+
+.ai-message tr:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
 /* Custom scrollbar for dark theme */
 ::-webkit-scrollbar {
     width: 8px;
