@@ -397,8 +397,8 @@ window.playTTS = function playTTS(button) {
       source.connect(audioCtx.destination);
       
       const now = audioCtx.currentTime;
-      // Schedule strictly after the previous one finishes
-      if (nextStartTime < now) nextStartTime = now + 0.1; // Initial buffer or catch-up
+      // If we are starting or have fallen behind, start immediately
+      if (nextStartTime < now) nextStartTime = now;
       
       source.start(nextStartTime);
       nextStartTime += audioBuffer.duration;
