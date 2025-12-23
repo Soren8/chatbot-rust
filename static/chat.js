@@ -431,6 +431,70 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
         currentAbortController = null;
       });
 };
+
+function handleDeleteMessage(buttonElement) {
+  const deleteBtn = $(buttonElement);
+  const userMessageElement = deleteBtn.closest('.message.user-message');
+  if (userMessageElement.length === 0) return;
+  
+  const aiMessageElement = userMessageElement.next('.ai-message');
+  
+  const userText = (userMessageElement.find('.user-message-text').text() || userMessageElement.text() || '').replace(/^\s*You:\s*/, '').trim();
+  const aiText = aiMessageElement.length ? (aiMessageElement.find('.ai-message-text').text() || '').trim() : '';
+  
+  if (aiMessageElement.length) aiMessageElement.remove();
+  userMessageElement.remove();
+  
+  fetch('/delete_message', { 
+    method: 'POST', 
+    headers: withCsrf({ 'Content-Type': 'application/json' }), 
+    body: JSON.stringify({ 
+      user_message: userText, 
+      ai_message: aiText, 
+      set_name: $('#set-selector').val() || 'default' 
+    }) 
+  })
+  .then(r => { if (r.status === 401) { window.location.href = '/login'; } })
+  .catch(()=>{});
+}
+
+// Long press logic for delete button
+let deleteTimer = null;
+const LONG_PRESS_DURATION = 800;
+
+$(document).on('mousedown touchstart', '.delete-button', function(e) {
+  // Only left click or touch
+  if (e.type === 'mousedown' && e.which !== 1) return;
+  
+  const $btn = $(this);
+  clearTimeout(deleteTimer);
+  $btn.removeClass('long-pressing');
+  
+  // Force a reflow if needed, or just add class
+  // Using setTimeout(0) helps with some transition quirks but direct add is usually fine
+  $btn.addClass('long-pressing');
+  
+  deleteTimer = setTimeout(() => {
+    $btn.removeClass('long-pressing');
+    // Vibrate if supported
+    if (navigator.vibrate) navigator.vibrate(50);
+    handleDeleteMessage($btn[0]);
+  }, LONG_PRESS_DURATION);
+});
+
+$(document).on('mouseup touchend mouseleave touchcancel touchmove', '.delete-button', function(e) {
+  const $btn = $(this);
+  clearTimeout(deleteTimer);
+  if ($btn.hasClass('long-pressing')) {
+    $btn.removeClass('long-pressing');
+  }
+});
+
+$(document).on('click', '.delete-button', function(e) {
+  e.preventDefault();
+  e.stopPropagation();
+});
+
 // Main ready block
 $(document).ready(function() {
   disablePremiumModels();
@@ -513,20 +577,6 @@ $(document).ready(function() {
       $messageElement.prepend($textarea).append($actions);
       $textarea.focus();
       return;
-    }
-
-    const deleteBtn = target.closest && target.closest('.delete-button');
-    if (deleteBtn) {
-      const userMessageElement = deleteBtn.closest('.message.user-message');
-      if (!userMessageElement) return;
-      const aiMessageElement = userMessageElement.nextElementSibling && userMessageElement.nextElementSibling.classList.contains('ai-message') ? userMessageElement.nextElementSibling : null;
-      const userText = (userMessageElement.querySelector('.user-message-text')?.textContent || '').replace('You:', '').trim();
-      const aiText = aiMessageElement ? (aiMessageElement.querySelector('.ai-message-text')?.textContent || '').trim() : '';
-      if (aiMessageElement) aiMessageElement.remove();
-      userMessageElement.remove();
-      fetch('/delete_message', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ user_message: userText, ai_message: aiText, set_name: $('#set-selector').val() || 'default' }) })
-        .then(r => { if (r.status === 401) { window.location.href = '/login'; } })
-        .catch(()=>{});
     }
 
     const saveEditBtn = target.closest && target.closest('.save-edit');
