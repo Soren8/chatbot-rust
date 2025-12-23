@@ -392,6 +392,25 @@ html, body {
     padding: 0;
 }
 
+.login-page {
+    display: flex !important;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: center;
+    padding-top: 15vh; /* Center of box at ~33vh */
+    height: 100vh;
+}
+
+@media (max-width: 767.98px) {
+    .login-page {
+        padding-top: 10vh;
+    }
+}
+
+.login-container {
+    width: 100%;
+}
+
 body {
     display: flex;
     flex-direction: column;
