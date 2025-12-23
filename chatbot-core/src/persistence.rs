@@ -58,6 +58,8 @@ pub struct SetData {
 pub struct SetMetadata {
     pub created: f64,
     #[serde(default)]
+    pub modified: f64,
+    #[serde(default)]
     pub encrypted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<SetData>,
@@ -65,8 +67,10 @@ pub struct SetMetadata {
 
 impl SetMetadata {
     fn new(encrypted: bool) -> Self {
+        let now = current_timestamp();
         Self {
-            created: current_timestamp(),
+            created: now,
+            modified: now,
             encrypted,
             data: None,
         }
@@ -447,7 +451,8 @@ impl DataPersistence {
             return Err(PersistenceError::InvalidSetName);
         }
 
-        let metadata = sets.remove(&old_name).unwrap();
+        let mut metadata = sets.remove(&old_name).unwrap();
+        metadata.modified = current_timestamp();
         sets.insert(new_name.clone(), metadata);
         self.write_sets(&username, &sets, encryption)
     }
@@ -473,6 +478,7 @@ impl DataPersistence {
         data.memory = memory.to_string();
         metadata.data = Some(data);
         metadata.encrypted = encrypted_flag;
+        metadata.modified = current_timestamp();
         
         sets.insert(set_name, metadata);
         self.write_sets(&username, &sets, Some(encryption))
@@ -499,6 +505,7 @@ impl DataPersistence {
         data.system_prompt = prompt.to_string();
         metadata.data = Some(data);
         metadata.encrypted = encrypted_flag;
+        metadata.modified = current_timestamp();
         
         sets.insert(set_name, metadata);
         self.write_sets(&username, &sets, Some(encryption))
@@ -525,6 +532,7 @@ impl DataPersistence {
         data.history = history.to_vec();
         metadata.data = Some(data);
         metadata.encrypted = encrypted_flag;
+        metadata.modified = current_timestamp();
         
         sets.insert(set_name, metadata);
         self.write_sets(&username, &sets, Some(encryption))

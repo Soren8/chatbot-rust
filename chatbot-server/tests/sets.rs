@@ -150,7 +150,14 @@ async fn set_management_flow() {
         .await
         .expect("sets body");
     let sets_json: serde_json::Value = serde_json::from_slice(&sets_body).expect("sets json");
-    assert!(sets_json.get("default").is_some(), "default set missing");
+    assert!(
+        sets_json
+            .as_array()
+            .expect("expected array")
+            .iter()
+            .any(|s| s["name"] == "default"),
+        "default set missing"
+    );
 
     let new_set_name = "study";
     let create_response = app
@@ -200,7 +207,14 @@ async fn set_management_flow() {
         .expect("sets body after create");
     let sets_json: serde_json::Value =
         serde_json::from_slice(&sets_body).expect("sets json after create");
-    assert!(sets_json.get(new_set_name).is_some(), "new set not present");
+    assert!(
+        sets_json
+            .as_array()
+            .expect("expected array")
+            .iter()
+            .any(|s| s["name"] == new_set_name),
+        "new set not present"
+    );
 
     seed_plaintext_set(&workspace.path().join("user_sets"), username, new_set_name);
 
@@ -295,7 +309,14 @@ async fn set_management_flow() {
         .expect("final sets body");
     let final_json: serde_json::Value =
         serde_json::from_slice(&final_body).expect("final sets json");
-    assert!(final_json.get(new_set_name).is_none());
+    assert!(
+        !final_json
+            .as_array()
+            .expect("expected array")
+            .iter()
+            .any(|s| s["name"] == new_set_name),
+        "deleted set should not be present"
+    );
 }
 
 fn seed_plaintext_set(root: &PathBuf, username: &str, set_name: &str) {

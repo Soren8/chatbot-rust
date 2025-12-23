@@ -62,13 +62,17 @@ pub async fn handle_get_sets(
         .list_sets(username, encryption_mode)
         .map_err(persistence_error_to_http)?;
 
-    let payload = serde_json::to_value(sets).map_err(|err| {
-        error!(?err, "failed to serialize sets map");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response serialization failed".to_string(),
-        )
-    })?;
+    let mut sets_vec: Vec<(String, chatbot_core::persistence::SetMetadata)> = sets.into_iter().collect();
+    sets_vec.sort_by(|a, b| b.1.modified.partial_cmp(&a.1.modified).unwrap_or(std::cmp::Ordering::Equal));
+
+    let payload = json!(sets_vec.into_iter().map(|(name, meta)| {
+        json!({
+            "name": name,
+            "created": meta.created,
+            "modified": meta.modified,
+            "encrypted": meta.encrypted
+        })
+    }).collect::<Vec<_>>());
 
     build_json_response(StatusCode::OK, payload)
 }

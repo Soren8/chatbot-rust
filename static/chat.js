@@ -403,6 +403,7 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
               try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
+              if (typeof loadSets === 'function') loadSets(false);
               return;
             }
             buffer += decoder.decode(value, {stream:true});
@@ -524,9 +525,15 @@ $(document).ready(function() {
   function savePreferences() {
       if (!window.APP_DATA.loggedIn) return;
       
+      const currentModel = $('#modelSelect').val();
+      const currentSet = $('#set-selector').val();
+
+      window.APP_DATA.lastModel = currentModel;
+      window.APP_DATA.lastSet = currentSet;
+
       const preferences = {
-          last_model: $('#modelSelect').val(),
-          last_set: $('#set-selector').val()
+          last_model: currentModel,
+          last_set: currentSet
       };
 
       fetch('/update_preferences', {
@@ -670,7 +677,8 @@ $(document).ready(function() {
           const $selector = $('#set-selector');
           $selector.empty();
           let setExists = false;
-          $.each(data, function(setName) {
+          $.each(data, function(_, setInfo) {
+            const setName = setInfo.name;
             $('<option>').val(setName).text(setName).appendTo($selector);
             if (window.APP_DATA.lastSet && setName === window.APP_DATA.lastSet) {
                 setExists = true;
@@ -800,7 +808,10 @@ $(document).ready(function() {
     })
       .then(r => r.json())
       .then(data => {
-        if (data.status === 'success') appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message');
+        if (data.status === 'success') {
+          appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message');
+          if (typeof loadSets === 'function') loadSets(false);
+        }
         else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save system prompt.'), 'error-message');
       })
       .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
@@ -820,7 +831,10 @@ $(document).ready(function() {
     })
       .then(r => r.json())
       .then(data => {
-        if (data.status === 'success') appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message');
+        if (data.status === 'success') {
+          appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message');
+          if (typeof loadSets === 'function') loadSets(false);
+        }
         else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save memory.'), 'error-message');
       })
       .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
@@ -959,6 +973,7 @@ $(document).ready(function() {
               try { $targetElement.find('.regenerate-button, .play-button').prop('disabled', false); $targetElement.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
+              if (typeof loadSets === 'function') loadSets(false);
               return;
             }
             const chunk = decoder.decode(value, { stream: true });
