@@ -117,10 +117,28 @@ pub fn prepare_chat_messages(
         .provider
         .context_size
         .unwrap_or(DEFAULT_CONTEXT_SIZE as u32) as usize;
+
+    // Limit system prompt and memory to 20% of context size each.
+    // 20% system + 20% memory + 20% buffer = 60%, leaving ~40% for history + new message
+    let max_component_tokens = (context_size as f64 * 0.20) as usize;
+    let max_component_chars = max_component_tokens * 4;
+
+    let system_prompt = if approximate_token_count(&context.system_prompt) > max_component_tokens as f64 {
+        take_chars(&context.system_prompt, max_component_chars)
+    } else {
+        context.system_prompt.clone()
+    };
+
+    let memory_text = if approximate_token_count(&context.memory_text) > max_component_tokens as f64 {
+        take_chars(&context.memory_text, max_component_chars)
+    } else {
+        context.memory_text.clone()
+    };
+
     let available_tokens = calculate_available_history_tokens(
         context_size,
-        &context.system_prompt,
-        &context.memory_text,
+        &system_prompt,
+        &memory_text,
     );
 
     let history_processed: Vec<(String, String)> = if context.send_thoughts {
@@ -150,12 +168,12 @@ pub fn prepare_chat_messages(
     }
 
     let mut messages = Vec::new();
-    messages.push(ChatMessage::system(context.system_prompt.clone()));
+    messages.push(ChatMessage::system(system_prompt));
 
-    if !context.memory_text.trim().is_empty() {
+    if !memory_text.trim().is_empty() {
         messages.push(ChatMessage::system(format!(
             "Memory:\n{}",
-            memory_snippet(&context.memory_text)
+            memory_snippet(&memory_text)
         )));
     }
 
