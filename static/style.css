@@ -400,6 +400,12 @@ body {
 
 /* Mobile specific overrides */
 @media (max-width: 767.98px) {
+    .navbar {
+        position: fixed;
+        top: 0;
+        width: 100%;
+    }
+
     body {
         height: 100dvh;
         overflow: hidden;
