@@ -273,7 +273,9 @@ fn extract_sse_payloads(
                         chunks.push(reasoning.to_string());
                         *has_sent_any_content = true;
                     }
-                } else if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                }
+                
+                if let Some(content) = delta.get("content").and_then(Value::as_str) {
                     if *currently_thinking && !*is_implicit_model {
                         chunks.push("</think>".to_string());
                         *currently_thinking = false;
@@ -290,4 +292,49 @@ fn extract_sse_payloads(
     }
 
     Ok(ExtractionOutcome { chunks, done })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_openai_extract_sse_payloads_with_both_reasoning_and_content() {
+        let mut buffer = String::new();
+        let mut currently_thinking = false;
+        let mut has_sent_any_content = false;
+        let mut is_implicit_model = false;
+
+        // Simulate a chunk that contains BOTH reasoning_content (transitioning out?) and content.
+        // This simulates the race condition where both fields arrive in the same JSON delta.
+        let json = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "reasoning_content": "final thought",
+                    "content": "Hello"
+                }
+            }]
+        });
+        
+        buffer.push_str(&format!("data: {}\n\n", json.to_string()));
+
+        let outcome = extract_sse_payloads(
+            &mut buffer,
+            &mut currently_thinking,
+            &mut has_sent_any_content,
+            &mut is_implicit_model,
+        ).unwrap();
+
+        // We expect:
+        // 1. <think> (since we weren't thinking)
+        // 2. "final thought"
+        // 3. </think> (transition to content)
+        // 4. "Hello"
+        
+        // With the bug, "Hello" (and </think>) will be missing because 'else if' prevents the second block from running.
+        
+        let combined = outcome.chunks.join("");
+        assert!(combined.contains("final thought"), "Should contain reasoning");
+        assert!(combined.contains("Hello"), "Should contain content but got: {}", combined);
+    }
 }
