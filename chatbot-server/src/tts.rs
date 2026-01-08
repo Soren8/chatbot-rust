@@ -384,7 +384,7 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, (StatusCode,
     let base = config.tts_base_url.trim_end_matches('/');
     let url = format!("{base}/v1/tts");
 
-    debug!(url = %url, ?request, "sending request to fish speech backend");
+    debug!(url = %url, "sending request to fish speech backend");
 
     let response = HTTP_CLIENT
         .post(&url)
@@ -430,7 +430,7 @@ async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (Stat
     let base = config.tts_base_url.trim_end_matches('/');
     let url = format!("{base}/v1/tts");
 
-    debug!(url = %url, ?request, "sending request to fish speech backend");
+    debug!(url = %url, "sending request to fish speech backend");
 
     let response = HTTP_CLIENT
         .post(&url)
