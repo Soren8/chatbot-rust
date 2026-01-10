@@ -10,58 +10,76 @@ Our privacy tiers were created to offer users progressive security options witho
 - **Hybrid reality**: Local GPU availability allows Private tier without actual system hosting
 - **User experience focus**: Tiers map to clear mental models rather than abstract security classes
 
-## Privacy Tiers
+## Privacy Modes
 
-1. **Standard Tier**
-   - **Authentication**: Password or OAuth
-   - **Data Storage**: Server-managed AES-256 keys; login derives a per-user Fernet key from the password, keeps it in memory for the active session only, and expires it after inactivity
-   - **LLM Providers**: Any provider
-   - **Recoverability**: Full account recovery
-   - **Use Case**: General conversations where convenience is prioritized
+We are moving to a **Per-Chat Privacy Model**. Users can choose the privacy level for each specific conversation.
 
-2. **Private Tier**
-   - **Authentication**: Password + storage passphrase
-   - **Data Storage**: Client-derived keys (passphrase never sent to server)
-   - **LLM Providers**: On-prem only (Ollama/Local)
-   - **Recoverability**: Passphrase-dependent
-   - **Use Case**: Sensitive topics requiring zero-knowledge storage
+### 1. Private Mode (Zero-Knowledge) [Current Default for Password Users]
+*   **Best for:** Sensitive personal data, intellectual property, private matters.
+*   **Key Management:** **Client-Derived.** The encryption key is derived directly from the user's secret (login password or separate storage password). The server *never* persists this key.
+*   **Recoverability:** **None.** If the secret is lost, this data is mathematically irretrievable. Password resets will cause these chats to become inaccessible.
+*   **OAuth Implication:** OAuth users must set a separate "Storage Password" to use this mode.
+*   **Provider Access:** User should use Local Providers (Ollama) for maximum privacy.
 
-3. **Ephemeral Tier**
-   - **Authentication**: None
-   - **Data Storage**: Memory-only (no disk writes)
-   - **LLM Providers**: Free or on-prem providers
-   - **Recoverability**: None
-   - **Use Case**: Anonymous temporary conversations
+### 2. Recoverable Mode (Server-Managed) [Planned]
+*   **Best for:** General tasks, coding assistance, OAuth users.
+*   **Key Management:** **Server-Managed.** The encryption key is stored on the server, protected by a system master key.
+*   **Recoverability:** **High.** Password resets or OAuth re-authentication allow full access to be restored.
+*   **OAuth Implication:** This is the **default** mode for OAuth users.
+
+### 3. Ephemeral Mode (Incognito) [Partially Implemented]
+*   **Best for:** "Digital vapor trails", quick questions, testing.
+*   **Key Management:** None (Keys exist only in volatile RAM).
+*   **Recoverability:** **Impossible.** Data is destroyed on session end or inactivity.
+
+## Risk Mitigation (User-Managed Security)
+
+### 1. Recovery Kit (Emergency Access)
+*   **Concept:** A user-downloadable file generated upon account creation/update containing the encryption key or salt.
+*   **Usage:** Allows unlocking "Private" chats after a password reset.
+
+### 2. Chat Export (Local Backup)
+*   **Concept:** Ability to "eject" data from the system.
+*   **Mechanism:** Server generates plaintext/JSON export using the active session key.
+*   **Usage:** Users can locally backup their Private chats.
 
 ## Implementation Details
 
-### Provider Restrictions
+### Architecture & Authentication Matrix
 
-The following matrix illustrates which providers are permitted in each privacy tier:
+| Feature | Password Auth (Current) | OAuth (Planned) |
+| :--- | :--- | :--- |
+| **Default Mode** | **Private** (using Login Password) | **Recoverable** (Server Key) |
+| **Private Chats** | Implicit (uses Login Password) | **Requires separate Storage Password** |
+| **Recoverable Chats** | Optional (Server Key) | Native / Default |
+| **Account Recovery** | Only restores access to Recoverable Chats | Only restores access to Recoverable Chats |
 
-| Provider Type | Standard | Private | Ephemeral |
-|---------------|----------|---------|-----------|
-| On-prem       | ✅       | ✅      | ✅        |
-| Free cloud    | ✅       | ❌      | ✅        |
-| Paid cloud    | ✅       | ❌      | ❌        |
+## Current Architecture Status
+*As of Jan 2026*
 
-### Storage Mechanisms
-```mermaid
-flowchart TB
-    A[Privacy Tier] --> B{Storage Method}
-    B -->|Standard| C[Server-managed keys\n(derived per session, timed expiry)]
-    B -->|Private| D[Client-derived keys]
-    B -->|Ephemeral| E[Memory only]
-```
+The system currently operates in a **Strict Private Mode**:
 
-### Security Properties
-- **Standard**: Protects against storage theft but allows server access (threat model: protects local disk but not server-side compromise)
-- **Private**: True zero-knowledge storage (server cannot access data) (threat model: server cannot access data but session may leak)
-- **Ephemeral**: No persistent data = maximum session privacy (threat model: no data recoverability)
+1.  **Authenticated Users:**
+    *   All user data is stored using **Private Mode** logic.
+    *   Keys are derived from the login password.
+    *   **CRITICAL LIMITATION:** There is **NO Account Recovery**. Losing a password means permanent data loss.
+    *   OAuth is not yet implemented.
 
-### UI Elements
-- Privacy tier selector dropdown
-- Dynamic LLM provider filtering
-- Storage passphrase manager (Private tier)
-- Session timeout warnings (Ephemeral tier)
-- See [design.md](design.md) UI/UX Improvements section for related wireframes.
+2.  **Anonymous Users:**
+    *   Guests operate in **Ephemeral Mode**.
+
+## Roadmap
+
+### Phase 1: Recoverable Mode & UX
+- [ ] Implement Server-Managed Key infrastructure.
+- [ ] Add UI dropdown for "Privacy Mode" (Private/Recoverable) per chat.
+- [ ] Add tooltips explaining the "No Recovery" risk of Private Mode.
+- [ ] Rename "Standard Tier" concepts to "Recoverable Mode".
+
+### Phase 2: OAuth & Hybrid Auth
+- [ ] Implement OAuth (GitHub/Google).
+- [ ] Build "Storage Password" flow for OAuth users accessing Private Mode.
+
+### Phase 3: Advanced Features
+- [ ] **Chat Migration:** Allow converting a chat from "Private" to "Recoverable".
+- [ ] **Recovery Kit:** Implement the UI/Logic to generate and accept emergency kits.

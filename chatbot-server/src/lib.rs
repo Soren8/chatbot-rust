@@ -67,6 +67,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/login",
             get(login::handle_login_get).post(login::handle_login_post),
         )
+        .route("/auth/salt/:username", get(login::handle_get_salt))
         .route("/logout", get(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))

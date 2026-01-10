@@ -182,7 +182,30 @@ impl UserStore {
         }
 
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let salt_path = self.salts_dir.join(format!("{normalised}_salt"));
+        let salt = self.get_or_create_salt(&normalised)?;
+
+        let mut derived = [0u8; KEY_LEN];
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
+        let encoded = STANDARD.encode(derived);
+        Ok(encoded.into_bytes())
+    }
+
+    pub fn get_client_salt(&self, username: &str) -> Result<String, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let users = self.load_users()?;
+
+        if !users.contains_key(&normalised) {
+            let mut salt = [0u8; SALT_LEN];
+            OsRng.fill_bytes(&mut salt);
+            return Ok(STANDARD.encode(salt));
+        }
+
+        let salt = self.get_or_create_salt(&normalised)?;
+        Ok(STANDARD.encode(salt))
+    }
+
+    fn get_or_create_salt(&self, normalised_username: &str) -> Result<[u8; SALT_LEN], UserStoreError> {
+        let salt_path = self.salts_dir.join(format!("{normalised_username}_salt"));
         let mut salt = [0u8; SALT_LEN];
         if salt_path.exists() {
             let mut file = File::open(&salt_path)?;
@@ -192,11 +215,7 @@ impl UserStore {
             let mut file = File::create(&salt_path)?;
             file.write_all(&salt)?;
         }
-
-        let mut derived = [0u8; KEY_LEN];
-        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
-        let encoded = STANDARD.encode(derived);
-        Ok(encoded.into_bytes())
+        Ok(salt)
     }
 
     pub fn user_tier(&self, username: &str) -> Result<String, UserStoreError> {
