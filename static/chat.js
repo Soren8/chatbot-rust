@@ -334,11 +334,14 @@ window.playTTS = function playTTS(button) {
   
   // Use a single AudioContext for sample-accurate scheduling
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(e => console.debug('AudioContext resume failed:', e));
+  }
 
   CURRENT_AUDIO = {
     stop: () => {
       isStopped = true;
-      if (audioCtx.state !== 'closed') audioCtx.close();
+      if (audioCtx.state !== 'closed') audioCtx.close().catch(() => {});
     }
   };
   CURRENT_AUDIO_BUTTON = button;
@@ -346,13 +349,33 @@ window.playTTS = function playTTS(button) {
   $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
 
   function getPendingText() {
-    const $textClone = $messageElement.find('.ai-message-text').clone();
-    $textClone.find('.thinking-container').remove();
-    $textClone.find('.regenerate-container').remove();
-    let fullText = $textClone.text().trim();
+    // Prefer data-original if available, as it is the raw text (not markdown-mangled)
+    let fullText = $messageElement.attr('data-original') || '';
+    if (fullText) {
+      // Strip thinking tags to get only the visible text
+      fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    }
+    
+    // Fallback to DOM text if data-original is missing or empty
+    if (!fullText) {
+      const $textClone = $messageElement.find('.ai-message-text').clone();
+      $textClone.find('.thinking-container').remove();
+      $textClone.find('.regenerate-container').remove();
+      fullText = $textClone.text().trim();
+    }
+
     if (fullText === 'Thinking...') return '';
     if (fullText.startsWith(processedText)) {
       return fullText.substring(processedText.length);
+    }
+    // Fallback if mismatch occurs (e.g. due to markdown re-rendering)
+    console.debug('TTS text mismatch, attempting recovery', { 
+      full: fullText.substring(0, 20) + '...', 
+      processed: processedText.substring(0, 20) + '...' 
+    });
+    const idx = fullText.indexOf(processedText);
+    if (idx !== -1) {
+      return fullText.substring(idx + processedText.length);
     }
     return '';
   }
@@ -393,9 +416,16 @@ window.playTTS = function playTTS(button) {
         } else {
           // Truly finished
           const checkEnd = setInterval(() => {
-            if (isStopped || audioCtx.currentTime >= nextStartTime) {
+            if (isStopped) { clearInterval(checkEnd); return; }
+            
+            // If context is suspended, try to resume it one last time
+            if (audioCtx.state === 'suspended') {
+              audioCtx.resume().catch(() => {});
+            }
+
+            if (audioCtx.currentTime >= nextStartTime) {
               clearInterval(checkEnd);
-              if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
+              if (CURRENT_AUDIO_BUTTON === button) {
                 $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
                 CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
               }
@@ -415,13 +445,18 @@ window.playTTS = function playTTS(button) {
       if (!text) { setTimeout(processQueue, 10); return; }
 
       isFetching = true;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       // Step 1: Get Token
       fetch('/tts', {
         method: 'POST',
         headers: withCsrf({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ text: text })
+        body: JSON.stringify({ text: text }),
+        signal: controller.signal
       })
       .then(r => {
+        clearTimeout(timeoutId);
         if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
         if (!r.ok) throw new Error('Network response was not ok');
         return r.json();
@@ -429,20 +464,30 @@ window.playTTS = function playTTS(button) {
       .then(data => {
         if (isStopped) return;
         // Step 2: Fetch full WAV
-        return fetch(`/tts_stream/${data.token}`).then(r => r.arrayBuffer());
+        return fetch(`/tts_stream/${data.token}`).then(r => {
+            if (!r.ok) throw new Error('Stream fetch failed');
+            return r.arrayBuffer();
+        });
       })
       .then(arrayBuffer => {
-        if (isStopped || !arrayBuffer) return;
+        if (isStopped) { isFetching = false; return; }
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) { throw new Error('Empty audio buffer'); }
         // Step 3: Decode full WAV
         return audioCtx.decodeAudioData(arrayBuffer);
       })
       .then(audioBuffer => {
-        if (isStopped || !audioBuffer) return;
+        if (isStopped) { isFetching = false; return; }
+        if (!audioBuffer) { throw new Error('Failed to decode audio'); }
         
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioCtx.destination);
         
+        // Ensure AudioContext is running
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume().catch(() => {});
+        }
+
         const now = audioCtx.currentTime;
         // If we are starting or have fallen behind, start immediately
         if (nextStartTime < now) nextStartTime = now;
@@ -456,7 +501,8 @@ window.playTTS = function playTTS(button) {
       .catch(err => {
         console.error('TTS error:', err);
         isFetching = false;
-        processQueue();
+        // Wait a bit before retrying to avoid rapid failure loops
+        setTimeout(processQueue, 500);
       });
     }
   }
@@ -525,6 +571,7 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
       fullVisibleText += content;
       $msgText.html(renderMarkdown(fullVisibleText));
       hasWrittenToDOM = true;
+      $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
     }
     function appendThinking(content) {
       if (!content) return;
@@ -533,6 +580,7 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
       $thinkingWrap.find('.toggle-thinking').show();
       $thinkingContent.text(fullThinkingText);
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
+      $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
     }
     function processBuffer() {
       const openTag = '<think>';
@@ -1174,6 +1222,7 @@ $(document).ready(function() {
           fullVisibleText += content;
           $messageTextElement.html(renderMarkdown(fullVisibleText));
           hasWrittenToDOM = true;
+          $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
         }
         function appendThinking(content) {
           if (!content) return;
@@ -1182,6 +1231,7 @@ $(document).ready(function() {
           $thinkingContainerWrapper.find('.toggle-thinking').show();
           $thinkingContentElement.text(fullThinkingText);
           if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
+          $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
         }
         function processChunk(chunk) {
           buffer += chunk;
