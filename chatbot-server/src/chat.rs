@@ -130,6 +130,18 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         )
     })?;
 
+    let ip = crate::chat_utils::get_ip(&headers);
+    let username = session_context.username.as_deref().unwrap_or("guest");
+    let set_name = payload.set_name.as_deref().unwrap_or("default");
+
+    tracing::info!(
+        username = %username,
+        ip = %ip,
+        model = %selected_model,
+        set = %set_name,
+        "Chat request received"
+    );
+
     let app_config = app_config();
     let save_thoughts = payload.save_thoughts.unwrap_or(app_config.save_thoughts);
     let send_thoughts = payload.send_thoughts.unwrap_or(app_config.send_thoughts);

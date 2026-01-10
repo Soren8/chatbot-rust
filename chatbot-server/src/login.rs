@@ -2,19 +2,32 @@ use std::{collections::HashMap, sync::OnceLock};
 
 use axum::{
     body::{self, Body},
+    extract::Path,
     http::{header, HeaderValue, Request, Response, StatusCode},
+    Json,
 };
 use chatbot_core::{
     config, session,
     user_store::{normalise_username, UserStore, UserStoreError},
 };
 use minijinja::{context, AutoEscape, Environment};
+use serde_json::json;
 use serde_urlencoded::from_bytes;
 use tracing::{error, warn};
 
 use crate::home::SECURITY_CSP;
 
 const INVALID_CREDENTIALS: &str = "Invalid credentials";
+
+pub async fn handle_get_salt(
+    Path(username): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = UserStore::new().map_err(map_store_error)?;
+    let salt = store
+        .get_client_salt(&username)
+        .map_err(map_store_error)?;
+    Ok(Json(json!({ "salt": salt })))
+}
 
 pub async fn handle_login_get(
     request: Request<Body>,
@@ -71,6 +84,7 @@ pub async fn handle_login_post(
     let username_raw = form.get("username").map(|s| s.trim()).unwrap_or("");
     let password = form.get("password").map(|s| s.as_str()).unwrap_or("");
     let csrf_token = form.get("csrf_token").map(|s| s.as_str());
+    let storage_key = form.get("storage_key").map(|s| s.trim());
 
     if username_raw.is_empty() || password.is_empty() {
         return invalid_credentials();
@@ -105,12 +119,24 @@ pub async fn handle_login_post(
         .map_err(map_store_error)?;
 
     if !valid {
+        let ip = crate::chat_utils::get_ip(&headers);
+        tracing::info!(username = %username, ip = %ip, "Login failed");
         return invalid_credentials();
     }
 
-    let encryption_key = store
-        .derive_encryption_key(&username, password)
-        .map_err(map_store_error)?;
+    let encryption_key = if let Some(key) = storage_key {
+        if key.is_empty() {
+            store
+                .derive_encryption_key(&username, password)
+                .map_err(map_store_error)?
+        } else {
+            key.as_bytes().to_vec()
+        }
+    } else {
+        store
+            .derive_encryption_key(&username, password)
+            .map_err(map_store_error)?
+    };
 
     let finalize = session::finalize_login(cookie_header.as_deref(), &username, &encryption_key)
         .map_err(|err| {
@@ -120,6 +146,9 @@ pub async fn handle_login_post(
                 "session error".to_string(),
             )
         })?;
+
+    let ip = crate::chat_utils::get_ip(&headers);
+    tracing::info!(username = %username, ip = %ip, "Login successful");
 
     let mut response = Response::builder()
         .status(StatusCode::FOUND)

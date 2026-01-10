@@ -1,4 +1,19 @@
+use axum::http::HeaderMap;
 use chatbot_core::session;
+
+pub fn get_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("X-Forwarded-For")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .or_else(|| {
+            headers
+                .get("X-Real-IP")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
 pub struct ChatLockGuard {
     session_id: String,
