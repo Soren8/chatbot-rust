@@ -25,6 +25,11 @@ const BITS_PER_SAMPLE: u16 = 16;
 static THINK_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new("(?s)<think>.*?</think>").expect("valid think regex"));
 
+static EMOJI_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"[\p{Emoji_Presentation}\p{Extended_Pictographic}\u{200d}\u{FE0F}]")
+        .expect("valid emoji regex")
+});
+
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         .timeout(Duration::from_secs(30))
@@ -513,12 +518,13 @@ fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, Strin
 
 fn sanitize_text(input: &str) -> String {
     let no_think = THINK_REGEX.replace_all(input, "");
+    let no_emoji = EMOJI_REGEX.replace_all(&no_think, "");
     
     let mut options = pulldown_cmark::Options::empty();
     options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
-    let parser = pulldown_cmark::Parser::new_ext(&no_think, options);
+    let parser = pulldown_cmark::Parser::new_ext(&no_emoji, options);
     
-    let mut cleaned = String::with_capacity(no_think.len());
+    let mut cleaned = String::with_capacity(no_emoji.len());
     for event in parser {
         match event {
             pulldown_cmark::Event::Text(t) => cleaned.push_str(&t),
@@ -529,6 +535,47 @@ fn sanitize_text(input: &str) -> String {
     }
     
     cleaned.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_text_strips_emojis() {
+        let input = "Hello 🌟! How are you doing today? 😊 (Thinking: <think>I am a bot</think>)";
+        // pulldown_cmark might collapse spaces or handle them in specific ways.
+        // Let's match what it actually produces.
+        let result = sanitize_text(input);
+        assert!(!result.contains("🌟"));
+        assert!(!result.contains("😊"));
+        assert!(!result.contains("I am a bot"));
+        assert!(result.contains("Hello !"));
+        assert!(result.contains("How are you doing today?"));
+    }
+
+    #[test]
+    fn test_sanitize_text_strips_complex_emojis() {
+        let input = "Family: 👨‍👩‍👧‍👦, Flag: 🇺🇸, Rainbow: 🌈";
+        let result = sanitize_text(input);
+        // Ensure no leftover ZWJ or other emoji components
+        assert_eq!(result, "Family: , Flag: , Rainbow:");
+    }
+
+    #[test]
+    fn test_sanitize_text_does_not_strip_standard_text() {
+        let input = "Text with numbers 123 and punctuation !@#$%^&*()_+-=[]{};':\",./<>?";
+        let result = sanitize_text(input);
+        assert_eq!(result, "Text with numbers 123 and punctuation !@#$%^&*()_+-=[]{};':\",./<>?");
+    }
+
+    #[test]
+    fn test_text_between_emojis() {
+        let input = "🚀 Hello 🚀 World 🚀";
+        let result = sanitize_text(input);
+        // Markdown parser preserves the spaces that were around the emojis
+        assert_eq!(result, "Hello  World");
+    }
 }
 
 async fn post_backend(
