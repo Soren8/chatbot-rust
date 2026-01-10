@@ -177,7 +177,7 @@ impl OpenAiProvider {
                     yield chunk;
                 }
                 if outcome.done {
-                    if currently_thinking && !is_implicit_model {
+                    if currently_thinking {
                         yield "</think>".to_string();
                     }
                     debug!("OpenAI SSE stream marked [DONE]");
@@ -196,7 +196,7 @@ impl OpenAiProvider {
                 for chunk in outcome.chunks {
                     yield chunk;
                 }
-                if currently_thinking && !is_implicit_model {
+                if currently_thinking {
                     yield "</think>".to_string();
                 }
             }
@@ -276,7 +276,7 @@ fn extract_sse_payloads(
                 }
                 
                 if let Some(content) = delta.get("content").and_then(Value::as_str) {
-                    if *currently_thinking && !*is_implicit_model {
+                    if *currently_thinking && !*is_implicit_model && !content.trim().is_empty() {
                         chunks.push("</think>".to_string());
                         *currently_thinking = false;
                     }
@@ -336,5 +336,35 @@ mod tests {
         let combined = outcome.chunks.join("");
         assert!(combined.contains("final thought"), "Should contain reasoning");
         assert!(combined.contains("Hello"), "Should contain content but got: {}", combined);
+    }
+
+    #[test]
+    fn test_interleaved_thinking_coalescence() {
+        let mut buffer = String::new();
+        let mut currently_thinking = false;
+        let mut has_sent_any_content = false;
+        let mut is_implicit_model = false;
+
+        // Chunk 1: Thought
+        buffer.push_str("data: {\"choices\": [{\"delta\": {\"reasoning_content\": \"thought 1\"}}]}\n\n");
+        let outcome1 = extract_sse_payloads(&mut buffer, &mut currently_thinking, &mut has_sent_any_content, &mut is_implicit_model).unwrap();
+        
+        // Chunk 2: Just a space in content (this triggers the bug: closing thinking prematurely)
+        buffer.push_str("data: {\"choices\": [{\"delta\": {\"content\": \" \"}}]}\n\n");
+        let outcome2 = extract_sse_payloads(&mut buffer, &mut currently_thinking, &mut has_sent_any_content, &mut is_implicit_model).unwrap();
+
+        // Chunk 3: More thought
+        buffer.push_str("data: {\"choices\": [{\"delta\": {\"reasoning_content\": \"thought 2\"}}]}\n\n");
+        let outcome3 = extract_sse_payloads(&mut buffer, &mut currently_thinking, &mut has_sent_any_content, &mut is_implicit_model).unwrap();
+
+        let all_chunks: Vec<String> = outcome1.chunks.into_iter()
+            .chain(outcome2.chunks)
+            .chain(outcome3.chunks)
+            .collect();
+            
+        let combined = all_chunks.join("");
+        // Desired behavior: "<think>thought 1 thought 2"
+        assert_eq!(combined.matches("<think>").count(), 1, "Should have coalesced thinking blocks. Got: {}", combined);
+        assert!(!combined.contains("</think>"), "Should not have closed thinking block prematurely. Got: {}", combined);
     }
 }

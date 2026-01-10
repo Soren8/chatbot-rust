@@ -887,22 +887,24 @@ $(document).ready(function() {
   if (window.APP_DATA.loggedIn) {
     function formatAiMessage(text) {
       if (!text) return '';
-      let html = '';
-      let buffer = text;
-      let state = 'visible';
+      
       const openTag = '<think>';
       const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
+      
+      let thinkingParts = [];
+      let visibleParts = [];
+      let buffer = text;
+      let state = 'visible';
 
       while (buffer.length > 0) {
         if (state === 'visible') {
           const idx = buffer.indexOf(openTag);
           if (idx !== -1) {
-            html += renderMarkdown(buffer.substring(0, idx));
+            visibleParts.push(buffer.substring(0, idx));
             buffer = buffer.substring(idx + openTag.length);
             state = 'thinking';
-            html += '<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">';
           } else {
-            html += renderMarkdown(buffer);
+            visibleParts.push(buffer);
             buffer = '';
           }
         } else {
@@ -916,17 +918,23 @@ $(document).ready(function() {
             }
           }
           if (firstCloseIdx !== -1) {
-            html += escapeHTML(buffer.substring(0, firstCloseIdx)).replace(/\n/g, '<br>');
+            thinkingParts.push(buffer.substring(0, firstCloseIdx));
             buffer = buffer.substring(firstCloseIdx + usedTagLen);
             state = 'visible';
-            html += '</div></div>';
           } else {
-            html += escapeHTML(buffer).replace(/\n/g, '<br>');
+            thinkingParts.push(buffer);
             buffer = '';
-            html += '</div></div>';
           }
         }
       }
+
+      let html = '';
+      const fullThinking = thinkingParts.join('').trim();
+      if (fullThinking) {
+        html += `<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">${escapeHTML(fullThinking).replace(/\n/g, '<br>')}</div></div>`;
+      }
+      
+      html += renderMarkdown(visibleParts.join(''));
       return html;
     }
 
