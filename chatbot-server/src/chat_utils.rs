@@ -1,7 +1,11 @@
-use axum::http::HeaderMap;
+use axum::{
+    extract::ConnectInfo,
+    http::{Extensions, HeaderMap},
+};
 use chatbot_core::session;
+use std::net::SocketAddr;
 
-pub fn get_ip(headers: &HeaderMap) -> String {
+pub fn get_ip(headers: &HeaderMap, extensions: &Extensions) -> String {
     headers
         .get("X-Forwarded-For")
         .and_then(|v| v.to_str().ok())
@@ -11,6 +15,11 @@ pub fn get_ip(headers: &HeaderMap) -> String {
                 .get("X-Real-IP")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| addr.ip().to_string())
         })
         .unwrap_or_else(|| "unknown".to_string())
 }

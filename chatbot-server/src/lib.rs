@@ -6,14 +6,14 @@ use axum::{
     Router,
 };
 use chatbot_core::session::ServiceResponse;
-use std::{env, path::PathBuf};
+use std::{env, net::SocketAddr, path::PathBuf};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod chat;
-mod chat_utils;
+pub mod chat_utils;
 mod health;
 mod home;
 mod login;
@@ -49,7 +49,11 @@ pub async fn run() -> anyhow::Result<()> {
     let addr = listener.local_addr()?;
     info!("listening on http://{addr}");
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use tracing::error;
 
 pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
     let headers = request.headers();
-    let ip = crate::chat_utils::get_ip(headers);
+    let ip = crate::chat_utils::get_ip(headers, request.extensions());
     let cookie_header = headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())

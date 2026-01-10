@@ -86,7 +86,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
-    let ip = crate::chat_utils::get_ip(&headers);
+    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
     let username = session::session_context(cookie_header.as_deref())
         .ok()
         .and_then(|ctx| ctx.username)
@@ -260,7 +260,7 @@ pub async fn handle_api_tts(
     }
 
     let (parts, body) = request.into_parts();
-    let ip = crate::chat_utils::get_ip(&parts.headers);
+    let ip = crate::chat_utils::get_ip(&parts.headers, &parts.extensions);
     tracing::info!(ip = %ip, "API TTS request");
 
     let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {

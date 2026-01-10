@@ -130,7 +130,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         )
     })?;
 
-    let ip = crate::chat_utils::get_ip(&headers);
+    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
     let username = session_context.username.as_deref().unwrap_or("guest");
     let set_name = payload.set_name.as_deref().unwrap_or("default");
 

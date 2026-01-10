@@ -119,7 +119,7 @@ pub async fn handle_login_post(
         .map_err(map_store_error)?;
 
     if !valid {
-        let ip = crate::chat_utils::get_ip(&headers);
+        let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
         tracing::info!(username = %username, ip = %ip, "Login failed");
         return invalid_credentials();
     }
@@ -147,7 +147,7 @@ pub async fn handle_login_post(
             )
         })?;
 
-    let ip = crate::chat_utils::get_ip(&headers);
+    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
     tracing::info!(username = %username, ip = %ip, "Login successful");
 
     let mut response = Response::builder()

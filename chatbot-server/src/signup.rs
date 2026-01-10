@@ -116,7 +116,10 @@ pub async fn handle_signup_post(
     let mut store = UserStore::new().map_err(map_store_error)?;
 
     match store.create_user(&username, &hashed) {
-        Ok(CreateOutcome::Created) => {}
+        Ok(CreateOutcome::Created) => {
+            let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+            tracing::info!(username = %username, ip = %ip, "User created");
+        }
         Ok(CreateOutcome::AlreadyExists) => {
             return Err((StatusCode::BAD_REQUEST, "User already exists.".to_string()));
         }
