@@ -1,14 +1,14 @@
 # Privacy Design Specification
 
 ## Design Rationale
-Our privacy tiers were created to offer users progressive security options without sacrificing usability. This balanced approach emerged from several key considerations:
+Our privacy modes were created to offer users progressive security options without sacrificing usability. This balanced approach emerged from several key considerations:
 
-- **True security compensations**: Server-side encryption (Standard) protects against external threats but not admin access
-- **The password reset dilemma**: Password-derived encryption (Private) provides isolation at the cost of unrecoverable data
-- **LLM logging risks**: Private tier restricts providers to prevent opaque cloud logging
-- **Tempest use cases**: Ephemeral mode meets journalist/whistleblower needs for digital vapor trails
-- **Hybrid reality**: Local GPU availability allows Private tier without actual system hosting
-- **User experience focus**: Tiers map to clear mental models rather than abstract security classes
+- **Security Trade-offs**: Server-side encryption (Recoverable Mode) protects against external data theft but remains accessible to system administrators
+- **The password reset dilemma**: Password-derived encryption (Private Mode) provides isolation at the cost of unrecoverable data
+- **LLM logging risks**: Private Mode restricts providers to prevent opaque cloud logging
+- **Tempest use cases**: Ephemeral Mode meets journalist/whistleblower needs for digital vapor trails
+- **Hybrid reality**: Local GPU availability allows Private Mode without actual system hosting
+- **User experience focus**: Modes map to clear mental models rather than abstract security classes
 
 ## Privacy Modes
 
@@ -74,7 +74,7 @@ The system currently operates in a **Strict Private Mode**:
 - [ ] Implement Server-Managed Key infrastructure.
 - [ ] Add UI dropdown for "Privacy Mode" (Private/Recoverable) per chat.
 - [ ] Add tooltips explaining the "No Recovery" risk of Private Mode.
-- [ ] Rename "Standard Tier" concepts to "Recoverable Mode".
+- [ ] Rename "Standard" concepts to "Recoverable Mode" across codebase and UI.
 
 ### Phase 2: OAuth & Hybrid Auth
 - [ ] Implement OAuth (GitHub/Google).

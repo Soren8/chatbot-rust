@@ -80,10 +80,10 @@ This document captures the current architecture of the project and the potential
   - [ ] Enforce consistent formatting and lint rules via pre-commit.
   - [ ] Remove unused imports and dead code to reduce noise.
 
-- **Privacy Tiers**
-  1. **Standard**: Server-managed encryption with full account recovery.
-  2. **Private**: Client-derived keys for zero-knowledge storage (on-prem LLMs only).
-  3. **Ephemeral**: Memory-only sessions with no persistent data (free/on-prem LLMs).
+- **Privacy Modes**
+  1. **Recoverable Mode**: Server-managed encryption with full account recovery.
+  2. **Private Mode**: Client-derived keys for zero-knowledge storage.
+  3. **Ephemeral Mode**: Memory-only sessions with no persistent data.
   See [design-privacy.md](design-privacy.md) for details.
 
 - **Docker & Deployment**
