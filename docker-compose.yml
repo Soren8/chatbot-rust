@@ -37,26 +37,6 @@ services:
       LOCAL_PORT: ${LOCAL_PORT:-11434}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-  chatbot-cuda:
-    build:
-      context: ./chatbot-cuda
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./chatbot-cuda/data:/app/data
-      - ./temp/cuda-uv-cache:/root/.cache/uv
-      - ./temp/cuda-huggingface:/app/data/cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      HOST: "0.0.0.0"
-      PORT: "8000"
   tests:
     profiles: ["test"]
     build:
