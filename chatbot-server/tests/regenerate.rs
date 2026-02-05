@@ -421,3 +421,144 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
         "system prompt should remain stored alongside regenerated history"
     );
 }
+
+#[tokio::test]
+async fn regenerate_updates_system_prompt_in_history() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+
+    const USERNAME: &str = "regen_sys_user";
+    const PASSWORD: &str = "SysP@ss!";
+
+    let hashed = hash(PASSWORD, DEFAULT_COST).expect("hash password");
+    let users_json = workspace.path().join("users.json");
+    let payload = json!({
+        USERNAME: {
+            "password": hashed,
+            "tier": "free"
+        }
+    });
+    let mut file = File::create(&users_json).expect("create users.json");
+    file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
+        .expect("write users.json");
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let mut session_cookie: Option<String> = None;
+
+    // Login
+    let login_get = app
+        .clone()
+        .oneshot(Request::builder().uri("/login").body(Body::empty()).unwrap())
+        .await
+        .expect("GET /login");
+    update_session_cookie(&mut session_cookie, &login_get);
+    let login_body = to_bytes(login_get.into_body(), 64 * 1024).await.unwrap();
+    let login_html = std::str::from_utf8(&login_body).unwrap();
+    let login_csrf = common::extract_csrf_token(login_html).unwrap();
+    
+    let initial_cookie = session_cookie.clone().unwrap();
+
+    let form_body = format!(
+        "username={}&password={}&csrf_token={}",
+        urlencoding::encode(USERNAME),
+        urlencoding::encode(PASSWORD),
+        urlencoding::encode(&login_csrf),
+    );
+
+    let login_post = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &initial_cookie)
+                .body(Body::from(form_body))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+    
+    update_session_cookie(&mut session_cookie, &login_post);
+    let auth_cookie = session_cookie.unwrap_or(initial_cookie);
+
+    // Initial Chat
+    env::set_var(
+        "CHATBOT_TEST_OPENAI_CHUNKS",
+        serde_json::to_string(&vec!["init".to_string()]).unwrap(),
+    );
+
+    let csrf_token = "mock_csrf_for_api"; // The test helpers might need real CSRF if checking logic is strict, but reusing logic from other tests:
+    // Actually, other tests extract CSRF from home page. Let's do that to be safe.
+    let home_res = app.clone().oneshot(Request::builder().uri("/").header(header::COOKIE, &auth_cookie).body(Body::empty()).unwrap()).await.unwrap();
+    let home_body = to_bytes(home_res.into_body(), 1024*1024).await.unwrap();
+    let home_text = std::str::from_utf8(&home_body).unwrap();
+    let csrf_token = CSRF_META_RE.captures(home_text).unwrap().get(1).unwrap().as_str().to_owned();
+
+    let initial_payload = json!({
+        "message": "Hi",
+        "system_prompt": "Old System Prompt",
+        "set_name": "default",
+        "model_name": "default",
+    });
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/chat")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::COOKIE, &auth_cookie)
+                .body(Body::from(serde_json::to_vec(&initial_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Regenerate with NEW system prompt
+    env::set_var(
+        "CHATBOT_TEST_OPENAI_CHUNKS",
+        serde_json::to_string(&vec!["regen".to_string()]).unwrap(),
+    );
+
+    let regen_payload = json!({
+        "message": "Hi",
+        "system_prompt": "New System Prompt",
+        "set_name": "default",
+        "model_name": "default",
+        "pair_index": 0,
+    });
+
+    let regen_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/regenerate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::COOKIE, &auth_cookie)
+                .body(Body::from(serde_json::to_vec(&regen_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    
+    assert_eq!(regen_res.status(), StatusCode::OK);
+    let _ = to_bytes(regen_res.into_body(), 1024).await.unwrap();
+
+    // Verify Persistence
+    let store = UserStore::new().unwrap();
+    let key = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
+    let persistence = DataPersistence::new().unwrap();
+    let loaded = persistence.load_set(USERNAME, "default", Some(EncryptionMode::Fernet(key.as_slice()))).unwrap();
+
+    assert_eq!(loaded.system_prompt, "New System Prompt", "System prompt should be updated after regenerate");
+}

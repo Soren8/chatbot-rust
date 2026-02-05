@@ -525,6 +525,7 @@ window.regenerateMessage = function regenerateMessage(button) {
 
 window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex) {
   const $target = $(aiMessageElement);
+  $target.removeAttr('data-original');
   $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button"><i class="bi bi-play-fill"></i></button></div>`);
   
   if (window.APP_DATA.autoplayTTS) {
