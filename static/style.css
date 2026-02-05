@@ -318,7 +318,7 @@ a:hover, a:focus {
         width: 100%;
     }
 
-    .regenerate-button, .play-button, .delete-button {
+    .regenerate-button, .play-button, .delete-button, .edit-button {
         padding: 10px 14px !important;
         min-width: 72px !important;
         font-size: 16px !important;
