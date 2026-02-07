@@ -34,6 +34,7 @@ async-stream = "0.3"
 futures-util = "0.3"
 minijinja = { version = "1.0", features = ["builtins", "json"] }
 pulldown-cmark = "0.9"
+async-openai = "0.32.4"
 
 [dev-dependencies]
 tempfile = "3"

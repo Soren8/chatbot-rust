@@ -22,6 +22,7 @@ use crate::chat_utils::ChatLockGuard;
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
+use crate::providers::xai::XaiProvider;
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -110,7 +111,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         provider_type = %provider_type,
         "resolved provider configuration for chat"
     );
-    if provider_type != "openai" && provider_type != "ollama" {
+    if provider_type != "openai" && provider_type != "ollama" && provider_type != "xai" {
         error!(
             model = %selected_model,
             provider_type = %provider_type,
@@ -173,6 +174,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
     enum ProviderKind {
         OpenAi(OpenAiProvider),
         Ollama(OllamaProvider),
+        Xai(XaiProvider),
     }
 
     let provider_kind = match provider_type.as_str() {
@@ -187,6 +189,13 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             .map(ProviderKind::Ollama)
             .map_err(|err| {
                 error!(?err, "failed to construct Ollama provider");
+                lock_guard.lock().unwrap().release_if_needed();
+                (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
+            })?,
+        "xai" => XaiProvider::new(&context.provider)
+            .map(ProviderKind::Xai)
+            .map_err(|err| {
+                error!(?err, "failed to construct XAI provider");
                 lock_guard.lock().unwrap().release_if_needed();
                 (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
             })?,
@@ -242,7 +251,18 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
                     ));
                 }
             }
-        }
+        },
+        ProviderKind::Xai(provider) => match provider.stream_chat(messages.clone()) {
+            Ok(stream) => stream,
+            Err(err) => {
+                error!(?err, "provider stream setup failed");
+                lock_guard.lock().unwrap().release_if_needed();
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    "provider request failed".to_string(),
+                ));
+            }
+        },
     };
 
     let stream_lock = lock_guard.clone();

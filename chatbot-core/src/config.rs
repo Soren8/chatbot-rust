@@ -45,6 +45,14 @@ impl ProviderConfig {
             }
         }
 
+        if self.provider_type == "xai" || self.base_url.contains("api.x.ai") {
+            if let Ok(xai_key) = env::var("XAI_API_KEY") {
+                if !xai_key.trim().is_empty() {
+                    self.api_key = Some(xai_key);
+                }
+            }
+        }
+
         if self
             .api_key
             .as_ref()
