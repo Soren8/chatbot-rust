@@ -566,19 +566,35 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
     let hasWrittenToDOM = false;
     let fullVisibleText = '';
     let fullThinkingText = '';
+    let wasSearching = false;
 
     function appendVisible(content) {
       if (!content) return;
       fullVisibleText += content;
       $msgText.html(renderMarkdown(fullVisibleText));
       hasWrittenToDOM = true;
+      if (wasSearching) {
+          const $toggle = $target.find('.toggle-thinking');
+          if ($target.find('.thinking-content').css('display') === 'none') {
+             $toggle.html('<i class="bi bi-caret-right-fill"></i> Search completed.');
+          }
+      }
       $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
     }
     function appendThinking(content) {
       if (!content) return;
       fullThinkingText += content;
       $thinkingWrap.show();
-      $thinkingWrap.find('.toggle-thinking').show();
+      const $toggle = $thinkingWrap.find('.toggle-thinking');
+      $toggle.show();
+      
+      if (!wasSearching && (content.includes('Searching') || content.includes('web search'))) {
+          wasSearching = true;
+          if ($target.find('.thinking-content').css('display') === 'none') {
+             $toggle.html('<i class="bi bi-caret-right-fill"></i> Searching the web...');
+          }
+      }
+
       $thinkingContent.text(fullThinkingText);
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
       $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
@@ -1217,19 +1233,35 @@ $(document).ready(function() {
         let hasWrittenToDOM = false;
         let fullVisibleText = '';
         let fullThinkingText = '';
+        let wasSearching = false;
 
         function appendVisible(content) {
           if (!content) return;
           fullVisibleText += content;
           $messageTextElement.html(renderMarkdown(fullVisibleText));
           hasWrittenToDOM = true;
+          if (wasSearching) {
+              const $toggle = $targetElement.find('.toggle-thinking');
+              if ($targetElement.find('.thinking-content').css('display') === 'none') {
+                 $toggle.html('<i class="bi bi-caret-right-fill"></i> Search completed.');
+              }
+          }
           $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
         }
         function appendThinking(content) {
           if (!content) return;
           fullThinkingText += content;
           $thinkingContainerWrapper.show();
-          $thinkingContainerWrapper.find('.toggle-thinking').show();
+          const $toggle = $thinkingContainerWrapper.find('.toggle-thinking');
+          $toggle.show();
+          
+          if (!wasSearching && (content.includes('Searching') || content.includes('web search'))) {
+              wasSearching = true;
+              if ($thinkingContentElement.css('display') === 'none') {
+                 $toggle.html('<i class="bi bi-caret-right-fill"></i> Searching the web...');
+              }
+          }
+
           $thinkingContentElement.text(fullThinkingText);
           if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
           $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
@@ -1380,13 +1412,26 @@ $(document).ready(function() {
 // Toggle thinking content visibility (used by inline handler in generated HTML)
 window.toggleThinking = function toggleThinking(button) {
   const $button = $(button);
+  const $message = $button.closest('.message');
+  const isFinished = !$message.find('.regenerate-button').prop('disabled');
+
   const $contentDiv = $button.next();
+  const text = $contentDiv.text();
+  const isSearch = text.includes('Searching') || text.includes('web search') || text.includes('Found source');
+  
   if ($contentDiv.css('display') === 'none') {
     $contentDiv.css('display', 'block');
-    $button.html('<i class="bi bi-caret-down-fill"></i> Hide Thinking');
+    const label = isSearch ? 'Hide Search Details' : 'Hide Thinking';
+    $button.html(`<i class="bi bi-caret-down-fill"></i> ${label}`);
   } else {
     $contentDiv.css('display', 'none');
-    $button.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
+    let label;
+    if (isSearch) {
+        label = isFinished ? 'Search completed.' : 'Searching the web...';
+    } else {
+        label = 'Show Thinking';
+    }
+    $button.html(`<i class="bi bi-caret-right-fill"></i> ${label}`);
   }
 };
 // Initialize config from inline template if globals are not set
