@@ -254,6 +254,7 @@ mod tests {
                 allowed_providers: Vec::new(),
                 request_timeout: None,
                 test_chunks: None,
+                search: false,
             },
             encryption_key: None,
             test_chunks: None,

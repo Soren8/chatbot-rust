@@ -63,7 +63,7 @@
                             <div class="col-12 col-md-9">
                                 <select id="modelSelect" class="form-select">
                                     {% for llm in available_llms %}
-                                    <option value="{{ llm.provider_name }}" data-tier="{{ llm.tier }}">{{ llm.provider_name }}</option>
+                                    <option value="{{ llm.provider_name }}" data-tier="{{ llm.tier }}" data-search="{{ 'true' if llm.search else 'false' }}">{{ llm.provider_name }}</option>
                                     {% endfor %}
                                 </select>
                             </div>
@@ -139,7 +139,7 @@
                 </div>
                 <div class="input-group">
                     <input type="text" id="user-input" class="form-control" placeholder="Type your message here...">
-                    <button class="btn btn-outline-secondary" type="button" id="web-search-toggle" title="Toggle Web Search">
+                    <button class="btn btn-outline-secondary" type="button" id="web-search-toggle" title="Toggle Web Search" style="display: none;">
                         <i class="bi bi-globe"></i>
                     </button>
                     <button class="btn btn-outline-primary" type="button" id="send-button">Send</button>

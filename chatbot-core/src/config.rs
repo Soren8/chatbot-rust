@@ -33,6 +33,8 @@ pub struct ProviderConfig {
     pub request_timeout: Option<f64>,
     #[serde(default)]
     pub test_chunks: Option<Vec<String>>,
+    #[serde(default)]
+    pub search: bool,
 }
 
 impl ProviderConfig {
@@ -441,6 +443,7 @@ fn fallback_provider() -> ProviderConfig {
         allowed_providers: Vec::new(),
         request_timeout: None,
         test_chunks: None,
+        search: false,
     }
 }
 

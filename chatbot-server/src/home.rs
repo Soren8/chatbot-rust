@@ -17,6 +17,7 @@ const FREE_TIER: &str = "free";
 struct FrontendModel {
     provider_name: String,
     tier: String,
+    search: bool,
 }
 
 pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
@@ -127,6 +128,7 @@ fn build_available_models(
         models.push(FrontendModel {
             provider_name: provider.provider_name.clone(),
             tier,
+            search: provider.search,
         });
     }
     models
@@ -229,6 +231,7 @@ mod tests {
         let available_models = vec![FrontendModel {
             provider_name: "test-model".to_string(),
             tier: "free".to_string(),
+            search: false,
         }];
         let default_prompt = "system prompt";
         let csrf_token = "csrf";

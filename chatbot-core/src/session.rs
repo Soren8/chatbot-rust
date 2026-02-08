@@ -1039,6 +1039,7 @@ mod tests {
             allowed_providers: vec![],
             request_timeout: None,
             test_chunks: None,
+            search: false,
         };
 
         let request = RegenerateRequestData {

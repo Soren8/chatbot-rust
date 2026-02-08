@@ -244,6 +244,20 @@ window.validateModelTier = function validateModelTier() {
     $modelSelect.css('backgroundColor', '#2c3e50');
   }
   previousModel = $modelSelect.val();
+  updateSearchToggleVisibility();
+}
+
+function updateSearchToggleVisibility() {
+    const $selected = $('#modelSelect option:checked');
+    const $searchToggle = $('#web-search-toggle');
+    if ($selected.data('search') === true || $selected.data('search') === 'true') {
+        $searchToggle.show();
+    } else {
+        $searchToggle.hide();
+        // Reset search to OFF if not supported
+        $searchToggle.removeClass('btn-primary').addClass('btn-outline-secondary');
+        $searchToggle.attr('title', 'Web Search: OFF');
+    }
 }
 
 // Append a message to the chat content
@@ -778,6 +792,7 @@ $(document).on('click', '.delete-button', function(e) {
 // Main ready block
 $(document).ready(function() {
   disablePremiumModels();
+  updateSearchToggleVisibility();
 
   // Initialize checkboxes
   if (window.APP_DATA) {
