@@ -517,7 +517,14 @@ fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, Strin
 }
 
 fn sanitize_text(input: &str) -> String {
-    let no_think = THINK_REGEX.replace_all(input, "");
+    let mut no_think = THINK_REGEX.replace_all(input, "").into_owned();
+    
+    // Robustness: if we still see </think>, it means the start tag was missing.
+    // Strip everything up to and including the first </think>.
+    if let Some(pos) = no_think.find("</think>") {
+        no_think = no_think[pos + 8..].to_string();
+    }
+
     let no_emoji = EMOJI_REGEX.replace_all(&no_think, "");
     
     let mut options = pulldown_cmark::Options::empty();
@@ -534,7 +541,8 @@ fn sanitize_text(input: &str) -> String {
         }
     }
     
-    cleaned.trim().to_string()
+    let result = cleaned.trim().to_string();
+    result
 }
 
 #[cfg(test)]

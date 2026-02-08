@@ -118,7 +118,10 @@ impl OpenAiProvider {
         }
 
         let mut is_implicit_model = self.model.contains("nemotron-3-nano-30b-a3b")
-            || self.model.contains("apriel-1.6-15b-thinker");
+            || self.model.contains("apriel-1.6-15b-thinker")
+            || self.model.contains("glm-4")
+            || self.model.contains("local-model");
+        
         let api_key = self
             .api_key
             .as_deref()
@@ -244,7 +247,9 @@ fn extract_sse_payloads(
             let model_response = value.get("model").and_then(Value::as_str).unwrap_or("");
             if !*is_implicit_model
                 && (model_response.contains("nemotron-3-nano-30b-a3b")
-                    || model_response.contains("apriel-1.6-15b-thinker"))
+                    || model_response.contains("apriel-1.6-15b-thinker")
+                    || model_response.contains("glm-4")
+                    || model_response.contains("local-model"))
             {
                 *is_implicit_model = true;
             }
@@ -260,28 +265,41 @@ fn extract_sse_payloads(
                 .and_then(|choice| choice.get("delta"));
 
             if let Some(delta) = delta {
-                if let Some(reasoning) = delta
-                    .get("reasoning_content")
-                    .or_else(|| delta.get("reasoning"))
-                    .and_then(Value::as_str)
-                {
+                let reasoning_field = delta.get("reasoning_content").or_else(|| delta.get("reasoning"));
+                let content_field = delta.get("content");
+                
+                if let Some(r) = reasoning_field.and_then(Value::as_str) {
                     if !*currently_thinking {
                         chunks.push("<think>".to_string());
                         *currently_thinking = true;
                     }
-                    if !reasoning.is_empty() {
-                        chunks.push(reasoning.to_string());
+                    if !r.is_empty() {
+                        chunks.push(r.to_string());
                         *has_sent_any_content = true;
                     }
                 }
                 
-                if let Some(content) = delta.get("content").and_then(Value::as_str) {
-                    if *currently_thinking && !*is_implicit_model && !content.trim().is_empty() {
-                        chunks.push("</think>".to_string());
-                        *currently_thinking = false;
+                if let Some(c) = content_field.and_then(Value::as_str) {
+                    // If we see an explicit closing tag in the content stream, 
+                    // we must respect it and stop thinking, even for "implicit" models.
+                    let has_explicit_close = c.contains("</think>");
+                    
+                    if *currently_thinking && !c.trim().is_empty() {
+                        if !*is_implicit_model || has_explicit_close {
+                             // For implicit models, we only close if we see the tag or if we want to transition to content.
+                             // But if the model SENT </think>, we definitely stop thinking.
+                             if has_explicit_close {
+                                 // We don't push another </think> because c contains it.
+                                 *currently_thinking = false;
+                             } else if !*is_implicit_model {
+                                 chunks.push("</think>".to_string());
+                                 *currently_thinking = false;
+                             }
+                        }
                     }
-                    if !content.is_empty() {
-                        chunks.push(content.to_string());
+                    
+                    if !c.is_empty() {
+                        chunks.push(c.to_string());
                         *has_sent_any_content = true;
                     }
                 }
