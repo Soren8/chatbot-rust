@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{header, Method, Request, StatusCode},
+    http::{Method, Request, StatusCode},
 };
 use chatbot_server::{build_router, resolve_static_root};
 use tower::ServiceExt;

@@ -493,7 +493,6 @@ async fn regenerate_updates_system_prompt_in_history() {
         serde_json::to_string(&vec!["init".to_string()]).unwrap(),
     );
 
-    let csrf_token = "mock_csrf_for_api"; // The test helpers might need real CSRF if checking logic is strict, but reusing logic from other tests:
     // Actually, other tests extract CSRF from home page. Let's do that to be safe.
     let home_res = app.clone().oneshot(Request::builder().uri("/").header(header::COOKIE, &auth_cookie).body(Body::empty()).unwrap()).await.unwrap();
     let home_body = to_bytes(home_res.into_body(), 1024*1024).await.unwrap();
