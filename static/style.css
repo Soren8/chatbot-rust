@@ -5,7 +5,6 @@
     border-radius: 4px;
     max-width: 80%;
     word-wrap: break-word;
-    white-space: pre-wrap;
 }
 
 .user-message {
@@ -34,7 +33,6 @@
 }
 
 .ai-message-text {
-    white-space: pre-wrap;
     word-wrap: break-word;
     display: block;
     width: 100%;
@@ -556,10 +554,68 @@ body {
     background-color: rgba(255,255,255,0.05);
 }
 
+/* Markdown element spacing resets */
+
+.ai-message-text p, .user-message-text p, .ai-message p, .user-message p {
+
+    margin-top: 0;
+
+    margin-bottom: 0.5rem;
+
+}
+
+.ai-message-text p:last-child, .user-message-text p:last-child, .ai-message p:last-child, .user-message p:last-child {
+
+    margin-bottom: 0;
+
+}
+
+.ai-message-text ul, .ai-message-text ol, .user-message-text ul, .user-message-text ol, .ai-message ul, .ai-message ol, .user-message ul, .user-message ol {
+
+    margin-top: 0;
+
+    margin-bottom: 0.5rem;
+
+    padding-left: 1.5rem;
+
+}
+
+.ai-message-text li, .user-message-text li, .ai-message li, .user-message li {
+
+    margin-bottom: 0.2rem;
+
+}
+
+.ai-message-text h1, .ai-message-text h2, .ai-message-text h3, .ai-message-text h4, .ai-message-text h5, .ai-message-text h6,
+
+.user-message-text h1, .user-message-text h2, .user-message-text h3, .user-message-text h4, .user-message-text h5, .user-message-text h6,
+
+.ai-message h1, .ai-message h2, .ai-message h3, .ai-message h4, .ai-message h5, .ai-message h6,
+
+.user-message h1, .user-message h2, .user-message h3, .user-message h4, .user-message h5, .user-message h6 {
+
+    margin-top: 0.5rem;
+
+    margin-bottom: 0.25rem;
+
+}
+
+.ai-message-text blockquote, .user-message-text blockquote, .ai-message blockquote, .user-message blockquote {
+
+    margin: 0.5rem 0;
+
+    padding-left: 1rem;
+
+    border-left: 3px solid #666;
+
+    color: #888;
+
+}
+
 /* Code block styling */
 .code-block-container {
     position: relative;
-    margin: 1rem 0;
+    margin: 0.5rem 0;
     border-radius: 6px;
     overflow: hidden;
     border: 1px solid #444;
