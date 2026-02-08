@@ -59,6 +59,7 @@ impl XaiProvider {
     pub fn stream_chat(
         &self,
         messages: Vec<ChatMessagePayload>,
+        web_search_enabled: bool,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
         let api_key = if let Some(key) = &self.api_key {
             key.clone()
@@ -82,10 +83,12 @@ impl XaiProvider {
             })
             .collect();
 
-        // If tools are needed, we default to web_search for now as per requirements
-        let tools = vec![
-            Tool { tool_type: ToolType::WebSearch },
-        ];
+        // Only include tools if web search is enabled
+        let tools = if web_search_enabled {
+            vec![Tool { tool_type: ToolType::WebSearch }]
+        } else {
+            vec![]
+        };
 
         let payload = ResponseRequest {
             model: self.model.clone(),
@@ -190,6 +193,32 @@ fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
                     }
                     "response.completed" => {
                         done = true;
+                    }
+                    "response.output_item.added" => {
+                        if let Some(item) = value.get("item") {
+                            if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
+                                if let Some(action) = item.get("action") {
+                                    if let Some(query) = action.get("query").and_then(Value::as_str) {
+                                        if !query.is_empty() {
+                                            chunks.push(format!("<think>Searching for: {}...\n</think>", query));
+                                        } else {
+                                            chunks.push("<think>Starting web search...\n</think>".to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "response.output_item.done" => {
+                        if let Some(item) = value.get("item") {
+                            if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
+                                if let Some(action) = item.get("action") {
+                                    if let Some(url) = action.get("url").and_then(Value::as_str) {
+                                        chunks.push(format!("<think>Found source: {}\n</think>", url));
+                                    }
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }

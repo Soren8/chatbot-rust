@@ -34,6 +34,8 @@ struct ChatRequest {
     #[serde(default)]
     model_name: Option<String>,
     #[serde(default)]
+    web_search: Option<bool>,
+    #[serde(default)]
     encrypted: Option<bool>,
     #[serde(default)]
     save_thoughts: Option<bool>,
@@ -252,7 +254,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
                 }
             }
         },
-        ProviderKind::Xai(provider) => match provider.stream_chat(messages.clone()) {
+        ProviderKind::Xai(provider) => match provider.stream_chat(messages.clone(), payload.web_search.unwrap_or(false)) {
             Ok(stream) => stream,
             Err(err) => {
                 error!(?err, "provider stream setup failed");

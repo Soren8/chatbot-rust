@@ -38,6 +38,8 @@ struct RegenerateRequest {
     #[serde(default)]
     pair_index: Option<i32>,
     #[serde(default)]
+    web_search: Option<bool>,
+    #[serde(default)]
     save_thoughts: Option<bool>,
     #[serde(default)]
     send_thoughts: Option<bool>,
@@ -243,7 +245,7 @@ pub async fn handle_regenerate(
                 }
             }
         },
-        ProviderKind::Xai(provider) => match provider.stream_chat(messages.clone()) {
+        ProviderKind::Xai(provider) => match provider.stream_chat(messages.clone(), payload.web_search.unwrap_or(false)) {
             Ok(stream) => stream,
             Err(err) => {
                 error!(?err, "provider stream setup failed");

@@ -549,6 +549,7 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
       set_name: $('#set-selector').val() || 'default',
       model_name: $('#modelSelect').val(),
       pair_index: pairIndex,
+      web_search: $('#web-search-toggle').hasClass('btn-primary'),
       save_thoughts: $('#check-save-thoughts').is(':checked'),
       send_thoughts: $('#check-send-thoughts').is(':checked')
     })
@@ -1192,6 +1193,7 @@ $(document).ready(function() {
       system_prompt: systemPrompt,
       set_name: activeSet,
       model_name: $('#modelSelect').val(),
+      web_search: $('#web-search-toggle').hasClass('btn-primary'),
       save_thoughts: $('#check-save-thoughts').is(':checked'),
       send_thoughts: $('#check-send-thoughts').is(':checked')
     };
@@ -1396,6 +1398,19 @@ $(document).ready(function() {
         })
         .catch(error => { appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message'); });
     }
+  });
+
+  // Web Search Toggle
+  const $searchToggle = $('#web-search-toggle');
+  $searchToggle.on('click', function() {
+      const isActive = $(this).hasClass('btn-primary');
+      if (isActive) {
+          $(this).removeClass('btn-primary').addClass('btn-outline-secondary');
+          $(this).attr('title', 'Web Search: OFF');
+      } else {
+          $(this).removeClass('btn-outline-secondary').addClass('btn-primary');
+          $(this).attr('title', 'Web Search: ON');
+      }
   });
 
   // Initialize prompt/memory for guests
