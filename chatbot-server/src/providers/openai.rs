@@ -119,8 +119,7 @@ impl OpenAiProvider {
 
         let mut is_implicit_model = self.model.contains("nemotron-3-nano-30b-a3b")
             || self.model.contains("apriel-1.6-15b-thinker")
-            || self.model.contains("glm-4")
-            || self.model.contains("local-model");
+            || self.model.contains("glm-4");
         
         let api_key = self
             .api_key
@@ -248,8 +247,7 @@ fn extract_sse_payloads(
             if !*is_implicit_model
                 && (model_response.contains("nemotron-3-nano-30b-a3b")
                     || model_response.contains("apriel-1.6-15b-thinker")
-                    || model_response.contains("glm-4")
-                    || model_response.contains("local-model"))
+                    || model_response.contains("glm-4"))
             {
                 *is_implicit_model = true;
             }
@@ -277,8 +275,10 @@ fn extract_sse_payloads(
                         chunks.push(r.to_string());
                         *has_sent_any_content = true;
                     }
-                }
-                
+                    if r.contains("</think>") {
+                        *currently_thinking = false;
+                    }
+                }                
                 if let Some(c) = content_field.and_then(Value::as_str) {
                     // If we see an explicit closing tag in the content stream, 
                     // we must respect it and stop thinking, even for "implicit" models.
