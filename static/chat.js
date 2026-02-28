@@ -394,7 +394,7 @@ window.playTTS = function playTTS(button) {
     return '';
   }
 
-  function discoverSentences() {
+function discoverSentences() {
     if (isStopped) return;
     const pending = getPendingText();
     if (!pending) return;
@@ -406,6 +406,13 @@ window.playTTS = function playTTS(button) {
         sentenceQueue.push(s);
         processedText += s;
       });
+      // Queue any remaining text that didn't end with a terminator
+      const consumed = matches.join('');
+      const leftover = pending.substring(consumed.length).trim();
+      if (leftover) {
+        sentenceQueue.push(leftover);
+        processedText += leftover;
+      }
     }
   }
 
@@ -542,13 +549,10 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
   $target.removeAttr('data-original');
   $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button"><i class="bi bi-play-fill"></i></button></div>`);
   
-  if (window.APP_DATA.autoplayTTS) {
+if (window.APP_DATA.autoplayTTS) {
     const playBtn = $target.find('.play-button')[0];
     if (playBtn) setTimeout(() => window.playTTS(playBtn), 50);
   }
-
-  // Initial scroll to bottom when regeneration starts
-  scrollToBottom();
 
   if (currentAbortController) currentAbortController.abort();
   currentAbortController = new AbortController();
