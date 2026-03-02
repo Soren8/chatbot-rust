@@ -184,10 +184,11 @@ async fn tts_returns_wav_audio() {
         .expect("read wav body");
     assert!(!wav_bytes.is_empty(), "wav body should not be empty");
 
-    let captured_payloads = captured.lock().await;
+let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("backend payload captured");
     assert_eq!(payload["text"], "Hello");
-    assert_eq!(payload["voice_file"], "voices/default.wav");
+    // Kokoro no longer sends voice_file by default (only if tts_voice is configured)
+    assert_eq!(payload.get("voice_file"), None);
 
     shutdown.send(()).ok();
     handle.join().expect("join backend thread");
@@ -480,10 +481,11 @@ async fn api_tts_generates_wav_audio() {
     assert_eq!(&wav_bytes[..4], b"RIFF");
     assert_eq!(&wav_bytes[8..12], b"WAVE");
 
-    let captured_payloads = captured.lock().await;
+let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("backend payload recorded");
     assert_eq!(payload["text"], "Hello");
-    assert_eq!(payload["voice_file"], "voices/default.wav");
+    // Kokoro no longer sends voice_file by default (only if tts_voice is configured)
+    assert_eq!(payload.get("voice_file"), None);
 
     shutdown.send(()).ok();
     handle.join().expect("join backend thread");

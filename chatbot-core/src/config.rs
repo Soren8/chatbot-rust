@@ -82,6 +82,7 @@ pub struct AppConfig {
     pub log_level: String,
     pub tts_base_url: String,
     pub tts_provider: String,
+    pub tts_voice: Option<String>,
     pub default_system_prompt: String,
     pub session_timeout: u64,
     pub csrf: bool,
@@ -176,6 +177,8 @@ struct RawConfig {
     send_thoughts: Option<bool>,
     #[serde(default)]
     tts_provider: Option<String>,
+    #[serde(default)]
+    tts_voice: Option<String>,
 }
 
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -314,12 +317,15 @@ fn load_app_config() -> AppConfig {
 
     let save_thoughts = raw_config.save_thoughts.unwrap_or(true);
     let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
+    let tts_voice = raw_config.tts_voice;
 
     info!(
         effective_save = save_thoughts,
         effective_send = send_thoughts,
         "effective config values for thinking tokens"
     );
+
+    debug!(tts_voice = ?tts_voice, "loaded TTS voice configuration");
 
     info!(
         providers = providers_by_name.len(),
@@ -334,6 +340,7 @@ fn load_app_config() -> AppConfig {
         log_level,
         tts_base_url,
         tts_provider,
+        tts_voice,
         default_system_prompt,
         session_timeout,
         csrf,

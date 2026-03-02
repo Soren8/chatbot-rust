@@ -17,7 +17,6 @@ use serde_json::{json, Value};
 use tracing::{debug, error};
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
-const DEFAULT_VOICE_FILE: &str = "voices/default.wav";
 const SAMPLE_RATE_HZ: u32 = 24_000;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
@@ -50,7 +49,8 @@ struct ApiTtsRequest {
 #[derive(Debug, Serialize)]
 struct BackendRequest {
     text: String,
-    voice_file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voice_file: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,7 +176,7 @@ pub async fn handle_tts_stream(
         })?
     };
 
-    let config = config::app_config();
+let config = config::app_config();
     debug!(provider = %config.tts_provider, "handling /tts_stream request");
     if config.tts_provider == "fish" {
         return handle_fish_speech(cleaned).await;
@@ -185,7 +185,7 @@ pub async fn handle_tts_stream(
     debug!("using default/kokoro backend for /tts_stream");
     let backend_request = BackendRequest {
         text: cleaned,
-        voice_file: DEFAULT_VOICE_FILE.to_string(),
+        voice_file: config.tts_voice.clone(),
     };
 
     // We use the non-streaming endpoint to get the full bytes so we can apply a fade
@@ -498,6 +498,10 @@ fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, Strin
         return Err("No text provided".to_string());
     }
 
+    let config = config::app_config();
+    
+    // For kokoro: use tts_voice from config, or None by default (let backend choose)
+    // For fish speech: voice_file is not used anyway (uses reference_id instead)
     let voice_file = payload
         .voice_file
         .and_then(|value| {
@@ -508,7 +512,7 @@ fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, Strin
                 Some(trimmed.to_owned())
             }
         })
-        .unwrap_or_else(|| DEFAULT_VOICE_FILE.to_string());
+        .or(config.tts_voice.clone());
 
     Ok(BackendRequest {
         text: cleaned,
