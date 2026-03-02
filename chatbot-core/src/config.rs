@@ -162,10 +162,20 @@ struct RawConfig {
     session_timeout: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     csrf: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_bool_flexible", alias = "saveThoughts")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_bool_flexible",
+        alias = "saveThoughts"
+    )]
     save_thoughts: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_bool_flexible", alias = "sendThoughts")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_bool_flexible",
+        alias = "sendThoughts"
+    )]
     send_thoughts: Option<bool>,
+    #[serde(default)]
+    tts_provider: Option<String>,
 }
 
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -232,19 +242,26 @@ fn load_app_config() -> AppConfig {
     let tts_host = env::var("TTS_HOST").unwrap_or_else(|_| "localhost".to_string());
     let tts_port = env::var("TTS_PORT").unwrap_or_else(|_| "5000".to_string());
     let tts_base_url = format!("http://{tts_host}:{tts_port}");
-    let tts_provider = env::var("TTS_PROVIDER")
-        .unwrap_or_else(|_| "kokoro".to_string())
-        .split('#')
-        .next()
-        .unwrap_or("kokoro")
-        .trim()
-        .to_lowercase();
-
-    debug!(tts_provider = %tts_provider, "loaded TTS provider configuration");
 
     let cdn_sri = build_cdn_sri_map();
 
     let raw_config = load_yaml_config().unwrap_or_default();
+
+    // TTS provider: env var overrides YAML, which defaults to kokoro
+    let tts_provider: String = if let Ok(env_value) = env::var("TTS_PROVIDER") {
+        env_value
+            .split('#')
+            .next()
+            .unwrap_or("kokoro")
+            .trim()
+            .to_lowercase()
+    } else if let Some(yaml_value) = raw_config.tts_provider {
+        yaml_value.to_lowercase()
+    } else {
+        "kokoro".to_string()
+    };
+
+    debug!(tts_provider = %tts_provider, "loaded TTS provider configuration");
 
     let mut providers = raw_config
         .llms
@@ -583,7 +600,7 @@ mod tests {
         let _lock = TEST_MUTEX.lock().expect("test mutex");
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
-        
+
         // Test with boolean false
         {
             let mut file = fs::File::create(&path).expect("create config");
@@ -632,16 +649,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
         let mut file = fs::File::create(&path).expect("create config");
-        writeln!(
-            file,
-            "save_thoughts: false\nsend_thoughts: true"
-        )
-        .expect("write config");
+        writeln!(file, "save_thoughts: false\nsend_thoughts: true").expect("write config");
 
         let _cwd_guard = CwdGuard::change_to(dir.path());
         reset();
         let config = app_config();
-        
+
         assert_eq!(config.save_thoughts, false);
         assert_eq!(config.send_thoughts, true);
         reset();
