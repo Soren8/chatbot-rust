@@ -29,6 +29,15 @@ static EMOJI_REGEX: Lazy<Regex> = Lazy::new(|| {
         .expect("valid emoji regex")
 });
 
+static URL_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"https?://[^\s]+|www\.[^\s]+").expect("valid url regex")
+});
+
+// Matches citation markers like [1], [2], [[1]], [[2]] (with optional surrounding whitespace)
+static CITATION_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\[?\[(\d+)\]\]?").expect("valid citation regex")
+});
+
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         .timeout(Duration::from_secs(30))
@@ -131,6 +140,8 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         Some(text) if !text.is_empty() => text,
         _ => return json_error(StatusCode::BAD_REQUEST, "No text provided"),
     };
+
+    debug!(raw_text_len = raw_text.len(), raw_text_preview = ?raw_text.get(..100.min(raw_text.len())), "handle_tts: received text");
 
     let cleaned = sanitize_text(&raw_text);
     if cleaned.is_empty() {
@@ -521,6 +532,8 @@ fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, Strin
 }
 
 fn sanitize_text(input: &str) -> String {
+    debug!(input_len = input.len(), input_preview = ?input.get(..100.min(input.len())), "sanitize_text: starting");
+    
     let mut no_think = THINK_REGEX.replace_all(input, "").into_owned();
     
     // Robustness: if we still see </think>, it means the start tag was missing.
@@ -529,7 +542,14 @@ fn sanitize_text(input: &str) -> String {
         no_think = no_think[pos + 8..].to_string();
     }
 
-    let no_emoji = EMOJI_REGEX.replace_all(&no_think, "");
+    // Remove URLs BEFORE markdown parsing so [text](url) links are handled correctly
+    let url_matches: Vec<_> = URL_REGEX.find_iter(&no_think).collect();
+    debug!(url_match_count = url_matches.len(), matches = ?url_matches.iter().map(|m| m.as_str()).collect::<Vec<_>>(), "sanitize_text: URL matches before stripping");
+    
+    let no_urls = URL_REGEX.replace_all(&no_think, "");
+    debug!(no_urls_preview = ?no_urls.get(..100.min(no_urls.len())), "sanitize_text: after URL removal");
+
+    let no_emoji = EMOJI_REGEX.replace_all(&no_urls, "");
     
     let mut options = pulldown_cmark::Options::empty();
     options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
@@ -545,7 +565,14 @@ fn sanitize_text(input: &str) -> String {
         }
     }
     
-    let result = cleaned.trim().to_string();
+    // Strip citation markers like [1], [[2]] that survive markdown parsing
+    let no_citations = CITATION_REGEX.replace_all(&cleaned, "");
+    
+    // Collapse multiple spaces into one
+    let collapsed = no_citations.split_whitespace().collect::<Vec<_>>().join(" ");
+    
+    let result = collapsed.trim().to_string();
+    debug!(result_preview = ?result.get(..100.min(result.len())), "sanitize_text: final result");
     result
 }
 
@@ -585,8 +612,73 @@ mod tests {
     fn test_text_between_emojis() {
         let input = "🚀 Hello 🚀 World 🚀";
         let result = sanitize_text(input);
-        // Markdown parser preserves the spaces that were around the emojis
-        assert_eq!(result, "Hello  World");
+        assert_eq!(result, "Hello World");
+    }
+
+    #[test]
+    fn test_sanitize_text_strips_urls() {
+        let input = "Check out https://example.com and www.test.org for more info";
+        let result = sanitize_text(input);
+        assert!(!result.contains("https://example.com"));
+        assert!(!result.contains("www.test.org"));
+        assert!(result.contains("Check out"));
+        assert!(result.contains("for more info"));
+    }
+
+    #[test]
+    fn test_sanitize_text_strips_http_urls() {
+        let input = "Visit http://old-site.net today!";
+        let result = sanitize_text(input);
+        assert!(!result.contains("http://old-site.net"));
+        assert!(result.contains("Visit"));
+        assert!(result.contains("today!"));
+    }
+
+    #[test]
+    fn test_sanitize_text_strips_long_url() {
+        let input = "Check this out: https://example.com/news/article-title-goes-here-123456";
+        let result = sanitize_text(input);
+        eprintln!("Result: '{}'", result);
+        assert!(!result.contains("example.com"), "example.com should be stripped but result is: {}", result);
+        assert!(!result.contains("https://"), "https:// should be stripped but result is: {}", result);
+        assert!(result.contains("Check this out:"), "Check this out: should remain but result is: {}", result);
+    }
+
+    #[test]
+    fn test_url_regex_matches_full_url() {
+        let url = "https://example.com/news/article-title-goes-here-123456";
+        let caps: Vec<_> = URL_REGEX.find_iter(url).collect();
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].as_str(), url);
+    }
+
+    #[test]
+    fn test_sanitize_text_strips_citations() {
+        let input = "Some fact [1] and another fact [[2]] here.";
+        let result = sanitize_text(input);
+        assert!(!result.contains("[1]"), "citation [1] should be stripped but result is: {}", result);
+        assert!(!result.contains("[2]"), "citation [2] should be stripped but result is: {}", result);
+        assert!(result.contains("Some fact"));
+        assert!(result.contains("another fact"));
+    }
+
+    #[test]
+    fn test_sanitize_text_strips_markdown_link_citations() {
+        let input = "Check this [[1]](https://example.com/article) for details.";
+        let result = sanitize_text(input);
+        assert!(!result.contains("[1]"), "citation should be stripped but result is: {}", result);
+        assert!(!result.contains("example.com"), "URL should be stripped but result is: {}", result);
+        assert!(result.contains("Check this"));
+        assert!(result.contains("for details."));
+    }
+
+    #[test]
+    fn test_sanitize_text_strips_bold_and_italic() {
+        let input = "This is **bold** and *italic* text.";
+        let result = sanitize_text(input);
+        assert!(!result.contains("**"), "bold markers should be stripped but result is: {}", result);
+        assert!(!result.contains("*italic*"), "italic markers should be stripped but result is: {}", result);
+        assert_eq!(result, "This is bold and italic text.");
     }
 }
 

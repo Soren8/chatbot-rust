@@ -362,6 +362,30 @@ window.playTTS = function playTTS(button) {
 
   $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
 
+  // Sanitize raw markdown text for TTS: strip URLs, citations, and formatting
+  function sanitizeForTTS(text) {
+    return text
+      // Strip URLs (must come before citation removal)
+      .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
+      // Strip markdown citation links: [[1]](url) or [[1]]() -> empty
+      .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
+      // Strip remaining markdown links: [text](url) -> text
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      // Strip bold/italic: ***text***, **text**, *text*
+      .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
+      // Strip underline bold/italic: ___text___, __text__, _text_
+      .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')
+      // Strip strikethrough: ~~text~~
+      .replace(/~~([^~]+)~~/g, '$1')
+      // Strip inline code: `text`
+      .replace(/`([^`]*)`/g, '$1')
+      // Strip heading markers: ### heading
+      .replace(/^#{1,6}\s+/gm, '')
+      // Collapse multiple spaces into one
+      .replace(/  +/g, ' ')
+      .trim();
+  }
+
   function getPendingText() {
     // Prefer data-original if available, as it is the raw text (not markdown-mangled)
     let fullText = $messageElement.attr('data-original') || '';
@@ -377,6 +401,9 @@ window.playTTS = function playTTS(button) {
       $textClone.find('.regenerate-container').remove();
       fullText = $textClone.text().trim();
     }
+
+    // Sanitize for TTS before sentence splitting
+    fullText = sanitizeForTTS(fullText);
 
     if (fullText === 'Thinking...') return '';
     if (fullText.startsWith(processedText)) {
@@ -394,7 +421,7 @@ window.playTTS = function playTTS(button) {
     return '';
   }
 
-function discoverSentences() {
+  function discoverSentences() {
     if (isStopped) return;
     const pending = getPendingText();
     if (!pending) return;
