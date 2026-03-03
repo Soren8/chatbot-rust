@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tracing::{debug, error};
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
-const SAMPLE_RATE_HZ: u32 = 24_000;
+const SAMPLE_RATE_HZ: u32 = 25_200;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
 
