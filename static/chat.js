@@ -406,13 +406,10 @@ function discoverSentences() {
         sentenceQueue.push(s);
         processedText += s;
       });
-      // Queue any remaining text that didn't end with a terminator
-      const consumed = matches.join('');
-      const leftover = pending.substring(consumed.length).trim();
-      if (leftover) {
-        sentenceQueue.push(leftover);
-        processedText += leftover;
-      }
+      // Do NOT eagerly queue leftover text that lacks a sentence terminator.
+      // It will be picked up on subsequent calls once more text arrives and
+      // forms a complete sentence, or when generation finishes (processQueue
+      // handles the final remainder).
     }
   }
 
@@ -427,7 +424,7 @@ function discoverSentences() {
       // Check if generation is finished or still in 'Thinking...' phase
       const currentRawText = $messageElement.find('.ai-message-text').text().trim();
       const stillThinking = currentRawText === 'Thinking...';
-      const stillGenerating = stillThinking || (window.currentAbortController !== null);
+      const stillGenerating = stillThinking || (currentAbortController !== null);
       
       if (!stillGenerating) {
         const remaining = getPendingText();
@@ -684,7 +681,11 @@ if (window.APP_DATA.autoplayTTS) {
               const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
               $target.attr('data-original', finalAiOriginal);
               
-              try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+              try {
+                $target.find('.regenerate-button').prop('disabled', false);
+                const playBtn = $target.find('.play-button').prop('disabled', false);
+                if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+              } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
               if (typeof loadSets === 'function') loadSets(false);
@@ -698,7 +699,11 @@ if (window.APP_DATA.autoplayTTS) {
             }
             read();
           }).catch(err => {
-            try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+            try {
+              $target.find('.regenerate-button').prop('disabled', false);
+              const playBtn = $target.find('.play-button').prop('disabled', false);
+              if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+            } catch (e) {}
             setGeneratingState(false);
             currentAbortController = null;
           });
@@ -711,7 +716,11 @@ if (window.APP_DATA.autoplayTTS) {
         } else {
           $target.html(`<strong>AI:</strong> <span class="error-message">Error: ${err.message}</span>`);
         }
-        try { $target.find('.regenerate-button, .play-button').prop('disabled', false); $target.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+        try {
+          $target.find('.regenerate-button').prop('disabled', false);
+          const playBtn = $target.find('.play-button').prop('disabled', false);
+          if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+        } catch (e) {}
         setGeneratingState(false);
         currentAbortController = null;
       });
@@ -1359,7 +1368,11 @@ $(document).ready(function() {
               const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
               $targetElement.attr('data-original', finalAiOriginal);
 
-              try { $targetElement.find('.regenerate-button, .play-button').prop('disabled', false); $targetElement.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+              try {
+                $targetElement.find('.regenerate-button').prop('disabled', false);
+                const playBtn = $targetElement.find('.play-button').prop('disabled', false);
+                if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+              } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
               if (typeof loadSets === 'function') loadSets(false);
@@ -1373,7 +1386,11 @@ $(document).ready(function() {
             }
             return readStream();
           }).catch(err => {
-            try { $targetElement.find('.regenerate-button, .play-button').prop('disabled', false); $targetElement.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+            try {
+              $targetElement.find('.regenerate-button').prop('disabled', false);
+              const playBtn = $targetElement.find('.play-button').prop('disabled', false);
+              if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+            } catch (e) {}
             setGeneratingState(false);
             currentAbortController = null;
           });
@@ -1384,7 +1401,11 @@ $(document).ready(function() {
         if (error.name === 'AbortError') {
           const $lastAI = $('.ai-message:last-child');
           $lastAI.find('.ai-message-text').append(' [Stopped]');
-          try { $lastAI.find('.regenerate-button, .play-button').prop('disabled', false); $lastAI.find('.play-button').html('<i class="bi bi-play-fill"></i>'); } catch (e) {}
+          try {
+            $lastAI.find('.regenerate-button').prop('disabled', false);
+            const playBtn = $lastAI.find('.play-button').prop('disabled', false);
+            if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+          } catch (e) {}
         } else {
           appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
         }
