@@ -89,6 +89,7 @@ pub struct AppConfig {
     pub save_thoughts: bool,
     pub send_thoughts: bool,
     pub cdn_sri: HashMap<String, String>,
+    pub brave_mcp_url: Option<String>,
     provider_order: Vec<String>,
     providers_by_name: HashMap<String, ProviderConfig>,
     default_provider_name: String,
@@ -319,6 +320,8 @@ fn load_app_config() -> AppConfig {
     let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
     let tts_voice = raw_config.tts_voice;
 
+    let brave_mcp_url = env::var("BRAVE_MCP_URL").ok().filter(|v| !v.is_empty());
+
     info!(
         effective_save = save_thoughts,
         effective_send = send_thoughts,
@@ -326,6 +329,12 @@ fn load_app_config() -> AppConfig {
     );
 
     debug!(tts_voice = ?tts_voice, "loaded TTS voice configuration");
+
+    if let Some(ref url) = brave_mcp_url {
+        info!(url = %url, "Brave Search MCP configured");
+    } else {
+        info!("Brave Search MCP not configured (BRAVE_MCP_URL not set)");
+    }
 
     info!(
         providers = providers_by_name.len(),
@@ -347,6 +356,7 @@ fn load_app_config() -> AppConfig {
         save_thoughts,
         send_thoughts,
         cdn_sri,
+        brave_mcp_url,
         provider_order,
         providers_by_name,
         default_provider_name,

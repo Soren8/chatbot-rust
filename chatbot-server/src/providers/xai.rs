@@ -78,7 +78,7 @@ impl XaiProvider {
                 };
                 json!({
                     "role": role,
-                    "content": msg.content
+                    "content": msg.content.as_deref().unwrap_or("")
                 })
             })
             .collect();

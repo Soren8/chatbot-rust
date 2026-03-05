@@ -32,12 +32,17 @@ llms:
     base_url: "http://${LOCAL_HOST}:${LOCAL_PORT}/v1"
     model_name: "local-model"
     tier: "free"
+    # Set search: true to enable Brave Search via MCP sidecar (BRAVE_MCP_URL must be configured)
+    search: true
 
   - provider_name: "GPT-4 (Premium)"
     type: "openai"
     api_key: "${OPENAI_API_KEY}"
     model_name: "gpt-4-turbo"
     tier: "premium"
+    # OpenAI and OpenRouter providers use Brave Search MCP for web search.
+    # XAI providers use their native search and ignore this setting.
+    search: true
 
 default_llm: "Local Ollama (Free Tier)"
 default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."

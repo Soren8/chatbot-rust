@@ -13,34 +13,76 @@ use chatbot_core::config::ProviderConfig;
 use self::messages::ChatMessagePayload;
 use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};
 
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+    pub raw: Value,
+}
+
+pub enum ToolCallResponse {
+    Content(String),
+    ToolCalls(Vec<ToolCall>),
+}
+
 pub mod messages {
     use serde::Serialize;
+    use serde_json::Value;
 
     #[derive(Clone, Serialize)]
     pub struct ChatMessagePayload {
         pub role: String,
-        pub content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tool_calls: Option<Vec<Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tool_call_id: Option<String>,
     }
 
     impl ChatMessagePayload {
         pub fn system(content: String) -> Self {
             Self {
                 role: "system".to_string(),
-                content,
+                content: Some(content),
+                tool_calls: None,
+                tool_call_id: None,
             }
         }
 
         pub fn user(content: String) -> Self {
             Self {
                 role: "user".to_string(),
-                content,
+                content: Some(content),
+                tool_calls: None,
+                tool_call_id: None,
             }
         }
 
         pub fn assistant(content: String) -> Self {
             Self {
                 role: "assistant".to_string(),
-                content,
+                content: Some(content),
+                tool_calls: None,
+                tool_call_id: None,
+            }
+        }
+
+        pub fn assistant_with_tool_calls(tool_calls: Vec<Value>) -> Self {
+            Self {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(tool_calls),
+                tool_call_id: None,
+            }
+        }
+
+        pub fn tool(tool_call_id: String, content: String) -> Self {
+            Self {
+                role: "tool".to_string(),
+                content: Some(content),
+                tool_calls: None,
+                tool_call_id: Some(tool_call_id),
             }
         }
     }
@@ -64,6 +106,10 @@ mod payload {
         pub temperature: f32,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub provider: Option<ProviderRoutingOptions>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tools: Option<Vec<serde_json::Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tool_choice: Option<String>,
     }
 }
 
@@ -142,6 +188,8 @@ impl OpenAiProvider {
             stream: true,
             temperature: 0.7,
             provider,
+            tools: None,
+            tool_choice: None,
         };
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
@@ -205,6 +253,88 @@ impl OpenAiProvider {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    pub async fn call_with_tools(
+        &self,
+        messages: &[ChatMessagePayload],
+        tools: &[Value],
+    ) -> Result<ToolCallResponse> {
+        let api_key = self
+            .api_key
+            .as_deref()
+            .unwrap_or("no-key-required")
+            .to_string();
+
+        let provider = if self.allowed_providers.is_empty() {
+            None
+        } else {
+            Some(ProviderRoutingOptions {
+                order: self.allowed_providers.clone(),
+                allow_fallbacks: false,
+            })
+        };
+
+        let payload = ChatCompletionRequest {
+            model: self.model.clone(),
+            messages: messages.to_vec(),
+            stream: false,
+            temperature: 0.7,
+            provider,
+            tools: Some(tools.to_vec()),
+            tool_choice: Some("auto".to_string()),
+        };
+
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+
+        let response: Value = self
+            .client
+            .post(url)
+            .bearer_auth(api_key)
+            .json(&payload)
+            .send()
+            .await
+            .context("failed to send tool call request")?
+            .error_for_status()
+            .context("tool call request returned error status")?
+            .json()
+            .await
+            .context("failed to parse tool call response")?;
+
+        let message = &response["choices"][0]["message"];
+
+        if let Some(raw_tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+            if !raw_tool_calls.is_empty() {
+                let calls = raw_tool_calls
+                    .iter()
+                    .filter_map(|tc| {
+                        let id = tc["id"].as_str()?.to_string();
+                        let name = tc["function"]["name"].as_str()?.to_string();
+                        let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                        let arguments =
+                            serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                        Some(ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            raw: tc.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                if !calls.is_empty() {
+                    return Ok(ToolCallResponse::ToolCalls(calls));
+                }
+            }
+        }
+
+        let content = message
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(ToolCallResponse::Content(content))
     }
 }
 

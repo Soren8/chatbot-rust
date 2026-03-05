@@ -16,7 +16,7 @@ use chatbot_core::{
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::chat_utils::ChatLockGuard;
 use crate::providers::ollama::OllamaProvider;
@@ -220,15 +220,30 @@ pub async fn handle_regenerate(
     let user_message = payload.message.clone();
 
     let mut provider_stream = match provider_kind {
-        ProviderKind::OpenAi(provider) => match provider.stream_chat(messages.clone()) {
-            Ok(stream) => stream,
-            Err(err) => {
-                error!(?err, "provider stream setup failed");
-                lock_guard.lock().unwrap().release_if_needed();
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    "provider request failed".to_string(),
-                ));
+        ProviderKind::OpenAi(provider) => {
+            let use_search = payload.web_search.unwrap_or(false);
+            let mcp = if use_search { crate::mcp::mcp_client() } else { None };
+
+            let stream_result = if let Some(mcp) = mcp {
+                let tools = vec![crate::tools::brave_web_search_tool()];
+                match crate::search::search_augmented_stream(&provider, messages.clone(), mcp, &tools).await {
+                    Ok(s) => Ok(s),
+                    Err(err) => {
+                        warn!(?err, "search augmentation failed, falling back to regular streaming");
+                        provider.stream_chat(messages.clone())
+                    }
+                }
+            } else {
+                provider.stream_chat(messages.clone())
+            };
+
+            match stream_result {
+                Ok(stream) => stream,
+                Err(err) => {
+                    error!(?err, "provider stream setup failed");
+                    lock_guard.lock().unwrap().release_if_needed();
+                    return Err((StatusCode::BAD_GATEWAY, "provider request failed".to_string()));
+                }
             }
         },
         ProviderKind::Ollama(provider) => {

@@ -18,14 +18,17 @@ mod health;
 mod home;
 mod login;
 mod logout;
+pub mod mcp;
 mod memory;
 mod preferences;
 mod providers;
 mod regenerate;
 mod reset_chat;
+mod search;
 mod sets;
 mod signup;
 pub mod test_instrumentation;
+mod tools;
 mod tts;
 
 pub async fn run() -> anyhow::Result<()> {
@@ -41,6 +44,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
+
+    mcp::init_mcp().await;
 
     let app = build_router(static_root);
 
