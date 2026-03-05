@@ -222,11 +222,11 @@ pub async fn handle_regenerate(
     let mut provider_stream = match provider_kind {
         ProviderKind::OpenAi(provider) => {
             let use_search = payload.web_search.unwrap_or(false);
-            let mcp = if use_search { crate::mcp::mcp_client() } else { None };
+            let brave = if use_search { crate::brave::brave_client() } else { None };
 
-            let stream_result = if let Some(mcp) = mcp {
+            let stream_result = if let Some(brave) = brave {
                 let tools = vec![crate::tools::brave_web_search_tool()];
-                match crate::search::search_augmented_stream(&provider, messages.clone(), mcp, &tools).await {
+                match crate::search::search_augmented_stream(&provider, messages.clone(), brave, &tools).await {
                     Ok(s) => Ok(s),
                     Err(err) => {
                         warn!(?err, "search augmentation failed, falling back to regular streaming");

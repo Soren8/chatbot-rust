@@ -1,12 +1,4 @@
 services:
-  brave-search:
-    image: mcp/brave-search
-    environment:
-      BRAVE_API_KEY: ${BRAVE_API_KEY}
-      BRAVE_MCP_TRANSPORT: http
-      BRAVE_MCP_ENABLED_TOOLS: brave_web_search
-    restart: always
-
   chatbot:
     build:
       context: .
@@ -14,8 +6,6 @@ services:
       args:
         RUST_BUILD_PROFILE: ${RUST_BUILD_PROFILE:-debug}
     restart: always
-    depends_on:
-      - brave-search
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -49,7 +39,6 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
-      BRAVE_MCP_URL: ${BRAVE_MCP_URL:-http://brave-search:8000/mcp}
   tests:
     profiles: ["test"]
     build:

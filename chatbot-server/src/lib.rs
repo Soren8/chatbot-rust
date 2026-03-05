@@ -12,13 +12,13 @@ use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod brave;
 mod chat;
 pub mod chat_utils;
 mod health;
 mod home;
 mod login;
 mod logout;
-pub mod mcp;
 mod memory;
 mod preferences;
 mod providers;
@@ -44,8 +44,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
-
-    mcp::init_mcp().await;
 
     let app = build_router(static_root);
 
