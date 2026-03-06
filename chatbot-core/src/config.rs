@@ -35,6 +35,15 @@ pub struct ProviderConfig {
     pub test_chunks: Option<Vec<String>>,
     #[serde(default)]
     pub search: bool,
+    /// When true (default), XAI providers use XAI's own web_search tool via the
+    /// Responses API. When false, Brave Search is used instead (requires BRAVE_API_KEY).
+    /// Ignored for non-XAI providers.
+    #[serde(default = "default_true")]
+    pub xai_search: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl ProviderConfig {
@@ -478,6 +487,7 @@ fn fallback_provider() -> ProviderConfig {
         request_timeout: None,
         test_chunks: None,
         search: false,
+        xai_search: true,
     }
 }
 

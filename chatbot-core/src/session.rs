@@ -1040,6 +1040,7 @@ mod tests {
             request_timeout: None,
             test_chunks: None,
             search: false,
+            xai_search: true,
         };
 
         let request = RegenerateRequestData {

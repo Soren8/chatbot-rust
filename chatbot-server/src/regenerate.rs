@@ -260,15 +260,39 @@ pub async fn handle_regenerate(
                 }
             }
         },
-        ProviderKind::Xai(provider) => match provider.stream_chat(messages.clone(), payload.web_search.unwrap_or(false)) {
-            Ok(stream) => stream,
-            Err(err) => {
-                error!(?err, "provider stream setup failed");
-                lock_guard.lock().unwrap().release_if_needed();
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    "provider request failed".to_string(),
-                ));
+        ProviderKind::Xai(xai_provider) => {
+            let web_search = payload.web_search.unwrap_or(false);
+            let use_brave = web_search && !context.provider.xai_search;
+            let brave = if use_brave { crate::brave::brave_client() } else { None };
+
+            let stream_result = if let Some(ref brave) = brave {
+                match OpenAiProvider::new(&context.provider) {
+                    Ok(openai_provider) => {
+                        let tools = vec![crate::tools::brave_web_search_tool()];
+                        match crate::search::search_augmented_stream(&openai_provider, messages.clone(), brave, &tools).await {
+                            Ok(s) => Ok(s),
+                            Err(err) => {
+                                warn!(?err, "XAI Brave search failed, falling back to native");
+                                xai_provider.stream_chat(messages.clone(), web_search)
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        warn!(?err, "failed to build OpenAI provider for XAI Brave search, using native");
+                        xai_provider.stream_chat(messages.clone(), web_search)
+                    }
+                }
+            } else {
+                xai_provider.stream_chat(messages.clone(), web_search)
+            };
+
+            match stream_result {
+                Ok(stream) => stream,
+                Err(err) => {
+                    error!(?err, "provider stream setup failed");
+                    lock_guard.lock().unwrap().release_if_needed();
+                    return Err((StatusCode::BAD_GATEWAY, "provider request failed".to_string()));
+                }
             }
         },
     };
