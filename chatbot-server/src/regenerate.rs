@@ -224,7 +224,7 @@ pub async fn handle_regenerate(
             let use_search = payload.web_search.unwrap_or(false);
             let brave = if use_search { crate::brave::brave_client() } else { None };
 
-            let stream_result = if let Some(brave) = brave {
+            let stream_result = if let Some(ref brave) = brave {
                 let tools = vec![crate::tools::brave_web_search_tool()];
                 match crate::search::search_augmented_stream(&provider, messages.clone(), brave, &tools).await {
                     Ok(s) => Ok(s),

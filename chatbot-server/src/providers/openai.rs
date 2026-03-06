@@ -260,6 +260,25 @@ impl OpenAiProvider {
         messages: &[ChatMessagePayload],
         tools: &[Value],
     ) -> Result<ToolCallResponse> {
+        if let Ok(query) = std::env::var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY") {
+            if !query.is_empty() {
+                let raw = serde_json::json!({
+                    "id": "test_call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "brave_web_search",
+                        "arguments": format!("{{\"query\":\"{}\"}}", query)
+                    }
+                });
+                return Ok(ToolCallResponse::ToolCalls(vec![ToolCall {
+                    id: "test_call_1".to_string(),
+                    name: "brave_web_search".to_string(),
+                    arguments: serde_json::json!({ "query": query }),
+                    raw,
+                }]));
+            }
+        }
+
         let api_key = self
             .api_key
             .as_deref()

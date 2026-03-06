@@ -21,24 +21,29 @@ struct SearchResult {
     description: Option<String>,
 }
 
+static HTTP_CLIENT: OnceCell<Client> = OnceCell::new();
+
+fn http_client() -> &'static Client {
+    HTTP_CLIENT.get_or_init(Client::new)
+}
+
 pub struct BraveClient {
     api_key: String,
-    client: Client,
 }
 
 impl BraveClient {
     fn new(api_key: String) -> Self {
-        Self {
-            api_key,
-            client: Client::new(),
-        }
+        Self { api_key }
     }
 
     pub async fn search(&self, query: &str, count: usize) -> Result<String> {
+        if let Ok(stub) = std::env::var("CHATBOT_TEST_BRAVE_RESULTS") {
+            return Ok(stub);
+        }
+
         let count = count.clamp(1, 20);
 
-        let resp: SearchResponse = self
-            .client
+        let resp: SearchResponse = http_client()
             .get("https://api.search.brave.com/res/v1/web/search")
             .query(&[("q", query), ("count", &count.to_string())])
             .header("X-Subscription-Token", &self.api_key)
@@ -71,19 +76,18 @@ impl BraveClient {
     }
 }
 
-static BRAVE_CLIENT: OnceCell<Option<BraveClient>> = OnceCell::new();
-
-pub fn brave_client() -> Option<&'static BraveClient> {
-    BRAVE_CLIENT
-        .get_or_init(|| match std::env::var("BRAVE_API_KEY") {
-            Ok(key) if !key.is_empty() => {
-                info!("Brave Search client initialized");
-                Some(BraveClient::new(key))
-            }
-            _ => {
-                warn!("BRAVE_API_KEY not set; Brave Search disabled");
-                None
-            }
-        })
-        .as_ref()
+/// Returns a `BraveClient` if `BRAVE_API_KEY` is set, otherwise `None`.
+/// Reads the env var on each call — cheap, and avoids singleton issues in tests.
+/// The underlying HTTP connection pool (`http_client()`) is still a singleton.
+pub fn brave_client() -> Option<BraveClient> {
+    match std::env::var("BRAVE_API_KEY") {
+        Ok(key) if !key.is_empty() => {
+            info!("Brave Search client initialized");
+            Some(BraveClient::new(key))
+        }
+        _ => {
+            warn!("BRAVE_API_KEY not set; Brave Search disabled");
+            None
+        }
+    }
 }
