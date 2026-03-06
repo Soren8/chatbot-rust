@@ -31,17 +31,12 @@ pub async fn search_augmented_stream(
                         .get("query")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let count = tc
-                        .arguments
-                        .get("count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(10) as usize;
 
                     prefix_chunks
                         .push(format!("<think>Searching for: {}...</think>", query));
                     debug!(query = %query, "executing brave_web_search");
 
-                    let result = brave.search(query, count).await.unwrap_or_else(|e| {
+                    let result = brave.search(query).await.unwrap_or_else(|e| {
                         warn!(?e, "Brave Search request failed");
                         format!("Search failed: {e}")
                     });

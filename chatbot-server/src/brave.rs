@@ -5,20 +5,20 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 #[derive(Deserialize)]
-struct SearchResponse {
-    web: Option<WebResults>,
+struct LlmContextResponse {
+    grounding: Option<Grounding>,
 }
 
 #[derive(Deserialize)]
-struct WebResults {
-    results: Vec<SearchResult>,
+struct Grounding {
+    generic: Vec<GroundingItem>,
 }
 
 #[derive(Deserialize)]
-struct SearchResult {
-    title: String,
+struct GroundingItem {
     url: String,
-    description: Option<String>,
+    title: Option<String>,
+    snippets: Vec<String>,
 }
 
 static HTTP_CLIENT: OnceCell<Client> = OnceCell::new();
@@ -36,40 +36,39 @@ impl BraveClient {
         Self { api_key }
     }
 
-    pub async fn search(&self, query: &str, count: usize) -> Result<String> {
+    pub async fn search(&self, query: &str) -> Result<String> {
         if let Ok(stub) = std::env::var("CHATBOT_TEST_BRAVE_RESULTS") {
             return Ok(stub);
         }
 
-        let count = count.clamp(1, 20);
-
-        let resp: SearchResponse = http_client()
-            .get("https://api.search.brave.com/res/v1/web/search")
-            .query(&[("q", query), ("count", &count.to_string())])
+        let resp: LlmContextResponse = http_client()
+            .get("https://api.search.brave.com/res/v1/llm/context")
+            .query(&[("q", query)])
             .header("X-Subscription-Token", &self.api_key)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("Brave Search request failed")?
+            .context("Brave LLM Context request failed")?
             .error_for_status()
-            .context("Brave Search returned error status")?
+            .context("Brave LLM Context returned error status")?
             .json()
             .await
-            .context("failed to parse Brave Search response")?;
+            .context("failed to parse Brave LLM Context response")?;
 
-        let results = resp.web.map(|w| w.results).unwrap_or_default();
-        if results.is_empty() {
+        let items = resp.grounding.map(|g| g.generic).unwrap_or_default();
+        if items.is_empty() {
             return Ok("No results found.".to_string());
         }
 
-        Ok(results
+        Ok(items
             .iter()
-            .map(|r| {
-                let mut parts = vec![r.title.as_str(), r.url.as_str()];
-                if let Some(desc) = &r.description {
-                    parts.push(desc.as_str());
-                }
-                parts.join("\n")
+            .filter(|item| !item.snippets.is_empty())
+            .map(|item| {
+                let header = match &item.title {
+                    Some(title) => format!("## {}\n{}", title, item.url),
+                    None => item.url.clone(),
+                };
+                format!("{}\n{}", header, item.snippets.join("\n"))
             })
             .collect::<Vec<_>>()
             .join("\n\n"))
