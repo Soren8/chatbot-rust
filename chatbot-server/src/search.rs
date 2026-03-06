@@ -22,9 +22,7 @@ pub async fn search_augmented_stream(
         Ok(ToolCallResponse::ToolCalls(tool_calls)) => {
             let mut prefix_chunks: Vec<String> = Vec::new();
             let mut augmented = messages.clone();
-
-            let raw_tool_calls: Vec<Value> = tool_calls.iter().map(|tc| tc.raw.clone()).collect();
-            augmented.push(ChatMessagePayload::assistant_with_tool_calls(raw_tool_calls));
+            let mut any_results = false;
 
             for tc in &tool_calls {
                 if tc.name == "brave_web_search" {
@@ -54,11 +52,20 @@ pub async fn search_augmented_stream(
                         result
                     };
 
-                    augmented.push(ChatMessagePayload::tool(tc.id.clone(), truncated));
+                    // Inject results as a user message — universally compatible with all
+                    // models, unlike the OpenAI tool-role format which many local models
+                    // don't handle correctly and causes them to loop on tool calls.
+                    augmented.push(ChatMessagePayload::user(format!(
+                        "[Web search results for \"{}\"]\n\n{}",
+                        query, truncated
+                    )));
+                    any_results = true;
                 }
             }
 
-            prefix_chunks.push("<think>Search complete.</think>".to_string());
+            if any_results {
+                prefix_chunks.push("<think>Search complete.</think>".to_string());
+            }
 
             let final_stream = provider.stream_chat(augmented)?;
             let prefix_stream =
