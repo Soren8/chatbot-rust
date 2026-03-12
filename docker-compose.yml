@@ -38,7 +38,7 @@ services:
     restart: always
     depends_on:
       voice-service:
-        condition: service_healthy
+        condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -65,8 +65,6 @@ services:
       # Service discovery (non-secret defaults for Docker networking)
       VOICE_SERVICE_HOST: ${VOICE_SERVICE_HOST:-voice-service}
       VOICE_SERVICE_PORT: ${VOICE_SERVICE_PORT:-5100}
-      LOCAL_HOST: ${LOCAL_HOST:-host.docker.internal}
-      LOCAL_PORT: ${LOCAL_PORT:-11434}
 
       # Secrets (from .env)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

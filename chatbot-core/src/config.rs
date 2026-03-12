@@ -407,7 +407,10 @@ fn load_yaml_config() -> Option<RawConfig> {
     match fs::read_to_string(path) {
         Ok(contents) => match serde_yaml::from_str::<Value>(&contents) {
             Ok(value) => {
-                let replaced = replace_env_vars(value);
+                // Extract user-defined vars from the top-level `vars:` mapping.
+                // These are substituted like env vars but env vars take precedence.
+                let user_vars = extract_user_vars(&value);
+                let replaced = replace_vars(value, &user_vars);
                 match serde_yaml::from_value::<RawConfig>(replaced) {
                     Ok(config) => Some(config),
                     Err(err) => {
@@ -428,18 +431,46 @@ fn load_yaml_config() -> Option<RawConfig> {
     }
 }
 
-fn replace_env_vars(value: Value) -> Value {
+/// Extract the `vars:` mapping from the top level of the config YAML.
+fn extract_user_vars(value: &Value) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    if let Value::Mapping(map) = value {
+        if let Some(Value::Mapping(vars_map)) = map.get(&Value::String("vars".to_string())) {
+            for (k, v) in vars_map {
+                if let (Value::String(key), Value::String(val)) = (k, v) {
+                    vars.insert(key.clone(), val.clone());
+                }
+                // Also handle numeric values (e.g. port: 1234)
+                if let (Value::String(key), Value::Number(num)) = (k, v) {
+                    vars.insert(key.clone(), num.to_string());
+                }
+            }
+        }
+    }
+    vars
+}
+
+/// Recursively substitute `${VAR}` references. Env vars take precedence
+/// over user-defined vars, so secrets in the environment always win.
+/// The `vars` key itself is stripped from the output.
+fn replace_vars(value: Value, user_vars: &HashMap<String, String>) -> Value {
     match value {
-        Value::String(s) => Value::String(replace_env_in_str(&s)),
-        Value::Sequence(seq) => Value::Sequence(seq.into_iter().map(replace_env_vars).collect()),
+        Value::String(s) => Value::String(replace_in_str(&s, user_vars)),
+        Value::Sequence(seq) => {
+            Value::Sequence(seq.into_iter().map(|v| replace_vars(v, user_vars)).collect())
+        }
         Value::Mapping(map) => {
             let mut replaced = Mapping::new();
             for (key, value) in map.into_iter() {
+                // Strip the vars key — it's not a real config field
+                if key == Value::String("vars".to_string()) {
+                    continue;
+                }
                 let key = match key {
-                    Value::String(s) => Value::String(replace_env_in_str(&s)),
+                    Value::String(s) => Value::String(replace_in_str(&s, user_vars)),
                     other => other,
                 };
-                replaced.insert(key, replace_env_vars(value));
+                replaced.insert(key, replace_vars(value, user_vars));
             }
             Value::Mapping(replaced)
         }
@@ -447,12 +478,16 @@ fn replace_env_vars(value: Value) -> Value {
     }
 }
 
-fn replace_env_in_str(input: &str) -> String {
-    static ENV_VAR_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\$\{([^}]+)\}").expect("env var regex"));
-    ENV_VAR_RE
+fn replace_in_str(input: &str, user_vars: &HashMap<String, String>) -> String {
+    static VAR_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\$\{([^}]+)\}").expect("var regex"));
+    VAR_RE
         .replace_all(input, |caps: &regex::Captures<'_>| {
-            env::var(&caps[1]).unwrap_or_default()
+            let name = &caps[1];
+            // Env vars win (secrets), then user-defined vars, then empty string
+            env::var(name).unwrap_or_else(|_| {
+                user_vars.get(name).cloned().unwrap_or_default()
+            })
         })
         .to_string()
 }

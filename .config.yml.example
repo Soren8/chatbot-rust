@@ -1,3 +1,9 @@
+# User-defined variables — referenced as ${VAR_NAME} anywhere below.
+# Environment variables (from .env) take precedence over these.
+vars:
+  LOCAL_HOST: host.docker.internal
+  LOCAL_PORT: 11434
+
 # TTS / Voice configuration
 tts_provider: "qwen"  # Options: qwen (default), kokoro, fish
 # tts_voice: "Ryan"   # Voice preset for Qwen3-TTS

@@ -3,7 +3,7 @@
 ## Build & Run Commands
 
 - Run Rust integration tests: `docker compose run --rm tests cargo test`
-- Run in Docker: `docker compose up --build`
+- Run in Docker: `docker compose --progress plain up --build`
 - Do not attempt to build, run, or test outside of the docker environment.
 
 ## Code Style Guidelines
@@ -33,7 +33,7 @@
 ## Important Notes
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Git commit at the completion of each full task.
-- ALWAYS run `docker compose up --build -d` before running tests to allow the user to reality-check the fix in the running environment while the test suite executes.
+- ALWAYS run `docker compose --progress plain up --build -d` before running tests to allow the user to reality-check the fix in the running environment while the test suite executes.
 - Do not moralize about the user's language or tone.
 - Preserve the `temp/.cargo/` cache directory; do not delete it because it stores Rust build artifacts used by other agents. If it is missing, recreate it inside `temp/` (never at repo root).
 - Keep Docker build caches under `temp/.docker/`; create that directory inside `temp/` when needed so the repository root stays free of sandbox artefacts.
