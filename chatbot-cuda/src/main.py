@@ -1,5 +1,6 @@
 """FastAPI voice service — TTS (Qwen3-TTS) and STT (Parakeet)."""
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -54,7 +55,8 @@ async def tts(req: TtsRequest):
         raise HTTPException(status_code=400, detail="text is required")
 
     try:
-        pcm, sr = models.synthesize(
+        pcm, sr = await asyncio.to_thread(
+            models.synthesize,
             text=req.text,
             voice=req.voice,
             ref_audio=req.voice_ref_audio,
@@ -119,7 +121,7 @@ async def stt(audio: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        text = models.transcribe(tmp_path)
+        text = await asyncio.to_thread(models.transcribe, tmp_path)
     except Exception as exc:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=str(exc))

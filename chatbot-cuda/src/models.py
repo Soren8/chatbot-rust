@@ -1,5 +1,6 @@
 """Model loading and inference for Qwen3-TTS and Parakeet STT."""
 
+import asyncio
 import base64
 import io
 import logging
@@ -41,15 +42,38 @@ def load_tts() -> None:
     from qwen_tts import Qwen3TTSModel
 
     logger.info("Loading TTS model %s on %s", _TTS_MODEL_ID, _DEVICE)
-    _tts_model = Qwen3TTSModel.from_pretrained(
-        _TTS_MODEL_ID,
-        device_map=_DEVICE,
-        dtype=torch.bfloat16,
-    )
-    # Run a tiny warmup to pre-compile any lazy ops
+
+    # Try Flash Attention 2 first for maximum throughput; fall back if unsupported.
+    try:
+        _tts_model = Qwen3TTSModel.from_pretrained(
+            _TTS_MODEL_ID,
+            device_map=_DEVICE,
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+        )
+        logger.info("TTS loaded with Flash Attention 2")
+    except (TypeError, ValueError, ImportError) as exc:
+        logger.warning("Flash Attention 2 unavailable for TTS (%s), using default attention", exc)
+        _tts_model = Qwen3TTSModel.from_pretrained(
+            _TTS_MODEL_ID,
+            device_map=_DEVICE,
+            dtype=torch.bfloat16,
+        )
+
+    # torch.compile speeds up per-token generation via kernel fusion.
+    # fullgraph=False tolerates Python control flow; mode=default avoids
+    # CUDA-graph shape restrictions that would break dynamic-length generation.
+    try:
+        _tts_model = torch.compile(_tts_model, fullgraph=False, mode="default")
+        logger.info("TTS model compiled with torch.compile")
+    except Exception as exc:
+        logger.warning("torch.compile failed (non-fatal): %s", exc)
+
+    # Warmup: run a realistic sentence to trigger lazy JIT compilation
+    # on all code paths before the first real request arrives.
     try:
         _tts_model.generate_custom_voice(
-            text="Hello.",
+            text="Hello, this is a warmup sentence for the text-to-speech system.",
             language="English",
             speaker="Ryan",
             **_GEN_KWARGS,
@@ -143,11 +167,13 @@ async def synthesize_stream(
     """
     Yield PCM chunks as they are produced.
 
-    Qwen3-TTS doesn't expose a true token-level streaming API in the Python
-    SDK; we synthesize the full audio and yield it in a single chunk.  A
-    future version can swap in the streaming inference path once available.
+    Synthesis is offloaded to a thread so the event loop remains responsive.
+    Qwen3-TTS doesn't expose token-level streaming; the full sentence is
+    synthesised and then yielded in chunks.
     """
-    pcm, _ = synthesize(text, voice=voice, ref_audio=ref_audio, ref_text=ref_text)
+    pcm, _ = await asyncio.to_thread(
+        synthesize, text, voice=voice, ref_audio=ref_audio, ref_text=ref_text
+    )
 
     chunk_size = 4096
     for i in range(0, len(pcm), chunk_size):
