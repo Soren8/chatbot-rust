@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0"
-axum = "0.7"
+axum = { version = "0.7", features = ["multipart"] }
 chatbot-core = { path = "../chatbot-core" }
 tokio = { version = "1.37", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
@@ -28,7 +28,7 @@ pbkdf2 = "0.12"
 rand = { version = "0.8", features = ["std"] }
 sha2 = "0.10"
 bytes = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "multipart"] }
 tokio-stream = "0.1"
 async-stream = "0.3"
 futures-util = "0.3"

@@ -27,6 +27,7 @@ mod reset_chat;
 mod search;
 mod sets;
 mod signup;
+mod stt;
 pub mod test_instrumentation;
 mod tools;
 mod tts;
@@ -79,6 +80,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))
         .route("/tts_stream/:token", get(tts::handle_tts_stream))
+        .route("/stt", post(stt::handle_stt))
         .route("/api/tts", post(tts::handle_api_tts))
         .route("/api/tts/stream", post(tts::handle_api_tts_stream))
         .route("/regenerate", post(regenerate::handle_regenerate))

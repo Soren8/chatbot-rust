@@ -1,3 +1,15 @@
+/* Mic recording animation */
+#mic-button.recording {
+    color: #e06a6a;
+    border-color: #e06a6a;
+    animation: pulse-recording 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-recording {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
 /* Message styling */
 .message {
     margin-bottom: 3px;

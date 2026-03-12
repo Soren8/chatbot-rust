@@ -406,6 +406,8 @@ window.playTTS = function playTTS(button) {
     fullText = sanitizeForTTS(fullText);
 
     if (fullText === 'Thinking...') return '';
+    // Don't TTS error messages
+    if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
     if (fullText.startsWith(processedText)) {
       return fullText.substring(processedText.length);
     }
@@ -1479,6 +1481,65 @@ $(document).ready(function() {
           $(this).attr('title', 'Web Search: ON');
       }
   });
+
+  // Microphone / STT
+  const $micBtn = $('#mic-button');
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    $micBtn.show();
+
+    let _mediaRecorder = null;
+    let _audioChunks = [];
+
+    $micBtn.on('click', function () {
+      if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+        _mediaRecorder.stop();
+        return;
+      }
+
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        _audioChunks = [];
+        _mediaRecorder = new MediaRecorder(stream);
+
+        _mediaRecorder.ondataavailable = function (e) {
+          if (e.data.size > 0) _audioChunks.push(e.data);
+        };
+
+        _mediaRecorder.onstop = function () {
+          // Stop all tracks so the browser releases the microphone
+          stream.getTracks().forEach(function (t) { t.stop(); });
+
+          $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');
+
+          const blob = new Blob(_audioChunks, { type: _mediaRecorder.mimeType || 'audio/webm' });
+          const formData = new FormData();
+          formData.append('audio', blob, 'recording.webm');
+
+          fetch('/stt', {
+            method: 'POST',
+            headers: withCsrf({}),
+            body: formData,
+          })
+            .then(function (res) {
+              if (!res.ok) throw new Error('STT request failed (' + res.status + ')');
+              return res.json();
+            })
+            .then(function (data) {
+              const current = $('#user-input').val();
+              const separator = current.trim() ? ' ' : '';
+              $('#user-input').val(current + separator + (data.text || '')).focus();
+            })
+            .catch(function (err) {
+              appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+            });
+        };
+
+        _mediaRecorder.start();
+        $micBtn.addClass('recording').html('&#x23F9;').attr('title', 'Stop Recording');
+      }).catch(function (err) {
+        appendMessage('<strong>Error:</strong> Microphone access denied: ' + escapeHTML(err.message), 'error-message');
+      });
+    });
+  }
 
   // Initialize prompt/memory for guests
   if (!window.APP_DATA.loggedIn) {

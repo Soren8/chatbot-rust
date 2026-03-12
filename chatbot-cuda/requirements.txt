@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+qwen-tts
+nemo_toolkit[asr]
+pydub
+python-multipart
+numpy
+soundfile
+librosa
+huggingface_hub

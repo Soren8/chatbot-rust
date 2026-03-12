@@ -70,6 +70,17 @@ struct FishSpeechRequest {
     format: String,
 }
 
+#[derive(Debug, Serialize)]
+struct QwenTtsRequest {
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voice_ref_audio: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voice_ref_text: Option<String>,
+}
+
 pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
     if request.method() != Method::POST {
         return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
@@ -189,6 +200,10 @@ pub async fn handle_tts_stream(
 
 let config = config::app_config();
     debug!(provider = %config.tts_provider, "handling /tts_stream request");
+    if config.tts_provider == "qwen" {
+        return handle_qwen_tts(cleaned, &config).await;
+    }
+    // DEPRECATED: legacy external TTS provider
     if config.tts_provider == "fish" {
         return handle_fish_speech(cleaned).await;
     }
@@ -232,7 +247,7 @@ let config = config::app_config();
     // Apply a tiny fade to the PCM data to eliminate clicks
     apply_pcm_fade(&mut bytes, SAMPLE_RATE_HZ);
 
-    let wav_bytes = pcm_to_wav(&bytes);
+    let wav_bytes = pcm_to_wav(&bytes, SAMPLE_RATE_HZ);
 
     build_audio_response(wav_bytes)
 }
@@ -296,6 +311,10 @@ pub async fn handle_api_tts(
 
     let config = config::app_config();
     debug!(provider = %config.tts_provider, "handling /api/tts request");
+    if config.tts_provider == "qwen" {
+        return handle_qwen_tts(backend_request.text, &config).await;
+    }
+    // DEPRECATED: legacy external TTS provider
     if config.tts_provider == "fish" {
         return handle_fish_speech(backend_request.text).await;
     }
@@ -323,7 +342,7 @@ pub async fn handle_api_tts(
         )
     })?;
 
-    let wav_bytes = pcm_to_wav(&pcm_bytes);
+    let wav_bytes = pcm_to_wav(&pcm_bytes, SAMPLE_RATE_HZ);
 
     build_audio_response(wav_bytes)
 }
@@ -355,8 +374,12 @@ pub async fn handle_api_tts_stream(
     };
 
     let config = config::app_config();
+    if config.tts_provider == "qwen" {
+        return handle_qwen_tts(backend_request.text, &config).await;
+    }
+    // DEPRECATED: legacy external TTS provider
     if config.tts_provider == "fish" {
-         return handle_fish_speech_stream(backend_request.text).await;
+        return handle_fish_speech_stream(backend_request.text).await;
     }
 
     let response = post_backend("/api/tts/stream", &backend_request).await?;
@@ -376,7 +399,7 @@ pub async fn handle_api_tts_stream(
     let stream = response.bytes_stream();
 
     // For Kokoro, we need to prepend a WAV header because it returns raw PCM.
-    let header_bytes = pcm_to_wav_header(0x7FFF_FFFF);
+    let header_bytes = pcm_to_wav_header(0x7FFF_FFFF, SAMPLE_RATE_HZ);
     let header_stream = futures_util::stream::once(async move {
         Ok::<_, reqwest::Error>(axum::body::Bytes::from(header_bytes))
     });
@@ -499,6 +522,61 @@ async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (Stat
         })
 }
 
+
+async fn handle_qwen_tts(
+    text: String,
+    config: &config::AppConfig,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let base = config.voice_service_base_url.trim_end_matches('/');
+    let url = format!("{base}/v1/tts");
+
+    let voice = config.tts_voice.clone().unwrap_or_else(|| "Ryan".to_string());
+    let request = QwenTtsRequest {
+        text,
+        voice: Some(voice),
+        voice_ref_audio: None,
+        voice_ref_text: None,
+    };
+
+    debug!(url = %url, "sending request to Qwen TTS voice service");
+
+    let response = HTTP_CLIENT
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to reach Qwen TTS voice service");
+            (StatusCode::BAD_GATEWAY, "TTS backend unreachable".to_string())
+        })?;
+
+    let sample_rate: u32 = response
+        .headers()
+        .get("X-Sample-Rate")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24_000);
+
+    let status = response.status();
+    let mut bytes = response
+        .bytes()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to read Qwen TTS response body");
+            (StatusCode::INTERNAL_SERVER_ERROR, "response read error".to_string())
+        })?
+        .to_vec();
+
+    if !status.is_success() {
+        let message = extract_backend_error(status, &bytes);
+        error!(?status, message, "Qwen TTS voice service returned error");
+        return json_error(StatusCode::BAD_GATEWAY, &message);
+    }
+
+    apply_pcm_fade(&mut bytes, sample_rate);
+    let wav_bytes = pcm_to_wav(&bytes, sample_rate);
+    build_audio_response(wav_bytes)
+}
 
 fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, String> {
     let raw_text = payload.text.unwrap_or_default().trim().to_owned();
@@ -704,10 +782,10 @@ async fn post_backend(
         })
 }
 
-fn pcm_to_wav_header(data_len: u32) -> Vec<u8> {
+fn pcm_to_wav_header(data_len: u32, sample_rate: u32) -> Vec<u8> {
     let chunk_size = 36u32.saturating_add(data_len);
     let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
-    let byte_rate = SAMPLE_RATE_HZ * block_align as u32;
+    let byte_rate = sample_rate * block_align as u32;
 
     let mut buffer = Vec::with_capacity(44);
     buffer.extend_from_slice(b"RIFF");
@@ -717,7 +795,7 @@ fn pcm_to_wav_header(data_len: u32) -> Vec<u8> {
     buffer.extend_from_slice(&16u32.to_le_bytes());
     buffer.extend_from_slice(&1u16.to_le_bytes());
     buffer.extend_from_slice(&CHANNELS.to_le_bytes());
-    buffer.extend_from_slice(&SAMPLE_RATE_HZ.to_le_bytes());
+    buffer.extend_from_slice(&sample_rate.to_le_bytes());
     buffer.extend_from_slice(&byte_rate.to_le_bytes());
     buffer.extend_from_slice(&block_align.to_le_bytes());
     buffer.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
@@ -726,9 +804,9 @@ fn pcm_to_wav_header(data_len: u32) -> Vec<u8> {
     buffer
 }
 
-fn pcm_to_wav(pcm: &[u8]) -> Vec<u8> {
+fn pcm_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
     let data_len = pcm.len() as u32;
-    let mut header = pcm_to_wav_header(data_len);
+    let mut header = pcm_to_wav_header(data_len, sample_rate);
     header.extend_from_slice(pcm);
     header
 }
