@@ -1,11 +1,44 @@
+name: chatbot
+
 services:
-  chatbot:
+  voice-service:
+    build:
+      context: ./chatbot-cuda
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    volumes:
+      - ./chatbot-cuda/data:/app/data
+      # Persistent model cache — downloaded once on first startup, reused across rebuilds
+      - ./chatbot-cuda/model_cache:/app/model_cache
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5100/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      # First-run model downloads can take 20–30 min on a slow connection.
+      # Warm starts (cache hit) are ready in ~60s.
+      start_period: 1800s
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+      NEMO_CACHE_DIR: /app/model_cache/nemo
+
+  webserver:
+    image: chatbot-rust
     build:
       context: .
       target: prod
       args:
         RUST_BUILD_PROFILE: ${RUST_BUILD_PROFILE:-debug}
     restart: always
+    depends_on:
+      voice-service:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -29,12 +62,13 @@ services:
       CHATBOT_BIND_ADDR: ${CHATBOT_BIND_ADDR:-0.0.0.0:80}
       CHATBOT_STATIC_ROOT: /app/static
 
-      # TTS + provider config envs that .config.yml may reference
-      TTS_HOST: ${TTS_HOST:-localhost}
-      TTS_PORT: ${TTS_PORT:-5000}
-      TTS_PROVIDER: ${TTS_PROVIDER:-kokoro}
+      # Service discovery (non-secret defaults for Docker networking)
+      VOICE_SERVICE_HOST: ${VOICE_SERVICE_HOST:-voice-service}
+      VOICE_SERVICE_PORT: ${VOICE_SERVICE_PORT:-5100}
       LOCAL_HOST: ${LOCAL_HOST:-host.docker.internal}
       LOCAL_PORT: ${LOCAL_PORT:-11434}
+
+      # Secrets (from .env)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
