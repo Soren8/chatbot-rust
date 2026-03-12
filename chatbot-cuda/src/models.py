@@ -1,4 +1,4 @@
-"""Model loading and inference for Qwen3-TTS and Parakeet STT."""
+"""Model loading and inference for Qwen3-TTS, Kokoro-TTS and Parakeet STT."""
 
 import asyncio
 import base64
@@ -6,6 +6,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 from typing import Optional, AsyncGenerator
 
 import numpy as np
@@ -19,12 +20,30 @@ _tts_model = None
 _tts_loaded: bool = False
 _tts_sample_rate: int = 24000
 
+_kokoro_pipeline = None
+_kokoro_loaded: bool = False
+_KOKORO_SR: int = 24000
+
 _stt_model = None
 _stt_loaded: bool = False
 
 _DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 _TTS_MODEL_ID = os.environ.get("TTS_MODEL_ID", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
 _STT_MODEL_ID = os.environ.get("STT_MODEL_ID", "nvidia/parakeet-tdt-0.6b-v2")
+
+
+def _read_tts_provider() -> str:
+    """Read tts_provider from .config.yml, same source of truth as the Rust webserver."""
+    try:
+        import yaml
+        with open("/app/.config.yml") as f:
+            cfg = yaml.safe_load(f) or {}
+        return str(cfg.get("tts_provider", "qwen")).lower()
+    except Exception:
+        return "qwen"
+
+
+_TTS_MODEL = _read_tts_provider()
 
 _GEN_KWARGS = dict(
     max_new_tokens=2048,
@@ -105,8 +124,31 @@ def load_stt() -> None:
     logger.info("STT model loaded.")
 
 
+def load_kokoro() -> None:
+    global _kokoro_pipeline, _kokoro_loaded
+    from kokoro import KPipeline
+
+    logger.info("Loading Kokoro TTS pipeline on %s", _DEVICE)
+    _kokoro_pipeline = KPipeline(lang_code="a", device=_DEVICE)
+
+    # Warmup: trigger any lazy JIT / phonemizer init before first real request.
+    try:
+        for _, _, _ in _kokoro_pipeline(
+            "Hello, this is a warmup sentence.", voice="af_heart"
+        ):
+            break
+    except Exception as exc:
+        logger.warning("Kokoro warmup failed (non-fatal): %s", exc)
+
+    _kokoro_loaded = True
+    logger.info("Kokoro TTS loaded.")
+
+
 def load_models() -> None:
-    load_tts()
+    if _TTS_MODEL == "kokoro":
+        load_kokoro()
+    else:
+        load_tts()
     load_stt()
 
 
@@ -180,6 +222,70 @@ async def synthesize_stream(
         yield pcm[i : i + chunk_size]
 
 
+# ── Kokoro TTS inference ─────────────────────────────────────────────────────
+
+def synthesize_kokoro(
+    text: str,
+    voice: str = "af_heart",
+) -> tuple[bytes, int]:
+    """
+    Synthesize text with Kokoro and return raw 16-bit mono PCM bytes.
+
+    Kokoro chunks by sentence internally; this function concatenates all
+    sentence chunks into a single blob for callers that need the full audio.
+    Returns (pcm_bytes, sample_rate).
+    """
+    if not _kokoro_loaded:
+        raise RuntimeError("Kokoro TTS not loaded")
+
+    chunks = []
+    for _, _, audio in _kokoro_pipeline(text, voice=voice):
+        chunks.append(_float32_to_pcm16(audio))
+    return b"".join(chunks), _KOKORO_SR
+
+
+async def synthesize_kokoro_stream(
+    text: str,
+    voice: str = "af_heart",
+) -> AsyncGenerator[bytes, None]:
+    """
+    Yield PCM chunks sentence by sentence as Kokoro produces them.
+
+    A background thread runs the Kokoro generator (which blocks on GPU
+    inference per sentence) and posts each chunk to an asyncio queue so
+    the event loop stays responsive between sentences.
+    """
+    if not _kokoro_loaded:
+        raise RuntimeError("Kokoro TTS not loaded")
+
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _generate() -> None:
+        try:
+            for _, _, audio in _kokoro_pipeline(text, voice=voice):
+                chunk = _float32_to_pcm16(audio)
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, exc)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+    threading.Thread(target=_generate, daemon=True).start()
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+def kokoro_sample_rate() -> int:
+    return _KOKORO_SR
+
+
 # ── STT inference ────────────────────────────────────────────────────────────
 
 def transcribe(audio_path: str) -> str:
@@ -201,7 +307,9 @@ def transcribe(audio_path: str) -> str:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _float32_to_pcm16(audio: np.ndarray) -> bytes:
+def _float32_to_pcm16(audio) -> bytes:
+    if hasattr(audio, "numpy"):  # torch.Tensor
+        audio = audio.cpu().numpy()
     clipped = np.clip(audio, -1.0, 1.0)
     return (clipped * 32767).astype(np.int16).tobytes()
 

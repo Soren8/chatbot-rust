@@ -106,7 +106,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Silero VAD voice activity detection.
   - [ ] Whisper Large v3 turbo.
   - [ ] Smart Turn v2 by @trydaily.
-  - [x] Kokoro_tts.
+  - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml` and `TTS_MODEL=kokoro` in env. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.
   - [x] Fish Speech API support.
   - [ ] **Qwen3-TTS true streaming** — The official `qwen-tts` pip package synthesizes the full waveform before returning (no streaming API). The Qwen team's "low-latency streaming" requires internal pipeline disaggregation code that was never publicly released (see GitHub issues #10 and #77). Community forks exist (`faster-qwen3-tts`, `rekuenkdr/Qwen3-TTS-streaming`, `dffdeeq/Qwen3-TTS-streaming`) that achieve ~150–200ms TTFA via chunk-level codec streaming, but they require auditing before adoption. A PR to upstream is expected eventually. When official streaming lands, the path is: Python `synthesize_stream()` yields length-prefixed WAV chunks per codec frame → Rust `handle_qwen_tts` proxies `/v1/tts/stream` with `Body::from_stream` → JS fetch reader parses chunks and schedules gapless playback via existing `nextStartTime` queue.
 

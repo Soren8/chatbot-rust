@@ -29,6 +29,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --break-system-packages -r requirements.txt
 
+# misaki[en] (Kokoro's G2P engine) requires spaCy's en_core_web_sm model.
+# Bake it into the image so it's available offline at runtime.
+RUN python3 -m spacy download en_core_web_sm --break-system-packages
+
 COPY src/ ./src/
 COPY start.sh .
 RUN chmod +x start.sh

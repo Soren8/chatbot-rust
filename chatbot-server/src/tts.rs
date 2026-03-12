@@ -81,6 +81,12 @@ struct QwenTtsRequest {
     voice_ref_text: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct KokoroTtsRequest {
+    text: String,
+    voice: String,
+}
+
 pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
     if request.method() != Method::POST {
         return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
@@ -203,12 +209,15 @@ let config = config::app_config();
     if config.tts_provider == "qwen" {
         return handle_qwen_tts(cleaned, &config).await;
     }
+    if config.tts_provider == "kokoro" {
+        return handle_kokoro_tts(cleaned, &config).await;
+    }
     // DEPRECATED: legacy external TTS provider
     if config.tts_provider == "fish" {
         return handle_fish_speech(cleaned).await;
     }
 
-    debug!("using default/kokoro backend for /tts_stream");
+    debug!("using legacy external backend for /tts_stream");
     let backend_request = BackendRequest {
         text: cleaned,
         voice_file: config.tts_voice.clone(),
@@ -314,12 +323,15 @@ pub async fn handle_api_tts(
     if config.tts_provider == "qwen" {
         return handle_qwen_tts(backend_request.text, &config).await;
     }
+    if config.tts_provider == "kokoro" {
+        return handle_kokoro_tts(backend_request.text, &config).await;
+    }
     // DEPRECATED: legacy external TTS provider
     if config.tts_provider == "fish" {
         return handle_fish_speech(backend_request.text).await;
     }
 
-    debug!("using default/kokoro backend for /api/tts");
+    debug!("using legacy external backend for /api/tts");
     let response = post_backend("/api/tts/stream", &backend_request).await?;
     if !response.status().is_success() {
         let status = response.status();
@@ -376,6 +388,9 @@ pub async fn handle_api_tts_stream(
     let config = config::app_config();
     if config.tts_provider == "qwen" {
         return handle_qwen_tts(backend_request.text, &config).await;
+    }
+    if config.tts_provider == "kokoro" {
+        return handle_kokoro_tts_stream(backend_request.text, &config).await;
     }
     // DEPRECATED: legacy external TTS provider
     if config.tts_provider == "fish" {
@@ -576,6 +591,111 @@ async fn handle_qwen_tts(
     apply_pcm_fade(&mut bytes, sample_rate);
     let wav_bytes = pcm_to_wav(&bytes, sample_rate);
     build_audio_response(wav_bytes)
+}
+
+async fn handle_kokoro_tts(
+    text: String,
+    config: &config::AppConfig,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let base = config.voice_service_base_url.trim_end_matches('/');
+    let url = format!("{base}/v1/tts/kokoro");
+
+    let voice = config.tts_voice.clone().unwrap_or_else(|| "af_heart".to_string());
+    let request = KokoroTtsRequest { text, voice };
+
+    debug!(url = %url, "sending request to Kokoro TTS voice service");
+
+    let response = HTTP_CLIENT
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to reach Kokoro TTS voice service");
+            (StatusCode::BAD_GATEWAY, "TTS backend unreachable".to_string())
+        })?;
+
+    let sample_rate: u32 = response
+        .headers()
+        .get("X-Sample-Rate")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24_000);
+
+    let status = response.status();
+    let mut bytes = response
+        .bytes()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to read Kokoro TTS response body");
+            (StatusCode::INTERNAL_SERVER_ERROR, "response read error".to_string())
+        })?
+        .to_vec();
+
+    if !status.is_success() {
+        let message = extract_backend_error(status, &bytes);
+        error!(?status, message, "Kokoro TTS voice service returned error");
+        return json_error(StatusCode::BAD_GATEWAY, &message);
+    }
+
+    apply_pcm_fade(&mut bytes, sample_rate);
+    let wav_bytes = pcm_to_wav(&bytes, sample_rate);
+    build_audio_response(wav_bytes)
+}
+
+async fn handle_kokoro_tts_stream(
+    text: String,
+    config: &config::AppConfig,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let base = config.voice_service_base_url.trim_end_matches('/');
+    let url = format!("{base}/v1/tts/kokoro/stream");
+
+    let voice = config.tts_voice.clone().unwrap_or_else(|| "af_heart".to_string());
+    let request = KokoroTtsRequest { text, voice };
+
+    debug!(url = %url, "sending streaming request to Kokoro TTS voice service");
+
+    let response = HTTP_CLIENT
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to reach Kokoro TTS voice service (stream)");
+            (StatusCode::BAD_GATEWAY, "TTS backend unreachable".to_string())
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let bytes = response.bytes().await.unwrap_or_default();
+        let message = extract_backend_error(status, &bytes);
+        error!(?status, message, "Kokoro TTS stream returned error");
+        return json_error(StatusCode::BAD_GATEWAY, &message);
+    }
+
+    let sample_rate: u32 = response
+        .headers()
+        .get("X-Sample-Rate")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24_000);
+
+    let stream = response.bytes_stream();
+    let header_bytes = pcm_to_wav_header(0x7FFF_FFFF, sample_rate);
+    let header_stream = futures_util::stream::once(async move {
+        Ok::<_, reqwest::Error>(axum::body::Bytes::from(header_bytes))
+    });
+    let combined_stream = futures_util::stream::StreamExt::chain(header_stream, stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(header::CONTENT_DISPOSITION, "inline; filename=tts-stream.wav")
+        .body(Body::from_stream(combined_stream))
+        .map_err(|err| {
+            error!(?err, "failed to build Kokoro streaming TTS response");
+            (StatusCode::INTERNAL_SERVER_ERROR, "response build error".to_string())
+        })
 }
 
 fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, String> {

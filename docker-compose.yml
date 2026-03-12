@@ -16,6 +16,12 @@ services:
       - ./chatbot-cuda/data:/app/data
       # Persistent model cache — downloaded once on first startup, reused across rebuilds
       - ./chatbot-cuda/model_cache:/app/model_cache
+      - type: bind
+        source: ./.config.yml
+        target: /app/.config.yml
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5100/health')"]
       interval: 30s

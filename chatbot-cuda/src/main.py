@@ -36,6 +36,7 @@ def health():
     return {
         "status": "ok",
         "tts_loaded": models._tts_loaded,
+        "kokoro_loaded": models._kokoro_loaded,
         "stt_loaded": models._stt_loaded,
     }
 
@@ -92,6 +93,59 @@ async def tts_stream(req: TtsRequest):
             raise HTTPException(status_code=500, detail=str(exc))
 
     sr = models.tts_sample_rate()
+    return StreamingResponse(
+        generator(),
+        media_type="application/octet-stream",
+        headers={"X-Sample-Rate": str(sr)},
+    )
+
+
+# ── Kokoro TTS ────────────────────────────────────────────────────────────────
+
+class KokoroTtsRequest(BaseModel):
+    text: str
+    voice: str = "af_heart"
+
+
+@app.post("/v1/tts/kokoro")
+async def kokoro_tts(req: KokoroTtsRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    try:
+        pcm, sr = await asyncio.to_thread(
+            models.synthesize_kokoro,
+            text=req.text,
+            voice=req.voice,
+        )
+    except Exception as exc:
+        logger.exception("Kokoro TTS synthesis failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return Response(
+        content=pcm,
+        media_type="application/octet-stream",
+        headers={"X-Sample-Rate": str(sr)},
+    )
+
+
+@app.post("/v1/tts/kokoro/stream")
+async def kokoro_tts_stream(req: KokoroTtsRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    async def generator():
+        try:
+            async for chunk in models.synthesize_kokoro_stream(
+                text=req.text,
+                voice=req.voice,
+            ):
+                yield chunk
+        except Exception as exc:
+            logger.exception("Kokoro TTS stream failed")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    sr = models.kokoro_sample_rate()
     return StreamingResponse(
         generator(),
         media_type="application/octet-stream",

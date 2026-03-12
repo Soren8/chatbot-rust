@@ -6,7 +6,8 @@ vars:
 
 # TTS / Voice configuration
 tts_provider: "qwen"  # Options: qwen (default), kokoro, fish
-# tts_voice: "Ryan"   # Voice preset for Qwen3-TTS
+# tts_voice: "Ryan"   # Voice preset for Qwen3-TTS (qwen provider)
+# tts_voice: "af_heart"  # Voice for Kokoro (kokoro provider). Other options: af_bella, am_adam, bm_george
 
 default_llm: "Local Ollama (Free Tier)"
 default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
