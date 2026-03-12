@@ -60,6 +60,10 @@ This document captures the current architecture of the project and the potential
   - [ ] Require a non-default `SECRET_KEY` via environment; remove hardcoded fallbacks.
   - [x] Store all API keys and sensitive settings in environment variables only; avoid checking secrets into Git.
   - [ ] Validate `.config.yml` against a schema to catch missing or invalid fields.
+  - [ ] Protect `.env` and `.config.yml` from AI agent access. These files contain live secrets and must never be read by cloud-connected tools. Options (in order of robustness):
+    1. **Dedicated agent user + Linux ACLs**: Create an `aiagent` user, use `setfacl -m u:aiagent:--- .env .config.yml` to deny access to secret files only, run all AI agents (`claude`, `opencode`, etc.) as that user. Agent retains full read access to the rest of the codebase.
+    2. **Runtime secret injection**: Eliminate plaintext `.env` entirely. Use a secrets manager (1Password CLI `op run`, `sops`/`age`, `pass`, Doppler) to inject secrets at `docker compose up` time so nothing sensitive exists on disk.
+    3. **Agent-specific hooks** (partial, per-tool only): Claude Code hooks can block Read/Bash access to matching file paths, but this does not generalize to other agents.
   - [ ] Implement hybrid chat-history encryption:
         - [x] Derive a per-user data key from a user-supplied passphrase.
         - [x] Encrypt set names and metadata on disk to prevent leakage of conversation identifiers.
