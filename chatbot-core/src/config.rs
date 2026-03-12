@@ -92,6 +92,8 @@ pub struct AppConfig {
     pub tts_base_url: String,
     pub tts_provider: String,
     pub tts_voice: Option<String>,
+    pub voice_service_base_url: String,
+    pub stt_enabled: bool,
     pub default_system_prompt: String,
     pub session_timeout: u64,
     pub csrf: bool,
@@ -189,6 +191,8 @@ struct RawConfig {
     tts_provider: Option<String>,
     #[serde(default)]
     tts_voice: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    stt_enabled: Option<bool>,
 }
 
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -256,22 +260,28 @@ fn load_app_config() -> AppConfig {
     let tts_port = env::var("TTS_PORT").unwrap_or_else(|_| "5000".to_string());
     let tts_base_url = format!("http://{tts_host}:{tts_port}");
 
+    let voice_service_host =
+        env::var("VOICE_SERVICE_HOST").unwrap_or_else(|_| "voice-service".to_string());
+    let voice_service_port =
+        env::var("VOICE_SERVICE_PORT").unwrap_or_else(|_| "5100".to_string());
+    let voice_service_base_url = format!("http://{voice_service_host}:{voice_service_port}");
+
     let cdn_sri = build_cdn_sri_map();
 
     let raw_config = load_yaml_config().unwrap_or_default();
 
-    // TTS provider: env var overrides YAML, which defaults to kokoro
+    // TTS provider: env var overrides YAML, which defaults to qwen
     let tts_provider: String = if let Ok(env_value) = env::var("TTS_PROVIDER") {
         env_value
             .split('#')
             .next()
-            .unwrap_or("kokoro")
+            .unwrap_or("qwen")
             .trim()
             .to_lowercase()
     } else if let Some(yaml_value) = raw_config.tts_provider {
         yaml_value.to_lowercase()
     } else {
-        "kokoro".to_string()
+        "qwen".to_string()
     };
 
     debug!(tts_provider = %tts_provider, "loaded TTS provider configuration");
@@ -328,6 +338,7 @@ fn load_app_config() -> AppConfig {
     let save_thoughts = raw_config.save_thoughts.unwrap_or(true);
     let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
     let tts_voice = raw_config.tts_voice;
+    let stt_enabled = raw_config.stt_enabled.unwrap_or(true);
 
     let brave_api_key = env::var("BRAVE_API_KEY").ok().filter(|v| !v.is_empty());
 
@@ -359,6 +370,8 @@ fn load_app_config() -> AppConfig {
         tts_base_url,
         tts_provider,
         tts_voice,
+        voice_service_base_url,
+        stt_enabled,
         default_system_prompt,
         session_timeout,
         csrf,

@@ -1,3 +1,14 @@
+# TTS / Voice configuration
+tts_provider: "qwen"  # Options: qwen (default), kokoro, fish
+# tts_voice: "Ryan"   # Voice preset for Qwen3-TTS
+
+default_llm: "Local Ollama (Free Tier)"
+default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
+session_timeout: 3600
+csrf: on # Set to 'off' only for development (localhost over HTTP); this also disables the 'Secure' flag on session cookies.
+save_thoughts: true
+send_thoughts: false
+
 llms:
   - provider_name: "Local Ollama (Free Tier)"
     type: "ollama" 
@@ -49,10 +60,3 @@ llms:
     search: true
     # xai_search: true   # Default: use XAI's web search tool (no BRAVE_API_KEY needed)
     # xai_search: false  # Use Brave Search instead (requires BRAVE_API_KEY)
-
-default_llm: "Local Ollama (Free Tier)"
-default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
-session_timeout: 3600
-csrf: on # Set to 'off' only for development (localhost over HTTP); this also disables the 'Secure' flag on session cookies.
-save_thoughts: true
-send_thoughts: false
