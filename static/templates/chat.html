@@ -145,6 +145,9 @@
                     <button class="btn btn-outline-secondary" type="button" id="mic-button" title="Voice Input" style="display: none;">
                         &#x1F399;
                     </button>
+                    <button class="btn btn-outline-secondary" type="button" id="voice-mode-btn" title="Voice Mode" style="display: none;">
+                        <i class="bi bi-headset"></i>
+                    </button>
                     <button class="btn btn-outline-primary" type="button" id="send-button">Send</button>
                 </div>
             </div>
@@ -172,6 +175,8 @@
         "lastModel": {{ last_model | tojson }}
     }
     </script>
+    <script src="/static/deps/vad/ort/ort.min.js"></script>
+    <script src="/static/deps/vad/bundle.min.js"></script>
     <script src="/static/chat.js"></script>
 
     </body>

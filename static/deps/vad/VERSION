@@ -1,0 +1,13 @@
+vad-web: @ricky0123/vad-web@0.0.30
+  source: https://www.npmjs.com/package/@ricky0123/vad-web/v/0.0.30
+  license: ISC
+  files: bundle.min.js, vad.worklet.bundle.min.js, silero_vad_v5.onnx
+
+onnxruntime-web: onnxruntime-web@1.22.0
+  source: https://www.npmjs.com/package/onnxruntime-web/v/1.22.0
+  license: MIT
+  files: ort/ort.min.js (browser global), ort/ort-wasm-simd-threaded.mjs, ort/ort-wasm-simd-threaded.wasm
+
+Vendored on: 2026-03-13
+Purpose: Browser-side VAD (voice activity detection) for interactive voice mode.
+         Pinned and vendored locally to eliminate CDN supply-chain risk.

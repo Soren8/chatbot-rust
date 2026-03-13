@@ -1,3 +1,10 @@
+/* Voice mode button active state */
+#voice-mode-btn.active {
+    color: #4bb543;
+    border-color: #4bb543;
+    animation: pulse-recording 1.5s ease-in-out infinite;
+}
+
 /* Mic recording animation */
 #mic-button.recording {
     color: #e06a6a;

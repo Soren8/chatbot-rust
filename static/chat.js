@@ -1,3 +1,8 @@
+// Configure onnxruntime-web WASM path (must run before vad initializes)
+if (typeof ort !== 'undefined') {
+  ort.env.wasm.wasmPaths = '/static/deps/vad/ort/';
+}
+
 // Ensure config exists before any DOM-ready handlers use it
 try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
@@ -575,9 +580,9 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
   $target.removeAttr('data-original');
   $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button"><i class="bi bi-play-fill"></i></button></div>`);
   
-if (window.APP_DATA.autoplayTTS) {
+if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     const playBtn = $target.find('.play-button')[0];
-    if (playBtn) setTimeout(() => window.playTTS(playBtn), 50);
+    if (playBtn) setTimeout(() => (window.voiceModeActive ? window.playTTSVoiceMode(playBtn) : window.playTTS(playBtn)), 50);
   }
 
   if (currentAbortController) currentAbortController.abort();
@@ -1277,9 +1282,9 @@ $(document).ready(function() {
         
         const $targetElement = $('.ai-message:last-child');
 
-        if (window.APP_DATA.autoplayTTS) {
+        if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           const playBtn = $targetElement.find('.play-button')[0];
-          if (playBtn) setTimeout(() => window.playTTS(playBtn), 50);
+          if (playBtn) setTimeout(() => (window.voiceModeActive ? window.playTTSVoiceMode(playBtn) : window.playTTS(playBtn)), 50);
         }
 
         // Initial scroll to bottom when AI starts responding
@@ -1540,6 +1545,322 @@ $(document).ready(function() {
       });
     });
   }
+
+  // ── Voice Mode ─────────────────────────────────────────────────────────────
+  const $voiceModeBtn = $('#voice-mode-btn');
+  window.voiceModeActive = false;
+  let voiceModeVAD = null;
+  let vadSttInProgress = false;
+  // Sustained-speech barge-in confirmation state
+  let bargeInFrames = 0;
+  const BARGE_IN_FRAMES_DESKTOP = 3;  // ~300ms at 100ms/frame
+  const BARGE_IN_FRAMES_MOBILE = 5;   // ~500ms
+  const isMobile = /Mobi|Android/i.test(navigator.userAgent);
+  const BARGE_IN_THRESHOLD = isMobile ? BARGE_IN_FRAMES_MOBILE : BARGE_IN_FRAMES_DESKTOP;
+
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof vad !== 'undefined') {
+    $voiceModeBtn.show();
+  }
+
+  $voiceModeBtn.on('click', function () {
+    if (window.voiceModeActive) {
+      stopVoiceMode();
+    } else {
+      startVoiceMode();
+    }
+  });
+
+  async function startVoiceMode() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1
+        }
+      });
+
+      voiceModeVAD = await vad.MicVAD.new({
+        stream: stream,
+        model: 'v5',
+        baseAssetPath: '/static/deps/vad/',
+        onnxWASMBasePath: '/static/deps/vad/ort/',
+        positiveSpeechThreshold: 0.8,
+        redemptionFrames: 15,
+        onSpeechStart: function () {
+          // During TTS playback, require sustained frames before barge-in
+          if (CURRENT_AUDIO) {
+            bargeInFrames = 0;
+            // Handled in onFrameProcessed via sustained detection
+          } else {
+            handleBargeIn();
+          }
+        },
+        onFrameProcessed: function (probs) {
+          // Sustained barge-in detection during TTS playback
+          if (CURRENT_AUDIO && probs.isSpeech > 0.8) {
+            bargeInFrames++;
+            if (bargeInFrames >= BARGE_IN_THRESHOLD) {
+              bargeInFrames = 0;
+              handleBargeIn();
+            }
+          } else if (!CURRENT_AUDIO) {
+            bargeInFrames = 0;
+          }
+        },
+        onSpeechEnd: function (audio) {
+          handleSpeechEnd(audio);
+        }
+      });
+
+      await voiceModeVAD.start();
+      window.voiceModeActive = true;
+      $voiceModeBtn.addClass('active');
+      $micBtn.prop('disabled', true);
+    } catch (err) {
+      appendMessage('<strong>Error:</strong> Voice mode failed to start: ' + escapeHTML(err.message), 'error-message');
+    }
+  }
+
+  function stopVoiceMode() {
+    if (voiceModeVAD) {
+      voiceModeVAD.pause();
+      voiceModeVAD.destroy();
+      voiceModeVAD = null;
+    }
+    window.voiceModeActive = false;
+    bargeInFrames = 0;
+    $voiceModeBtn.removeClass('active');
+    $micBtn.prop('disabled', false);
+  }
+
+  function handleBargeIn() {
+    if (CURRENT_AUDIO) {
+      if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
+      if (CURRENT_AUDIO_BUTTON) {
+        $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+      }
+      CURRENT_AUDIO = null;
+      CURRENT_AUDIO_BUTTON = null;
+    }
+    if (currentAbortController) {
+      currentAbortController.abort();
+      currentAbortController = null;
+      setGeneratingState(false);
+    }
+  }
+
+  function encodeWAV(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    function writeStr(offset, str) {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  async function handleSpeechEnd(audio) {
+    if (vadSttInProgress) return;
+    vadSttInProgress = true;
+    if (voiceModeVAD) voiceModeVAD.pause();
+
+    try {
+      const wavBlob = encodeWAV(audio, 16000);
+      const formData = new FormData();
+      formData.append('audio', wavBlob, 'recording.wav');
+
+      const res = await fetch('/stt', {
+        method: 'POST',
+        headers: withCsrf({}),
+        body: formData
+      });
+      if (!res.ok) throw new Error('STT request failed (' + res.status + ')');
+      const data = await res.json();
+      const text = (data.text || '').trim();
+
+      if (text) {
+        $('#user-input').val(text);
+        sendMessage();
+      }
+    } catch (err) {
+      appendMessage('<strong>Error:</strong> Voice STT failed: ' + escapeHTML(err.message), 'error-message');
+    } finally {
+      vadSttInProgress = false;
+      if (voiceModeVAD && window.voiceModeActive) voiceModeVAD.start();
+    }
+  }
+
+  // Pause/resume VAD when page is hidden
+  document.addEventListener('visibilitychange', function () {
+    if (!voiceModeVAD) return;
+    if (document.hidden) {
+      voiceModeVAD.pause();
+    } else if (window.voiceModeActive) {
+      voiceModeVAD.start();
+    }
+  });
+
+  // Voice mode TTS playback using <audio> element for browser AEC
+  window.playTTSVoiceMode = function playTTSVoiceMode(button) {
+    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
+      if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
+      if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+      CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null; return;
+    }
+    if (CURRENT_AUDIO) {
+      if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
+      if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+      CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+    }
+
+    const $messageElement = $(button).closest('.message');
+    let isStopped = false;
+    let processedText = '';
+    let sentenceQueue = [];
+    let isFetching = false;
+    let audioEl = null;
+
+    function sanitizeForTTS(text) {
+      return text
+        .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
+        .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
+        .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')
+        .replace(/~~([^~]+)~~/g, '$1')
+        .replace(/`([^`]*)`/g, '$1')
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/  +/g, ' ')
+        .trim();
+    }
+
+    function getPendingText() {
+      let fullText = $messageElement.attr('data-original') || '';
+      if (fullText) fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      if (!fullText) {
+        const $textClone = $messageElement.find('.ai-message-text').clone();
+        $textClone.find('.thinking-container').remove();
+        $textClone.find('.regenerate-container').remove();
+        fullText = $textClone.text().trim();
+      }
+      fullText = sanitizeForTTS(fullText);
+      if (fullText === 'Thinking...') return '';
+      if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
+      if (fullText.startsWith(processedText)) return fullText.substring(processedText.length);
+      const idx = fullText.indexOf(processedText);
+      if (idx !== -1) return fullText.substring(idx + processedText.length);
+      return '';
+    }
+
+    function discoverSentences() {
+      if (isStopped) return;
+      const pending = getPendingText();
+      if (!pending) return;
+      const matches = pending.match(/[^.!?]+[.!?]+/g);
+      if (matches) {
+        matches.forEach(s => { sentenceQueue.push(s); processedText += s; });
+      }
+    }
+
+    function playNext() {
+      if (isStopped) return;
+      if (sentenceQueue.length === 0) discoverSentences();
+      if (sentenceQueue.length === 0) {
+        const currentRawText = $messageElement.find('.ai-message-text').text().trim();
+        const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
+        if (!stillGenerating) {
+          const remaining = getPendingText();
+          if (remaining.trim()) {
+            sentenceQueue.push(remaining);
+            processedText += remaining;
+          } else {
+            // All done
+            if (CURRENT_AUDIO_BUTTON === button) {
+              $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+              CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+            }
+            return;
+          }
+        } else {
+          setTimeout(playNext, 200);
+          return;
+        }
+      }
+
+      if (sentenceQueue.length > 0) {
+        const text = sentenceQueue.shift().trim();
+        if (!text) { setTimeout(playNext, 10); return; }
+
+        isFetching = true;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+        fetch('/tts', {
+          method: 'POST',
+          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ text: text }),
+          signal: controller.signal
+        })
+        .then(r => {
+          clearTimeout(timeoutId);
+          if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+          if (!r.ok) throw new Error('TTS request failed');
+          return r.json();
+        })
+        .then(data => {
+          if (isStopped) return;
+          audioEl = new Audio('/tts_stream/' + data.token);
+          audioEl.onended = function () {
+            if (!isStopped) { isFetching = false; playNext(); }
+          };
+          audioEl.onerror = function () {
+            console.error('Voice mode audio playback error');
+            isFetching = false;
+            if (!isStopped) setTimeout(playNext, 500);
+          };
+          audioEl.play().catch(e => {
+            console.error('Audio play failed:', e);
+            isFetching = false;
+            if (!isStopped) setTimeout(playNext, 500);
+          });
+        })
+        .catch(err => {
+          console.error('Voice mode TTS error:', err);
+          isFetching = false;
+          if (!isStopped) setTimeout(playNext, 500);
+        });
+      }
+    }
+
+    CURRENT_AUDIO = {
+      stop: () => {
+        isStopped = true;
+        if (audioEl) { audioEl.pause(); audioEl.src = ''; audioEl = null; }
+      }
+    };
+    CURRENT_AUDIO_BUTTON = button;
+    $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
+    playNext();
+  };
 
   // Initialize prompt/memory for guests
   if (!window.APP_DATA.loggedIn) {
