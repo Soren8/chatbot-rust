@@ -42,13 +42,7 @@ services:
       args:
         RUST_BUILD_PROFILE: ${RUST_BUILD_PROFILE:-debug}
     restart: always
-    depends_on:
-      voice-service:
-        condition: service_started
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "80:80"
+    network_mode: host
     volumes:
       - ./data:/app/data
       - type: bind
