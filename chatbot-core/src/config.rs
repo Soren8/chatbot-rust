@@ -193,6 +193,10 @@ struct RawConfig {
     tts_voice: Option<String>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     stt_enabled: Option<bool>,
+    #[serde(default)]
+    voice_service_host: Option<String>,
+    #[serde(default)]
+    voice_service_port: Option<u16>,
 }
 
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -260,15 +264,17 @@ fn load_app_config() -> AppConfig {
     let tts_port = env::var("TTS_PORT").unwrap_or_else(|_| "5000".to_string());
     let tts_base_url = format!("http://{tts_host}:{tts_port}");
 
-    let voice_service_host =
-        env::var("VOICE_SERVICE_HOST").unwrap_or_else(|_| "voice-service".to_string());
-    let voice_service_port =
-        env::var("VOICE_SERVICE_PORT").unwrap_or_else(|_| "5100".to_string());
-    let voice_service_base_url = format!("http://{voice_service_host}:{voice_service_port}");
-
     let cdn_sri = build_cdn_sri_map();
 
     let raw_config = load_yaml_config().unwrap_or_default();
+
+    let voice_service_host = raw_config
+        .voice_service_host
+        .as_deref()
+        .unwrap_or("localhost")
+        .to_string();
+    let voice_service_port = raw_config.voice_service_port.unwrap_or(5100);
+    let voice_service_base_url = format!("http://{voice_service_host}:{voice_service_port}");
 
     // TTS provider: env var overrides YAML, which defaults to qwen
     let tts_provider: String = if let Ok(env_value) = env::var("TTS_PROVIDER") {

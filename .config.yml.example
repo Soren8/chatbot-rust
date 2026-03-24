@@ -5,9 +5,14 @@ vars:
   LOCAL_PORT: 11434
 
 # TTS / Voice configuration
-tts_provider: "qwen"  # Options: qwen (default), kokoro, fish
-# tts_voice: "Ryan"   # Voice preset for Qwen3-TTS (qwen provider)
-# tts_voice: "af_heart"  # Voice for Kokoro (kokoro provider). Other options: af_bella, am_adam, bm_george
+tts_provider: "kokoro"  # Options: kokoro, qwen, fish
+tts_voice: "bf_emma"   # Voice for Kokoro. Other options: af_heart, af_bella, am_adam, bm_george
+# tts_voice: "Ryan"     # Voice preset for Qwen3-TTS (qwen provider)
+stt_enabled: true
+
+# Voice service connection (the vertically integrated chatbot-cuda container)
+voice_service_host: localhost
+voice_service_port: 5100
 
 default_llm: "Local Ollama (Free Tier)"
 default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."

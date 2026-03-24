@@ -5,6 +5,7 @@ services:
     build:
       context: ./chatbot-cuda
     restart: always
+    network_mode: host
     deploy:
       resources:
         reservations:
@@ -61,10 +62,6 @@ services:
       RUST_LOG: ${LOG_LEVEL:-info}
       CHATBOT_BIND_ADDR: ${CHATBOT_BIND_ADDR:-0.0.0.0:80}
       CHATBOT_STATIC_ROOT: /app/static
-
-      # Service discovery (non-secret defaults for Docker networking)
-      VOICE_SERVICE_HOST: ${VOICE_SERVICE_HOST:-voice-service}
-      VOICE_SERVICE_PORT: ${VOICE_SERVICE_PORT:-5100}
 
       # Secrets (from .env)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
