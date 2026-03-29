@@ -287,7 +287,7 @@ fn load_app_config() -> AppConfig {
     } else if let Some(yaml_value) = raw_config.tts_provider {
         yaml_value.to_lowercase()
     } else {
-        "qwen".to_string()
+        "kokoro".to_string()
     };
 
     debug!(tts_provider = %tts_provider, "loaded TTS provider configuration");

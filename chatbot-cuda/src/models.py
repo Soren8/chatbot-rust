@@ -38,9 +38,9 @@ def _read_tts_provider() -> str:
         import yaml
         with open("/app/.config.yml") as f:
             cfg = yaml.safe_load(f) or {}
-        return str(cfg.get("tts_provider", "qwen")).lower()
+        return str(cfg.get("tts_provider", "kokoro")).lower()
     except Exception:
-        return "qwen"
+        return "kokoro"
 
 
 _TTS_MODEL = _read_tts_provider()
