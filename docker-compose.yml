@@ -11,7 +11,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['0']
+              count: all
               capabilities: [gpu]
     volumes:
       - ./chatbot-cuda/data:/app/data
@@ -32,7 +32,6 @@ services:
       # Warm starts (cache hit) are ready in ~60s.
       start_period: 1800s
     environment:
-      CUDA_VISIBLE_DEVICES: "0"
       NEMO_CACHE_DIR: /app/model_cache/nemo
 
   webserver:

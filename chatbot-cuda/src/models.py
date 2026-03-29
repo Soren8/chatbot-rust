@@ -111,7 +111,7 @@ def load_stt() -> None:
     logger.info("Loading STT model %s", _STT_MODEL_ID)
     _stt_model = nemo_asr.models.ASRModel.from_pretrained(_STT_MODEL_ID)
     if torch.cuda.is_available():
-        _stt_model = _stt_model.cuda()
+        _stt_model = _stt_model.cuda().half()
     # Disable CUDA graphs to avoid cu_call unpacking incompatibility
     # between NeMo and the installed CUDA toolkit version.
     if hasattr(_stt_model, 'decoding') and hasattr(_stt_model.decoding, 'decoding'):
@@ -120,7 +120,16 @@ def load_stt() -> None:
             dc.decoding_computer.cuda_graphs_mode = None
             logger.info("Disabled CUDA graphs for STT decoding.")
     _stt_model.eval()
+    try:
+        _stt_model = torch.compile(
+            _stt_model, fullgraph=False, mode="default", dynamic=True
+        )
+        logger.info("STT model compiled with torch.compile")
+    except Exception as exc:
+        logger.warning("torch.compile failed for STT (non-fatal): %s", exc)
     _stt_loaded = True
+    if torch.cuda.is_available():
+        logger.info("STT loaded. VRAM: %.1f GB allocated", torch.cuda.memory_allocated() / 1e9)
     logger.info("STT model loaded.")
 
 
@@ -131,7 +140,7 @@ def load_kokoro() -> None:
     logger.info("Loading Kokoro TTS pipeline on %s", _DEVICE)
     _kokoro_pipeline = KPipeline(lang_code="a", device=_DEVICE)
 
-    # Warmup: trigger any lazy JIT / phonemizer init before first real request.
+    # Warmup: triggers JIT compilation and phonemizer init before first real request.
     try:
         for _, _, _ in _kokoro_pipeline(
             "Hello, this is a warmup sentence.", voice="af_heart"
@@ -141,6 +150,8 @@ def load_kokoro() -> None:
         logger.warning("Kokoro warmup failed (non-fatal): %s", exc)
 
     _kokoro_loaded = True
+    if torch.cuda.is_available():
+        logger.info("Kokoro loaded. VRAM: %.1f GB allocated", torch.cuda.memory_allocated() / 1e9)
     logger.info("Kokoro TTS loaded.")
 
 
@@ -150,6 +161,11 @@ def load_models() -> None:
     else:
         load_tts()
     load_stt()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        logger.info("VRAM after load: %.1f GB allocated, %.1f GB reserved",
+                    torch.cuda.memory_allocated() / 1e9,
+                    torch.cuda.memory_reserved() / 1e9)
 
 
 # ── TTS inference ────────────────────────────────────────────────────────────

@@ -7,21 +7,27 @@ set -euo pipefail
 QWEN_MODEL_ID="${TTS_MODEL_ID:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}"
 STT_MODEL="${STT_MODEL_ID:-nvidia/parakeet-tdt-0.6b-v2}"
 
-# Read tts_provider from .config.yml (same source of truth as the Rust webserver).
-TTS_PROVIDER=$(python3 - <<'PYEOF'
+# Read tts_provider and voice_gpu_device from .config.yml (same source of truth as the Rust webserver).
+_cfg=$(python3 - <<'PYEOF'
 import sys
 try:
     import yaml
     with open("/app/.config.yml") as f:
         cfg = yaml.safe_load(f) or {}
-    print(cfg.get("tts_provider", "qwen").lower())
+    provider = cfg.get("tts_provider", "qwen").lower()
+    gpu = str(cfg.get("voice_gpu_device", 0))
 except Exception as e:
-    print("qwen", file=sys.stderr)
-    print("qwen")
+    print(f"Error reading config: {e}", file=sys.stderr)
+    provider = "qwen"
+    gpu = "0"
+print(f"{provider} {gpu}")
 PYEOF
 )
+TTS_PROVIDER=$(echo "$_cfg" | cut -d' ' -f1)
+export CUDA_VISIBLE_DEVICES=$(echo "$_cfg" | cut -d' ' -f2)
 
 echo "[start] tts_provider=${TTS_PROVIDER}"
+echo "[start] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 
 if [ "$TTS_PROVIDER" = "kokoro" ]; then
     echo "[start] ensuring Kokoro TTS model cached"

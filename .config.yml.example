@@ -13,6 +13,9 @@ stt_enabled: true
 # Voice service connection (the vertically integrated chatbot-cuda container)
 voice_service_host: localhost
 voice_service_port: 5100
+# GPU device index (as shown by nvidia-smi) for the voice service.
+# Set to 0 for the first GPU, 1 for the second, etc.
+voice_gpu_device: 0
 
 default_llm: "Local Ollama (Free Tier)"
 default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
