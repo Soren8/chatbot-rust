@@ -4,7 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/app/model_cache \
     TORCH_HOME=/app/model_cache \
-    NEMO_CACHE_DIR=/app/model_cache/nemo
+    NEMO_CACHE_DIR=/app/model_cache/nemo \
+    CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 \

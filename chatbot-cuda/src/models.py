@@ -27,7 +27,7 @@ _KOKORO_SR: int = 24000
 _stt_model = None
 _stt_loaded: bool = False
 
-_DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+_DEVICE = f"cuda:{os.environ['CUDA_VISIBLE_DEVICES']}" if torch.cuda.is_available() and "CUDA_VISIBLE_DEVICES" in os.environ else ("cuda:0" if torch.cuda.is_available() else "cpu")
 _TTS_MODEL_ID = os.environ.get("TTS_MODEL_ID", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
 _STT_MODEL_ID = os.environ.get("STT_MODEL_ID", "nvidia/parakeet-tdt-0.6b-v2")
 
