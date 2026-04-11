@@ -68,10 +68,9 @@ pub async fn search_augmented_stream(
             let combined = prefix_stream.chain(final_stream);
             Ok(Box::pin(combined))
         }
-        Ok(ToolCallResponse::Content(text)) => {
-            debug!("model returned content directly (no tool calls)");
-            let stream = tokio_stream::iter(vec![Ok(text)]);
-            Ok(Box::pin(stream))
+        Ok(ToolCallResponse::Content(_text)) => {
+            debug!("model returned content directly (no tool calls), using stream_chat to preserve thinking");
+            provider.stream_chat(messages)
         }
         Err(err) => {
             warn!(?err, "call_with_tools failed; falling back to regular streaming");
