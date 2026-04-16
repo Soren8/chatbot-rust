@@ -1550,6 +1550,7 @@ $(document).ready(function() {
   const $voiceModeBtn = $('#voice-mode-btn');
   window.voiceModeActive = false;
   let voiceModeVAD = null;
+  let voiceModeStream = null;
   let vadSttInProgress = false;
   // Sustained-speech barge-in confirmation state
   let bargeInFrames = 0;
@@ -1572,7 +1573,7 @@ $(document).ready(function() {
 
   async function startVoiceMode() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      voiceModeStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
@@ -1581,39 +1582,7 @@ $(document).ready(function() {
         }
       });
 
-      voiceModeVAD = await vad.MicVAD.new({
-        stream: stream,
-        model: 'v5',
-        baseAssetPath: '/static/deps/vad/',
-        onnxWASMBasePath: '/static/deps/vad/ort/',
-        positiveSpeechThreshold: 0.8,
-        redemptionFrames: 15,
-        onSpeechStart: function () {
-          // During TTS playback, require sustained frames before barge-in
-          if (CURRENT_AUDIO) {
-            bargeInFrames = 0;
-            // Handled in onFrameProcessed via sustained detection
-          } else {
-            handleBargeIn();
-          }
-        },
-        onFrameProcessed: function (probs) {
-          // Sustained barge-in detection during TTS playback
-          if (CURRENT_AUDIO && probs.isSpeech > 0.8) {
-            bargeInFrames++;
-            if (bargeInFrames >= BARGE_IN_THRESHOLD) {
-              bargeInFrames = 0;
-              handleBargeIn();
-            }
-          } else if (!CURRENT_AUDIO) {
-            bargeInFrames = 0;
-          }
-        },
-        onSpeechEnd: function (audio) {
-          handleSpeechEnd(audio);
-        }
-      });
-
+      voiceModeVAD = await createVAD(voiceModeStream);
       await voiceModeVAD.start();
       window.voiceModeActive = true;
       $voiceModeBtn.addClass('active');
@@ -1623,11 +1592,63 @@ $(document).ready(function() {
     }
   }
 
+  function createVAD(stream) {
+    return vad.MicVAD.new({
+      stream: stream,
+      model: 'v5',
+      baseAssetPath: '/static/deps/vad/',
+      onnxWASMBasePath: '/static/deps/vad/ort/',
+      positiveSpeechThreshold: 0.8,
+      redemptionFrames: 15,
+      onSpeechStart: function () {
+        if (CURRENT_AUDIO) {
+          bargeInFrames = 0;
+        } else {
+          handleBargeIn();
+        }
+      },
+      onFrameProcessed: function (probs) {
+        if (CURRENT_AUDIO && probs.isSpeech > 0.8) {
+          bargeInFrames++;
+          if (bargeInFrames >= BARGE_IN_THRESHOLD) {
+            bargeInFrames = 0;
+            handleBargeIn();
+          }
+        } else if (!CURRENT_AUDIO) {
+          bargeInFrames = 0;
+        }
+      },
+      onSpeechEnd: function (audio) {
+        handleSpeechEnd(audio);
+      }
+    });
+  }
+
+  async function reinitializeVAD() {
+    if (!voiceModeStream || !window.voiceModeActive) return;
+    if (voiceModeVAD) {
+      voiceModeVAD.pause();
+      voiceModeVAD.destroy();
+    }
+    try {
+      voiceModeVAD = await createVAD(voiceModeStream);
+      await voiceModeVAD.start();
+    } catch (e) {
+      console.error('VAD reinitialize failed:', e);
+      appendMessage('<strong>Error:</strong> Voice detection failed to recover. Please toggle voice mode off and on.', 'error-message');
+      stopVoiceMode();
+    }
+  }
+
   function stopVoiceMode() {
     if (voiceModeVAD) {
       voiceModeVAD.pause();
       voiceModeVAD.destroy();
       voiceModeVAD = null;
+    }
+    if (voiceModeStream) {
+      voiceModeStream.getTracks().forEach(track => track.stop());
+      voiceModeStream = null;
     }
     window.voiceModeActive = false;
     bargeInFrames = 0;
@@ -1705,7 +1726,9 @@ $(document).ready(function() {
       appendMessage('<strong>Error:</strong> Voice STT failed: ' + escapeHTML(err.message), 'error-message');
     } finally {
       vadSttInProgress = false;
-      if (voiceModeVAD && window.voiceModeActive) voiceModeVAD.start();
+      if (window.voiceModeActive) {
+        await reinitializeVAD();
+      }
     }
   }
 
@@ -1715,7 +1738,12 @@ $(document).ready(function() {
     if (document.hidden) {
       voiceModeVAD.pause();
     } else if (window.voiceModeActive) {
-      voiceModeVAD.start();
+      try {
+        voiceModeVAD.start();
+      } catch (e) {
+        console.error('VAD resume failed after visibility change:', e);
+        stopVoiceMode();
+      }
     }
   });
 
