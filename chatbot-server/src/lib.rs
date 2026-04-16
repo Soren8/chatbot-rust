@@ -1,6 +1,7 @@
 use axum::{
     body::Body,
     http::{HeaderName, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::Response,
     routing::{get, post},
     Router,
@@ -61,8 +62,25 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn set_cross_origin_isolation_headers(
+    request: axum::extract::Request<Body>,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("cross-origin-embedder-policy"),
+        HeaderValue::from_static("require-corp"),
+    );
+    response
+}
+
 pub fn build_router(static_root: PathBuf) -> Router {
     Router::new()
+        .layer(middleware::from_fn(set_cross_origin_isolation_headers))
         .nest_service("/static", ServeDir::new(static_root))
         .route("/favicon.ico", get(favicon))
         .route("/health", get(health::handle_health))
