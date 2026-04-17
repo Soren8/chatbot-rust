@@ -1,13 +1,9 @@
-use crate::providers::openai::messages::{ContentPart, ImageUrlPart, MessageContent};
+use crate::providers::openai::messages::{ChatMessageContent, ContentPart, ImageUrlPart};
 
 const IMAGE_PATTERN: &str = "[IMAGE:";
 const IMAGE_TRAILER: char = ']';
 
-pub fn parse_message_content(input: &str) -> MessageContent {
-    if !input.contains(IMAGE_PATTERN) {
-        return MessageContent::Text(input.to_string());
-    }
-
+pub fn parse_message_content(input: &str) -> ChatMessageContent {
     let mut parts = Vec::new();
     let mut current_text = String::new();
     let mut remaining = input;
@@ -56,13 +52,13 @@ pub fn parse_message_content(input: &str) -> MessageContent {
         });
     }
 
-    if parts.len() == 1 {
-        if let Some(ContentPart::Text { text }) = parts.first() {
-            return MessageContent::Text(text.clone());
-        }
+    if parts.is_empty() {
+        parts.push(ContentPart::Text {
+            text: input.to_string(),
+        });
     }
 
-    MessageContent::MultiModal(parts)
+    ChatMessageContent::MultiModal(parts)
 }
 
 #[cfg(test)]
@@ -74,8 +70,14 @@ mod tests {
         let input = "Hello, how are you?";
         let result = parse_message_content(input);
         match result {
-            MessageContent::Text(s) => assert_eq!(s, "Hello, how are you?"),
-            _ => panic!("Expected Text variant"),
+            ChatMessageContent::MultiModal(parts) => {
+                assert_eq!(parts.len(), 1);
+                match &parts[0] {
+                    ContentPart::Text { text } => assert_eq!(text, "Hello, how are you?"),
+                    _ => panic!("Expected Text variant"),
+                }
+            }
+            _ => panic!("Expected MultiModal variant"),
         }
     }
 
@@ -84,7 +86,7 @@ mod tests {
         let input = "[IMAGE:data:image/png;base64,abc123]";
         let result = parse_message_content(input);
         match result {
-            MessageContent::MultiModal(parts) => {
+            ChatMessageContent::MultiModal(parts) => {
                 assert_eq!(parts.len(), 1);
                 match &parts[0] {
                     ContentPart::ImageUrl { image_url } => {
@@ -102,7 +104,7 @@ mod tests {
         let input = "Look at this: [IMAGE:data:image/png;base64,abc123]";
         let result = parse_message_content(input);
         match result {
-            MessageContent::MultiModal(parts) => {
+            ChatMessageContent::MultiModal(parts) => {
                 assert_eq!(parts.len(), 2);
                 match &parts[0] {
                     ContentPart::Text { text } => assert_eq!(text, "Look at this:"),
@@ -124,7 +126,7 @@ mod tests {
         let input = "[IMAGE:abc123]";
         let result = parse_message_content(input);
         match result {
-            MessageContent::MultiModal(parts) => {
+            ChatMessageContent::MultiModal(parts) => {
                 assert_eq!(parts.len(), 1);
                 match &parts[0] {
                     ContentPart::ImageUrl { image_url } => {

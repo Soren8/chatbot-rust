@@ -49,10 +49,17 @@ pub mod messages {
     }
 
     #[derive(Clone, Serialize)]
+    #[serde(untagged)]
+    pub enum ChatMessageContent {
+        Text(String),
+        MultiModal(Vec<ContentPart>),
+    }
+
+    #[derive(Clone, Serialize)]
     pub struct ChatMessagePayload {
         pub role: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub content: Option<MessageContent>,
+        pub content: Option<ChatMessageContent>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tool_calls: Option<Vec<Value>>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,7 +70,7 @@ pub mod messages {
         pub fn system(content: String) -> Self {
             Self {
                 role: "system".to_string(),
-                content: Some(MessageContent::Text(content)),
+                content: Some(ChatMessageContent::Text(content)),
                 tool_calls: None,
                 tool_call_id: None,
             }
@@ -72,13 +79,15 @@ pub mod messages {
         pub fn user(content: String) -> Self {
             Self {
                 role: "user".to_string(),
-                content: Some(MessageContent::Text(content)),
+                content: Some(ChatMessageContent::MultiModal(vec![
+                    ContentPart::Text { text: content },
+                ])),
                 tool_calls: None,
                 tool_call_id: None,
             }
         }
 
-        pub fn user_with_content(content: MessageContent) -> Self {
+        pub fn user_with_content(content: ChatMessageContent) -> Self {
             Self {
                 role: "user".to_string(),
                 content: Some(content),
@@ -90,7 +99,7 @@ pub mod messages {
         pub fn assistant(content: String) -> Self {
             Self {
                 role: "assistant".to_string(),
-                content: Some(MessageContent::Text(content)),
+                content: Some(ChatMessageContent::Text(content)),
                 tool_calls: None,
                 tool_call_id: None,
             }
@@ -108,9 +117,9 @@ pub mod messages {
         pub fn tool(tool_call_id: String, content: String) -> Self {
             Self {
                 role: "tool".to_string(),
-                content: Some(MessageContent::Text(content)),
+                content: Some(ChatMessageContent::Text(content)),
                 tool_calls: None,
-                tool_call_id: Some(tool_call_id),
+                tool_call_id: None,
             }
         }
     }
