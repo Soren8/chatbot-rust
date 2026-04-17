@@ -1598,8 +1598,9 @@ $(document).ready(function() {
       model: 'v5',
       baseAssetPath: '/static/deps/vad/',
       onnxWASMBasePath: '/static/deps/vad/ort/',
-      positiveSpeechThreshold: 0.8,
-      redemptionFrames: 15,
+      positiveSpeechThreshold: 0.5,
+      redemptionFrames: 5,
+      minSpeechFrames: 1,
       onSpeechStart: function () {
         if (CURRENT_AUDIO) {
           bargeInFrames = 0;
