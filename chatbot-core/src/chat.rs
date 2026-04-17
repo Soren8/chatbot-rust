@@ -221,6 +221,24 @@ fn take_chars(text: &str, limit: usize) -> String {
     if limit == 0 {
         return String::new();
     }
+
+    const IMAGE_TAG: &str = "[IMAGE:";
+    if let Some(tag_pos) = text.find(IMAGE_TAG) {
+        let rest = &text[tag_pos..];
+        let closing_bracket = rest.find(']').map(|p| p + 1);
+        
+        if let Some(cb) = closing_bracket {
+            let tag_end = tag_pos + cb;
+            if tag_end <= limit {
+                return text.chars().take(limit).collect();
+            }
+            if tag_pos < limit {
+                return text.chars().take(tag_pos).collect();
+            }
+            return String::new();
+        }
+    }
+
     text.chars().take(limit).collect()
 }
 
