@@ -277,8 +277,17 @@ function appendMessage(message, className, pairIndex) {
       tmp.innerHTML = message;
       originalText = (tmp.textContent || tmp.innerText || '').replace(/^\s*You:\s*/, '').trim();
     }
-    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${renderMarkdown(originalText)}</span>`);
-    $messageElement.attr('data-original', originalText);
+
+    // Handle image attachments [IMAGE:data:image/png;base64,...]
+    let imageHtml = '';
+    const imageMatch = originalText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
+    if (imageMatch) {
+      imageHtml = '<br><img src="' + escapeHTML(imageMatch[1]) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
+      originalText = originalText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
+    }
+
+    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${renderMarkdown(originalText)}${imageHtml}</span>`);
+    $messageElement.attr('data-original', originalText + (imageMatch ? '\n[IMAGE:' + imageMatch[1] + ']' : ''));
   } else {
     $messageElement.html(message);
   }
@@ -849,6 +858,51 @@ $(document).ready(function() {
     $('#check-autoplay-tts').prop('checked', window.APP_DATA.autoplayTTS);
   }
 
+  // Image attachment handling
+  let pendingImageData = null;
+  let pendingImagePreview = null;
+
+  $('#attach-button').on('click', function() {
+    $('#image-input').trigger('click');
+  });
+
+  $('#image-input').on('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      appendMessage('<strong>Error:</strong> Please select an image file.', 'error-message');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function(event) {
+      const imgData = event.target.result;
+      pendingImageData = imgData;
+
+      // Show preview in the UI
+      const $preview = $('<div class="image-preview-container" style="position: relative; display: inline-block; margin: 5px 0;"></div>');
+      const $img = $('<img>').attr('src', imgData).css({'max-width': '200px', 'max-height': '150px', 'border-radius': '8px', 'border': '1px solid #444'});
+      const $removeBtn = $('<button class="btn btn-sm btn-danger" style="position: absolute; top: -8px; right: -8px; border-radius: 50%; width: 24px; height: 24px; padding: 0; line-height: 24px;">&times;</button>');
+      $preview.append($img).append($removeBtn);
+
+      // Remove existing preview if any
+      $('#image-preview').remove();
+      pendingImagePreview = $preview;
+
+      // Insert preview before the input group
+      $('#chat-area .input-group').before($preview);
+
+      $removeBtn.on('click', function() {
+        pendingImageData = null;
+        pendingImagePreview = null;
+        $preview.remove();
+        $('#image-input').val('');
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+
   // Validate model tier on selection change (replacing inline onchange)
   $('#modelSelect').on('change', function() {
       validateModelTier();
@@ -965,8 +1019,16 @@ $(document).ready(function() {
       const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
       const pairIndex = userMsgNodes.indexOf($messageElement[0]);
 
+      // Handle image if present
+      let imageHtml = '';
+      const imageMatch = newText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
+      if (imageMatch) {
+        imageHtml = '<br><img src="' + escapeHTML(imageMatch[1]) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
+      }
+      const textWithoutImage = newText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
+
       $messageElement.attr('data-original', newText);
-      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${renderMarkdown(newText)}`).show();
+      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${renderMarkdown(textWithoutImage)}${imageHtml}`).show();
       $messageElement.find('.edit-textarea').remove();
       $messageElement.find('.edit-actions').remove();
       $messageElement.find('.regenerate-container').show();
@@ -1245,13 +1307,36 @@ $(document).ready(function() {
       return;
     }
     const message = $userInputElement.val().trim();
-    if (!message) return;
+    if (!message && !pendingImageData) return;
     const systemPrompt = $systemPromptElement.val() || window.DEFAULT_SYSTEM_PROMPT;
     const activeSet = ($('#set-selector').val() || 'default');
     $userInputElement.val('');
-    appendMessage('<strong>You:</strong> ' + escapeHTML(message), 'user-message');
+
+    // Build message content with optional image
+    let fullMessage = message;
+    let hasImage = false;
+    if (pendingImageData) {
+      fullMessage = message + '\n[IMAGE:' + pendingImageData + ']';
+      hasImage = true;
+    }
+
+    // Build user message HTML with image if present
+    let userMessageHtml = '<strong>You:</strong> ' + escapeHTML(message);
+    if (hasImage) {
+      userMessageHtml += '<br><img src="' + escapeHTML(pendingImageData) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
+    }
+    appendMessage(userMessageHtml, 'user-message');
+
+    // Clear pending image
+    if (pendingImagePreview) {
+      pendingImagePreview.remove();
+      pendingImagePreview = null;
+    }
+    pendingImageData = null;
+    $('#image-input').val('');
+
     const requestData = {
-      message,
+      message: fullMessage,
       system_prompt: systemPrompt,
       set_name: activeSet,
       model_name: $('#modelSelect').val(),

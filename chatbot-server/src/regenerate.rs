@@ -19,6 +19,7 @@ use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::chat_utils::ChatLockGuard;
+use crate::providers::message_utils::parse_message_content;
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
@@ -55,7 +56,7 @@ pub async fn handle_regenerate(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 2 * 1024 * 1024).await.map_err(|err| {
+    let body_bytes = body::to_bytes(body, 5 * 1024 * 1024).await.map_err(|err| {
         error!(?err, "failed to read regenerate request body");
         (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
     })?;
@@ -210,7 +211,10 @@ pub async fn handle_regenerate(
         .iter()
         .map(|message| match message.role {
             ChatMessageRole::System => ChatMessagePayload::system(message.content.clone()),
-            ChatMessageRole::User => ChatMessagePayload::user(message.content.clone()),
+            ChatMessageRole::User => {
+                let content = parse_message_content(&message.content);
+                ChatMessagePayload::user_with_content(content)
+            }
             ChatMessageRole::Assistant => ChatMessagePayload::assistant(message.content.clone()),
         })
         .collect::<Vec<_>>();

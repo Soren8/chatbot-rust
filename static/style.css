@@ -756,3 +756,14 @@ body {
 #scroll-to-bottom:active {
     transform: scale(0.9);
 }
+
+.image-preview-container {
+    background-color: #2a2a2a;
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 8px;
+}
+
+#attach-button {
+    flex-shrink: 0;
+}
