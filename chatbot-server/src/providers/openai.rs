@@ -30,13 +30,6 @@ pub mod messages {
     use serde_json::Value;
 
     #[derive(Clone, Serialize)]
-    #[serde(untagged)]
-    pub enum MessageContent {
-        Text(String),
-        MultiModal(Vec<ContentPart>),
-    }
-
-    #[derive(Clone, Serialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum ContentPart {
         Text { text: String },
@@ -119,7 +112,7 @@ pub mod messages {
                 role: "tool".to_string(),
                 content: Some(ChatMessageContent::Text(content)),
                 tool_calls: None,
-                tool_call_id: None,
+                tool_call_id: Some(tool_call_id),
             }
         }
     }
