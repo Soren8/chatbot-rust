@@ -272,22 +272,35 @@ function appendMessage(message, className, pairIndex) {
 
   if (className && className.indexOf('user-message') !== -1) {
     let originalText = message;
-    if (typeof message === 'string' && message.indexOf('<strong>You:') !== -1) {
+    let prefix = '';
+    let imageHtml = '';
+
+    if (typeof message === 'string' && message.indexOf('<img ') !== -1) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = message;
+      const imgEl = tmp.querySelector('img');
+      if (imgEl) {
+        const imgSrc = imgEl.getAttribute('src');
+        imageHtml = '<br><img src="' + escapeHTML(imgSrc) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
+        imgEl.remove();
+        originalText = (tmp.textContent || tmp.innerText || '').replace(/^\s*You:\s*/, '').trim();
+        prefix = '<strong>You:</strong> ';
+      }
+    } else if (typeof message === 'string' && message.indexOf('<strong>You:') !== -1) {
       const tmp = document.createElement('div');
       tmp.innerHTML = message;
       originalText = (tmp.textContent || tmp.innerText || '').replace(/^\s*You:\s*/, '').trim();
+      prefix = '<strong>You:</strong> ';
+      const imageMatch = originalText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
+      if (imageMatch) {
+        imageHtml = '<br><img src="' + escapeHTML(imageMatch[1]) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
+        originalText = originalText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
+      }
     }
 
-    // Handle image attachments [IMAGE:data:image/png;base64,...]
-    let imageHtml = '';
-    const imageMatch = originalText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
-    if (imageMatch) {
-      imageHtml = '<br><img src="' + escapeHTML(imageMatch[1]) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
-      originalText = originalText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
-    }
-
-    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${renderMarkdown(originalText)}${imageHtml}</span>`);
-    $messageElement.attr('data-original', originalText + (imageMatch ? '\n[IMAGE:' + imageMatch[1] + ']' : ''));
+    $messageElement.html(`<span class="user-message-text">${prefix}${renderMarkdown(originalText)}${imageHtml}</span>`);
+    const imageMatchForData = originalText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/) || message.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
+    $messageElement.attr('data-original', originalText + (imageMatchForData ? '\n[IMAGE:' + imageMatchForData[1] + ']' : ''));
   } else {
     $messageElement.html(message);
   }
