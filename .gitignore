@@ -16,3 +16,11 @@ target/
 .gemini/
 .claude/
 
+# Capacitor
+node_modules/
+android/
+capacitor.config.json
+package.json
+package-lock.json
+static/index.html
+

@@ -15,10 +15,11 @@ The web frontend is the only interface. This creates three issues:
 - iOS support is low priority but desired as a side effect.
 - Existing web UI (`static/chat.js`, ~2000 lines Bootstrap/jQuery) must be reused with minimal changes.
 - VAD stays as Silero in Capacitor WebView; native VAD is post-baseline optimization only.
+- **Server-pull model**: The app loads web content from the running `chatbot-server` instead of bundling static assets. Any web UI updates are reflected instantly without rebuilding the APK.
 
 ## Recommendation: Capacitor Android + Native Android Auto Module
 
-Capacitor wraps the existing web UI in a native Android shell. Voice mode uses a native Kotlin plugin that captures audio and streams to `/stt`, bypassing browser restrictions. Android Auto is a separate native `CarAppService` implementing a voice-only interface (listen → transcribe → chat → TTS → speak, with an exit button).
+Capacitor wraps the existing web UI in a native Android shell. The WebView loads from the server (not bundled), so the app always shows the latest web UI. Voice mode uses a native Kotlin plugin that captures audio and streams to `/stt`, bypassing browser restrictions. Android Auto is a separate native `CarAppService` implementing a voice-only interface (listen → transcribe → chat → TTS → speak, with an exit button).
 
 ## Architecture
 
@@ -60,7 +61,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 ## Implementation Phases
 
 ### Phase 1: Capacitor Android Shell
-**Goal**: Existing web UI runs in native Android app.
+**Goal**: Existing web UI runs in native Android app, loaded from server (not bundled).
 
 1. Add Capacitor:
    ```bash
@@ -70,13 +71,17 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    npx cap add android
    ```
 
-2. Configure `AndroidManifest.xml`:
+2. Modify `MainActivity.java` to load from server URL instead of bundled assets:
+   - WebView loads `http://<server>:80` on launch
+   - Server URL configurable via `server_url` string resource
+
+3. Configure `AndroidManifest.xml`:
    - `RECORD_AUDIO`, `INTERNET`, `WAKE_LOCK`, `FOREGROUND_SERVICE` permissions
    - `android:exported="true"` for intent filters
 
-3. Add `@capacitor-community/background-runner` for background execution.
+4. Add `@capacitor-community/background-runner` for background execution.
 
-4. Build and verify shell app loads.
+5. Build and verify shell app loads and connects to running server.
 
 **Effort**: ~1-2 days.
 
@@ -130,6 +135,22 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 ---
 
+## Server-Pull Model
+
+The app does NOT bundle `static/` files. Instead, the WebView loads directly from the running `chatbot-server`. This means:
+
+- Web UI updates (chat.js, CSS, templates) appear instantly without rebuilding the APK
+- The device must have network access to the server (same WiFi or port-forwarded)
+- For car use, the server URL should point to the machine running `chatbot-server`
+- Default URL is `http://localhost:80` (change via `server_url` string resource)
+
+To change the server URL for a build, edit `res/values/strings.xml`:
+```xml
+<string name="server_url">http://192.168.1.100:80</string>
+```
+
+---
+
 ## VAD Evaluation
 
 Silero VAD runs in the Capacitor WebView, not in a browser tab, so it should not be subject to the same suspension rules. However, car environments are noisy. After Phase 2, test VAD accuracy. If it misses too often:
@@ -140,19 +161,42 @@ Native VAD is **not in scope** for initial delivery.
 
 ---
 
-## Files to Create/Modify
+## Build Instructions
+
+Prerequisites: Java 17+, Android SDK (command-line tools or Android Studio)
+
+```bash
+# Install dependencies (one-time)
+npm install
+
+# Sync web assets and plugins to Android
+npx cap sync android
+
+# Build debug APK
+cd android && ./gradlew assembleDebug
+
+# APK location
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+For production builds, configure the server URL in `res/values/strings.xml` before building.
+
+---
+
+## Files Created/Modified
 
 | File | Action |
 |------|--------|
 | `docs/frontends.md` | Create — this document |
 | `docs/design.md` | Modify — add frontends reference |
-| `capacitor.config.ts` | Create — points to `./static` |
+| `capacitor.config.json` | Create |
+| `package.json` | Create |
 | `android/` | Create — Capacitor Android project |
-| `android/app/src/main/java/.../NativeMicPlugin.kt` | Create — mic bridge |
-| `android/app/src/main/java/.../VoiceCarAppService.kt` | Create — AA CarAppService |
-| `static/chat.js` | Modify — add `Capacitor.isNative` conditional |
-| `ios/` | Create — Capacitor iOS project (Phase 4) |
-| `src/ios/NativeMicPlugin.swift` | Create — Swift mic plugin (Phase 4) |
+| `android/.../MainActivity.java` | Modify — server-pull WebView |
+| `android/.../AndroidManifest.xml` | Modify — audio permissions |
+| `res/values/strings.xml` | Modify — server_url |
+| `static/index.html` | Create — Capacitor placeholder (gitignored) |
+| `.gitignore` | Modify — exclude Capacitor build artifacts |
 
 ---
 
@@ -160,7 +204,7 @@ Native VAD is **not in scope** for initial delivery.
 
 | Phase | Deliverable | Effort |
 |-------|-------------|--------|
-| 1 | Capacitor Android shell | ~1-2 days |
+| 1 | Capacitor Android shell (server-pull) | ~1-2 days |
 | 2 | Native mic plugin + chat.js conditional | ~1 week |
 | 3 | Android Auto voice module | ~1 week |
 | 4 | iOS build (same codebase) | ~1 day |
