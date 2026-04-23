@@ -102,6 +102,13 @@ This document captures the current architecture of the project and the potential
   - [ ] Break out LLM providers into a git submodule so they can be shared and consumed by other projects or front ends.
   - [ ] Establish semantic versioning and backward-compatibility guarantees for the provider interface.
 
+- **Mobile Frontends**
+  - [ ] Capacitor Android shell — wrap existing web UI in native Android app
+  - [ ] Native microphone plugin — bypass browser audio restrictions on mobile
+  - [ ] Android Auto integration — native `CarAppService` for voice-only AA interface
+  - [ ] iOS support via Capacitor (same codebase, low priority)
+  - See [frontends.md](frontends.md) for full plan.
+
 - **Voice Mode** — Default TTS provider is `kokoro`; select Qwen3-TTS with `tts_provider: "qwen"` in `.config.yml`.
   - [ ] Silero VAD voice activity detection.
   - [ ] Whisper Large v3 turbo.
