@@ -18,7 +18,10 @@ target/
 
 # Capacitor
 node_modules/
-android/
+android/app/build/
+android/app/.gradle/
+android/.gradle/
+android/build/
 capacitor.config.json
 package.json
 package-lock.json
