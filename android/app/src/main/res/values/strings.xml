@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Chatbot</string>
+    <string name="title_activity_main">Chatbot</string>
+    <string name="package_name">com.chatbot.app</string>
+    <string name="custom_url_scheme">com.chatbot.app</string>
+    <string name="server_url">http://10.0.2.2:80</string>
+</resources>
