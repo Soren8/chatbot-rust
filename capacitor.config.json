@@ -1,5 +1,8 @@
 {
   "appId": "com.chatbot.app",
   "appName": "Chatbot",
-  "webDir": "./static"
+  "webDir": "./static",
+  "plugins": {
+    "NativeMic": {}
+  }
 }

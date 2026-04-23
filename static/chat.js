@@ -53,6 +53,34 @@ try {
   } catch (_) {}
 } catch (e) { /* no-op */ }
 
+// ── Native Mic Bridge ────────────────────────────────────────────────────────
+(function() {
+  const hasCapacitor = !!(window.Capacitor && window.Capacitor.nativePromise);
+  window.nativeMicAvailable = false;
+
+  if (hasCapacitor) {
+    window.NativeMic = {
+      isAvailable: function() { return true; },
+      requestPermission: function() {
+        return window.Capacitor.nativePromise('NativeMic', 'requestPermission', {});
+      },
+      isRecording: function() {
+        return window.Capacitor.nativePromise('NativeMic', 'isRecording', {});
+      },
+      start: function() {
+        return window.Capacitor.nativePromise('NativeMic', 'start', {});
+      },
+      stop: function() {
+        return window.Capacitor.nativePromise('NativeMic', 'stop', {});
+      },
+      addListener: function(eventName, callback) {
+        return window.Capacitor.addListener('NativeMic', eventName, callback);
+      }
+    };
+    window.nativeMicAvailable = true;
+  }
+})();
+
 const originalFetch = window.fetch;
 window.fetch = function(input, init) {
   return originalFetch.apply(this, arguments).then(response => {
@@ -1574,12 +1602,96 @@ $(document).ready(function() {
 
   // Microphone / STT
   const $micBtn = $('#mic-button');
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  const useNativeMic = window.NativeMic && window.NativeMic.isAvailable();
+  const useBrowserMic = !useNativeMic && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+
+  if (useNativeMic || useBrowserMic) {
     $micBtn.show();
+  }
 
-    let _mediaRecorder = null;
-    let _audioChunks = [];
+  let _nativeMicPcmChunks = [];
+  let _mediaRecorder = null;
+  let _audioChunks = [];
 
+  // Native mic push-to-talk
+  if (useNativeMic) {
+    let _nativeMicListener = null;
+
+    $micBtn.on('click', function () {
+      if ($micBtn.hasClass('recording')) {
+        // Stop recording
+        $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');
+
+        if (_nativeMicListener) {
+          _nativeMicListener.then(function (unlisten) { unlisten(); });
+          _nativeMicListener = null;
+        }
+
+        window.NativeMic.stop().then(function () {
+          if (_nativeMicPcmChunks.length === 0) return;
+          const totalLen = _nativeMicPcmChunks.reduce(function (a, b) { return a + b.length; }, 0);
+          const merged = new Uint8Array(totalLen);
+          let offset = 0;
+          _nativeMicPcmChunks.forEach(function (chunk) {
+            merged.set(chunk, offset);
+            offset += chunk.length;
+          });
+          const samples = new Int16Array(merged.buffer);
+          const wavBlob = encodeWAV(samples, 16000);
+          const formData = new FormData();
+          formData.append('audio', wavBlob, 'recording.wav');
+
+          _nativeMicPcmChunks = [];
+
+          fetch('/stt', {
+            method: 'POST',
+            headers: withCsrf({}),
+            body: formData,
+          })
+            .then(function (res) {
+              if (!res.ok) throw new Error('STT request failed (' + res.status + ')');
+              return res.json();
+            })
+            .then(function (data) {
+              const current = $('#user-input').val();
+              const separator = current.trim() ? ' ' : '';
+              $('#user-input').val(current + separator + (data.text || '')).focus();
+            })
+            .catch(function (err) {
+              appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+            });
+        }).catch(function (err) {
+          appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+        });
+        return;
+      }
+
+      // Start recording
+      _nativeMicPcmChunks = [];
+
+      window.NativeMic.requestPermission().then(function (result) {
+        if (!result.granted) throw new Error('Microphone permission denied');
+        _nativeMicListener = window.NativeMic.addListener('nativeMicData', function (data) {
+          if (data && data.data) {
+            const binary = atob(data.data);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            _nativeMicPcmChunks.push(bytes);
+          }
+        });
+        return window.NativeMic.start();
+      }).then(function () {
+        $micBtn.addClass('recording').html('&#x23F9;').attr('title', 'Stop Recording');
+      }).catch(function (err) {
+        appendMessage('<strong>Error:</strong> Microphone access denied: ' + escapeHTML(err.message), 'error-message');
+      });
+    });
+  }
+
+  // Browser mic push-to-talk (fallback)
+  if (useBrowserMic) {
     $micBtn.on('click', function () {
       if (_mediaRecorder && _mediaRecorder.state === 'recording') {
         _mediaRecorder.stop();
@@ -1595,7 +1707,6 @@ $(document).ready(function() {
         };
 
         _mediaRecorder.onstop = function () {
-          // Stop all tracks so the browser releases the microphone
           stream.getTracks().forEach(function (t) { t.stop(); });
 
           $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');

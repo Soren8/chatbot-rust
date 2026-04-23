@@ -1,13 +1,17 @@
 package com.chatbot.app;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
 
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import com.chatbot.app.NativeMicPlugin;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -17,6 +21,8 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        registerPlugin(NativeMicPlugin.class);
 
         serverUrl = getString(getResources().getIdentifier("server_url", "string", getPackageName()));
 
