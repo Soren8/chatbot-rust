@@ -60,7 +60,9 @@ try {
 
   if (hasCapacitor) {
     window.NativeMic = {
-      isAvailable: function() { return true; },
+      isAvailable: function() { 
+        return !!(window.Capacitor.Plugins && window.Capacitor.Plugins.NativeMic); 
+      },
       requestPermission: function() {
         return window.Capacitor.nativePromise('NativeMic', 'requestPermission', {});
       },
@@ -77,7 +79,7 @@ try {
         return window.Capacitor.addListener('NativeMic', eventName, callback);
       }
     };
-    window.nativeMicAvailable = true;
+    window.nativeMicAvailable = !!(window.Capacitor.Plugins && window.Capacitor.Plugins.NativeMic);
   }
 })();
 
@@ -1602,7 +1604,7 @@ $(document).ready(function() {
 
   // Microphone / STT
   const $micBtn = $('#mic-button');
-  const useNativeMic = window.NativeMic && window.NativeMic.isAvailable();
+  const useNativeMic = !!(window.NativeMic && window.NativeMic.isAvailable());
   const useBrowserMic = !useNativeMic && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
 
   if (useNativeMic || useBrowserMic) {
