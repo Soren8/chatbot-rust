@@ -7,6 +7,7 @@ import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
@@ -21,6 +22,11 @@ import java.nio.ByteOrder;
 
 @CapacitorPlugin(name = "NativeMic")
 public class NativeMicPlugin extends Plugin {
+    private static final String TAG = "NativeMicPlugin";
+
+    public NativeMicPlugin() {
+        Log.d(TAG, "NativeMicPlugin constructor called");
+    }
 
     private static final int SAMPLE_RATE = 16000;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
@@ -35,12 +41,15 @@ public class NativeMicPlugin extends Plugin {
 
     @PluginMethod
     public void requestPermission(PluginCall call) {
+        Log.d(TAG, "requestPermission called");
         if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
                 == PackageManager.PERMISSION_GRANTED) {
+            Log.d(TAG, "Permission already granted");
             JSObject result = new JSObject();
             result.put("granted", true);
             call.resolve(result);
         } else {
+            Log.d(TAG, "Requesting permission");
             permissionCall = call;
             ActivityCompat.requestPermissions(
                 getActivity(),
@@ -59,6 +68,7 @@ public class NativeMicPlugin extends Plugin {
 
     @PluginMethod
     public void start(PluginCall call) {
+        Log.d(TAG, "start called, isRecording=" + isRecording);
         if (isRecording) {
             call.reject("Already recording");
             return;
@@ -66,17 +76,20 @@ public class NativeMicPlugin extends Plugin {
 
         if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "Permission not granted for recording");
             call.reject("Microphone permission not granted");
             return;
         }
 
         int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
         if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            Log.e(TAG, "Invalid buffer size: " + bufferSize);
             call.reject("Unable to get minimum buffer size");
             return;
         }
 
         try {
+            Log.d(TAG, "Creating AudioRecord...");
             audioRecord = new AudioRecord(
                 MediaRecorder.AudioSource.MIC,
                 SAMPLE_RATE,
@@ -165,8 +178,10 @@ public class NativeMicPlugin extends Plugin {
     @Override
     protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
+        Log.d(TAG, "handleRequestPermissionsResult: " + requestCode + " results=" + (grantResults.length > 0 ? grantResults[0] : "none"));
         if (requestCode == PERMISSION_REQUEST_CODE && permissionCall != null) {
             boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            Log.d(TAG, "Permission result: granted=" + granted);
             JSObject result = new JSObject();
             result.put("granted", granted);
             permissionCall.resolve(result);

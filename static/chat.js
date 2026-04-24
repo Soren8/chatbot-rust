@@ -59,13 +59,10 @@ try {
   const isAndroid = /Android/.test(navigator.userAgent);
   window.nativeMicAvailable = false;
 
-  if (hasCapacitor) {
+  if (hasCapacitor && isAndroid) {
     window.NativeMic = {
       isAvailable: function() { 
-        if (isAndroid) {
-          return true;  // On Android, trust that the plugin is registered
-        }
-        return !!(window.Capacitor.Plugins && window.Capacitor.Plugins.NativeMic);
+        return !!(window.Capacitor && window.Capacitor.nativePromise);
       },
       requestPermission: function() {
         return window.Capacitor.nativePromise('NativeMic', 'requestPermission', {});
@@ -1629,7 +1626,7 @@ $(document).ready(function() {
         $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');
 
         if (_nativeMicListener) {
-          _nativeMicListener.then(function (unlisten) { unlisten(); });
+          _nativeMicListener.remove();
           _nativeMicListener = null;
         }
 

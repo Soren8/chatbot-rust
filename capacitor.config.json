@@ -2,6 +2,10 @@
   "appId": "com.chatbot.app",
   "appName": "Chatbot",
   "webDir": "./static",
+  "server": {
+    "url": "http://10.0.2.2:80",
+    "cleartext": true
+  },
   "plugins": {
     "NativeMic": {}
   }
