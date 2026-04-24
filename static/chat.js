@@ -56,12 +56,16 @@ try {
 // ── Native Mic Bridge ────────────────────────────────────────────────────────
 (function() {
   const hasCapacitor = !!(window.Capacitor && window.Capacitor.nativePromise);
+  const isAndroid = /Android/.test(navigator.userAgent);
   window.nativeMicAvailable = false;
 
   if (hasCapacitor) {
     window.NativeMic = {
       isAvailable: function() { 
-        return !!(window.Capacitor.Plugins && window.Capacitor.Plugins.NativeMic); 
+        if (isAndroid) {
+          return true;  // On Android, trust that the plugin is registered
+        }
+        return !!(window.Capacitor.Plugins && window.Capacitor.Plugins.NativeMic);
       },
       requestPermission: function() {
         return window.Capacitor.nativePromise('NativeMic', 'requestPermission', {});
@@ -79,7 +83,7 @@ try {
         return window.Capacitor.addListener('NativeMic', eventName, callback);
       }
     };
-    window.nativeMicAvailable = !!(window.Capacitor.Plugins && window.Capacitor.Plugins.NativeMic);
+    window.nativeMicAvailable = true;
   }
 })();
 
