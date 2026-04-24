@@ -7,6 +7,7 @@ import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import java.lang.System;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -43,9 +44,10 @@ public class MainActivity extends BridgeActivity {
         });
 
         if (serverUrl != null && !serverUrl.isEmpty()) {
-            webView.loadUrl(serverUrl);
+            String cacheBust = "?t=" + System.currentTimeMillis();
+            webView.loadUrl(serverUrl + cacheBust);
         } else {
-            webView.loadUrl("http://localhost:80");
+            webView.loadUrl("http://localhost:80?t=" + System.currentTimeMillis());
         }
     }
 
