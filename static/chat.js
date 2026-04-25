@@ -1757,8 +1757,11 @@ $(document).ready(function() {
   const BARGE_IN_FRAMES_MOBILE = 5;   // ~500ms
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
   const BARGE_IN_THRESHOLD = isMobile ? BARGE_IN_FRAMES_MOBILE : BARGE_IN_FRAMES_DESKTOP;
+  // Native mic bridge for Voice Mode on Android
+  let nativeMicBridge = null;
 
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof vad !== 'undefined') {
+  const hasNativeMicVoice = window.nativeMicAvailable && isMobile && typeof vad !== 'undefined';
+  if ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof vad !== 'undefined') || hasNativeMicVoice) {
     $voiceModeBtn.show();
   }
 
@@ -1770,19 +1773,181 @@ $(document).ready(function() {
     }
   });
 
-  async function startVoiceMode() {
+  // Bridge to feed native mic chunks to Silero VAD
+  function NativeMicVADBridge(onSpeechStart, onSpeechEnd, onFrameProcessed, onError) {
+    this.onSpeechStart = onSpeechStart;
+    this.onSpeechEnd = onSpeechEnd;
+    this.onFrameProcessed = onFrameProcessed;
+    this.onError = onError;
+    this.audioContext = null;
+    this.scriptProcessor = null;
+    this.mediaStreamDest = null;
+    this.vad = null;
+    this.chunkQueue = [];
+    this.processing = false;
+    this.currentAudio = null;
+    this.speechStartTime = null;
+    this.speechFrames = [];
+    this.isRecording = false;
+  }
+
+  NativeMicVADBridge.prototype.start = async function() {
     try {
-      voiceModeStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1
+      // Create AudioContext
+      this.audioContext = new AudioContext({ sampleRate: 16000 });
+
+      // Create ScriptProcessorNode to receive native audio chunks
+      // 4096 samples = 256ms at 16kHz
+      this.scriptProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+      // Create MediaStreamDestination for VAD
+      this.mediaStreamDest = this.audioContext.createMediaStreamDestination();
+
+      // Connect script processor to media stream destination
+      this.scriptProcessor.connect(this.mediaStreamDest);
+
+      // Queue for native audio chunks
+      this.chunkQueue = [];
+      const self = this;
+
+      // Process audio in the script processor
+      this.scriptProcessor.onaudioprocess = function(e) {
+        const output = e.outputBuffer.getChannelData(0);
+
+        // Fill output with queued samples
+        let offset = 0;
+        while (offset < output.length && self.chunkQueue.length > 0) {
+          const chunk = self.chunkQueue.shift();
+          const chunkLen = chunk.length;
+          for (let i = 0; i < chunkLen && offset < output.length; i++, offset++) {
+            output[offset] = chunk[i];
+          }
         }
+        // Fill remaining with silence
+        while (offset < output.length) {
+          output[offset++] = 0;
+        }
+
+        // Track audio for speech detection
+        if (self.isRecording) {
+          self.speechFrames.push(new Float32Array(output));
+        }
+      };
+
+      // Start VAD with our stream
+      this.vad = await createVAD(this.mediaStreamDest.stream);
+      await this.vad.start();
+      this.isRecording = true;
+
+      // Start native mic
+      await window.NativeMic.start();
+
+      // Listen for native audio data
+      this.nativeListener = window.NativeMic.addListener('nativeMicData', function(data) {
+        if (!data || !data.data) return;
+
+        // Decode base64 to Float32 samples
+        const binary = atob(data.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        // Convert Int16 to Float32
+        const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) {
+          float32[i] = int16[i] / 32768;
+        }
+
+        // Add to queue
+        self.chunkQueue.push(float32);
       });
 
-      voiceModeVAD = await createVAD(voiceModeStream);
-      await voiceModeVAD.start();
+    } catch (err) {
+      this.onError('Failed to start Voice Mode: ' + err.message);
+    }
+  };
+
+  NativeMicVADBridge.prototype.stop = async function() {
+    try {
+      this.isRecording = false;
+
+      if (this.nativeListener) {
+        this.nativeListener.remove();
+        this.nativeListener = null;
+      }
+
+      if (this.vad) {
+        this.vad.pause();
+        this.vad.destroy();
+        this.vad = null;
+      }
+
+      if (this.scriptProcessor) {
+        this.scriptProcessor.disconnect();
+        this.scriptProcessor = null;
+      }
+
+      if (this.audioContext) {
+        await this.audioContext.close();
+        this.audioContext = null;
+      }
+
+      await window.NativeMic.stop();
+
+    } catch (err) {
+      console.error('Error stopping Voice Mode bridge:', err);
+    }
+  };
+
+  async function startVoiceMode() {
+    try {
+      const useNativeMicVAD = window.nativeMicAvailable && isMobile;
+
+      if (useNativeMicVAD) {
+        // Use native mic bridge for Android
+        nativeMicBridge = new NativeMicVADBridge(
+          function() {
+            if (CURRENT_AUDIO) {
+              bargeInFrames = 0;
+            } else {
+              handleBargeIn();
+            }
+          },
+          function(audio) {
+            handleSpeechEnd(audio);
+          },
+          function(probs) {
+            if (CURRENT_AUDIO && probs.isSpeech > 0.8) {
+              bargeInFrames++;
+              if (bargeInFrames >= BARGE_IN_THRESHOLD) {
+                bargeInFrames = 0;
+                handleBargeIn();
+              }
+            } else if (!CURRENT_AUDIO) {
+              bargeInFrames = 0;
+            }
+          },
+          function(err) {
+            appendMessage('<strong>Error:</strong> ' + err, 'error-message');
+          }
+        );
+        await nativeMicBridge.start();
+      } else {
+        // Use browser getUserMedia on desktop
+        voiceModeStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1
+          }
+        });
+
+        voiceModeVAD = await createVAD(voiceModeStream);
+        await voiceModeVAD.start();
+      }
+
       window.voiceModeActive = true;
       $voiceModeBtn.addClass('active');
       $micBtn.prop('disabled', true);
@@ -1800,6 +1965,8 @@ $(document).ready(function() {
       positiveSpeechThreshold: 0.5,
       redemptionFrames: 5,
       minSpeechFrames: 1,
+      // Override getStream to return our pre-created stream instead of calling getUserMedia
+      getStream: async () => stream,
       onSpeechStart: function () {
         if (CURRENT_AUDIO) {
           bargeInFrames = 0;
@@ -1825,6 +1992,8 @@ $(document).ready(function() {
   }
 
   async function reinitializeVAD() {
+    // With native mic bridge, reinitialize not needed - bridge handles errors internally
+    if (nativeMicBridge) return;
     if (!voiceModeStream || !window.voiceModeActive) return;
     if (voiceModeVAD) {
       voiceModeVAD.pause();
@@ -1841,6 +2010,10 @@ $(document).ready(function() {
   }
 
   function stopVoiceMode() {
+    if (nativeMicBridge) {
+      nativeMicBridge.stop();
+      nativeMicBridge = null;
+    }
     if (voiceModeVAD) {
       voiceModeVAD.pause();
       voiceModeVAD.destroy();
@@ -1934,6 +2107,8 @@ $(document).ready(function() {
 
   // Pause/resume VAD when page is hidden
   document.addEventListener('visibilitychange', function () {
+    // With native mic bridge, we don't pause - native mic continues
+    if (nativeMicBridge) return;
     if (!voiceModeVAD) return;
     if (document.hidden) {
       voiceModeVAD.pause();
