@@ -3,5 +3,7 @@
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">desktop-1.tailfc0df0.ts.net</domain>
+        <domain includeSubdomains="true">tailfc0df0.ts.net</domain>
     </domain-config>
 </network-security-config>

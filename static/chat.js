@@ -1762,9 +1762,9 @@ $(document).ready(function() {
   // Sustained-speech barge-in confirmation state
   let bargeInFrames = 0;
   const BARGE_IN_FRAMES_DESKTOP = 3;  // ~300ms at 100ms/frame
-  const BARGE_IN_FRAMES_MOBILE = 5;   // ~500ms
+  const BARGE_IN_FRAMES_MOBILE = 3;   // ~300ms - same as desktop for fast response
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
-  const BARGE_IN_THRESHOLD = isMobile ? BARGE_IN_FRAMES_MOBILE : BARGE_IN_FRAMES_DESKTOP;
+  const BARGE_IN_THRESHOLD = BARGE_IN_FRAMES_DESKTOP;
   // Native mic bridge for Voice Mode on Android
   let nativeMicBridge = null;
 
@@ -1984,7 +1984,6 @@ $(document).ready(function() {
       positiveSpeechThreshold: 0.5,
       redemptionFrames: 5,
       minSpeechFrames: 1,
-      // Override getStream to return our pre-created stream instead of calling getUserMedia
       getStream: async () => stream,
       onSpeechStart: function () {
         nativeLog('VAD', 'onSpeechStart');

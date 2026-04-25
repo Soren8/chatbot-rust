@@ -22,6 +22,17 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    flavorDimensions += "environment"
+    productFlavors {
+        emulator {
+            dimension "environment"
+            resValue "string", "server_url", "http://10.0.2.2:80"
+        }
+        production {
+            dimension "environment"
+            resValue "string", "server_url", "http://desktop-1.tailfc0df0.ts.net:80"
+        }
+    }
 }
 
 repositories {

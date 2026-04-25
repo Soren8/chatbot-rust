@@ -3,7 +3,7 @@
   "appName": "Chatbot",
   "webDir": "./static",
   "server": {
-    "url": "http://10.0.2.2:80",
+    "url": "http://desktop-1.tailfc0df0.ts.net:80",
     "cleartext": true
   },
   "plugins": {

@@ -91,7 +91,7 @@ public class NativeMicPlugin extends Plugin {
         try {
             Log.d(TAG, "Creating AudioRecord...");
             audioRecord = new AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
