@@ -1900,6 +1900,17 @@ $(document).ready(function() {
     }
   };
 
+  NativeMicVADBridge.prototype.reinitialize = async function() {
+    if (!this.vad || !this.isRecording) return;
+    try {
+      this.vad.pause();
+      this.vad.start();
+    } catch (e) {
+      console.error('VAD reinitialize failed:', e);
+      this.onError('Voice detection failed to recover. Please toggle voice mode off and on.');
+    }
+  };
+
   async function startVoiceMode() {
     try {
       const useNativeMicVAD = window.nativeMicAvailable && isMobile;
@@ -1992,8 +2003,12 @@ $(document).ready(function() {
   }
 
   async function reinitializeVAD() {
-    if (!voiceModeStream || !window.voiceModeActive) return;
-    if (!voiceModeVAD) return;
+    if (!window.voiceModeActive) return;
+    if (nativeMicBridge) {
+      await nativeMicBridge.reinitialize();
+      return;
+    }
+    if (!voiceModeStream || !voiceModeVAD) return;
     try {
       voiceModeVAD.pause();
       voiceModeVAD.start();
