@@ -1902,11 +1902,17 @@ $(document).ready(function() {
 
   NativeMicVADBridge.prototype.reinitialize = async function() {
     if (!this.vad || !this.isRecording) return;
+    console.log('[VAD] reinitialize: pausing VAD');
+    this.vad.pause();
+    console.log('[VAD] reinitialize: destroying VAD');
+    this.vad.destroy();
+    console.log('[VAD] reinitialize: creating new VAD');
     try {
-      this.vad.pause();
-      this.vad.start();
+      this.vad = await createVAD(this.mediaStreamDest.stream);
+      await this.vad.start();
+      console.log('[VAD] reinitialize: VAD restarted successfully');
     } catch (e) {
-      console.error('VAD reinitialize failed:', e);
+      console.error('[VAD] reinitialize failed:', e);
       this.onError('Voice detection failed to recover. Please toggle voice mode off and on.');
     }
   };
@@ -1968,6 +1974,7 @@ $(document).ready(function() {
   }
 
   function createVAD(stream) {
+    console.log('[VAD] createVAD called with stream id:', stream.id);
     return vad.MicVAD.new({
       stream: stream,
       model: 'v5',
@@ -2083,6 +2090,7 @@ $(document).ready(function() {
   }
 
   async function handleSpeechEnd(audio) {
+    console.log('[VAD] handleSpeechEnd called, vadSttInProgress=', vadSttInProgress);
     if (vadSttInProgress) return;
     vadSttInProgress = true;
     if (voiceModeVAD) voiceModeVAD.pause();
