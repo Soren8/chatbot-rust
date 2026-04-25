@@ -26,6 +26,18 @@
 
         </activity>
 
+        <service
+            android:name=".car.ChatbotCarAppService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.POINT_OF_INTEREST" />
+            </intent-filter>
+            <meta-data
+                android:name="androidx.car.app.supportedCarTypes"
+                android:resource="@array/car_app_supported_types" />
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <array name="car_app_supported_types">
+        <item>androidx.car.app.GenericDeprecated</item>
+    </array>
+</resources>
