@@ -107,7 +107,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Native microphone plugin — bypass browser audio restrictions on mobile
   - [ ] Android Auto integration — native `CarAppService` for voice-only AA interface
   - [ ] iOS support via Capacitor (same codebase, low priority)
-  - See [frontends.md](frontends.md) for full plan.
+  - See [mobile-apps.md](mobile-apps.md) for full plan.
 
 - **Voice Mode** — Default TTS provider is `kokoro`; select Qwen3-TTS with `tts_provider: "qwen"` in `.config.yml`.
   - [ ] Silero VAD voice activity detection.

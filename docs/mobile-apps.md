@@ -226,8 +226,8 @@ Product flavors configure `server_url` string resource:
 
 | File | Action |
 |------|--------|
-| `docs/frontends.md` | Create — this document |
-| `docs/design.md` | Modify — add frontends reference |
+| `docs/mobile-apps.md` | Create — this document |
+| `docs/design.md` | Modify — add mobile-apps reference |
 | `capacitor.config.json` | Create — root config, synced to `android/app/src/main/assets/` after changes |
 | `package.json` | Create |
 | `android/` | Create — Capacitor Android project |
