@@ -26,6 +26,7 @@ import androidx.car.app.model.PaneTemplate;
 import androidx.car.app.model.Row;
 import androidx.car.app.model.Template;
 import androidx.car.app.validation.HostValidator;
+import com.chatbot.app.R;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -38,8 +39,7 @@ import java.util.concurrent.Executors;
 
 public class VoiceScreen extends Screen {
     private static final String TAG = "VoiceScreen";
-    private static final String SERVER_URL = "http://10.0.2.2:80";
-
+    private final String serverUrl;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private AudioTrack audioTrack;
@@ -49,7 +49,8 @@ public class VoiceScreen extends Screen {
 
     public VoiceScreen(@NonNull CarContext carContext) {
         super(carContext);
-        Log.i(TAG, "VoiceScreen created");
+        serverUrl = carContext.getString(R.string.server_url);
+        Log.i(TAG, "VoiceScreen created with server: " + serverUrl);
         mainHandler.postDelayed(this::startVoiceRecognition, 500);
     }
 
@@ -182,7 +183,7 @@ public class VoiceScreen extends Screen {
 
     private String sendToChat(String text) throws IOException {
         Log.i(TAG, "Sending to chat: " + text);
-        URL url = new URL(SERVER_URL + "/chat");
+        URL url = new URL(serverUrl + "/chat");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
@@ -215,7 +216,7 @@ public class VoiceScreen extends Screen {
     private void playTts(String text) {
         executor.execute(() -> {
             try {
-                URL url = new URL(SERVER_URL + "/tts");
+                URL url = new URL(serverUrl + "/tts");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
@@ -247,7 +248,7 @@ public class VoiceScreen extends Screen {
                     token = responseBody;
                 }
 
-                conn = (HttpURLConnection) new URL(SERVER_URL + "/tts_stream/" + token).openConnection();
+                conn = (HttpURLConnection) new URL(serverUrl + "/tts_stream/" + token).openConnection();
                 responseCode = conn.getResponseCode();
                 if (responseCode != 200) {
                     Log.e(TAG, "TTS stream API returned " + responseCode);
