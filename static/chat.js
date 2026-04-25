@@ -1992,16 +1992,11 @@ $(document).ready(function() {
   }
 
   async function reinitializeVAD() {
-    // With native mic bridge, reinitialize not needed - bridge handles errors internally
-    if (nativeMicBridge) return;
     if (!voiceModeStream || !window.voiceModeActive) return;
-    if (voiceModeVAD) {
-      voiceModeVAD.pause();
-      voiceModeVAD.destroy();
-    }
+    if (!voiceModeVAD) return;
     try {
-      voiceModeVAD = await createVAD(voiceModeStream);
-      await voiceModeVAD.start();
+      voiceModeVAD.pause();
+      voiceModeVAD.start();
     } catch (e) {
       console.error('VAD reinitialize failed:', e);
       appendMessage('<strong>Error:</strong> Voice detection failed to recover. Please toggle voice mode off and on.', 'error-message');
