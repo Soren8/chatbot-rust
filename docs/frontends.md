@@ -111,7 +111,10 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    - Silero VAD's `createVAD()` receives the stream with custom `getStream` override
    - Handles onSpeechStart, onSpeechEnd callbacks
 
-**Key Bug Fixed**: Silero VAD's `start()` internally calls `navigator.mediaDevices.getUserMedia()` even when a stream is passed, so the `getStream` override was required. Also, after speech detection, calling `pause()`/`start()` or `destroy()`/`createVAD()` on the VAD broke subsequent detection — the VAD must be left running continuously without interruption.
+**Key Bugs Fixed**:
+1. Silero VAD's `start()` internally calls `navigator.mediaDevices.getUserMedia()` even when a stream is passed, so the `getStream` override was required.
+2. After speech detection, calling `pause()`/`start()` or `destroy()`/`createVAD()` on the VAD broke subsequent detection — the VAD must be left running continuously without interruption.
+3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Solution: use `AudioSource.VOICE_COMMUNICATION` which enables hardware AEC/echo suppression.
 
 **Effort**: ~1 week.
 
@@ -195,19 +198,27 @@ Native VAD is **not in scope** for initial delivery.
 Prerequisites: Java 21+, Android SDK (command-line tools or Android Studio)
 
 ```bash
-# Build Android APK
+# Build Android APK (production flavor)
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 export ANDROID_HOME=/home/malakar/Android/Sdk
-cd android && ./gradlew assembleDebug
+cd android && ./gradlew assembleProductionDebug
 
-# APK location
-android/app/build/outputs/apk/debug/app-debug.apk
+# Build Android APK (emulator flavor)
+cd android && ./gradlew assembleEmulatorDebug
+
+# APK locations
+android/app/build/outputs/apk/production/debug/app-production-debug.apk
+android/app/build/outputs/apk/emulator/debug/app-emulator-debug.apk
 
 # Install via adb
-/home/malakar/Android/Sdk/platform-tools/adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+/home/malakar/Android/Sdk/platform-tools/adb install -r android/app/build/outputs/apk/production/debug/app-production-debug.apk
 ```
 
-For production builds, configure the server URL in `res/values/strings.xml` before building.
+Product flavors configure `server_url` string resource:
+- **emulator**: `http://10.0.2.2:80` (Android emulator's host loopback)
+- **production**: `http://desktop-1.tailfc0df0.ts.net:80`
+
+`network_security_config.xml` allows cleartext HTTP for emulator IP and tailscale domains.
 
 ---
 
@@ -217,19 +228,22 @@ For production builds, configure the server URL in `res/values/strings.xml` befo
 |------|--------|
 | `docs/frontends.md` | Create — this document |
 | `docs/design.md` | Modify — add frontends reference |
-| `capacitor.config.json` | Create |
+| `capacitor.config.json` | Create — root config, synced to `android/app/src/main/assets/` after changes |
 | `package.json` | Create |
 | `android/` | Create — Capacitor Android project |
-| `android/.../MainActivity.java` | Modify — server-pull WebView, disable cache |
+| `android/.../MainActivity.java` | Modify — server-pull WebView, disable cache, register plugins |
 | `android/.../AndroidManifest.xml` | Modify — audio permissions, CarAppService |
-| `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture |
+| `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture with `VOICE_COMMUNICATION` source |
 | `android/.../car/ChatbotCarAppService.java` | Create — Android Auto entry |
 | `android/.../car/VoiceSession.java` | Create — Android Auto session |
-| `android/.../car/VoiceScreen.java` | Create — Android Auto UI |
-| `android/.../Logger/LoggerPlugin.java` | Create — native logging to adb |
-| `res/values/strings.xml` | Modify — server_url |
-| `res/values/arrays.xml` | Create — car_app_supported_types |
-| `static/chat.js` | Modify — NativeMicVADBridge, voice mode |
+| `android/.../car/VoiceScreen.java` | Create — Android Auto UI, reads server URL from flavor string |
+| `android/.../Logger/LoggerPlugin.java` | Create — native logging to adb logcat |
+| `android/.../build.gradle` | Modify — product flavors (emulator/production) |
+| `android/.../res/xml/network_security_config.xml` | Create — allow cleartext for emulator + tailscale |
+| `android/.../res/values/arrays.xml` | Create — `car_app_supported_types` |
+| `android/.../res/values/strings.xml` | Modify — `server_url` per flavor |
+| `static/chat.js` | Modify — `NativeMicVADBridge`, VAD callbacks, TTS echo fix |
+| `static/deps/vad/` | Create — Silero VAD WASM assets |
 | `.gitignore` | Modify — exclude Capacitor build artifacts |
 
 ---
