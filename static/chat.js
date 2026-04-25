@@ -3,6 +3,14 @@ if (typeof ort !== 'undefined') {
   ort.env.wasm.wasmPaths = '/static/deps/vad/ort/';
 }
 
+// Native logging helper - logs to both browser console AND adb logcat
+window.nativeLog = function(tag, msg) {
+  console.log('[' + tag + ']', msg);
+  if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Logger) {
+    window.Capacitor.Plugins.Logger.log({ tag: tag, message: msg });
+  }
+};
+
 // Ensure config exists before any DOM-ready handlers use it
 try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
@@ -1838,6 +1846,7 @@ $(document).ready(function() {
       this.vad = await createVAD(this.mediaStreamDest.stream);
       await this.vad.start();
       this.isRecording = true;
+      this.chunkCount = 0;
 
       // Start native mic
       await window.NativeMic.start();
@@ -1861,6 +1870,10 @@ $(document).ready(function() {
 
         // Add to queue
         self.chunkQueue.push(float32);
+        self.chunkCount++;
+        if (self.chunkCount % 50 === 0) {
+          nativeLog('VAD', 'chunk ' + self.chunkCount + ' queue len=' + self.chunkQueue.length);
+        }
       });
 
     } catch (err) {
@@ -1902,19 +1915,7 @@ $(document).ready(function() {
 
   NativeMicVADBridge.prototype.reinitialize = async function() {
     if (!this.vad || !this.isRecording) return;
-    console.log('[VAD] reinitialize: pausing VAD');
-    this.vad.pause();
-    console.log('[VAD] reinitialize: destroying VAD');
-    this.vad.destroy();
-    console.log('[VAD] reinitialize: creating new VAD');
-    try {
-      this.vad = await createVAD(this.mediaStreamDest.stream);
-      await this.vad.start();
-      console.log('[VAD] reinitialize: VAD restarted successfully');
-    } catch (e) {
-      console.error('[VAD] reinitialize failed:', e);
-      this.onError('Voice detection failed to recover. Please toggle voice mode off and on.');
-    }
+    nativeLog('VAD', 'reinitialize: not calling pause/start, VAD keeps running chunkCount=' + this.chunkCount);
   };
 
   async function startVoiceMode() {
@@ -1974,7 +1975,7 @@ $(document).ready(function() {
   }
 
   function createVAD(stream) {
-    console.log('[VAD] createVAD called with stream id:', stream.id);
+    nativeLog('VAD', 'createVAD called with stream id: ' + stream.id);
     return vad.MicVAD.new({
       stream: stream,
       model: 'v5',
@@ -1986,6 +1987,7 @@ $(document).ready(function() {
       // Override getStream to return our pre-created stream instead of calling getUserMedia
       getStream: async () => stream,
       onSpeechStart: function () {
+        nativeLog('VAD', 'onSpeechStart');
         if (CURRENT_AUDIO) {
           bargeInFrames = 0;
         } else {
@@ -2004,6 +2006,7 @@ $(document).ready(function() {
         }
       },
       onSpeechEnd: function (audio) {
+        nativeLog('VAD', 'onSpeechEnd');
         handleSpeechEnd(audio);
       }
     });
