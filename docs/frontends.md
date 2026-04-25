@@ -28,18 +28,27 @@ Capacitor wraps the existing web UI in a native Android shell. The WebView loads
 │                        Android Device                         │
 │  ┌─────────────────────────────┐    ┌──────────────────────┐  │
 │  │     Capacitor WebView       │    │    Android Auto      │  │
-│  │  ┌───────────────────────┐  │    │    (Native Kotlin)   │  │
+│  │  ┌───────────────────────┐  │    │    (Native Java)     │  │
 │  │  │  chat.js              │  │    │                      │  │
-│  │  │  - Silero VAD         │  │    │  CarAppService       │  │
+│  │  │  - Silero VAD         │  │    │  ChatbotCarAppService│  │
 │  │  │  - TTS playback       │  │    │  - Voice input       │  │
 │  │  │  - Chat UI            │  │    │  - REST calls        │  │
 │  │  └───────────┬───────────┘  │    │  - TTS output        │  │
 │  │              │              │    │  - Exit button        │  │
 │  │              ▼              │    └──────────────────────┘  │
 │  │  ┌───────────────────────┐  │                             │
-│  │  │  NativeMicPlugin.kt   │  │                             │
-│  │  │  - 16kHz mono capture │  │                             │
-│  │  │  - POSTs to /stt      │  │                             │
+│  │  │  NativeMicPlugin.java │  │                             │
+│  │  │  - 16kHz mono PCM    │  │                             │
+│  │  │  - base64 to JS bridge│  │                             │
+│  │  └───────────────────────┘  │                             │
+│  │              │              │                             │
+│  │              ▼              │                             │
+│  │  ┌───────────────────────┐  │                             │
+│  │  │  NativeMicVADBridge   │  │                             │
+│  │  │  - ScriptProcessor    │  │                             │
+│  │  │  - MediaStreamDest    │  │                             │
+│  │  │  - Feeds Silero VAD   │  │                             │
+│  │  └───────────────────────┘  │                             │
 │  └─────────────────────────────┘                             │
 └──────────────────────────────┼────────────────────────────────┘
                                │   REST API
@@ -54,13 +63,13 @@ Capacitor wraps the existing web UI in a native Android shell. The WebView loads
 
 - **React Native**: Partial web reuse — jQuery/Bootstrap must be ported (~2-4 week rewrite).
 - **Flutter**: Zero web reuse — full Dart rewrite (~2-3 months). Platform channel overhead for real-time audio is a concern.
-- **All frameworks**: Android Auto always requires a separate native Kotlin module regardless of framework choice.
+- **All frameworks**: Android Auto always requires a separate native Java module regardless of framework choice.
 
 Capacitor is the only option that preserves the existing web UI unchanged.
 
 ## Implementation Phases
 
-### Phase 1: Capacitor Android Shell
+### Phase 1: Capacitor Android Shell ✅
 **Goal**: Existing web UI runs in native Android app, loaded from server (not bundled).
 
 1. Add Capacitor:
@@ -74,50 +83,55 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 2. Modify `MainActivity.java` to load from server URL instead of bundled assets:
    - WebView loads `http://<server>:80` on launch
    - Server URL configurable via `server_url` string resource
+   - WebView caching disabled for development
 
 3. Configure `AndroidManifest.xml`:
    - `RECORD_AUDIO`, `INTERNET`, `WAKE_LOCK`, `FOREGROUND_SERVICE` permissions
    - `android:exported="true"` for intent filters
 
-4. Add `@capacitor-community/background-runner` for background execution.
-
-5. Build and verify shell app loads and connects to running server.
+4. Build and verify shell app loads and connects to running server.
 
 **Effort**: ~1-2 days.
 
 ---
 
-### Phase 2: Native Microphone Plugin (Android)
+### Phase 2: Native Microphone Plugin (Android) ✅
 **Goal**: Voice mode works reliably without browser restrictions.
 
-1. Write `NativeMicPlugin.kt`:
+1. Write `NativeMicPlugin.java`:
    - Uses `AudioRecord` for 16kHz mono PCM capture
-   - POSTs to existing `/stt` endpoint
+   - Sends audio data to JS via Capacitor events (`nativeMicData`)
    - Handles audio focus and wake locks
    - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` to web layer
 
-2. Modify `chat.js`:
-   - Add `if (window.Capacitor && window.NativeMic) useNativeMicBridge()` conditional
-   - When native bridge is present, use it instead of `getUserMedia` + MediaRecorder
-   - Keep existing Silero VAD in WebView (not browser tab, so no suspension issue)
+2. `NativeMicVADBridge` class in `chat.js`:
+   - Creates AudioContext + ScriptProcessorNode + MediaStreamDestination
+   - Feeds native mic chunks (base64 → Float32) through queue to ScriptProcessorNode
+   - ScriptProcessorNode outputs to MediaStreamDestination's stream
+   - Silero VAD's `createVAD()` receives the stream with custom `getStream` override
+   - Handles onSpeechStart, onSpeechEnd callbacks
+
+**Key Bug Fixed**: Silero VAD's `start()` internally calls `navigator.mediaDevices.getUserMedia()` even when a stream is passed, so the `getStream` override was required. Also, after speech detection, calling `pause()`/`start()` or `destroy()`/`createVAD()` on the VAD broke subsequent detection — the VAD must be left running continuously without interruption.
 
 **Effort**: ~1 week.
 
 ---
 
-### Phase 3: Android Auto Module
+### Phase 3: Android Auto Module ✅
 **Goal**: App appears on AA head unit as a voice-only interface.
 
-1. Implement `CarAppService` in Kotlin:
-   - `onCreateSession()` returns a `VoiceSessionFragment`
-   - UI: only a listening indicator and an Exit button
-   - Voice input → `/stt` → `/chat` → `/tts` → audio playback
+1. Implement `CarAppService` in Java:
+   - `ChatbotCarAppService` with `onCreateSession()` returning `VoiceSession`
+   - `VoiceScreen` with listening indicator and Exit button
+   - Voice input via Android `SpeechRecognizer`
+   - REST calls: `/chat` → response, `/tts` → `/tts_stream` → audio playback
    - Exit button terminates session and closes AA UI
 
 2. Manifest declarations:
    - `android:autoContents="true"`
-   - `android.media.apis` capability
+   - `androidx.car.app.category.POINT_OF_INTEREST`
    - `android:exported="true"` on CarAppService
+   - `car_app_supported_types` array with `GenericDeprecated`
 
 **Effort**: ~1 week.
 
@@ -142,18 +156,32 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 - Web UI updates (chat.js, CSS, templates) appear instantly without rebuilding the APK
 - The device must have network access to the server (same WiFi or port-forwarded)
 - For car use, the server URL should point to the machine running `chatbot-server`
-- Default URL is `http://localhost:80` (change via `server_url` string resource)
+- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback)
 
-To change the server URL for a build, edit `res/values/strings.xml`:
-```xml
-<string name="server_url">http://192.168.1.100:80</string>
-```
+**Note**: WebView caching is disabled in `MainActivity.onStart()` via `setCacheMode(LOAD_NO_CACHE)` to ensure fresh loads during development.
 
 ---
 
-## VAD Evaluation
+## VAD Implementation Notes
 
-Silero VAD runs in the Capacitor WebView, not in a browser tab, so it should not be subject to the same suspension rules. However, car environments are noisy. After Phase 2, test VAD accuracy. If it misses too often:
+### Silero VAD in Capacitor WebView
+
+Silero VAD runs in the Capacitor WebView with a native mic bridge. Key implementation details:
+
+1. **NativeMicPlugin.java** captures 16kHz mono PCM via `AudioRecord` and sends base64-encoded chunks to JS via `notifyListeners('nativeMicData', ...)`
+
+2. **NativeMicVADBridge** (chat.js):
+   - Creates an `AudioContext` with `ScriptProcessorNode` (4096 samples = 256ms at 16kHz)
+   - Creates `MediaStreamDestination` and connects the ScriptProcessor to it
+   - On receiving native audio chunks, converts Int16 → Float32 and pushes to a queue
+   - The ScriptProcessor drains the queue into its output buffer (silence when queue is empty)
+   - The resulting stream is passed to Silero VAD via `createVAD(stream)` with `getStream` override
+
+3. **Critical VAD behavior**: After `onSpeechEnd` fires, the VAD must be left running. Calling `pause()`/`start()` causes Silero to internally call `getUserMedia` (fails in Android WebView). Calling `destroy()` and recreating the VAD also breaks subsequent detection. Simply letting the VAD run continuously works correctly — it naturally detects the next speech onset.
+
+### VAD Evaluation
+
+Car environments are noisy. After Phase 2 delivery, test VAD accuracy. If it misses too often:
 - Adjust Silero thresholds (`positiveSpeechThreshold`, `minSpeechFrames`)
 - Or implement native Kotlin VAD plugin using ONNX Runtime Mobile
 
@@ -163,20 +191,19 @@ Native VAD is **not in scope** for initial delivery.
 
 ## Build Instructions
 
-Prerequisites: Java 17+, Android SDK (command-line tools or Android Studio)
+Prerequisites: Java 21+, Android SDK (command-line tools or Android Studio)
 
 ```bash
-# Install dependencies (one-time)
-npm install
-
-# Sync web assets and plugins to Android
-npx cap sync android
-
-# Build debug APK
+# Build Android APK
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+export ANDROID_HOME=/home/malakar/Android/Sdk
 cd android && ./gradlew assembleDebug
 
 # APK location
 android/app/build/outputs/apk/debug/app-debug.apk
+
+# Install via adb
+/home/malakar/Android/Sdk/platform-tools/adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 For production builds, configure the server URL in `res/values/strings.xml` before building.
@@ -192,21 +219,27 @@ For production builds, configure the server URL in `res/values/strings.xml` befo
 | `capacitor.config.json` | Create |
 | `package.json` | Create |
 | `android/` | Create — Capacitor Android project |
-| `android/.../MainActivity.java` | Modify — server-pull WebView |
-| `android/.../AndroidManifest.xml` | Modify — audio permissions |
+| `android/.../MainActivity.java` | Modify — server-pull WebView, disable cache |
+| `android/.../AndroidManifest.xml` | Modify — audio permissions, CarAppService |
+| `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture |
+| `android/.../car/ChatbotCarAppService.java` | Create — Android Auto entry |
+| `android/.../car/VoiceSession.java` | Create — Android Auto session |
+| `android/.../car/VoiceScreen.java` | Create — Android Auto UI |
+| `android/.../Logger/LoggerPlugin.java` | Create — native logging to adb |
 | `res/values/strings.xml` | Modify — server_url |
-| `static/index.html` | Create — Capacitor placeholder (gitignored) |
+| `res/values/arrays.xml` | Create — car_app_supported_types |
+| `static/chat.js` | Modify — NativeMicVADBridge, voice mode |
 | `.gitignore` | Modify — exclude Capacitor build artifacts |
 
 ---
 
 ## Summary
 
-| Phase | Deliverable | Effort |
+| Phase | Deliverable | Status |
 |-------|-------------|--------|
-| 1 | Capacitor Android shell (server-pull) | ~1-2 days |
-| 2 | Native mic plugin + chat.js conditional | ~1 week |
-| 3 | Android Auto voice module | ~1 week |
-| 4 | iOS build (same codebase) | ~1 day |
+| 1 | Capacitor Android shell (server-pull) | ✅ Complete |
+| 2 | Native mic plugin + NativeMicVADBridge | ✅ Complete |
+| 3 | Android Auto voice module | ✅ Complete |
+| 4 | iOS build (same codebase) | Pending |
 
 **Total**: ~2-3 weeks for full Android delivery. iOS nearly free after.
