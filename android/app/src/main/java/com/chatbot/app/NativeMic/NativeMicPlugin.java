@@ -9,6 +9,8 @@ import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.NoiseSuppressor;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -46,6 +48,9 @@ public class NativeMicPlugin extends Plugin {
     private AudioManager audioManager = null;
     private AudioFocusRequest audioFocusRequest = null;
     private boolean hasAudioFocus = false;
+    private int previousAudioMode = AudioManager.MODE_NORMAL;
+    private AcousticEchoCanceler echoCanceler = null;
+    private NoiseSuppressor noiseSuppressor = null;
 
     @Override
     public void load() {
@@ -99,10 +104,13 @@ public class NativeMicPlugin extends Plugin {
         }
 
         requestAudioFocus();
+        enterCommunicationMode();
 
         int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
         if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
             Log.e(TAG, "Invalid buffer size: " + bufferSize);
+            abandonAudioFocus();
+            exitCommunicationMode();
             call.reject("Unable to get minimum buffer size");
             return;
         }
@@ -121,8 +129,12 @@ public class NativeMicPlugin extends Plugin {
                 call.reject("AudioRecord failed to initialize");
                 audioRecord.release();
                 audioRecord = null;
+                abandonAudioFocus();
+                exitCommunicationMode();
                 return;
             }
+
+            enableAudioEffects(audioRecord.getAudioSessionId());
 
             audioRecord.startRecording();
             isRecording = true;
@@ -145,6 +157,9 @@ public class NativeMicPlugin extends Plugin {
 
         } catch (Exception e) {
             FileLogger.log(TAG, "ERROR start: " + e.getMessage(), e);
+            stopRecording();
+            abandonAudioFocus();
+            exitCommunicationMode();
             call.reject("Failed to start recording: " + e.getMessage());
         }
     }
@@ -154,6 +169,7 @@ public class NativeMicPlugin extends Plugin {
         FileLogger.log(TAG, "stop called");
         stopRecording();
         abandonAudioFocus();
+        exitCommunicationMode();
         JSObject result = new JSObject();
         result.put("stopped", true);
         call.resolve(result);
@@ -179,6 +195,45 @@ public class NativeMicPlugin extends Plugin {
         FileLogger.log(TAG, "requestAudioFocus result=" + result + " granted=" + hasAudioFocus);
     }
 
+    private void enterCommunicationMode() {
+        if (audioManager == null) {
+            return;
+        }
+        previousAudioMode = audioManager.getMode();
+        audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+        FileLogger.log(TAG, "setMode MODE_IN_COMMUNICATION previous=" + previousAudioMode + " current=" + audioManager.getMode());
+    }
+
+    private void exitCommunicationMode() {
+        if (audioManager == null) {
+            return;
+        }
+        audioManager.setMode(previousAudioMode);
+        FileLogger.log(TAG, "restore audio mode=" + previousAudioMode + " current=" + audioManager.getMode());
+    }
+
+    private void enableAudioEffects(int audioSessionId) {
+        FileLogger.log(TAG, "AudioRecord sessionId=" + audioSessionId + " aecAvailable=" + AcousticEchoCanceler.isAvailable() + " nsAvailable=" + NoiseSuppressor.isAvailable());
+        if (AcousticEchoCanceler.isAvailable()) {
+            echoCanceler = AcousticEchoCanceler.create(audioSessionId);
+            if (echoCanceler != null) {
+                int result = echoCanceler.setEnabled(true);
+                FileLogger.log(TAG, "AEC enabled=" + echoCanceler.getEnabled() + " result=" + result);
+            } else {
+                FileLogger.log(TAG, "AEC create returned null");
+            }
+        }
+        if (NoiseSuppressor.isAvailable()) {
+            noiseSuppressor = NoiseSuppressor.create(audioSessionId);
+            if (noiseSuppressor != null) {
+                int result = noiseSuppressor.setEnabled(true);
+                FileLogger.log(TAG, "NS enabled=" + noiseSuppressor.getEnabled() + " result=" + result);
+            } else {
+                FileLogger.log(TAG, "NS create returned null");
+            }
+        }
+    }
+
     private void abandonAudioFocus() {
         if (audioManager != null && audioFocusRequest != null && hasAudioFocus) {
             audioManager.abandonAudioFocusRequest(audioFocusRequest);
@@ -202,11 +257,25 @@ public class NativeMicPlugin extends Plugin {
                 if (audioRecord.getState() == AudioRecord.STATE_INITIALIZED) {
                     audioRecord.stop();
                 }
+                releaseAudioEffects();
                 audioRecord.release();
             } catch (Exception e) {
                 // ignore
             }
             audioRecord = null;
+        }
+    }
+
+    private void releaseAudioEffects() {
+        if (echoCanceler != null) {
+            echoCanceler.release();
+            echoCanceler = null;
+            FileLogger.log(TAG, "AEC released");
+        }
+        if (noiseSuppressor != null) {
+            noiseSuppressor.release();
+            noiseSuppressor = null;
+            FileLogger.log(TAG, "NS released");
         }
     }
 
@@ -242,5 +311,6 @@ public class NativeMicPlugin extends Plugin {
     public void destroy() {
         stopRecording();
         abandonAudioFocus();
+        exitCommunicationMode();
     }
 }
