@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tracing::{debug, error};
 
 use chatbot_core::config::ProviderConfig;
-use crate::providers::openai::messages::{ChatMessageContent, ChatMessagePayload};
+use crate::providers::openai::messages::{ChatMessageContent, ChatMessagePayload, ContentPart};
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,10 +78,26 @@ impl XaiProvider {
                 };
                 let content = match msg.content {
                     Some(ChatMessageContent::Text(s)) => Value::String(s),
-                    Some(ChatMessageContent::MultiModal(parts)) => serde_json::to_value(parts).unwrap_or(Value::String("".to_string())),
+                    Some(ChatMessageContent::MultiModal(parts)) => {
+                        let converted: Vec<Value> = parts
+                            .into_iter()
+                            .map(|part| match part {
+                                ContentPart::Text { text } => json!({
+                                    "type": "input_text",
+                                    "text": text
+                                }),
+                                ContentPart::ImageUrl { image_url } => json!({
+                                    "type": "input_image",
+                                    "image_url": image_url.url
+                                }),
+                            })
+                            .collect();
+                        Value::Array(converted)
+                    }
                     None => Value::String("".to_string()),
                 };
                 json!({
+                    "type": "message",
                     "role": role,
                     "content": content
                 })
