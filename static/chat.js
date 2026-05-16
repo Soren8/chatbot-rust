@@ -394,11 +394,11 @@ window.playTTS = function playTTS(button) {
   const $messageElement = $(button).closest('.message');
 
   let isStopped = false;
-  let processedText = '';
   let sentenceQueue = [];
   let activeSourcesPlaying = 0;
   let isFetching = false;
   let nextStartTime = 0;
+  let totalQueuedTextLen = 0;
 
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === 'suspended') {
@@ -453,12 +453,8 @@ window.playTTS = function playTTS(button) {
     fullText = sanitizeForTTS(fullText);
     if (fullText === 'Thinking...') return '';
     if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
-    if (fullText.startsWith(processedText)) {
-      return fullText.substring(processedText.length);
-    }
-    const idx = fullText.indexOf(processedText);
-    if (idx !== -1) {
-      return fullText.substring(idx + processedText.length);
+    if (fullText.length > totalQueuedTextLen) {
+      return fullText.substring(totalQueuedTextLen);
     }
     return '';
   }
@@ -469,10 +465,9 @@ window.playTTS = function playTTS(button) {
     if (!pending) return;
     const matches = pending.match(/[^.!?]+[.!?]+/g);
     if (matches) {
-      matches.forEach(s => {
-        sentenceQueue.push(s);
-        processedText += s;
-      });
+      let matchLen = 0;
+      matches.forEach(s => { sentenceQueue.push(s); matchLen += s.length; });
+      totalQueuedTextLen += matchLen;
     }
   }
 
@@ -507,7 +502,6 @@ window.playTTS = function playTTS(button) {
       const remaining = getPendingText();
       if (remaining.trim()) {
         sentenceQueue.push(remaining);
-        processedText += remaining;
       } else {
         // Nothing left to fetch. Wait for any active audio to drain, then finish.
         if (activeSourcesPlaying === 0) {
@@ -580,7 +574,6 @@ window.playTTS = function playTTS(button) {
             const remaining = getPendingText();
             if (remaining.trim()) {
               sentenceQueue.push(remaining);
-              processedText += remaining;
               pumpQueue();
             } else {
               finishPlayback();
