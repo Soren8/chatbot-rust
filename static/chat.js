@@ -392,14 +392,14 @@ window.playTTS = function playTTS(button) {
   }
 
   const $messageElement = $(button).closest('.message');
-  
+
   let isStopped = false;
-  let nextStartTime = 0;
   let processedText = '';
   let sentenceQueue = [];
+  let activeSourcesPlaying = 0;
   let isFetching = false;
-  
-  // Use a single AudioContext for sample-accurate scheduling
+  let nextStartTime = 0;
+
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === 'suspended') {
     audioCtx.resume().catch(e => console.debug('AudioContext resume failed:', e));
@@ -440,35 +440,22 @@ window.playTTS = function playTTS(button) {
   }
 
   function getPendingText() {
-    // Prefer data-original if available, as it is the raw text (not markdown-mangled)
     let fullText = $messageElement.attr('data-original') || '';
     if (fullText) {
-      // Strip thinking tags to get only the visible text
       fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     }
-    
-    // Fallback to DOM text if data-original is missing or empty
     if (!fullText) {
       const $textClone = $messageElement.find('.ai-message-text').clone();
       $textClone.find('.thinking-container').remove();
       $textClone.find('.regenerate-container').remove();
       fullText = $textClone.text().trim();
     }
-
-    // Sanitize for TTS before sentence splitting
     fullText = sanitizeForTTS(fullText);
-
     if (fullText === 'Thinking...') return '';
-    // Don't TTS error messages
     if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
     if (fullText.startsWith(processedText)) {
       return fullText.substring(processedText.length);
     }
-    // Fallback if mismatch occurs (e.g. due to markdown re-rendering)
-    console.debug('TTS text mismatch, attempting recovery', { 
-      full: fullText.substring(0, 20) + '...', 
-      processed: processedText.substring(0, 20) + '...' 
-    });
     const idx = fullText.indexOf(processedText);
     if (idx !== -1) {
       return fullText.substring(idx + processedText.length);
@@ -480,134 +467,142 @@ window.playTTS = function playTTS(button) {
     if (isStopped) return;
     const pending = getPendingText();
     if (!pending) return;
-
-    // Look for sentence terminators
     const matches = pending.match(/[^.!?]+[.!?]+/g);
     if (matches) {
       matches.forEach(s => {
         sentenceQueue.push(s);
         processedText += s;
       });
-      // Do NOT eagerly queue leftover text that lacks a sentence terminator.
-      // It will be picked up on subsequent calls once more text arrives and
-      // forms a complete sentence, or when generation finishes (processQueue
-      // handles the final remainder).
     }
   }
 
-  function processQueue() {
-    if (isStopped || isFetching) return;
-    
+  function isStillGenerating() {
+    const currentRawText = $messageElement.find('.ai-message-text').text().trim();
+    return currentRawText === 'Thinking...' || (currentAbortController !== null);
+  }
+
+  function finishPlayback() {
+    if (CURRENT_AUDIO_BUTTON === button) {
+      $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+      CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+    }
+  }
+
+  function pumpQueue() {
+    if (isStopped) return;
+    if (isFetching) return;
+
     if (sentenceQueue.length === 0) {
       discoverSentences();
     }
 
     if (sentenceQueue.length === 0) {
-      // Check if generation is finished or still in 'Thinking...' phase
-      const currentRawText = $messageElement.find('.ai-message-text').text().trim();
-      const stillThinking = currentRawText === 'Thinking...';
-      const stillGenerating = stillThinking || (currentAbortController !== null);
-      
-      if (!stillGenerating) {
-        const remaining = getPendingText();
-        if (remaining.trim()) {
-          sentenceQueue.push(remaining);
-          processedText += remaining;
-        } else {
-          // Truly finished
-          const checkEnd = setInterval(() => {
-            if (isStopped) { clearInterval(checkEnd); return; }
-            
-            // If context is suspended, try to resume it one last time
-            if (audioCtx.state === 'suspended') {
-              audioCtx.resume().catch(() => {});
-            }
-
-            if (audioCtx.currentTime >= nextStartTime) {
-              clearInterval(checkEnd);
-              if (CURRENT_AUDIO_BUTTON === button) {
-                $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-                CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
-              }
-            }
-          }, 100);
-          return;
-        }
+      // Nothing matched a complete sentence. Decide based on stream state.
+      if (isStillGenerating()) {
+        // More text may arrive; poll again shortly.
+        setTimeout(pumpQueue, 100);
+        return;
+      }
+      // Generation finished. Flush any trailing text without a sentence terminator.
+      const remaining = getPendingText();
+      if (remaining.trim()) {
+        sentenceQueue.push(remaining);
+        processedText += remaining;
       } else {
-        // Still generating or still thinking, poll again soon
-        setTimeout(processQueue, 200);
+        // Nothing left to fetch. Wait for any active audio to drain, then finish.
+        if (activeSourcesPlaying === 0) {
+          finishPlayback();
+        }
+        // If sources are still playing, finishPlayback() is invoked from
+        // source.onended when the last one ends.
         return;
       }
     }
 
-    if (sentenceQueue.length > 0) {
-      const text = sentenceQueue.shift().trim();
-      if (!text) { setTimeout(processQueue, 10); return; }
+    const text = sentenceQueue.shift().trim();
+    if (!text) { setTimeout(pumpQueue, 10); return; }
 
-      isFetching = true;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
+    isFetching = true;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-      // Step 1: Get Token
-      fetch('/tts', {
-        method: 'POST',
-        headers: withCsrf({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ text: text }),
-        signal: controller.signal
-      })
-      .then(r => {
-        clearTimeout(timeoutId);
-        if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-        if (!r.ok) throw new Error('Network response was not ok');
-        return r.json();
-      })
-      .then(data => {
-        if (isStopped) return;
-        // Step 2: Fetch full WAV
-        return fetch(`/tts_stream/${data.token}`).then(r => {
-            if (!r.ok) throw new Error('Stream fetch failed');
-            return r.arrayBuffer();
-        });
-      })
-      .then(arrayBuffer => {
-        if (isStopped) { isFetching = false; return; }
-        if (!arrayBuffer || arrayBuffer.byteLength === 0) { throw new Error('Empty audio buffer'); }
-        // Step 3: Decode full WAV
-        return audioCtx.decodeAudioData(arrayBuffer);
-      })
-      .then(audioBuffer => {
-        if (isStopped) { isFetching = false; return; }
-        if (!audioBuffer) { throw new Error('Failed to decode audio'); }
-        
-        const source = audioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioCtx.destination);
-        
-        // Ensure AudioContext is running
-        if (audioCtx.state === 'suspended') {
-          audioCtx.resume().catch(() => {});
-        }
-
-        const now = audioCtx.currentTime;
-        // If we are starting or have fallen behind, start immediately
-        if (nextStartTime < now) nextStartTime = now;
-        
-        source.start(nextStartTime);
-        nextStartTime += audioBuffer.duration;
-        
-        isFetching = false;
-        processQueue();
-      })
-      .catch(err => {
-        console.error('TTS error:', err);
-        isFetching = false;
-        // Wait a bit before retrying to avoid rapid failure loops
-        setTimeout(processQueue, 500);
+    fetch('/tts', {
+      method: 'POST',
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ text: text }),
+      signal: controller.signal
+    })
+    .then(r => {
+      clearTimeout(timeoutId);
+      if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+      if (!r.ok) throw new Error('Network response was not ok');
+      return r.json();
+    })
+    .then(data => {
+      if (isStopped) return;
+      return fetch(`/tts_stream/${data.token}`).then(r => {
+        if (!r.ok) throw new Error('Stream fetch failed');
+        return r.arrayBuffer();
       });
-    }
+    })
+    .then(arrayBuffer => {
+      if (isStopped) { isFetching = false; return; }
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) { throw new Error('Empty audio buffer'); }
+      return audioCtx.decodeAudioData(arrayBuffer);
+    })
+    .then(audioBuffer => {
+      if (isStopped) { isFetching = false; return; }
+      if (!audioBuffer) { throw new Error('Failed to decode audio'); }
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+
+      const now = audioCtx.currentTime;
+      if (nextStartTime < now) nextStartTime = now;
+      const startAt = nextStartTime;
+      source.start(startAt);
+      nextStartTime += audioBuffer.duration;
+      activeSourcesPlaying += 1;
+
+      source.onended = function() {
+        activeSourcesPlaying = Math.max(0, activeSourcesPlaying - 1);
+        if (isStopped) return;
+        // When the last scheduled audio ends, try to drain any pending text.
+        if (activeSourcesPlaying === 0 && !isFetching && sentenceQueue.length === 0) {
+          // Re-check pending in case new text arrived after we last queued.
+          discoverSentences();
+          if (sentenceQueue.length === 0 && !isStillGenerating()) {
+            const remaining = getPendingText();
+            if (remaining.trim()) {
+              sentenceQueue.push(remaining);
+              processedText += remaining;
+              pumpQueue();
+            } else {
+              finishPlayback();
+            }
+            return;
+          }
+          pumpQueue();
+        }
+      };
+
+      isFetching = false;
+      // Eagerly try to fetch the next sentence so audio pipelines without gaps.
+      pumpQueue();
+    })
+    .catch(err => {
+      console.error('TTS error:', err);
+      isFetching = false;
+      if (!isStopped) setTimeout(pumpQueue, 500);
+    });
   }
 
-  processQueue();
+  pumpQueue();
 }
 window.regenerateMessage = function regenerateMessage(button) {
   const $aiMessageElement = $(button).closest('.message');
