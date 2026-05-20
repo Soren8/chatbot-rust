@@ -10,9 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+ENV CARGO_HOME=/app/.cargo
+RUN mkdir -p /app/.cargo
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
-RUN /root/.cargo/bin/rustup component add rustfmt
-ENV PATH="/root/.cargo/bin:$PATH"
+RUN /app/.cargo/bin/rustup component add rustfmt
+ENV PATH="/app/.cargo/bin:$PATH"
 
 # Build the Rust server
 FROM rust-tools AS rust-build
@@ -31,8 +33,8 @@ COPY chatbot-core/Cargo.toml ./chatbot-core/
 COPY chatbot-server/Cargo.toml ./chatbot-server/
 COPY chatbot-test-support/Cargo.toml ./chatbot-test-support/
 
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
+RUN --mount=type=cache,target=/app/.cargo/registry \
+    --mount=type=cache,target=/app/.cargo/git \
     cargo fetch
 
 COPY chatbot-core /build/chatbot-core
@@ -40,11 +42,11 @@ COPY chatbot-server /build/chatbot-server
 COPY chatbot-test-support /build/chatbot-test-support
 COPY static /build/static
 
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/build/target-cache \
+RUN --mount=type=cache,target=/app/.cargo/registry \
+    --mount=type=cache,target=/app/.cargo/git \
+    --mount=type=cache,target=/app/.cargo/target \
     sh -ec '\
-      export CARGO_TARGET_DIR=/build/target-cache; \
+      export CARGO_TARGET_DIR=/app/.cargo/target; \
       if [ "$RUST_BUILD_PROFILE" = "debug" ]; then \
         cargo build -p chatbot-server; \
         profile_dir=debug; \
@@ -53,7 +55,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
         profile_dir="$RUST_BUILD_PROFILE"; \
       fi; \
       mkdir -p "/build/target/$profile_dir"; \
-      cp "/build/target-cache/$profile_dir/chatbot-server" "/build/target/$profile_dir/chatbot-server" \
+      cp "/app/.cargo/target/$profile_dir/chatbot-server" "/build/target/$profile_dir/chatbot-server" \
     '
 
 # Test image with cargo available
@@ -67,6 +69,8 @@ COPY static /app/static
 RUN mkdir -p /app/data
 RUN touch /app/.config.yml
 ENV CHATBOT_STATIC_ROOT="/app/static"
+ENV CARGO_HOME=/app/.cargo
+ENV CARGO_TARGET_DIR=/app/.cargo/target
 
 # Production image with Axum binary
 FROM debian:bookworm-slim AS prod
