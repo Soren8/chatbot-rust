@@ -126,15 +126,17 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 1. Implement `CarAppService` in Java:
    - `ChatbotCarAppService` with `onCreateSession()` returning `VoiceSession`
    - `VoiceScreen` with listening indicator and Exit button
-   - Voice input via Android `SpeechRecognizer`
+   - Voice input via native `AudioRecord` + RMS VAD (not `SpeechRecognizer`)
    - REST calls: `/chat` → response, `/tts` → `/tts_stream` → audio playback
    - Exit button terminates session and closes AA UI
 
-2. Manifest declarations:
-   - `android:autoContents="true"`
-   - `androidx.car.app.category.POINT_OF_INTEREST`
+2. Manifest declarations (per [Car App Library setup](https://developer.android.com/training/cars/apps/library/set-up-project)):
+   - `com.google.android.gms.car.application` meta-data → `@xml/automotive_app_desc`
+   - `automotive_app_desc.xml` must declare `<uses name="template"/>` (not `audio`)
+   - `CarAppService` intent-filter with `androidx.car.app.category.POI`
+   - `androidx.car.app.minCarApiLevel` meta-data on the service
    - `android:exported="true"` on CarAppService
-   - `car_app_supported_types` array with `GenericDeprecated`
+   - Dependencies: `androidx.car.app:app` + `androidx.car.app:app-projected`
 
 **Effort**: ~1 week.
 
@@ -192,6 +194,80 @@ Car environments are noisy. After Phase 2 delivery, test VAD accuracy. If it mis
 Native VAD is **not in scope** for initial delivery.
 
 ---
+
+## Android Auto: testing and distribution
+
+This app uses the **Android for Cars App Library** (`CarAppService`, `PaneTemplate`). That choice has strict distribution rules that affect day-to-day development.
+
+### Sideload does not work on real Android Auto (even parked)
+
+Per [Test Android apps for cars](https://developer.android.com/training/cars/testing):
+
+- On a **real** Android Auto session (phone AA UI or car projection), the app must be installed from a **trusted source** (Google Play or Play-internal distribution).
+- AA developer setting **Unknown sources** applies only to **media**, **messaging notifications**, and **parked** apps — **not** to Car App Library apps.
+- Enabling Unknown sources while parked does **not** make a sideloaded (`adb install`) build appear in the AA launcher. This is Google platform policy, not a project manifest bug.
+
+**Observed:** Wired AA works for other apps; a debug APK installed via `adb` never appears in AA customize/launcher, with or without Unknown sources.
+
+**Workaround for phone/car testing:** [Internal App Sharing](https://play.google.com/console/about/internalappsharing/) or an [internal testing track](https://play.google.com/console/about/internal-testing/) — Play-signed install without a public store listing or full review per iteration.
+
+**Fast local iteration:** Desktop Head Unit (DHU) or AVD-based flows below (sideload is fine there).
+
+### Three testing setups (do not mix install instructions)
+
+| Setup | Where DHU runs | Where Android Auto + your APK run | APK flavor | Connection |
+|-------|----------------|-----------------------------------|------------|------------|
+| **A. AVD + DHU** (recommended dev loop) | Dev PC | Same Android emulator | `emulator` (`10.0.2.2`) | `adb forward tcp:5277 tcp:5277` (no USB to phone) |
+| **B. Physical phone + DHU** | Dev PC | Physical phone | `production` (or dev server URL) | Wireless `adb connect` + `adb forward` — USB not required; avoid DHU `--usb` (libusb) |
+| **C. Real car / phone AA UI** | N/A (real head unit or AA on phone) | Physical phone | Any | Wired AA; install via **Play internal**, not `adb install` |
+
+**DHU architecture (clarification):** DHU emulates the **head unit on the PC**. Android Auto still runs on the **phone or AVD** (head-unit server on port 5277). Your **Chatbot APK must be installed on that device** — you are not installing DHU on the phone. Default connection is **ADB tunneling** (`adb forward`), not USB accessory mode.
+
+### A. Emulator + DHU (all on dev PC)
+
+Community-documented path when USB or GrapheneOS complicates phone testing ([reference](https://stackoverflow.com/questions/76482834/can-we-test-android-auto-purely-in-emulators-2023)):
+
+1. SDK Manager → install **Android Auto Desktop Head Unit Emulator** (`extras/google/auto`).
+2. Create AVD with Google APIs / Play image (x86_64; API 33+ reported working).
+3. Sideload **Android Auto** (`com.google.android.projection.gearhead`) onto the AVD if not present (Play image or x86_64 APK).
+4. Enable emulator developer options and **Android Auto developer mode** (tap AA version ~10× in AA settings).
+5. AA settings → **Start head unit server** (developer menu).
+6. `adb install` Chatbot APK (`assembleEmulatorDebug`).
+7. `adb forward tcp:5277 tcp:5277`
+8. Run `$ANDROID_HOME/extras/google/auto/desktop-head-unit` on the PC (Linux/Wayland may need `SDL_VIDEODRIVER=x11`).
+
+Open Chatbot from the **DHU launcher window on the PC**, not the phone launcher.
+
+### B. Physical phone + DHU
+
+1. Install/update **Android Auto** on the phone (on GrapheneOS: **Sandboxed Google Play**).
+2. Enable AA developer mode; optionally **Start head unit server** for ADB tunneling.
+3. `adb connect <phone-ip>:5555` (wireless ADB is sufficient — no working USB cable needed).
+4. `adb install` production/debug APK.
+5. `adb forward tcp:5277 tcp:5277`
+6. Run `desktop-head-unit` on the PC (default `--adb`, not `--usb`).
+
+Sideload may work for DHU even when the app never appears in real AA (setup C).
+
+### C. Real vehicle or phone Android Auto UI
+
+- Requires Play-trusted install (internal sharing/track).
+- **GrapheneOS:** Wired AA often works well for Play-distributed apps; grant Sandboxed Play / AA permissions as needed. Sideloaded Car App builds still will not list in AA (same CAL policy as stock Android). Extra friction for non-Play apps (installer checks) is documented in [GrapheneOS#3257](https://github.com/GrapheneOS/os-issue-tracker/issues/3257); CAL sideload exemption does not exist on stock either.
+- Wireless AA on GrapheneOS is commonly less stable than wired ([issue tracker](https://github.com/GrapheneOS/os-issue-tracker/issues?q=android+auto)).
+
+### Manifest checklist (real AA / DHU discovery)
+
+Already configured in this repo; if the app is missing everywhere, verify:
+
+- `automotive_app_desc.xml`: `<uses name="template"/>` (not `audio` alone)
+- `CarAppService` intent-filter: `androidx.car.app.category.POI`
+- `com.google.android.gms.car.application` meta-data
+- `androidx.car.app.minCarApiLevel` on the service
+- Dependencies: `androidx.car.app:app` and `androidx.car.app:app-projected`
+
+`HostValidator.ALLOW_ALL_HOSTS_VALIDATOR` is for local/DHU only; use a production `HostValidator` before Play release.
+
+**Play Store note:** POI apps must meet [car app quality guidelines](https://developer.android.com/docs/quality-guidelines/car-app-quality). A voice chatbot is a stretch for the POI category; internal Play distribution is still required for real AA even when not publishing publicly.
 
 ## Build Instructions
 

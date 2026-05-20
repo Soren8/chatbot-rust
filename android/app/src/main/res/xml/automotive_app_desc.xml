@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <automotiveApp>
-    <uses name="audio" />
+    <!-- Required for Car App Library templated UIs (PaneTemplate, etc.) -->
+    <uses name="template" />
 </automotiveApp>
