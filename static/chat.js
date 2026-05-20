@@ -92,6 +92,9 @@ try {
   }
 })();
 
+const SESSION_EXPIRED_SEND_MSG =
+  'Session expired or unauthorized. Your message was not sent — it is still in the input box.';
+
 const originalFetch = window.fetch;
 window.fetch = function(input, init) {
   return originalFetch.apply(this, arguments).then(response => {
@@ -100,7 +103,11 @@ window.fetch = function(input, init) {
       if (input instanceof Request) {
         url = input.url;
       }
-      if (typeof url === 'string' && (url.includes('/update_memory') || url.includes('/update_system_prompt'))) {
+      if (typeof url === 'string' && (
+        url.includes('/chat') ||
+        url.includes('/update_memory') ||
+        url.includes('/update_system_prompt')
+      )) {
         return response;
       }
       window.location.href = '/login';
@@ -1360,7 +1367,6 @@ $(document).ready(function() {
     if (!message && !pendingImageData) return;
     const systemPrompt = $systemPromptElement.val() || window.DEFAULT_SYSTEM_PROMPT;
     const activeSet = ($('#set-selector').val() || 'default');
-    $userInputElement.val('');
 
     // Build message content with optional image
     let fullMessage = message;
@@ -1376,14 +1382,7 @@ $(document).ready(function() {
       userMessageHtml += '<br><img src="' + escapeHTML(pendingImageData) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
     }
     appendMessage(userMessageHtml, 'user-message');
-
-    // Clear pending image
-    if (pendingImagePreview) {
-      pendingImagePreview.remove();
-      pendingImagePreview = null;
-    }
-    pendingImageData = null;
-    $('#image-input').val('');
+    const $pendingUserMessage = $('#chat-content .message.user-message').last();
 
     const requestData = {
       message: fullMessage,
@@ -1405,10 +1404,17 @@ $(document).ready(function() {
       signal: currentAbortController.signal,
       body: JSON.stringify(requestData)
     })
-      .then(response => { 
-        if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-        if (!response.ok) return response.text().then(t => { throw new Error(t || 'Network response was not ok'); }); 
-        return response; 
+      .then(response => {
+        if (response.status === 401) throw new Error(SESSION_EXPIRED_SEND_MSG);
+        if (!response.ok) return response.text().then(t => { throw new Error(t || 'Network response was not ok'); });
+        $userInputElement.val('');
+        if (pendingImagePreview) {
+          pendingImagePreview.remove();
+          pendingImagePreview = null;
+        }
+        pendingImageData = null;
+        $('#image-input').val('');
+        return response;
       })
       .then(response => {
         const reader = response.body.getReader();
@@ -1576,6 +1582,7 @@ $(document).ready(function() {
             if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
           } catch (e) {}
         } else {
+          if ($pendingUserMessage.length) $pendingUserMessage.remove();
           appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
         }
         setGeneratingState(false);
