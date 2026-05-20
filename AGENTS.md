@@ -30,6 +30,12 @@
   2. Implement the fix.
   3. Run the test again to confirm it passes.
 
+## Scope and user instructions
+- Implement only what the user explicitly requested for the current task.
+- Do not expand scope on your own — extra endpoints, files, refactors, or "obviously helpful" tweaks are out of scope unless the user asked for them.
+- If you believe a related change would help, **stop and ask for confirmation before making it**, even when it seems clearly beneficial. Do not bundle unrequested changes into the same work.
+- When unsure whether something is in scope, ask rather than assume.
+
 ## Important Notes
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Git commit at the completion of each full task.
