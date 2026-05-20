@@ -984,12 +984,11 @@ pub fn update_session_system_prompt(session_id: &str, prompt: &str) {
 
 pub fn update_session_history(session_id: &str, history: &[(String, String)]) {
     let store = SessionStore::global();
-    if let Some(entry) = store.entries.get(session_id) {
-        let mut data = entry.data.lock().unwrap();
-        data.history = history.to_owned();
-        data.initialised = true;
-        data.last_used = Instant::now();
-    }
+    let entry = store.entry(session_id);
+    let mut data = entry.data.lock().unwrap();
+    data.history = history.to_owned();
+    data.initialised = true;
+    data.last_used = Instant::now();
 }
 
 pub fn session_history(session_id: &str) -> Vec<(String, String)> {

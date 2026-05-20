@@ -39,6 +39,8 @@ struct UpdateSystemPromptRequest {
 #[derive(Deserialize, Default)]
 struct DeleteMessageRequest {
     #[serde(default)]
+    pair_index: Option<i32>,
+    #[serde(default)]
     user_message: Option<String>,
     #[serde(default)]
     ai_message: Option<String>,
@@ -258,13 +260,29 @@ pub async fn handle_delete_message(
 
     let user_message = payload.user_message.unwrap_or_default();
     let trimmed = user_message.trim();
-    let ai_trimmed = payload.ai_message.unwrap_or_default().trim().to_owned();
+    let ai_message = payload.ai_message.unwrap_or_default();
+    let ai_trimmed = ai_message.trim();
     if trimmed.is_empty() {
         return build_json_response(
             StatusCode::BAD_REQUEST,
             json!({"status": "error", "error": "user_message is required"}),
         );
     }
+    if ai_trimmed.is_empty() {
+        return build_json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"status": "error", "error": "ai_message is required"}),
+        );
+    }
+    let pair_index = match payload.pair_index {
+        Some(index) if index >= 0 => index as usize,
+        _ => {
+            return build_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"status": "error", "error": "pair_index is required"}),
+            );
+        }
+    };
 
     let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
         .map_err(persistence_error_to_http)?;
@@ -286,54 +304,42 @@ pub async fn handle_delete_message(
 
     let mut history = session::session_history(&session.session_id);
 
-    let mut match_index = None;
-
-    if !ai_trimmed.is_empty() {
-        for (index, (user, assistant)) in history.iter().enumerate() {
-            if user.trim() == trimmed && assistant.trim() == ai_trimmed {
-                match_index = Some(index);
-                break;
-            }
-        }
-    }
-
-    if match_index.is_none() {
-        for (index, (user, _assistant)) in history.iter().enumerate() {
-            if user.trim() == trimmed {
-                match_index = Some(index);
-                break;
-            }
-        }
-    }
-
-    if let Some(index) = match_index {
-        history.remove(index);
-
-        session::update_session_history(&session.session_id, &history);
-
-        if let Some(username) = session.username.as_deref() {
-            let key = session
-                .encryption_key
-                .as_ref()
-                .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
-
-            persistence
-                .store_history(
-                    username,
-                    &set_name,
-                    &history,
-                    EncryptionMode::Fernet(key.as_slice()),
-                )
-                .map_err(persistence_error_to_http)?;
-        }
-
-        build_json_response(StatusCode::OK, json!({"status": "success"}))
-    } else {
-        build_json_response(
+    if pair_index >= history.len() {
+        return build_json_response(
             StatusCode::NOT_FOUND,
-            json!({"status": "error", "error": "message pair not found"}),
-        )
+            json!({"status": "error", "error": "pair_index out of range"}),
+        );
     }
+
+    let (stored_user, stored_assistant) = &history[pair_index];
+    if stored_user.trim() != trimmed || stored_assistant.trim() != ai_trimmed {
+        return build_json_response(
+            StatusCode::CONFLICT,
+            json!({"status": "error", "error": "content mismatch at pair_index"}),
+        );
+    }
+
+    history.remove(pair_index);
+
+    session::update_session_history(&session.session_id, &history);
+
+    if let Some(username) = session.username.as_deref() {
+        let key = session
+            .encryption_key
+            .as_ref()
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+
+        persistence
+            .store_history(
+                username,
+                &set_name,
+                &history,
+                EncryptionMode::Fernet(key.as_slice()),
+            )
+            .map_err(persistence_error_to_http)?;
+    }
+
+    build_json_response(StatusCode::OK, json!({"status": "success"}))
 }
 
 fn ensure_post(request: &Request<Body>) -> Result<(), (StatusCode, String)> {

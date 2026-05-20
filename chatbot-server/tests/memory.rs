@@ -227,6 +227,38 @@ async fn memory_and_prompt_endpoints_round_trip() {
         .expect("chat body");
     assert!(chat_body.len() > 0, "chat should stream response");
 
+    let load_before_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/load_set")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /load_set before delete");
+
+    assert_eq!(load_before_delete.status(), StatusCode::OK);
+    let load_before_body = to_bytes(load_before_delete.into_body(), 256 * 1024)
+        .await
+        .expect("load before delete body");
+    let load_before_json: serde_json::Value =
+        serde_json::from_slice(&load_before_body).expect("load before delete json");
+    let history_entry = load_before_json
+        .get("history")
+        .and_then(|value| value.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|pair| pair.as_array())
+        .expect("history entry after chat");
+    let stored_user = history_entry[0].as_str().expect("stored user message");
+    let stored_ai = history_entry[1].as_str().expect("stored ai message");
+
     let delete_response = app
         .clone()
         .oneshot(
@@ -238,7 +270,9 @@ async fn memory_and_prompt_endpoints_round_trip() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "user_message": "Please summarise the meeting",
+                        "pair_index": 0,
+                        "user_message": stored_user,
+                        "ai_message": stored_ai,
                         "set_name": "default",
                     }))
                     .expect("delete payload"),

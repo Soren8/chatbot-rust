@@ -800,38 +800,61 @@ function handleDeleteMessage(buttonElement) {
   const deleteBtn = $(buttonElement);
   const userMessageElement = deleteBtn.closest('.message.user-message');
   if (userMessageElement.length === 0) return;
-  
-  const aiMessageElement = userMessageElement.next('.ai-message');
-  
-  // Use data-original if available, fallback to text parsing (fragile)
-  const userText = (userMessageElement.attr('data-original') || userMessageElement.find('.user-message-text').text() || userMessageElement.text() || '').replace(/^\s*You:\s*/, '').trim();
-  const aiText = (aiMessageElement.attr('data-original') || (aiMessageElement.find('.ai-message-text').text() || '').trim());
-  
-  console.debug('Deleting message pair:', { userText, aiText });
 
-  if (aiMessageElement.length) aiMessageElement.remove();
-  userMessageElement.remove();
-  
-  fetch('/delete_message', { 
-    method: 'POST', 
-    headers: withCsrf({ 'Content-Type': 'application/json' }), 
-    body: JSON.stringify({ 
-      user_message: userText, 
-      ai_message: aiText, 
-      set_name: $('#set-selector').val() || 'default' 
-    }) 
+  const aiMessageElement = userMessageElement.next('.ai-message');
+  if (aiMessageElement.length === 0) {
+    console.error('Cannot delete: missing AI message pair');
+    return;
+  }
+
+  const userText = (userMessageElement.attr('data-original') || userMessageElement.find('.user-message-text').text() || userMessageElement.text() || '').replace(/^\s*You:\s*/, '').trim();
+  const aiText = (aiMessageElement.attr('data-original') || (aiMessageElement.find('.ai-message-text').text() || '')).trim();
+  if (!userText || !aiText) {
+    console.error('Cannot delete: missing message text');
+    return;
+  }
+
+  const storedPairIndex = userMessageElement.attr('data-pair-index');
+  let pairIndex = storedPairIndex !== undefined && storedPairIndex !== '' ? parseInt(storedPairIndex, 10) : NaN;
+  if (Number.isNaN(pairIndex)) {
+    const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
+    pairIndex = userMsgNodes.indexOf(userMessageElement[0]);
+  }
+  if (pairIndex < 0) {
+    console.error('Cannot delete: could not resolve pair index');
+    return;
+  }
+
+  console.debug('Deleting message pair:', { userText, aiText, pairIndex });
+
+  fetch('/delete_message', {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      pair_index: pairIndex,
+      user_message: userText,
+      ai_message: aiText,
+      set_name: $('#set-selector').val() || 'default'
+    })
   })
-  .then(r => { 
-    if (r.status === 401) { window.location.href = '/login'; }
-    return r.json();
+  .then(r => {
+    if (r.status === 401) { window.location.href = '/login'; return null; }
+    return r.json().then(data => ({ ok: r.ok, status: r.status, data }));
   })
-  .then(data => {
-    if (data && data.status === 'error') {
-      console.error('Server failed to delete message:', data.error);
+  .then(result => {
+    if (!result) return;
+    if (result.ok && result.data && result.data.status === 'success') {
+      aiMessageElement.remove();
+      userMessageElement.remove();
+      return;
     }
+    const errMsg = (result.data && result.data.error) || `delete failed (${result.status})`;
+    console.error('Server failed to delete message:', errMsg);
+    appendMessage('<strong>Error:</strong> Failed to delete message: ' + escapeHTML(errMsg), 'error-message');
   })
   .catch(err => {
     console.error('Error deleting message:', err);
+    appendMessage('<strong>Error:</strong> Failed to delete message: ' + escapeHTML(err.message), 'error-message');
   });
 }
 
@@ -1200,8 +1223,8 @@ $(document).ready(function() {
           $('#user-memory').val(data.memory || '');
           $('#chat-content').empty();
           if (data.history && data.history.length > 0) {
-            data.history.forEach(([userMsg, aiMsg]) => {
-              appendMessage(userMsg, 'user-message');
+            data.history.forEach(([userMsg, aiMsg], pairIndex) => {
+              appendMessage(userMsg, 'user-message', pairIndex);
               const formattedAi = formatAiMessage(aiMsg);
               const $aiMsg = appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${formattedAi}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
               $aiMsg.attr('data-original', aiMsg);
