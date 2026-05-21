@@ -10,7 +10,7 @@ Not a single line of code in this repository was written manually. Human work in
 - Axum server with configurable CSRF-protected routes (enabled by default) for chat, authentication, set management, and TTS.
 - `chatbot-core` crate encapsulating chat logic, provider abstractions, persistence, and session management.
 - Static assets rendered with Minijinja and served from `static/`.
-- Async provider implementations (OpenAI, Ollama) with streaming support and configurable defaults.
+- Async provider implementations (OpenAI-compatible, XAI) with streaming support and configurable defaults.
 - Comprehensive integration tests (`cargo test`) covering routes, session flows, and external service stubs.
 
 ## Repository Layout

@@ -268,7 +268,6 @@ mod tests {
                 context_size: Some(600),
                 base_url: "https://api".into(),
                 api_key: Some("key".into()),
-                template: None,
                 allowed_providers: Vec::new(),
                 request_timeout: None,
                 test_chunks: None,

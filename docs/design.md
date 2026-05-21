@@ -98,7 +98,7 @@ This document captures the current architecture of the project and the potential
 
 - **LLM Provider Abstraction**
   - [ ] Consider adding an async provider interface for non-blocking streaming across all providers.
-  - [ ] Document provider-specific fields (e.g., `template` usage, base URLs) and include example configs.
+  - [ ] Document provider-specific fields (e.g., base URLs) and include example configs.
   - [ ] Break out LLM providers into a git submodule so they can be shared and consumed by other projects or front ends.
   - [ ] Establish semantic versioning and backward-compatibility guarantees for the provider interface.
 

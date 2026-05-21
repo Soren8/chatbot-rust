@@ -19,7 +19,7 @@ We are moving to a **Per-Chat Privacy Model**. Users can choose the privacy leve
 *   **Key Management:** **Client-Derived.** The encryption key is derived directly from the user's secret (login password or separate storage password). The server *never* persists this key.
 *   **Recoverability:** **None.** If the secret is lost, this data is mathematically irretrievable. Password resets will cause these chats to become inaccessible.
 *   **OAuth Implication:** OAuth users must set a separate "Storage Password" to use this mode.
-*   **Provider Access:** User should use Local Providers (Ollama) for maximum privacy.
+*   **Provider Access:** User should use local OpenAI-compatible providers (e.g. Ollama, LM Studio) for maximum privacy.
 
 ### 2. Recoverable Mode (Server-Managed) [Planned]
 *   **Best for:** General tasks, coding assistance, OAuth users.
