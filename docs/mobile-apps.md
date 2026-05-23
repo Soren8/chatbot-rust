@@ -15,7 +15,7 @@ The web frontend is the only interface. This creates three issues:
 - iOS support is low priority but desired as a side effect.
 - Existing web UI (`static/chat.js`, ~2000 lines Bootstrap/jQuery) must be reused with minimal changes.
 - VAD stays as Silero in Capacitor WebView; native VAD is post-baseline optimization only.
-- **Server-pull model**: The app loads web content from the running `chatbot-server` instead of bundling static assets. Any web UI updates are reflected instantly without rebuilding the APK.
+- **Server-pull model**: The app loads web content from the running `chatbot-server` instead of bundling static assets. Web UI updates do not require rebuilding the APK, but they **do** require rebuilding the `webserver` Docker image (`docker compose up --build -d webserver`) because `static/` is baked into the image.
 
 ## Recommendation: Capacitor Android + Native Android Auto Module
 
@@ -158,7 +158,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 The app does NOT bundle `static/` files. Instead, the WebView loads directly from the running `chatbot-server`. This means:
 
-- Web UI updates (chat.js, CSS, templates) appear instantly without rebuilding the APK
+- Web UI updates (chat.js, CSS, templates) do not require rebuilding the APK; rebuild `webserver` to pick up static changes in the running server.
 - The device must have network access to the server (same WiFi or port-forwarded)
 - For car use, the server URL should point to the machine running `chatbot-server`
 - Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for production flavor
@@ -174,16 +174,19 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 Silero VAD runs in the Capacitor WebView with a native mic bridge. Key implementation details:
 
-1. **NativeMicPlugin.java** captures 16kHz mono PCM via `AudioRecord` and sends base64-encoded chunks to JS via `notifyListeners('nativeMicData', ...)`
+1. **NativeMicPlugin.java** captures 16kHz mono PCM via `AudioRecord` (`VOICE_COMMUNICATION`, AEC/NS/**AGC**), emits fixed **20 ms** frames to JS via `notifyListeners('nativeMicData', ...)`
 
-2. **NativeMicVADBridge** (chat.js):
-   - Creates an `AudioContext` with `ScriptProcessorNode` (4096 samples = 256ms at 16kHz)
-   - Creates `MediaStreamDestination` and connects the ScriptProcessor to it
-   - On receiving native audio chunks, converts Int16 → Float32 and pushes to a queue
-   - The ScriptProcessor drains the queue into its output buffer (silence when queue is empty)
-   - The resulting stream is passed to Silero VAD via `createVAD(stream)` with `getStream` override
+2. **`static/native-audio.js`** — PCM16 WAV encoding (no float clamp bug), `PcmSampleBuffer` for gapless ScriptProcessor feeding, prefetch before VAD start
 
-3. **Critical VAD behavior**: After `onSpeechEnd` fires, the VAD must be left running. Calling `pause()`/`start()` causes Silero to internally call `getUserMedia` (fails in Android WebView). Calling `destroy()` and recreating the VAD also breaks subsequent detection. Simply letting the VAD run continuously works correctly — it naturally detects the next speech onset.
+3. **`NativeMicUtteranceVAD`** (chat.js) — RMS-only on native PCM (same as `VoiceScreen.java`):
+   - No Silero / WebView `AudioContext`
+   - **600 ms PCM pre-roll** at utterance start
+   - Skips utterance detection during TTS session; barge-in via RMS while audio plays
+   - **400 ms cooldown** after TTS before listening resumes
+
+4. **`NativeVoiceTtsPlugin.java`** — plays `/tts_stream/{token}` via `AudioTrack` with `USAGE_VOICE_COMMUNICATION` so hardware AEC cancels TTS echo on the mic path (HTML `<audio>` uses the media route and breaks AEC).
+
+5. **Critical VAD behavior**: After `onSpeechEnd` fires, the VAD must be left running. **Never call `vad.pause()` on the native bridge** during STT — Silero cannot restart in Android WebView, which breaks barge-in during TTS. Use `vadSttInProgress` to ignore overlapping utterances instead. Calling `pause()`/`start()` on desktop VAD is OK (reinitialize resumes before TTS).
 
 ### VAD Evaluation
 
@@ -271,16 +274,24 @@ Already configured in this repo; if the app is missing everywhere, verify:
 
 ## Build Instructions
 
-Prerequisites: Java 21+, Android SDK (command-line tools or Android Studio)
+Prerequisites: **JDK 21** (not 25+), Android SDK (command-line tools or Android Studio)
+
+Pinned versions (do not bump casually — library compatibility breaks on newer JDKs/AGP):
+- Gradle **8.14.3** (`gradle/wrapper/gradle-wrapper.properties`)
+- Android Gradle Plugin **8.13.0** (`build.gradle`)
+- Java bytecode **21** (Capacitor-generated `capacitor.build.gradle`)
 
 ```bash
-# Build Android APK (production flavor)
+# Recommended: wrapper script picks JDK 21 automatically
+cd android && ./build-apk.sh production
+
+# Or explicit JDK + Gradle
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 export ANDROID_HOME=/home/malakar/Android/Sdk
 cd android && ./gradlew assembleProductionDebug
 
 # Build Android APK (emulator flavor)
-cd android && ./gradlew assembleEmulatorDebug
+cd android && ./build-apk.sh emulator
 
 # APK locations
 android/app/build/outputs/apk/production/debug/app-production-debug.apk

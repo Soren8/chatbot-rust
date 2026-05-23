@@ -89,6 +89,31 @@ try {
       }
     };
     window.nativeMicAvailable = true;
+
+    window.NativeVoiceTts = {
+      isAvailable: function () {
+        return !!(window.Capacitor && window.Capacitor.nativePromise);
+      },
+      beginSession: function () {
+        return window.Capacitor.nativePromise('NativeVoiceTts', 'beginSession', {});
+      },
+      enqueue: function (url) {
+        return window.Capacitor.nativePromise('NativeVoiceTts', 'enqueue', { url: url });
+      },
+      markEndOfQueue: function () {
+        return window.Capacitor.nativePromise('NativeVoiceTts', 'markEndOfQueue', {});
+      },
+      play: function (url) {
+        return window.Capacitor.nativePromise('NativeVoiceTts', 'play', { url: url });
+      },
+      stop: function () {
+        return window.Capacitor.nativePromise('NativeVoiceTts', 'stop', {});
+      },
+      addListener: function (eventName, callback) {
+        return window.Capacitor.addListener('NativeVoiceTts', eventName, callback);
+      }
+    };
+    window.nativeVoiceTtsAvailable = true;
   }
 })();
 
@@ -267,6 +292,12 @@ function scrollToBottom() {
 
 let CURRENT_AUDIO = null;
 let CURRENT_AUDIO_BUTTON = null;
+/** True while voice-mode TTS session is active (queued sentences). */
+let voiceModeTtsSessionActive = false;
+/** True while TTS audio is actively playing. */
+let voiceModeTtsPlaying = false;
+/** Do not start utterances until this timestamp (ms) — lets AEC settle after TTS. */
+let voiceModeListenCooldownUntil = 0;
 
 function disablePremiumModels() {
   const $selector = $('#modelSelect');
@@ -1640,7 +1671,7 @@ $(document).ready(function() {
     $micBtn.show();
   }
 
-  let _nativeMicPcmChunks = [];
+  let _nativeMicPcmChunks = []; // Int16Array chunks from NativeMic
   let _mediaRecorder = null;
   let _audioChunks = [];
 
@@ -1660,15 +1691,8 @@ $(document).ready(function() {
 
         window.NativeMic.stop().then(function () {
           if (_nativeMicPcmChunks.length === 0) return;
-          const totalLen = _nativeMicPcmChunks.reduce(function (a, b) { return a + b.length; }, 0);
-          const merged = new Uint8Array(totalLen);
-          let offset = 0;
-          _nativeMicPcmChunks.forEach(function (chunk) {
-            merged.set(chunk, offset);
-            offset += chunk.length;
-          });
-          const samples = new Int16Array(merged.buffer);
-          const wavBlob = encodeWAV(samples, 16000);
+          const pcm16 = NativeAudio.mergePcm16Chunks(_nativeMicPcmChunks);
+          const wavBlob = NativeAudio.pcm16ToWavBlob(pcm16);
           const formData = new FormData();
           formData.append('audio', wavBlob, 'recording.wav');
 
@@ -1704,12 +1728,7 @@ $(document).ready(function() {
         if (!result.granted) throw new Error('Microphone permission denied');
         _nativeMicListener = window.NativeMic.addListener('nativeMicData', function (data) {
           if (data && data.data) {
-            const binary = atob(data.data);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-              bytes[i] = binary.charCodeAt(i);
-            }
-            _nativeMicPcmChunks.push(bytes);
+            _nativeMicPcmChunks.push(NativeAudio.decodeNativePcmBase64(data.data));
           }
         });
         return window.NativeMic.start();
@@ -1801,175 +1820,293 @@ $(document).ready(function() {
     }
   });
 
-  // Bridge to feed native mic chunks to Silero VAD
-  function NativeMicVADBridge(onSpeechStart, onSpeechEnd, onFrameProcessed, onError) {
-    this.onSpeechStart = onSpeechStart;
-    this.onSpeechEnd = onSpeechEnd;
-    this.onFrameProcessed = onFrameProcessed;
+  // Capacitor voice mode: native PCM + RMS VAD only (matches Android Auto VoiceScreen).
+  // No Silero / WebView AudioContext — that path breaks during HTML TTS playback.
+  function NativeMicUtteranceVAD(onError) {
     this.onError = onError;
-    this.audioContext = null;
-    this.scriptProcessor = null;
-    this.mediaStreamDest = null;
-    this.vad = null;
-    this.chunkQueue = [];
-    this.processing = false;
-    this.currentAudio = null;
-    this.speechStartTime = null;
-    this.speechFrames = [];
+    this.preRollBuffer = new NativeAudio.Pcm16RingBuffer(NativeAudio.SPEECH_PREROLL_SAMPLES);
+    this.utteranceChunks = [];
+    this.inSpeech = false;
+    this.speechAboveCount = 0;
+    this.bargeAboveCount = 0;
+    this.silenceMs = 0;
+    this.nativeListener = null;
     this.isRecording = false;
+    this.chunkCount = 0;
   }
 
-  NativeMicVADBridge.prototype.start = async function() {
-    try {
-      // Create AudioContext
-      this.audioContext = new AudioContext({ sampleRate: 16000 });
+  /** Ms after TTS ends before RMS utterance detection resumes. */
+  const TTS_LISTEN_COOLDOWN_MS = 400;
 
-      // Create ScriptProcessorNode to receive native audio chunks
-      // 4096 samples = 256ms at 16kHz
-      this.scriptProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
+  NativeMicUtteranceVAD.prototype._onNativePcm = function (pcm16) {
+    const copy = pcm16.slice();
+    const rms = NativeAudio.pcm16Rms(copy);
+    const frameMs = 20;
+    const now = Date.now();
 
-      // Create MediaStreamDestination for VAD
-      this.mediaStreamDest = this.audioContext.createMediaStreamDestination();
+    this.preRollBuffer.push(copy);
+    this.chunkCount++;
 
-      // Connect script processor to media stream destination
-      this.scriptProcessor.connect(this.mediaStreamDest);
-
-      // Queue for native audio chunks
-      this.chunkQueue = [];
-      const self = this;
-
-      // Process audio in the script processor
-      this.scriptProcessor.onaudioprocess = function(e) {
-        const output = e.outputBuffer.getChannelData(0);
-
-        // Fill output with queued samples
-        let offset = 0;
-        while (offset < output.length && self.chunkQueue.length > 0) {
-          const chunk = self.chunkQueue.shift();
-          const chunkLen = chunk.length;
-          for (let i = 0; i < chunkLen && offset < output.length; i++, offset++) {
-            output[offset] = chunk[i];
+    // During TTS session: skip classification while fetching; barge-in only while audio plays.
+    if (voiceModeTtsSessionActive) {
+      if (voiceModeTtsPlaying) {
+        if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
+          this.bargeAboveCount++;
+          if (this.bargeAboveCount >= NativeAudio.BARGE_IN_RMS_FRAMES) {
+            this.bargeAboveCount = 0;
+            nativeLog('VAD', 'barge-in TTS rms=' + Math.round(rms));
+            handleBargeIn();
+            if (!this.inSpeech && !vadSttInProgress) {
+              this._beginUtterance(true);
+            }
+          }
+        } else {
+          this.bargeAboveCount = 0;
+        }
+      } else {
+        this.bargeAboveCount = 0;
+      }
+      if (this.inSpeech) {
+        this.utteranceChunks.push(copy);
+        if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
+          this.silenceMs = 0;
+        } else {
+          this.silenceMs += frameMs;
+          if (this.silenceMs >= 800) {
+            this._endUtterance();
           }
         }
-        // Fill remaining with silence
-        while (offset < output.length) {
-          output[offset++] = 0;
-        }
+      }
+      if (this.chunkCount % 50 === 0) {
+        nativeLog('VAD', 'pcm#' + this.chunkCount + ' ttsSess=1 ttsPlay=' + voiceModeTtsPlaying
+          + ' rms=' + Math.round(rms));
+      }
+      return;
+    }
 
-        // Track audio for speech detection
-        if (self.isRecording) {
-          self.speechFrames.push(new Float32Array(output));
-        }
-      };
+    if (now < voiceModeListenCooldownUntil) {
+      return;
+    }
 
-      // Start VAD with our stream
-      this.vad = await createVAD(this.mediaStreamDest.stream);
-      await this.vad.start();
-      this.isRecording = true;
+    if (!this.inSpeech && !vadSttInProgress) {
+      if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
+        this.speechAboveCount++;
+        if (this.speechAboveCount >= NativeAudio.BARGE_IN_RMS_FRAMES) {
+          nativeLog('VAD', 'utterance start rms=' + Math.round(rms));
+          this._beginUtterance();
+        }
+      } else {
+        this.speechAboveCount = 0;
+      }
+    }
+
+    if (this.inSpeech) {
+      this.utteranceChunks.push(copy);
+      if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
+        this.silenceMs = 0;
+      } else {
+        this.silenceMs += frameMs;
+        if (this.silenceMs >= 800) {
+          nativeLog('VAD', 'utterance end rms=' + Math.round(rms) + ' chunks=' + this.utteranceChunks.length);
+          this._endUtterance();
+        }
+      }
+    }
+
+    if (this.chunkCount % 50 === 0) {
+      nativeLog('VAD', 'pcm#' + this.chunkCount + ' inSpeech=' + this.inSpeech
+        + ' ttsPlay=' + voiceModeTtsPlaying + ' rms=' + Math.round(rms));
+    }
+  };
+
+  NativeMicUtteranceVAD.prototype._beginUtterance = function (skipPreRoll) {
+    if (this.inSpeech || vadSttInProgress) return;
+    this.inSpeech = true;
+    this.speechAboveCount = 0;
+    this.silenceMs = 0;
+    if (skipPreRoll) {
+      this.utteranceChunks = [];
+      nativeLog('VAD', 'utterance begin (post-barge-in, no pre-roll)');
+    } else {
+      this.utteranceChunks = this.preRollBuffer.snapshotChunks();
+      nativeLog('VAD', 'utterance begin preRollChunks=' + this.utteranceChunks.length);
+    }
+  };
+
+  NativeMicUtteranceVAD.prototype._endUtterance = function () {
+    if (!this.inSpeech) return;
+    this.inSpeech = false;
+    this.speechAboveCount = 0;
+    this.silenceMs = 0;
+    handleSpeechEnd();
+  };
+
+  NativeMicUtteranceVAD.prototype.takeSpeechWavBlob = function () {
+    const pcm16 = NativeAudio.mergePcm16Chunks(this.utteranceChunks);
+    this.utteranceChunks = [];
+    return NativeAudio.pcm16ToWavBlob(pcm16);
+  };
+
+  NativeMicUtteranceVAD.prototype.hasSpeechCapture = function () {
+    return this.utteranceChunks.length > 0;
+  };
+
+  NativeMicUtteranceVAD.prototype.start = async function () {
+    const self = this;
+    if (typeof NativeAudio === 'undefined') {
+      throw new Error('native-audio.js not loaded');
+    }
+    try {
+      nativeLog('VAD', 'NativeMicUtteranceVAD start (RMS-only v3)');
+      this.preRollBuffer.clear();
+      this.utteranceChunks = [];
+      this.inSpeech = false;
+      this.speechAboveCount = 0;
+      this.bargeAboveCount = 0;
+      this.silenceMs = 0;
       this.chunkCount = 0;
 
-      // Start native mic
       await window.NativeMic.start();
 
-      // Listen for native audio data
-      this.nativeListener = window.NativeMic.addListener('nativeMicData', function(data) {
+      this.nativeListener = window.NativeMic.addListener('nativeMicData', function (data) {
         if (!data || !data.data) return;
-
-        // Decode base64 to Float32 samples
-        const binary = atob(data.data);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        // Convert Int16 to Float32
-        const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) {
-          float32[i] = int16[i] / 32768;
-        }
-
-        // Add to queue
-        self.chunkQueue.push(float32);
-        self.chunkCount++;
-        if (self.chunkCount % 50 === 0) {
-          nativeLog('VAD', 'chunk ' + self.chunkCount + ' queue len=' + self.chunkQueue.length);
+        try {
+          self._onNativePcm(NativeAudio.decodeNativePcmBase64(data.data));
+        } catch (err) {
+          nativeLog('VAD', 'PCM decode error: ' + err.message);
         }
       });
-
+      this.isRecording = true;
     } catch (err) {
       this.onError('Failed to start Voice Mode: ' + err.message);
     }
   };
 
-  NativeMicVADBridge.prototype.stop = async function() {
+  NativeMicUtteranceVAD.prototype.stop = async function () {
     try {
       this.isRecording = false;
+      this.inSpeech = false;
 
       if (this.nativeListener) {
         this.nativeListener.remove();
         this.nativeListener = null;
       }
 
-      if (this.vad) {
-        this.vad.pause();
-        this.vad.destroy();
-        this.vad = null;
-      }
-
-      if (this.scriptProcessor) {
-        this.scriptProcessor.disconnect();
-        this.scriptProcessor = null;
-      }
-
-      if (this.audioContext) {
-        await this.audioContext.close();
-        this.audioContext = null;
-      }
-
+      this.preRollBuffer.clear();
+      this.utteranceChunks = [];
       await window.NativeMic.stop();
-
     } catch (err) {
-      console.error('Error stopping Voice Mode bridge:', err);
+      console.error('Error stopping Voice Mode native VAD:', err);
     }
   };
 
-  NativeMicVADBridge.prototype.reinitialize = async function() {
-    if (!this.vad || !this.isRecording) return;
-    nativeLog('VAD', 'reinitialize: not calling pause/start, VAD keeps running chunkCount=' + this.chunkCount);
+  NativeMicUtteranceVAD.prototype.reinitialize = async function () {
+    nativeLog('VAD', 'reinitialize: native RMS VAD always running');
   };
+
+  NativeMicUtteranceVAD.prototype.onTtsPlaybackStarted = function () {
+    this.preRollBuffer.clear();
+    this.inSpeech = false;
+    this.utteranceChunks = [];
+    this.speechAboveCount = 0;
+    this.bargeAboveCount = 0;
+    this.silenceMs = 0;
+  };
+
+  function useNativeVoiceTtsPlayback() {
+    return !!(window.nativeVoiceTtsAvailable && window.voiceModeActive && window.NativeVoiceTts);
+  }
+
+  function finishVoiceModeTtsSession() {
+    voiceModeTtsSessionActive = false;
+    voiceModeTtsPlaying = false;
+    voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
+  }
+
+  function onVoiceModeTtsStarted() {
+    voiceModeTtsPlaying = true;
+    if (nativeMicBridge && nativeMicBridge.onTtsPlaybackStarted) {
+      nativeMicBridge.onTtsPlaybackStarted();
+    }
+    nativeLog('VAD', 'TTS playback started native=' + useNativeVoiceTtsPlayback());
+  }
+
+  function onVoiceModeTtsEnded() {
+    voiceModeTtsPlaying = false;
+    // Cooldown only when the full TTS session finishes, not between sentences.
+    nativeLog('VAD', 'TTS playback ended');
+  }
+
+  let nativeVoiceTtsSessionListener = null;
+  let nativeVoiceTtsSessionPromise = null;
+  let nativeVoiceTtsOnSessionEnded = null;
+  let nativeTtsFetchChain = Promise.resolve();
+
+  function nativeVoiceTtsStreamUrl(token) {
+    return window.location.origin + '/tts_stream/' + encodeURIComponent(token);
+  }
+
+  function ensureNativeVoiceTtsSession() {
+    if (nativeVoiceTtsSessionPromise) {
+      return nativeVoiceTtsSessionPromise;
+    }
+    nativeVoiceTtsSessionPromise = window.NativeVoiceTts.beginSession().then(function () {
+      if (nativeVoiceTtsSessionListener) {
+        nativeVoiceTtsSessionListener.remove();
+      }
+      nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
+        if (data.type === 'started') {
+          onVoiceModeTtsStarted();
+        } else if (data.type === 'ended') {
+          onVoiceModeTtsEnded();
+          tearDownNativeVoiceTtsSession();
+          if (nativeVoiceTtsOnSessionEnded) {
+            var endedCb = nativeVoiceTtsOnSessionEnded;
+            nativeVoiceTtsOnSessionEnded = null;
+            endedCb();
+          }
+        } else if (data.type === 'error') {
+          onVoiceModeTtsEnded();
+          console.error('Native voice TTS error:', data.message);
+        }
+      });
+    });
+    return nativeVoiceTtsSessionPromise;
+  }
+
+  function enqueueNativeVoiceTts(token) {
+    return ensureNativeVoiceTtsSession().then(function () {
+      return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(token));
+    });
+  }
+
+  function closeNativeVoiceTtsSession() {
+    return nativeTtsFetchChain.then(function () {
+      if (!nativeVoiceTtsSessionPromise) {
+        return Promise.resolve();
+      }
+      return nativeVoiceTtsSessionPromise.then(function () {
+        return window.NativeVoiceTts.markEndOfQueue();
+      });
+    });
+  }
+
+  function tearDownNativeVoiceTtsSession() {
+    if (nativeVoiceTtsSessionListener) {
+      nativeVoiceTtsSessionListener.remove();
+      nativeVoiceTtsSessionListener = null;
+    }
+    nativeVoiceTtsSessionPromise = null;
+  }
 
   async function startVoiceMode() {
     try {
       const useNativeMicVAD = window.nativeMicAvailable && isMobile;
 
       if (useNativeMicVAD) {
-        // Use native mic bridge for Android
-        nativeMicBridge = new NativeMicVADBridge(
-          function() {
-            if (CURRENT_AUDIO) {
-              bargeInFrames = 0;
-            } else {
-              handleBargeIn();
-            }
-          },
-          function(audio) {
-            handleSpeechEnd(audio);
-          },
-          function(probs) {
-            if (CURRENT_AUDIO && probs.isSpeech > 0.8) {
-              bargeInFrames++;
-              if (bargeInFrames >= BARGE_IN_THRESHOLD) {
-                bargeInFrames = 0;
-                handleBargeIn();
-              }
-            } else if (!CURRENT_AUDIO) {
-              bargeInFrames = 0;
-            }
-          },
-          function(err) {
-            appendMessage('<strong>Error:</strong> ' + err, 'error-message');
-          }
-        );
+        nativeMicBridge = new NativeMicUtteranceVAD(function (err) {
+          appendMessage('<strong>Error:</strong> ' + err, 'error-message');
+        });
         await nativeMicBridge.start();
       } else {
         // Use browser getUserMedia on desktop
@@ -1994,7 +2131,8 @@ $(document).ready(function() {
     }
   }
 
-  function createVAD(stream) {
+  function createVAD(stream, hooks) {
+    hooks = hooks || {};
     nativeLog('VAD', 'createVAD called with stream id: ' + stream.id);
     return vad.MicVAD.new({
       stream: stream,
@@ -2005,15 +2143,11 @@ $(document).ready(function() {
       redemptionFrames: 5,
       minSpeechFrames: 1,
       getStream: async () => stream,
-      onSpeechStart: function () {
+      onSpeechStart: hooks.onSpeechStart || function () {
         nativeLog('VAD', 'onSpeechStart');
-        if (CURRENT_AUDIO) {
-          bargeInFrames = 0;
-        } else {
-          handleBargeIn();
-        }
+        if (CURRENT_AUDIO) handleBargeIn();
       },
-      onFrameProcessed: function (probs) {
+      onFrameProcessed: hooks.onFrameProcessed || function (probs) {
         if (CURRENT_AUDIO && probs.isSpeech > 0.8) {
           bargeInFrames++;
           if (bargeInFrames >= BARGE_IN_THRESHOLD) {
@@ -2024,10 +2158,10 @@ $(document).ready(function() {
           bargeInFrames = 0;
         }
       },
-      onSpeechEnd: function (audio) {
+      onSpeechEnd: hooks.onSpeechEnd || function (audio) {
         nativeLog('VAD', 'onSpeechEnd');
         handleSpeechEnd(audio);
-      }
+      },
     });
   }
 
@@ -2063,12 +2197,28 @@ $(document).ready(function() {
       voiceModeStream = null;
     }
     window.voiceModeActive = false;
+    voiceModeTtsPlaying = false;
+    voiceModeTtsSessionActive = false;
+    voiceModeListenCooldownUntil = 0;
+    if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
+      window.NativeVoiceTts.stop().catch(function () {});
+    }
+    tearDownNativeVoiceTtsSession();
+    nativeVoiceTtsOnSessionEnded = null;
     bargeInFrames = 0;
     $voiceModeBtn.removeClass('active');
     $micBtn.prop('disabled', false);
   }
 
   function handleBargeIn() {
+    voiceModeTtsPlaying = false;
+    voiceModeTtsSessionActive = false;
+    voiceModeListenCooldownUntil = 0;
+    if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
+      window.NativeVoiceTts.stop().catch(function () {});
+    }
+    tearDownNativeVoiceTtsSession();
+    nativeVoiceTtsOnSessionEnded = null;
     if (CURRENT_AUDIO) {
       if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
       if (CURRENT_AUDIO_BUTTON) {
@@ -2084,41 +2234,30 @@ $(document).ready(function() {
     }
   }
 
-  function encodeWAV(samples, sampleRate) {
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-    function writeStr(offset, str) {
-      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-    }
-    writeStr(0, 'RIFF');
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeStr(36, 'data');
-    view.setUint32(40, samples.length * 2, true);
-    let offset = 44;
-    for (let i = 0; i < samples.length; i++, offset += 2) {
-      const s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-    }
-    return new Blob([buffer], { type: 'audio/wav' });
-  }
-
-  async function handleSpeechEnd(audio) {
+  async function handleSpeechEnd(vadAudio) {
     console.log('[VAD] handleSpeechEnd called, vadSttInProgress=', vadSttInProgress);
     if (vadSttInProgress) return;
     vadSttInProgress = true;
+    // Desktop only: pause VAD during STT; reinitializeVAD() resumes before TTS.
+    // Native bridge must NEVER pause — Silero cannot restart in Android WebView, and
+    // barge-in during TTS requires continuous VAD.
     if (voiceModeVAD) voiceModeVAD.pause();
 
     try {
-      const wavBlob = encodeWAV(audio, 16000);
+      let wavBlob;
+      if (nativeMicBridge && nativeMicBridge.hasSpeechCapture()) {
+        wavBlob = nativeMicBridge.takeSpeechWavBlob();
+        nativeLog('VAD', 'STT native PCM wavBytes=' + wavBlob.size);
+        // Ignore very short blips (< ~125 ms), same threshold as Android Auto
+        if (wavBlob.size < 44 + 4000) {
+          nativeLog('VAD', 'STT skipped: utterance too short');
+          return;
+        }
+      } else if (vadAudio && vadAudio.length) {
+        wavBlob = NativeAudio.float32ToWavBlob(vadAudio, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
+      } else {
+        return;
+      }
       const formData = new FormData();
       formData.append('audio', wavBlob, 'recording.wav');
 
@@ -2162,7 +2301,7 @@ $(document).ready(function() {
     }
   });
 
-  // Voice mode TTS playback using <audio> element for browser AEC
+  // Voice mode TTS: native AudioTrack on Capacitor (AEC-safe), HTML audio on desktop
   window.playTTSVoiceMode = function playTTSVoiceMode(button) {
     if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
       if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
@@ -2181,6 +2320,10 @@ $(document).ready(function() {
     let sentenceQueue = [];
     let isFetching = false;
     let audioEl = null;
+    let nativeTtsPendingFetches = 0;
+    let nativeTtsCloseRequested = false;
+    nativeTtsFetchChain = Promise.resolve();
+    voiceModeTtsSessionActive = true;
 
     function sanitizeForTTS(text) {
       return text
@@ -2224,9 +2367,104 @@ $(document).ready(function() {
       }
     }
 
+    function maybeFinishNativeTtsSession() {
+      if (!useNativeVoiceTtsPlayback() || isStopped || nativeTtsCloseRequested) return;
+      if (nativeTtsPendingFetches > 0 || sentenceQueue.length > 0) return;
+      const currentRawText = $messageElement.find('.ai-message-text').text().trim();
+      const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
+      if (stillGenerating) {
+        setTimeout(playNext, 200);
+        return;
+      }
+      const remaining = getPendingText();
+      if (remaining.trim()) {
+        sentenceQueue.push(remaining);
+        processedText += remaining;
+        playNext();
+        return;
+      }
+      nativeTtsCloseRequested = true;
+      if (!nativeVoiceTtsSessionPromise) {
+        if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
+          $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+          CURRENT_AUDIO = null;
+          CURRENT_AUDIO_BUTTON = null;
+        }
+        finishVoiceModeTtsSession();
+        return;
+      }
+      nativeVoiceTtsOnSessionEnded = function () {
+        if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
+          $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+          CURRENT_AUDIO = null;
+          CURRENT_AUDIO_BUTTON = null;
+        }
+        finishVoiceModeTtsSession();
+      };
+      closeNativeVoiceTtsSession().catch(function () {
+        if (nativeVoiceTtsOnSessionEnded) {
+          var cb = nativeVoiceTtsOnSessionEnded;
+          nativeVoiceTtsOnSessionEnded = null;
+          cb();
+        }
+      });
+    }
+
+    function scheduleNativeTtsFetch(text) {
+      nativeTtsPendingFetches++;
+      nativeTtsFetchChain = nativeTtsFetchChain.then(function () {
+        if (isStopped) return;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(function () { controller.abort(); }, 30000);
+        return fetch('/tts', {
+          method: 'POST',
+          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ text: text }),
+          signal: controller.signal
+        })
+        .then(function (r) {
+          clearTimeout(timeoutId);
+          if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+          if (!r.ok) throw new Error('TTS request failed');
+          return r.json();
+        })
+        .then(function (data) {
+          if (isStopped) return;
+          return enqueueNativeVoiceTts(data.token);
+        })
+        .finally(function () {
+          clearTimeout(timeoutId);
+        });
+      }).catch(function (err) {
+        console.error('Native voice TTS error:', err);
+      }).finally(function () {
+        nativeTtsPendingFetches--;
+        if (!isStopped) {
+          maybeFinishNativeTtsSession();
+        }
+      });
+    }
+
     function playNext() {
       if (isStopped) return;
       if (sentenceQueue.length === 0) discoverSentences();
+
+      if (useNativeVoiceTtsPlayback()) {
+        while (sentenceQueue.length > 0) {
+          const text = sentenceQueue.shift().trim();
+          if (text) scheduleNativeTtsFetch(text);
+        }
+        maybeFinishNativeTtsSession();
+        if (sentenceQueue.length === 0) {
+          const currentRawText = $messageElement.find('.ai-message-text').text().trim();
+          const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
+          if (stillGenerating) {
+            setTimeout(playNext, 200);
+          }
+        }
+        return;
+      }
+
       if (sentenceQueue.length === 0) {
         const currentRawText = $messageElement.find('.ai-message-text').text().trim();
         const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
@@ -2241,6 +2479,7 @@ $(document).ready(function() {
               $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
               CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
             }
+            finishVoiceModeTtsSession();
             return;
           }
         } else {
@@ -2269,18 +2508,24 @@ $(document).ready(function() {
           if (!r.ok) throw new Error('TTS request failed');
           return r.json();
         })
-        .then(data => {
+        .then(function (data) {
           if (isStopped) return;
           audioEl = new Audio('/tts_stream/' + data.token);
+          audioEl.onplay = function () {
+            onVoiceModeTtsStarted();
+          };
           audioEl.onended = function () {
+            onVoiceModeTtsEnded();
             if (!isStopped) { isFetching = false; playNext(); }
           };
           audioEl.onerror = function () {
+            onVoiceModeTtsEnded();
             console.error('Voice mode audio playback error');
             isFetching = false;
             if (!isStopped) setTimeout(playNext, 500);
           };
-          audioEl.play().catch(e => {
+          audioEl.play().catch(function (e) {
+            onVoiceModeTtsEnded();
             console.error('Audio play failed:', e);
             isFetching = false;
             if (!isStopped) setTimeout(playNext, 500);
@@ -2295,8 +2540,16 @@ $(document).ready(function() {
     }
 
     CURRENT_AUDIO = {
-      stop: () => {
+      stop: function () {
         isStopped = true;
+        nativeTtsCloseRequested = true;
+        nativeTtsFetchChain = Promise.resolve();
+        finishVoiceModeTtsSession();
+        tearDownNativeVoiceTtsSession();
+        nativeVoiceTtsOnSessionEnded = null;
+        if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
+          window.NativeVoiceTts.stop().catch(function () {});
+        }
         if (audioEl) { audioEl.pause(); audioEl.src = ''; audioEl = null; }
       }
     };

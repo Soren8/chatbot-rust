@@ -6,7 +6,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 
 import com.chatbot.app.Logger.LoggerPlugin;
-import com.chatbot.app.NativeMicPlugin;
+import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -15,6 +15,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         initialPlugins.add(NativeMicPlugin.class);
+        initialPlugins.add(NativeVoiceTtsPlugin.class);
         initialPlugins.add(LoggerPlugin.class);
         super.onCreate(savedInstanceState);
     }

@@ -4,13 +4,16 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.AudioAttributes;
+import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -36,6 +39,8 @@ public class NativeMicPlugin extends Plugin {
     }
 
     private static final int SAMPLE_RATE = 16000;
+    /** Fixed 20 ms frames for steady JS consumption (320 samples * 2 bytes). */
+    private static final int CHUNK_SAMPLES = 320;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
     private static final int PERMISSION_REQUEST_CODE = 200;
@@ -49,8 +54,12 @@ public class NativeMicPlugin extends Plugin {
     private AudioFocusRequest audioFocusRequest = null;
     private boolean hasAudioFocus = false;
     private int previousAudioMode = AudioManager.MODE_NORMAL;
+    private boolean previousSpeakerphone = false;
+    private int previousVoiceCallVolume = -1;
+    private AudioDeviceInfo previousCommunicationDevice;
     private AcousticEchoCanceler echoCanceler = null;
     private NoiseSuppressor noiseSuppressor = null;
+    private AutomaticGainControl automaticGainControl = null;
 
     @Override
     public void load() {
@@ -122,7 +131,7 @@ public class NativeMicPlugin extends Plugin {
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
-                bufferSize * 2
+                bufferSize * 4
             );
 
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
@@ -140,13 +149,28 @@ public class NativeMicPlugin extends Plugin {
             isRecording = true;
 
             recordingThread = new Thread(() -> {
-                short[] buffer = new short[bufferSize];
+                short[] readBuffer = new short[bufferSize];
+                short[] chunkBuffer = new short[CHUNK_SAMPLES];
+                int chunkFill = 0;
                 while (isRecording && audioRecord != null) {
-                    int read = audioRecord.read(buffer, 0, bufferSize);
-                    if (read > 0) {
-                        byte[] pcmBytes = shortArrayToByteArray(buffer, read);
-                        notifyAudioData(pcmBytes);
+                    int read = audioRecord.read(readBuffer, 0, bufferSize);
+                    if (read <= 0) {
+                        continue;
                     }
+                    int offset = 0;
+                    while (offset < read) {
+                        int toCopy = Math.min(CHUNK_SAMPLES - chunkFill, read - offset);
+                        System.arraycopy(readBuffer, offset, chunkBuffer, chunkFill, toCopy);
+                        chunkFill += toCopy;
+                        offset += toCopy;
+                        if (chunkFill == CHUNK_SAMPLES) {
+                            notifyAudioData(shortArrayToByteArray(chunkBuffer, CHUNK_SAMPLES));
+                            chunkFill = 0;
+                        }
+                    }
+                }
+                if (chunkFill > 0) {
+                    notifyAudioData(shortArrayToByteArray(chunkBuffer, chunkFill));
                 }
             });
             recordingThread.start();
@@ -200,20 +224,64 @@ public class NativeMicPlugin extends Plugin {
             return;
         }
         previousAudioMode = audioManager.getMode();
+        previousSpeakerphone = audioManager.isSpeakerphoneOn();
         audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-        FileLogger.log(TAG, "setMode MODE_IN_COMMUNICATION previous=" + previousAudioMode + " current=" + audioManager.getMode());
+        audioManager.setSpeakerphoneOn(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            previousCommunicationDevice = audioManager.getCommunicationDevice();
+            AudioDeviceInfo speaker = findBuiltInSpeaker();
+            if (speaker != null) {
+                audioManager.setCommunicationDevice(speaker);
+                FileLogger.log(TAG, "setCommunicationDevice speaker id=" + speaker.getId());
+            }
+        }
+        int maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
+        previousVoiceCallVolume = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL);
+        audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVol, 0);
+        FileLogger.log(TAG, "setMode MODE_IN_COMMUNICATION speakerphone on previous="
+                + previousSpeakerphone + " voiceVol " + previousVoiceCallVolume + "->" + maxVol
+                + " current=" + audioManager.getMode());
     }
 
     private void exitCommunicationMode() {
         if (audioManager == null) {
             return;
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (previousCommunicationDevice != null) {
+                audioManager.setCommunicationDevice(previousCommunicationDevice);
+            } else {
+                audioManager.clearCommunicationDevice();
+            }
+            previousCommunicationDevice = null;
+        }
+        if (previousVoiceCallVolume >= 0) {
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, previousVoiceCallVolume, 0);
+            previousVoiceCallVolume = -1;
+        }
+        audioManager.setSpeakerphoneOn(previousSpeakerphone);
         audioManager.setMode(previousAudioMode);
-        FileLogger.log(TAG, "restore audio mode=" + previousAudioMode + " current=" + audioManager.getMode());
+        FileLogger.log(TAG, "restore audio mode=" + previousAudioMode
+                + " speakerphone=" + previousSpeakerphone + " current=" + audioManager.getMode());
+    }
+
+    private AudioDeviceInfo findBuiltInSpeaker() {
+        if (audioManager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return null;
+        }
+        for (AudioDeviceInfo device : audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+            if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                return device;
+            }
+        }
+        return null;
     }
 
     private void enableAudioEffects(int audioSessionId) {
-        FileLogger.log(TAG, "AudioRecord sessionId=" + audioSessionId + " aecAvailable=" + AcousticEchoCanceler.isAvailable() + " nsAvailable=" + NoiseSuppressor.isAvailable());
+        FileLogger.log(TAG, "AudioRecord sessionId=" + audioSessionId
+                + " aecAvailable=" + AcousticEchoCanceler.isAvailable()
+                + " nsAvailable=" + NoiseSuppressor.isAvailable()
+                + " agcAvailable=" + AutomaticGainControl.isAvailable());
         if (AcousticEchoCanceler.isAvailable()) {
             echoCanceler = AcousticEchoCanceler.create(audioSessionId);
             if (echoCanceler != null) {
@@ -230,6 +298,15 @@ public class NativeMicPlugin extends Plugin {
                 FileLogger.log(TAG, "NS enabled=" + noiseSuppressor.getEnabled() + " result=" + result);
             } else {
                 FileLogger.log(TAG, "NS create returned null");
+            }
+        }
+        if (AutomaticGainControl.isAvailable()) {
+            automaticGainControl = AutomaticGainControl.create(audioSessionId);
+            if (automaticGainControl != null) {
+                int result = automaticGainControl.setEnabled(true);
+                FileLogger.log(TAG, "AGC enabled=" + automaticGainControl.getEnabled() + " result=" + result);
+            } else {
+                FileLogger.log(TAG, "AGC create returned null");
             }
         }
     }
@@ -276,6 +353,11 @@ public class NativeMicPlugin extends Plugin {
             noiseSuppressor.release();
             noiseSuppressor = null;
             FileLogger.log(TAG, "NS released");
+        }
+        if (automaticGainControl != null) {
+            automaticGainControl.release();
+            automaticGainControl = null;
+            FileLogger.log(TAG, "AGC released");
         }
     }
 

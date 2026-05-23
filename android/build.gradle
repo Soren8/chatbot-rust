@@ -17,6 +17,16 @@ buildscript {
 
 apply from: "variables.gradle"
 
+// Capacitor targets Java 21. Gradle 8.14 + AGP 8.13 are pinned in wrapper/build.gradle.
+def runningJvm = JavaVersion.current()
+if (runningJvm.majorVersion.toInteger() > 21) {
+    throw new GradleException(
+        "Android build requires JDK 21 (Capacitor/AGP pin). " +
+        "Current JVM: ${runningJvm}. " +
+        "Use: export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 && ./gradlew ..."
+    )
+}
+
 allprojects {
     repositories {
         google()

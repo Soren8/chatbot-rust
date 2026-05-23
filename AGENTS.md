@@ -3,8 +3,16 @@
 ## Build & Run Commands
 
 - Run Rust integration tests: `docker compose run --rm tests cargo test`
-- Run in Docker: `docker compose --progress plain up --build`
+- Run in Docker: `docker compose --progress plain up --build -d`
 - Do not attempt to build, run, or test outside of the docker environment.
+
+`static/` and templates are **copied into the image at build time** (hermetic Docker). After changing web UI assets only, rebuild and restart the webserver service:
+
+```bash
+docker compose --progress plain up --build -d webserver
+```
+
+The Capacitor app loads JS/CSS from the running server; until `webserver` is rebuilt, the phone will keep serving the previous image’s static files.
 
 ## Code Style Guidelines
 - **Imports**: Standard library first, then third-party, then local modules
