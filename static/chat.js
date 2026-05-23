@@ -509,6 +509,7 @@ window.playTTS = function playTTS(button) {
       const remaining = getPendingText();
       if (remaining.trim()) {
         sentenceQueue.push(remaining);
+        totalQueuedTextLen += remaining.length;
       } else {
         // Nothing left to fetch. Wait for any active audio to drain, then finish.
         if (activeSourcesPlaying === 0) {
@@ -581,6 +582,7 @@ window.playTTS = function playTTS(button) {
             const remaining = getPendingText();
             if (remaining.trim()) {
               sentenceQueue.push(remaining);
+              totalQueuedTextLen += remaining.length;
               pumpQueue();
             } else {
               finishPlayback();

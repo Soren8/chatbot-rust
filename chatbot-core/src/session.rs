@@ -1034,7 +1034,6 @@ mod tests {
             context_size: Some(4096),
             base_url: "http://localhost".to_string(),
             api_key: None,
-            template: None,
             allowed_providers: vec![],
             request_timeout: None,
             test_chunks: None,

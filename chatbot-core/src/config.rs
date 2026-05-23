@@ -25,8 +25,6 @@ pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
     pub api_key: Option<String>,
-    #[serde(default)]
-    pub template: Option<String>,
     #[serde(default, deserialize_with = "deserialize_allowed_providers")]
     pub allowed_providers: Vec<String>,
     #[serde(default)]
@@ -530,13 +528,12 @@ fn build_cdn_sri_map() -> HashMap<String, String> {
 fn fallback_provider() -> ProviderConfig {
     ProviderConfig {
         provider_name: "default".to_string(),
-        provider_type: "ollama".to_string(),
+        provider_type: "openai".to_string(),
         tier: Some("free".to_string()),
-        model_name: "dolphin3.1-8b".to_string(),
+        model_name: "local-model".to_string(),
         context_size: Some(8192),
-        base_url: String::new(),
+        base_url: "http://127.0.0.1:11434/v1".to_string(),
         api_key: None,
-        template: None,
         allowed_providers: Vec::new(),
         request_timeout: None,
         test_chunks: None,
@@ -720,7 +717,7 @@ mod tests {
         let _cwd_guard = CwdGuard::change_to(dir.path());
         reset();
         let provider_type = app_config().default_provider().provider_type.clone();
-        assert_eq!(provider_type, "ollama");
+        assert_eq!(provider_type, "openai");
         reset();
     }
 
