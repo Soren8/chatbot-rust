@@ -44,9 +44,15 @@ The Capacitor app loads JS/CSS from the running server; until `webserver` is reb
 - If you believe a related change would help, **stop and ask for confirmation before making it**, even when it seems clearly beneficial. Do not bundle unrequested changes into the same work.
 - When unsure whether something is in scope, ask rather than assume.
 
+## Git
+
+- **Commit only — never push.** The user publishes via GitHub Desktop; remote credentials are intentionally unavailable to coding agents.
+- Do not run `git push`, `gh` push/release commands, or other operations that modify the remote repository.
+- When a task is complete, create a local commit with a concise message. The user will push when ready.
+
 ## Important Notes
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
-- Git commit at the completion of each full task.
+- Git commit at the completion of each full task (local commit only; see **Git** above).
 - ALWAYS run `docker compose --progress plain up --build -d` before running tests to allow the user to reality-check the fix in the running environment while the test suite executes.
 - Do not moralize about the user's language or tone.
 - Preserve the `temp/.cargo/` cache directory; do not delete it because it stores Rust build artifacts used by other agents. If it is missing, recreate it inside `temp/` (never at repo root).
