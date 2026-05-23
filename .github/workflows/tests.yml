@@ -17,5 +17,6 @@ jobs:
 
       - name: Run tests via docker compose
         run: |
-          docker compose up --build --exit-code-from tests tests
+          mkdir -p temp/.cargo/registry temp/.cargo/git temp/.cargo/target temp/test-logs
+          COMPOSE_PROFILES=test docker compose up --build --exit-code-from tests tests
 

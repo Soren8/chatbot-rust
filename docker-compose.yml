@@ -79,7 +79,7 @@ services:
         - type=local,dest=./temp/.docker/tests,mode=max
     working_dir: /app
     command: >-
-      bash -lc '
+      bash -c '
         set -uo pipefail
         LOG_DIR=/var/log/chatbot-tests
         mkdir -p "$${LOG_DIR}"
@@ -92,9 +92,11 @@ services:
       SECRET_KEY: test_secret_key_for_security_tests
       HOST_DATA_DIR: /app/data
       RUST_LOG: info
-      CARGO_HOME: /app/.cargo
+      CARGO_HOME: /opt/cargo
       CARGO_TARGET_DIR: /app/.cargo/target
     volumes:
       - ./:/app
       - ./temp/test-logs:/var/log/chatbot-tests
-      - ./temp/.cargo:/app/.cargo
+      - ./temp/.cargo/registry:/opt/cargo/registry
+      - ./temp/.cargo/git:/opt/cargo/git
+      - ./temp/.cargo/target:/app/.cargo/target

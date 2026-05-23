@@ -60,6 +60,10 @@ RUN --mount=type=cache,target=/app/.cargo/registry \
 
 # Test image with cargo available
 FROM rust-tools AS test
+# Toolchain lives outside /app so the dev bind-mount (./:/app) cannot hide cargo on CI.
+ENV CARGO_HOME=/opt/cargo
+ENV PATH="/opt/cargo/bin:$PATH"
+RUN mkdir -p /opt/cargo && cp -a /app/.cargo/. /opt/cargo/
 WORKDIR /app
 COPY Cargo.toml Cargo.lock /app/
 COPY chatbot-core /app/chatbot-core
@@ -69,7 +73,6 @@ COPY static /app/static
 RUN mkdir -p /app/data
 RUN touch /app/.config.yml
 ENV CHATBOT_STATIC_ROOT="/app/static"
-ENV CARGO_HOME=/app/.cargo
 ENV CARGO_TARGET_DIR=/app/.cargo/target
 
 # Production image with Axum binary
