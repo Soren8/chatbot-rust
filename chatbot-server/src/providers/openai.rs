@@ -14,10 +14,8 @@ use self::messages::ChatMessagePayload;
 use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};
 
 pub struct ToolCall {
-    pub id: String,
     pub name: String,
     pub arguments: Value,
-    pub raw: Value,
 }
 
 pub enum ToolCallResponse {
@@ -95,24 +93,6 @@ pub mod messages {
                 content: Some(ChatMessageContent::Text(content)),
                 tool_calls: None,
                 tool_call_id: None,
-            }
-        }
-
-        pub fn assistant_with_tool_calls(tool_calls: Vec<Value>) -> Self {
-            Self {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(tool_calls),
-                tool_call_id: None,
-            }
-        }
-
-        pub fn tool(tool_call_id: String, content: String) -> Self {
-            Self {
-                role: "tool".to_string(),
-                content: Some(ChatMessageContent::Text(content)),
-                tool_calls: None,
-                tool_call_id: Some(tool_call_id),
             }
         }
     }
@@ -292,19 +272,9 @@ impl OpenAiProvider {
     ) -> Result<ToolCallResponse> {
         if let Ok(query) = std::env::var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY") {
             if !query.is_empty() {
-                let raw = serde_json::json!({
-                    "id": "test_call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "brave_web_search",
-                        "arguments": format!("{{\"query\":\"{}\"}}", query)
-                    }
-                });
                 return Ok(ToolCallResponse::ToolCalls(vec![ToolCall {
-                    id: "test_call_1".to_string(),
                     name: "brave_web_search".to_string(),
                     arguments: serde_json::json!({ "query": query }),
-                    raw,
                 }]));
             }
         }
@@ -357,17 +327,11 @@ impl OpenAiProvider {
                 let calls = raw_tool_calls
                     .iter()
                     .filter_map(|tc| {
-                        let id = tc["id"].as_str()?.to_string();
                         let name = tc["function"]["name"].as_str()?.to_string();
                         let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
                         let arguments =
                             serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                        Some(ToolCall {
-                            id,
-                            name,
-                            arguments,
-                            raw: tc.clone(),
-                        })
+                        Some(ToolCall { name, arguments })
                     })
                     .collect::<Vec<_>>();
 
