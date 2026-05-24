@@ -6,6 +6,7 @@ import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
+import android.os.Build;
 import android.util.Log;
 
 import com.getcapacitor.JSObject;
@@ -14,6 +15,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -21,6 +23,7 @@ import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -29,12 +32,14 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs, USAGE_VOICE_COMMUNICATION.
+ * Each URL is downloaded fully and parsed before PCM is written (matches desktop decodeAudioData).
  */
 @CapacitorPlugin(name = "NativeVoiceTts")
 public class NativeVoiceTtsPlugin extends Plugin {
     private static final String TAG = "NativeVoiceTts";
     private static final int DEFAULT_SAMPLE_RATE = 24000;
     private static final int QUEUE_POLL_MS = 100;
+    private static final int MAX_WAV_BYTES = 8 * 1024 * 1024;
 
     private final BlockingQueue<String> urlQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean sessionActive = new AtomicBoolean(false);
@@ -152,7 +157,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
             try {
                 String url = urlQueue.poll(QUEUE_POLL_MS, TimeUnit.MILLISECONDS);
                 if (url != null) {
-                    streamUrlToTrack(url);
+                    playUrlToTrack(url);
                     continue;
                 }
                 if (endOfQueueMarked.get() && urlQueue.isEmpty()) {
@@ -165,6 +170,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 Thread.currentThread().interrupt();
                 return;
             } catch (Exception e) {
+                Log.e(TAG, "playback error", e);
                 notifyError(e.getMessage() != null ? e.getMessage() : "playback failed");
                 stopPlaybackInternal(false);
                 return;
@@ -172,19 +178,28 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
     }
 
-    private static final int STREAMING_DATA_SIZE = 0x7FFFFFFF;
-
-    private static final class WavDataInfo {
+    private static final class WavPcm {
         final int sampleRate;
-        final int dataBytes;
+        final byte[] pcm;
 
-        WavDataInfo(int sampleRate, int dataBytes) {
+        WavPcm(int sampleRate, byte[] pcm) {
             this.sampleRate = sampleRate;
-            this.dataBytes = dataBytes;
+            this.pcm = pcm;
         }
     }
 
-    private void streamUrlToTrack(String urlStr) throws IOException {
+    private void playUrlToTrack(String urlStr) throws IOException {
+        byte[] wavBytes = downloadUrl(urlStr);
+        WavPcm wav = extractPcmFromWav(wavBytes);
+        if (wav.pcm.length < 2) {
+            throw new IOException("empty PCM payload");
+        }
+        AudioTrack track = ensureTrackPlaying(wav.sampleRate);
+        writePcmBlocking(track, wav.pcm);
+        Log.d(TAG, "played pcm bytes=" + wav.pcm.length + " rate=" + wav.sampleRate);
+    }
+
+    private byte[] downloadUrl(String urlStr) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(120000);
@@ -194,87 +209,96 @@ public class NativeVoiceTtsPlugin extends Plugin {
             conn.disconnect();
             throw new IOException("HTTP " + code);
         }
-
         try (InputStream is = conn.getInputStream()) {
-            WavDataInfo wav = parseWavDataInfo(is);
-            AudioTrack track = ensureTrackPlaying(wav.sampleRate);
-            streamPcmData(is, track, wav.dataBytes);
+            return readAllBytes(is);
         } finally {
             conn.disconnect();
         }
     }
 
-    private WavDataInfo parseWavDataInfo(InputStream is) throws IOException {
-        byte[] riff = new byte[12];
-        if (readFully(is, riff, 0, 12) < 12
-                || riff[0] != 'R' || riff[1] != 'I' || riff[2] != 'F' || riff[3] != 'F'
-                || riff[8] != 'W' || riff[9] != 'A' || riff[10] != 'V' || riff[11] != 'E') {
-            throw new IOException("not a WAV stream");
+    private byte[] readAllBytes(InputStream is) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
+        byte[] buf = new byte[8192];
+        int total = 0;
+        int n;
+        while ((n = is.read(buf)) != -1) {
+            total += n;
+            if (total > MAX_WAV_BYTES) {
+                throw new IOException("WAV response too large");
+            }
+            out.write(buf, 0, n);
+        }
+        return out.toByteArray();
+    }
+
+    private WavPcm extractPcmFromWav(byte[] data) throws IOException {
+        if (data.length < 44) {
+            throw new IOException("WAV too short");
+        }
+        if (data[0] != 'R' || data[1] != 'I' || data[2] != 'F' || data[3] != 'F'
+                || data[8] != 'W' || data[9] != 'A' || data[10] != 'V' || data[11] != 'E') {
+            throw new IOException("not a WAV file");
         }
 
         int sampleRate = DEFAULT_SAMPLE_RATE;
-        while (true) {
-            byte[] chunkHdr = new byte[8];
-            if (readFully(is, chunkHdr, 0, 8) < 8) {
-                throw new IOException("truncated WAV header");
+        int pos = 12;
+        while (pos + 8 <= data.length) {
+            String chunkId = new String(data, pos, 4, StandardCharsets.US_ASCII);
+            int chunkSize = ByteBuffer.wrap(data, pos + 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
+            int chunkDataStart = pos + 8;
+            if (chunkDataStart > data.length) {
+                break;
             }
-            String chunkId = new String(chunkHdr, 0, 4, StandardCharsets.US_ASCII);
-            int chunkSize = ByteBuffer.wrap(chunkHdr, 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt() & 0x7FFFFFFF;
 
             if ("fmt ".equals(chunkId)) {
-                byte[] fmt = new byte[chunkSize];
-                int read = readFully(is, fmt, 0, chunkSize);
-                if (read >= 8) {
-                    sampleRate = ByteBuffer.wrap(fmt, 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
-                }
-                if (read < chunkSize) {
-                    skipFully(is, chunkSize - read);
+                if (chunkSize >= 8 && chunkDataStart + 8 <= data.length) {
+                    sampleRate = ByteBuffer.wrap(data, chunkDataStart + 4, 4)
+                            .order(ByteOrder.LITTLE_ENDIAN).getInt();
                 }
             } else if ("data".equals(chunkId)) {
-                return new WavDataInfo(sampleRate, chunkSize);
-            } else {
-                skipFully(is, chunkSize);
+                int pcmStart = chunkDataStart;
+                int pcmLen;
+                if (chunkSize <= 0 || chunkSize == Integer.MAX_VALUE) {
+                    pcmLen = data.length - pcmStart;
+                } else {
+                    pcmLen = Math.min(chunkSize, data.length - pcmStart);
+                }
+                if (pcmLen < 2 || (pcmLen & 1) != 0) {
+                    pcmLen &= ~1;
+                }
+                if (pcmLen < 2) {
+                    throw new IOException("invalid PCM length");
+                }
+                if (sampleRate < 8000 || sampleRate > 48000) {
+                    sampleRate = DEFAULT_SAMPLE_RATE;
+                }
+                return new WavPcm(sampleRate, Arrays.copyOfRange(data, pcmStart, pcmStart + pcmLen));
             }
+
+            pos = chunkDataStart + chunkSize + (chunkSize & 1);
         }
+        throw new IOException("WAV missing data chunk");
     }
 
-    private void streamPcmData(InputStream is, AudioTrack track, int dataBytes) throws IOException {
-        byte[] buf = new byte[8192];
-        long remaining = dataBytes == STREAMING_DATA_SIZE ? Long.MAX_VALUE : (dataBytes & 0xFFFFFFFFL);
+    private void writePcmBlocking(AudioTrack track, byte[] pcm) throws IOException {
+        int offset = 0;
+        int remaining = pcm.length & ~1;
         while (remaining > 0) {
             if (stopRequested.get()) {
                 return;
             }
-            int toRead = remaining == Long.MAX_VALUE
-                    ? buf.length
-                    : (int) Math.min(buf.length, remaining);
-            int n = is.read(buf, 0, toRead);
-            if (n < 0) {
-                break;
-            }
-            int writeLen = n & ~1;
-            if (writeLen > 0) {
-                track.write(buf, 0, writeLen);
-                bytesWritten.addAndGet(writeLen);
-            }
-            if (remaining != Long.MAX_VALUE) {
-                remaining -= n;
-            }
-        }
-    }
-
-    private static void skipFully(InputStream is, int bytes) throws IOException {
-        long remaining = bytes & 0xFFFFFFFFL;
-        while (remaining > 0) {
-            long skipped = is.skip(remaining);
-            if (skipped <= 0) {
-                if (is.read() < 0) {
-                    return;
-                }
-                remaining--;
+            int written;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                written = track.write(pcm, offset, remaining, AudioTrack.WRITE_BLOCKING);
             } else {
-                remaining -= skipped;
+                written = track.write(pcm, offset, remaining);
             }
+            if (written <= 0) {
+                throw new IOException("AudioTrack write failed: " + written);
+            }
+            offset += written;
+            remaining -= written;
+            bytesWritten.addAndGet(written);
         }
     }
 
@@ -343,18 +367,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
             }
             Thread.sleep(20);
         }
-    }
-
-    private static int readFully(InputStream is, byte[] buf, int off, int len) throws IOException {
-        int total = 0;
-        while (total < len) {
-            int n = is.read(buf, off + total, len - total);
-            if (n < 0) {
-                return total;
-            }
-            total += n;
-        }
-        return total;
     }
 
     private void stopPlaybackInternal(boolean notifyStopped) {
