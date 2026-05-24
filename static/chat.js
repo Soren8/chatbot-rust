@@ -1830,6 +1830,7 @@ $(document).ready(function() {
     this.speechAboveCount = 0;
     this.bargeAboveCount = 0;
     this.silenceMs = 0;
+    this.speechActiveMs = 0;
     this.nativeListener = null;
     this.isRecording = false;
     this.chunkCount = 0;
@@ -1868,11 +1869,12 @@ $(document).ready(function() {
       }
       if (this.inSpeech) {
         this.utteranceChunks.push(copy);
-        if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
+        if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
           this.silenceMs = 0;
+          this.speechActiveMs += frameMs;
         } else {
           this.silenceMs += frameMs;
-          if (this.silenceMs >= 800) {
+          if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
             this._endUtterance();
           }
         }
@@ -1889,9 +1891,9 @@ $(document).ready(function() {
     }
 
     if (!this.inSpeech && !vadSttInProgress) {
-      if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
+      if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
         this.speechAboveCount++;
-        if (this.speechAboveCount >= NativeAudio.BARGE_IN_RMS_FRAMES) {
+        if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
           nativeLog('VAD', 'utterance start rms=' + Math.round(rms));
           this._beginUtterance();
         }
@@ -1902,12 +1904,14 @@ $(document).ready(function() {
 
     if (this.inSpeech) {
       this.utteranceChunks.push(copy);
-      if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
+      if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
         this.silenceMs = 0;
+        this.speechActiveMs += frameMs;
       } else {
         this.silenceMs += frameMs;
-        if (this.silenceMs >= 800) {
-          nativeLog('VAD', 'utterance end rms=' + Math.round(rms) + ' chunks=' + this.utteranceChunks.length);
+        if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
+          nativeLog('VAD', 'utterance end rms=' + Math.round(rms) + ' chunks=' + this.utteranceChunks.length
+            + ' speechMs=' + this.speechActiveMs);
           this._endUtterance();
         }
       }
@@ -1924,6 +1928,7 @@ $(document).ready(function() {
     this.inSpeech = true;
     this.speechAboveCount = 0;
     this.silenceMs = 0;
+    this.speechActiveMs = 0;
     if (skipPreRoll) {
       this.utteranceChunks = [];
       nativeLog('VAD', 'utterance begin (post-barge-in, no pre-roll)');
@@ -1938,6 +1943,13 @@ $(document).ready(function() {
     this.inSpeech = false;
     this.speechAboveCount = 0;
     this.silenceMs = 0;
+    if (this.speechActiveMs < NativeAudio.SPEECH_MIN_ACTIVE_MS) {
+      nativeLog('VAD', 'utterance rejected: speechActiveMs=' + this.speechActiveMs
+        + ' min=' + NativeAudio.SPEECH_MIN_ACTIVE_MS);
+      this.utteranceChunks = [];
+      this.speechActiveMs = 0;
+      return;
+    }
     handleSpeechEnd();
   };
 
@@ -1957,13 +1969,14 @@ $(document).ready(function() {
       throw new Error('native-audio.js not loaded');
     }
     try {
-      nativeLog('VAD', 'NativeMicUtteranceVAD start (RMS-only v3)');
+      nativeLog('VAD', 'NativeMicUtteranceVAD start (RMS v' + NativeAudio.VOICE_MODE_NATIVE_VAD_VERSION + ')');
       this.preRollBuffer.clear();
       this.utteranceChunks = [];
       this.inSpeech = false;
       this.speechAboveCount = 0;
       this.bargeAboveCount = 0;
       this.silenceMs = 0;
+      this.speechActiveMs = 0;
       this.chunkCount = 0;
 
       await window.NativeMic.start();
@@ -2011,6 +2024,7 @@ $(document).ready(function() {
     this.speechAboveCount = 0;
     this.bargeAboveCount = 0;
     this.silenceMs = 0;
+    this.speechActiveMs = 0;
   };
 
   function useNativeVoiceTtsPlayback() {
@@ -2248,9 +2262,8 @@ $(document).ready(function() {
       if (nativeMicBridge && nativeMicBridge.hasSpeechCapture()) {
         wavBlob = nativeMicBridge.takeSpeechWavBlob();
         nativeLog('VAD', 'STT native PCM wavBytes=' + wavBlob.size);
-        // Ignore very short blips (< ~125 ms), same threshold as Android Auto
-        if (wavBlob.size < 44 + 4000) {
-          nativeLog('VAD', 'STT skipped: utterance too short');
+        if (wavBlob.size < 44 + NativeAudio.SPEECH_MIN_PCM_BYTES) {
+          nativeLog('VAD', 'STT skipped: utterance too short bytes=' + wavBlob.size);
           return;
         }
       } else if (vadAudio && vadAudio.length) {
