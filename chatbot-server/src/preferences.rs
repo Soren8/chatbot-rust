@@ -1,14 +1,13 @@
 use axum::{
     body::{self, Body},
-    http::{header, Request, Response, StatusCode},
+    http::{Request, Response, StatusCode},
 };
-use chatbot_core::{
-    session,
-    user_store::UserStore,
-};
+use chatbot_core::user_store::UserStore;
 use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
+
+use crate::{auth::Session as AuthSession, responses};
 
 #[derive(Deserialize)]
 struct UpdatePreferencesRequest {
@@ -19,17 +18,12 @@ struct UpdatePreferencesRequest {
 }
 
 pub async fn handle_update_preferences(
+    AuthSession(session): AuthSession,
     request: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    if request.method() != axum::http::Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
-    }
+    responses::ensure_post(request.method())?;
 
-    let (parts, body) = request.into_parts();
-    let headers = parts.headers;
+    let (_, body) = request.into_parts();
 
     let body_bytes = body::to_bytes(body, 1024).await.map_err(|err| {
         error!(?err, "failed to read body");
@@ -39,29 +33,6 @@ pub async fn handle_update_preferences(
     let payload: UpdatePreferencesRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
         error!(?err, "invalid JSON payload");
         (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
-    })?;
-
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
-    
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
-
-    let valid_csrf = session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-        error!(?err, "failed to validate CSRF");
-        (StatusCode::INTERNAL_SERVER_ERROR, "session error".to_string())
-    })?;
-
-    if !valid_csrf {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid CSRF token".to_string()));
-    }
-
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session");
-        (StatusCode::INTERNAL_SERVER_ERROR, "session error".to_string())
     })?;
 
     if let Some(username) = session.username {
@@ -76,12 +47,5 @@ pub async fn handle_update_preferences(
         })?;
     }
 
-    let response = json!({ "status": "success" });
-    let body = serde_json::to_vec(&response).unwrap();
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .unwrap())
+    Ok(responses::json_response(StatusCode::OK, json!({ "status": "success" })))
 }

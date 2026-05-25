@@ -12,27 +12,22 @@ mod common;
 #[tokio::test]
 async fn save_memory_checks_expected_auth() {
     common::init_tracing();
-    // Disable CSRF to simulate the "fail silently" scenario where an invalid session
-    // is automatically converted to a guest session without being blocked by CSRF checks.
-    // This allows us to verify the `logged_in` check logic.
-    env::set_var("CSRF", "off");
+    env::set_var("SECRET_KEY", "integration_test_secret");
     
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
-    // Simulate an invalid/expired cookie
-    let invalid_cookie = "session=INVALID_SESSION_ID";
+    let invalid_auth = "Bearer INVALID_SESSION_ID";
 
-    // Scenario 1: User expects to be logged in (logged_in: true), but session is invalid (guest).
-    // Before fix: Returns 200 OK (saved to guest).
-    // After fix: Should return 401 Unauthorized.
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
                 .uri("/update_memory")
-                .header(header::COOKIE, invalid_cookie)
+                .header(header::AUTHORIZATION, invalid_auth)
+                .header("X-Auth-User", "ghost")
+                .header("X-Enc-Key", common::fixed_enc_key_b64())
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
@@ -53,12 +48,12 @@ async fn save_memory_checks_expected_auth() {
 #[tokio::test]
 async fn save_system_prompt_checks_expected_auth() {
     common::init_tracing();
-    env::set_var("CSRF", "off");
+    env::set_var("SECRET_KEY", "integration_test_secret");
     
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
-    let invalid_cookie = "session=INVALID_SESSION_ID";
+    let invalid_auth = "Bearer INVALID_SESSION_ID";
 
     let response = app
         .clone()
@@ -66,7 +61,9 @@ async fn save_system_prompt_checks_expected_auth() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/update_system_prompt")
-                .header(header::COOKIE, invalid_cookie)
+                .header(header::AUTHORIZATION, invalid_auth)
+                .header("X-Auth-User", "ghost")
+                .header("X-Enc-Key", common::fixed_enc_key_b64())
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({

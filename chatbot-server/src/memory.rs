@@ -1,14 +1,16 @@
 use axum::{
     body::{self, Body},
-    http::{header, Request, Response, StatusCode},
+    http::{Request, Response, StatusCode},
 };
 use chatbot_core::{
-    persistence::{DataPersistence, EncryptionMode, PersistenceError},
+    persistence::{DataPersistence, EncryptionMode},
     session,
 };
 use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
+
+use crate::{auth::Session as AuthSession, responses};
 
 const MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
 
@@ -49,11 +51,11 @@ struct DeleteMessageRequest {
 }
 
 pub async fn handle_update_memory(
+    AuthSession(session): AuthSession,
     request: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    ensure_post(&request)?;
-    let (parts, body) = request.into_parts();
-    let headers = parts.headers;
+    responses::ensure_post(request.method())?;
+    let (_, body) = request.into_parts();
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /update_memory body");
@@ -71,35 +73,22 @@ pub async fn handle_update_memory(
 
     let memory_text = payload.memory.unwrap_or_default();
     if memory_text.trim().is_empty() {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::BAD_REQUEST,
             json!({"error": "Memory content is required"}),
-        );
+        ));
     }
 
     let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
-        .map_err(persistence_error_to_http)?;
+        .map_err(responses::persistence_error_to_http)?;
 
-    let cookie_header = extract_cookie(&headers);
-    let csrf_token = extract_csrf(&headers);
-
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for update_memory");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
+    let persistence = DataPersistence::new().map_err(responses::persistence_error_to_http)?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::UNAUTHORIZED,
             json!({"error": "Session expired"}),
-        );
+        ));
     }
 
     if let Some(username) = session.username.as_deref() {
@@ -115,38 +104,38 @@ pub async fn handle_update_memory(
                 &memory_text,
                 EncryptionMode::Fernet(key.as_slice()),
             )
-            .map_err(persistence_error_to_http)?;
+            .map_err(responses::persistence_error_to_http)?;
 
         session::update_session_memory(&session.session_id, &memory_text);
 
-        build_json_response(
+        Ok(responses::json_response(
             StatusCode::OK,
             json!({
                 "status": "success",
                 "message": "Memory saved to disk",
                 "storage": "disk"
             }),
-        )
+        ))
     } else {
         session::update_session_memory(&session.session_id, &memory_text);
 
-        build_json_response(
+        Ok(responses::json_response(
             StatusCode::OK,
             json!({
                 "status": "success",
                 "message": "Memory saved to session memory",
                 "storage": "session"
             }),
-        )
+        ))
     }
 }
 
 pub async fn handle_update_system_prompt(
+    AuthSession(session): AuthSession,
     request: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    ensure_post(&request)?;
-    let (parts, body) = request.into_parts();
-    let headers = parts.headers;
+    responses::ensure_post(request.method())?;
+    let (_, body) = request.into_parts();
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /update_system_prompt body");
@@ -164,38 +153,22 @@ pub async fn handle_update_system_prompt(
 
     let system_prompt = payload.system_prompt.unwrap_or_default();
     if system_prompt.trim().is_empty() {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::BAD_REQUEST,
             json!({"error": "System prompt is required"}),
-        );
+        ));
     }
 
     let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
-        .map_err(persistence_error_to_http)?;
+        .map_err(responses::persistence_error_to_http)?;
 
-    let cookie_header = extract_cookie(&headers);
-    let csrf_token = extract_csrf(&headers);
-
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(
-            ?err,
-            "failed to obtain session context for update_system_prompt"
-        );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
+    let persistence = DataPersistence::new().map_err(responses::persistence_error_to_http)?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::UNAUTHORIZED,
             json!({"error": "Session expired"}),
-        );
+        ));
     }
 
     if let Some(username) = session.username.as_deref() {
@@ -211,38 +184,38 @@ pub async fn handle_update_system_prompt(
                 &system_prompt,
                 EncryptionMode::Fernet(key.as_slice()),
             )
-            .map_err(persistence_error_to_http)?;
+            .map_err(responses::persistence_error_to_http)?;
 
         session::update_session_system_prompt(&session.session_id, &system_prompt);
 
-        build_json_response(
+        Ok(responses::json_response(
             StatusCode::OK,
             json!({
                 "status": "success",
                 "message": "System prompt saved to disk",
                 "storage": "disk"
             }),
-        )
+        ))
     } else {
         session::update_session_system_prompt(&session.session_id, &system_prompt);
 
-        build_json_response(
+        Ok(responses::json_response(
             StatusCode::OK,
             json!({
                 "status": "success",
                 "message": "System prompt saved to session memory",
                 "storage": "session"
             }),
-        )
+        ))
     }
 }
 
 pub async fn handle_delete_message(
+    AuthSession(session): AuthSession,
     request: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    ensure_post(&request)?;
-    let (parts, body) = request.into_parts();
-    let headers = parts.headers;
+    responses::ensure_post(request.method())?;
+    let (_, body) = request.into_parts();
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /delete_message body");
@@ -263,60 +236,47 @@ pub async fn handle_delete_message(
     let ai_message = payload.ai_message.unwrap_or_default();
     let ai_trimmed = ai_message.trim();
     if trimmed.is_empty() {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::BAD_REQUEST,
             json!({"status": "error", "error": "user_message is required"}),
-        );
+        ));
     }
     if ai_trimmed.is_empty() {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::BAD_REQUEST,
             json!({"status": "error", "error": "ai_message is required"}),
-        );
+        ));
     }
     let pair_index = match payload.pair_index {
         Some(index) if index >= 0 => index as usize,
         _ => {
-            return build_json_response(
+            return Ok(responses::json_response(
                 StatusCode::BAD_REQUEST,
                 json!({"status": "error", "error": "pair_index is required"}),
-            );
+            ));
         }
     };
 
     let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
-        .map_err(persistence_error_to_http)?;
+        .map_err(responses::persistence_error_to_http)?;
 
-    let cookie_header = extract_cookie(&headers);
-    let csrf_token = extract_csrf(&headers);
-
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for delete_message");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
+    let persistence = DataPersistence::new().map_err(responses::persistence_error_to_http)?;
 
     let mut history = session::session_history(&session.session_id);
 
     if pair_index >= history.len() {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::NOT_FOUND,
             json!({"status": "error", "error": "pair_index out of range"}),
-        );
+        ));
     }
 
     let (stored_user, stored_assistant) = &history[pair_index];
     if stored_user.trim() != trimmed || stored_assistant.trim() != ai_trimmed {
-        return build_json_response(
+        return Ok(responses::json_response(
             StatusCode::CONFLICT,
             json!({"status": "error", "error": "content mismatch at pair_index"}),
-        );
+        ));
     }
 
     history.remove(pair_index);
@@ -336,96 +296,8 @@ pub async fn handle_delete_message(
                 &history,
                 EncryptionMode::Fernet(key.as_slice()),
             )
-            .map_err(persistence_error_to_http)?;
+            .map_err(responses::persistence_error_to_http)?;
     }
 
-    build_json_response(StatusCode::OK, json!({"status": "success"}))
-}
-
-fn ensure_post(request: &Request<Body>) -> Result<(), (StatusCode, String)> {
-    if request.method() != axum::http::Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn extract_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned())
-}
-
-fn extract_csrf(headers: &axum::http::HeaderMap) -> Option<&str> {
-    headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok())
-}
-
-fn validate_csrf(
-    cookie_header: Option<&str>,
-    csrf_token: Option<&str>,
-) -> Result<(), (StatusCode, String)> {
-    let valid = session::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
-        error!(?err, "failed to validate CSRF token for memory endpoint");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
-
-    if !valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
-    }
-
-    Ok(())
-}
-
-fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
-    match err {
-        PersistenceError::InvalidUsername => {
-            (StatusCode::BAD_REQUEST, "invalid session".to_string())
-        }
-        PersistenceError::InvalidSetName => {
-            (StatusCode::BAD_REQUEST, "invalid set name".to_string())
-        }
-        PersistenceError::MissingEncryptionKey => {
-            (StatusCode::UNAUTHORIZED, "relogin required".to_string())
-        }
-        other => {
-            error!(?other, "persistence failure");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "persistence error".to_string(),
-            )
-        }
-    }
-}
-
-fn build_json_response(
-    status: StatusCode,
-    payload: serde_json::Value,
-) -> Result<Response<Body>, (StatusCode, String)> {
-    let body = serde_json::to_vec(&payload).map_err(|err| {
-        error!(?err, "failed to serialize JSON response");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response serialization failed".to_string(),
-        )
-    })?;
-
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .map_err(|err| {
-            error!(?err, "failed to build HTTP response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
-        })
+    Ok(responses::json_response(StatusCode::OK, json!({"status": "success"})))
 }

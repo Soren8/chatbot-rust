@@ -13,6 +13,7 @@ use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod auth;
 mod brave;
 mod chat;
 pub mod chat_utils;
@@ -24,6 +25,7 @@ mod memory;
 mod preferences;
 mod providers;
 mod regenerate;
+mod responses;
 mod reset_chat;
 mod search;
 mod sets;
@@ -93,8 +95,9 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/login",
             get(login::handle_login_get).post(login::handle_login_post),
         )
+        .route("/auth/bootstrap", get(home::handle_auth_bootstrap))
         .route("/auth/salt/:username", get(login::handle_get_salt))
-        .route("/logout", get(logout::handle_logout))
+        .route("/logout", post(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))
         .route("/tts_stream/:token", get(tts::handle_tts_stream))

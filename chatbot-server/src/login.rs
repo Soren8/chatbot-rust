@@ -13,7 +13,7 @@ use chatbot_core::{
 use minijinja::{context, AutoEscape, Environment};
 use serde_json::json;
 use serde_urlencoded::from_bytes;
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::home::SECURITY_CSP;
 
@@ -23,33 +23,19 @@ pub async fn handle_get_salt(
     Path(username): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let store = UserStore::new().map_err(map_store_error)?;
-    let salt = store
-        .get_client_salt(&username)
+    let (auth_salt, enc_salt) = store
+        .get_client_salts(&username)
         .map_err(map_store_error)?;
-    Ok(Json(json!({ "salt": salt })))
+    Ok(Json(json!({ "auth_salt": auth_salt, "enc_salt": enc_salt })))
 }
 
 pub async fn handle_login_get(
-    request: Request<Body>,
+    _request: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    let cookie_header = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
-
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to bootstrap login context");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
-
     let config = config::app_config();
     let sri = config.cdn_sri.clone();
 
-    let html = render_login_template(&bootstrap.csrf_token, &sri).map_err(|err| {
+    let html = render_login_template(&sri).map_err(|err| {
         error!(?err, "failed to render login template");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -57,7 +43,7 @@ pub async fn handle_login_get(
         )
     })?;
 
-    build_login_response(html, bootstrap.set_cookie)
+    build_login_response(html)
 }
 
 pub async fn handle_login_post(
@@ -65,11 +51,6 @@ pub async fn handle_login_post(
 ) -> Result<Response<Body>, (StatusCode, String)> {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
-
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
 
     let body_bytes = body::to_bytes(body, 64 * 1024).await.map_err(|err| {
         error!(?err, "failed to read login body");
@@ -82,29 +63,19 @@ pub async fn handle_login_post(
     })?;
 
     let username_raw = form.get("username").map(|s| s.trim()).unwrap_or("");
-    let password = form.get("password").map(|s| s.as_str()).unwrap_or("");
-    let csrf_token = form.get("csrf_token").map(|s| s.as_str());
-    let storage_key = form.get("storage_key").map(|s| s.trim());
+    let auth_token = form.get("auth_token").map(|s| s.trim()).unwrap_or("");
+    let enc_key = form.get("enc_key").map(|s| s.trim());
+    let plaintext_password = form.get("password").map(|s| s.as_str()).unwrap_or("");
 
-    if username_raw.is_empty() || password.is_empty() {
-        return invalid_credentials();
+    if !plaintext_password.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Plaintext password login is no longer supported.".to_string(),
+        ));
     }
 
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
-        })?;
-
-    if !csrf_valid {
-        return Ok(Response::builder()
-            .status(StatusCode::SEE_OTHER)
-            .header(header::LOCATION, "/login")
-            .body(Body::empty())
-            .unwrap());
+    if username_raw.is_empty() || auth_token.is_empty() {
+        return invalid_credentials();
     }
 
     let username = match normalise_username(username_raw) {
@@ -115,7 +86,7 @@ pub async fn handle_login_post(
     let store = UserStore::new().map_err(map_store_error)?;
 
     let valid = store
-        .validate_user(&username, password)
+        .validate_user(&username, auth_token)
         .map_err(map_store_error)?;
 
     if !valid {
@@ -124,56 +95,18 @@ pub async fn handle_login_post(
         return invalid_credentials();
     }
 
-    let encryption_key = if let Some(key) = storage_key {
-        if key.is_empty() {
-            store
-                .derive_encryption_key(&username, password)
-                .map_err(map_store_error)?
-        } else {
-            key.as_bytes().to_vec()
-        }
-    } else {
-        store
-            .derive_encryption_key(&username, password)
-            .map_err(map_store_error)?
-    };
-
-    let finalize = session::finalize_login(cookie_header.as_deref(), &username, &encryption_key)
-        .map_err(|err| {
-            error!(?err, "failed to finalize login");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
-        })?;
+    session::cache_login(&username, auth_token, enc_key).map_err(|err| {
+        error!(?err, "failed to cache login");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session error".to_string(),
+        )
+    })?;
 
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
     tracing::info!(username = %username, ip = %ip, "Login successful");
 
-    let mut response = Response::builder()
-        .status(StatusCode::FOUND)
-        .header(header::LOCATION, HeaderValue::from_static("/"));
-
-    match HeaderValue::from_str(&finalize.set_cookie) {
-        Ok(value) => {
-            response = response.header(header::SET_COOKIE, value);
-        }
-        Err(err) => {
-            error!(?err, "invalid Set-Cookie header from session finalize");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            ));
-        }
-    }
-
-    response.body(Body::empty()).map_err(|err| {
-        error!(?err, "failed to build login redirect response");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response build error".to_string(),
-        )
-    })
+    json_response(StatusCode::OK, json!({ "status": "success", "username": username }))
 }
 
 fn invalid_credentials() -> Result<Response<Body>, (StatusCode, String)> {
@@ -188,23 +121,14 @@ fn map_store_error(err: UserStoreError) -> (StatusCode, String) {
     )
 }
 
-fn render_login_template(
-    csrf_token: &str,
-    sri: &HashMap<String, String>,
-) -> Result<String, minijinja::Error> {
+fn render_login_template(sri: &HashMap<String, String>) -> Result<String, minijinja::Error> {
     let env = template_env();
     let template = env.get_template("login.html")?;
-    template.render(context! {
-        csrf_token => csrf_token,
-        sri => sri,
-    })
+    template.render(context! { sri => sri })
 }
 
-fn build_login_response(
-    body: String,
-    set_cookie: String,
-) -> Result<Response<Body>, (StatusCode, String)> {
-    let mut builder = Response::builder()
+fn build_login_response(body: String) -> Result<Response<Body>, (StatusCode, String)> {
+    let builder = Response::builder()
         .status(StatusCode::OK)
         .header(
             header::CONTENT_TYPE,
@@ -215,18 +139,6 @@ fn build_login_response(
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");
 
-    match HeaderValue::from_str(&set_cookie) {
-        Ok(value) => {
-            builder = builder.header(header::SET_COOKIE, value);
-        }
-        Err(err) => {
-            warn!(
-                ?err,
-                "discarding invalid Set-Cookie header from session manager"
-            );
-        }
-    }
-
     builder.body(Body::from(body)).map_err(|err| {
         error!(?err, "failed to build login response");
         (
@@ -234,6 +146,34 @@ fn build_login_response(
             "response build error".to_string(),
         )
     })
+}
+
+fn json_response(
+    status: StatusCode,
+    payload: serde_json::Value,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let body = serde_json::to_vec(&payload).map_err(|err| {
+        error!(?err, "failed to serialize login payload");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response build error".to_string(),
+        )
+    })?;
+
+    Response::builder()
+        .status(status)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(Body::from(body))
+        .map_err(|err| {
+            error!(?err, "failed to build login JSON response");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
+        })
 }
 
 fn template_env() -> &'static Environment<'static> {

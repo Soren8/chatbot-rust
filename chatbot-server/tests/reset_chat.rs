@@ -4,18 +4,12 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
-use chatbot_core::session;
+use chatbot_core::session::{self, SessionRequest};
 use chatbot_server::{build_router, resolve_static_root};
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde_json::json;
 use tower::ServiceExt;
 
 mod common;
-
-static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
-});
 
 #[tokio::test]
 async fn reset_chat_clears_history() {
@@ -26,41 +20,15 @@ async fn reset_chat_clears_history() {
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
+    let guest_session = "reset-chat-guest";
 
-    let home_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / response");
-
-    assert_eq!(home_response.status(), StatusCode::OK);
-
-    let set_cookie = home_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present")
-        .to_owned();
-
-    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
-        .await
-        .expect("read home body");
-    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
-    let csrf_token = CSRF_META_RE
-        .captures(body_text)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-        .expect("csrf token in page");
-
-    let cookie_value = common::extract_cookie(&set_cookie);
-
-    let session_context =
-        session::session_context(Some(&cookie_value)).expect("session context for seeding");
+    let session_context = session::session_context(SessionRequest {
+        authorization: None,
+        auth_user: None,
+        encryption_key: None,
+        guest_session: Some(guest_session),
+    })
+    .expect("session context for seeding");
 
     let seeded_history = vec![
         ("user".to_string(), "assistant".to_string()),
@@ -77,8 +45,7 @@ async fn reset_chat_clears_history() {
                 .method(Method::POST)
                 .uri("/reset_chat")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("X-CSRF-Token", &csrf_token)
-                .header(header::COOKIE, &cookie_value)
+                .header("X-Guest-Session", guest_session)
                 .body(Body::from(
                     serde_json::to_vec(&reset_payload).expect("payload bytes"),
                 ))

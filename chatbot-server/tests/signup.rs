@@ -39,64 +39,32 @@ async fn signup_get_renders_form_with_security_headers() {
     let _workspace = setup_workspace();
 
     let app = build_app();
-
     let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/signup")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/signup").body(Body::empty()).unwrap())
         .await
         .expect("GET /signup");
 
     assert_eq!(response.status(), StatusCode::OK);
     let headers = response.headers();
-
-    let set_cookie = headers
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present");
-    assert!(
-        set_cookie.contains("session"),
-        "session cookie should include session id"
-    );
-
     let csp = headers
         .get("Content-Security-Policy")
         .and_then(|value| value.to_str().ok())
         .expect("CSP header present");
-    assert!(
-        csp.contains("default-src 'self'"),
-        "CSP header should include default-src"
-    );
+    assert!(csp.contains("default-src 'self'"));
 
     for name in [
         "X-Content-Type-Options",
         "Referrer-Policy",
         "X-Frame-Options",
     ] {
-        assert!(
-            headers.get(name).is_some(),
-            "expected {name} header to be present"
-        );
+        assert!(headers.get(name).is_some(), "expected {name} header");
     }
 
     let body = to_bytes(response.into_body(), 64 * 1024)
         .await
         .expect("read body");
     let body_str = std::str::from_utf8(&body).expect("utf8 response body");
-    assert!(
-        body_str.contains("<form action=\"/signup\" method=\"post\">"),
-        "signup form markup present"
-    );
-
-    let csrf = common::extract_csrf_token(body_str).expect("csrf token embedded in signup form");
-    assert!(
-        !csrf.is_empty(),
-        "csrf token extracted from signup form should not be empty"
-    );
+    assert!(body_str.contains("<form action=\"/signup\" method=\"post\">"));
 }
 
 #[tokio::test]
@@ -104,32 +72,7 @@ async fn signup_flow_creates_user_record() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let workspace = setup_workspace();
-
     let app = build_app();
-
-    let get_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/signup")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET /signup");
-
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let set_cookie = get_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present")
-        .to_owned();
-    let body = to_bytes(get_response.into_body(), 64 * 1024)
-        .await
-        .expect("read body");
-    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
-        .expect("csrf token present");
 
     let username = format!(
         "testuser_{}",
@@ -138,36 +81,38 @@ async fn signup_flow_creates_user_record() {
             .unwrap()
             .as_millis()
     );
+    let auth_token = "Password123-derived-token";
     let payload = format!(
-        "username={}&password={}&csrf_token={}",
+        "username={}&auth_token={}&auth_salt={}&enc_salt={}",
         encode(&username),
-        encode("Password123"),
-        encode(&csrf)
+        encode(auth_token),
+        encode(&common::fixed_auth_salt_b64()),
+        encode(&common::fixed_enc_salt_b64())
     );
 
-    let post_response = app
+    let response = app
         .oneshot(
             Request::builder()
                 .method(Method::POST)
                 .uri("/signup")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, common::extract_cookie(&set_cookie))
                 .body(Body::from(payload))
                 .unwrap(),
         )
         .await
         .expect("POST /signup");
 
-    assert_eq!(post_response.status(), StatusCode::FOUND);
-    let location = post_response
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .expect("redirect location");
-    assert_eq!(location, "/login");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read signup body");
+    let json: Value = serde_json::from_slice(&body).expect("signup json");
+    assert_eq!(json["status"], "success");
 
     let users_file = workspace.path().join("users.json");
     let users_reader = BufReader::new(File::open(&users_file).expect("users.json exists"));
     let users: Value = serde_json::from_reader(users_reader).expect("valid users json");
-    assert!(users.get(&username).is_some(), "signup persisted user");
+    let user = users.get(&username).expect("signup persisted user");
+    assert!(user.get("auth_hash").is_some());
+    assert!(user.get("password").is_none());
 }

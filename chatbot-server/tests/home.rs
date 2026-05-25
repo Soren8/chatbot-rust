@@ -1,17 +1,14 @@
 use std::{
     env,
-    fs::File,
-    io::Write,
     sync::{Mutex, OnceLock},
 };
 
 use axum::{
     body::{to_bytes, Body},
-    http::{header, Method, Request, StatusCode},
+    http::{Request, StatusCode},
 };
-use bcrypt::{hash, DEFAULT_COST};
 use chatbot_server::{build_router, resolve_static_root};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tower::ServiceExt;
 
 mod common;
@@ -38,13 +35,6 @@ fn setup_workspace() -> common::TestWorkspace {
     common::TestWorkspace::with_config(TEST_CONFIG)
 }
 
-fn write_users_json(workspace: &common::TestWorkspace, payload: &Value) {
-    let path = workspace.path().join("users.json");
-    let mut file = File::create(&path).expect("create users.json");
-    file.write_all(serde_json::to_vec_pretty(payload).unwrap().as_slice())
-        .expect("write users.json");
-}
-
 fn build_app() -> axum::Router {
     let static_root = resolve_static_root();
     build_router(static_root)
@@ -68,7 +58,6 @@ async fn home_route_guest_filters_premium_models() {
     let _workspace = setup_workspace();
 
     let app = build_app();
-
     let response = app
         .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -76,9 +65,6 @@ async fn home_route_guest_filters_premium_models() {
         .expect("GET /");
 
     assert_eq!(response.status(), StatusCode::OK);
-    let set_cookie = response.headers().get(header::SET_COOKIE);
-    assert!(set_cookie.is_some(), "guest response sets session cookie");
-
     let body = to_bytes(response.into_body(), 512 * 1024)
         .await
         .expect("read body");
@@ -100,104 +86,50 @@ async fn home_route_guest_filters_premium_models() {
 }
 
 #[tokio::test]
-async fn home_route_logged_in_premium_sees_premium_models() {
+async fn auth_bootstrap_for_premium_user_includes_premium_models() {
     let _guard = test_mutex().lock().unwrap();
-    let workspace = setup_workspace();
-
-    let password = "Sup3rS3cret!";
+    let _workspace = setup_workspace();
     let username = "premium-user";
-    let hashed = hash(password, DEFAULT_COST).expect("hash password");
-    let payload = json!({
-        username: {
-            "password": hashed,
-            "tier": "premium"
-        }
-    });
-    write_users_json(&workspace, &payload);
-
-    let app = build_app();
-
-    let login_get = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/login")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET /login");
-    assert_eq!(login_get.status(), StatusCode::OK);
-    let (login_parts, login_body) = login_get.into_parts();
-    let set_cookie = login_parts
-        .headers
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-        .expect("session cookie");
-    let body = to_bytes(login_body, 128 * 1024)
-        .await
-        .expect("read login page");
-    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
-        .expect("csrf token");
-
-    let form = format!(
-        "username={}&password={}&csrf_token={}",
-        urlencoding::encode(username),
-        urlencoding::encode(password),
-        urlencoding::encode(&csrf),
+    let auth_token = "Sup3rS3cret!";
+    common::seed_user_with_profile(
+        username,
+        auth_token,
+        "premium",
+        Some("default"),
+        Some("premium-model"),
+        true,
+        false,
     );
 
-    let login_post = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/login")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, common::extract_cookie(&set_cookie))
-                .body(Body::from(form))
-                .unwrap(),
-        )
-        .await
-        .expect("POST /login");
-    assert_eq!(login_post.status(), StatusCode::FOUND);
-    let login_cookie = login_post
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-        .expect("set-cookie after login");
-    let cookie_header = common::extract_cookie(&login_cookie);
+    let app = build_app();
+    let client = common::AuthedClient::login(app.clone(), username, auth_token).await;
 
-    let home_response = app
+    let response = app
         .oneshot(
-            Request::builder()
-                .uri("/")
-                .header(header::COOKIE, &cookie_header)
+            client
+                .request(axum::http::Method::GET, "/auth/bootstrap")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
-        .expect("GET / with auth");
+        .expect("GET /auth/bootstrap");
 
-    assert_eq!(home_response.status(), StatusCode::OK);
-    let body = to_bytes(home_response.into_body(), 512 * 1024)
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 512 * 1024)
         .await
-        .expect("read home body");
-    let body = std::str::from_utf8(&body).expect("utf8 body");
-    assert!(body.contains("data-logged-in=\"true\""));
+        .expect("read bootstrap body");
+    let json: Value = serde_json::from_slice(&body).expect("bootstrap json");
+    assert_eq!(json["logged_in"], true);
+    assert_eq!(json["username"], username);
 
-    let app_data = extract_app_data(body);
-    let models = app_data
-        .get("availableModels")
-        .and_then(|v| v.as_array())
+    let models = json["available_models"]
+        .as_array()
         .cloned()
         .unwrap_or_default();
     assert!(
         models
             .iter()
             .any(|entry| entry.get("tier").and_then(|v| v.as_str()) == Some("premium")),
-        "premium view should include premium models",
+        "premium bootstrap should include premium models",
     );
 }

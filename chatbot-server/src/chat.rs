@@ -18,11 +18,13 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, warn};
 
+use crate::auth::Session as AuthSession;
 use crate::chat_utils::ChatLockGuard;
 use crate::providers::message_utils::parse_message_content;
 use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
 use crate::providers::xai::XaiProvider;
+use crate::responses;
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -43,10 +45,11 @@ struct ChatRequest {
     send_thoughts: Option<bool>,
 }
 
-pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
-    if request.method() != axum::http::Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
-    }
+pub async fn handle_chat(
+    AuthSession(session_context): AuthSession,
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    responses::ensure_post(request.method())?;
 
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
@@ -60,26 +63,6 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         error!(?err, "invalid chat request payload");
         (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
     })?;
-
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
-
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-        error!(?err, "failed to validate CSRF token");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
-
-    if !csrf_valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
-    }
 
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 
@@ -124,14 +107,6 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             "unsupported provider type".to_string(),
         ));
     }
-
-    let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to resolve session context");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
 
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
     let username = session_context.username.as_deref().unwrap_or("guest");

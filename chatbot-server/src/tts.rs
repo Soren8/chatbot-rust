@@ -7,7 +7,7 @@ use axum::{
     extract::Path,
     http::{header, Method, Request, Response, StatusCode},
 };
-use chatbot_core::{config, session};
+use chatbot_core::config;
 use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
@@ -15,6 +15,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, error};
+
+use crate::auth::Session as AuthSession;
+use crate::responses;
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const SAMPLE_RATE_HZ: u32 = 25_200;
@@ -87,40 +90,18 @@ struct KokoroTtsRequest {
     voice: String,
 }
 
-pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
-    if request.method() != Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
-    }
+pub async fn handle_tts(
+    AuthSession(session): AuthSession,
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    responses::ensure_post(request.method())?;
 
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
-
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
-
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token for /tts");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
-        })?;
-
-    if !csrf_valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
-    }
-
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
-    let username = session::session_context(cookie_header.as_deref())
-        .ok()
-        .and_then(|ctx| ctx.username)
+    let username = session
+        .username
         .unwrap_or_else(|| "guest".to_string());
 
     tracing::info!(username = %username, ip = %ip, "TTS token request");

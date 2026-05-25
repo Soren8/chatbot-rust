@@ -1,7 +1,7 @@
 use axum::{
     body,
     body::Body,
-    http::{header, Request, Response, StatusCode},
+    http::{Request, Response, StatusCode},
 };
 use chatbot_core::{
     persistence::{DataPersistence, EncryptionMode, PersistenceError},
@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
+use crate::{auth::Session as AuthSession, responses};
+
 #[derive(Deserialize, Default)]
 struct ResetChatRequest {
     #[serde(default)]
@@ -18,14 +20,12 @@ struct ResetChatRequest {
 }
 
 pub async fn handle_reset_chat(
+    AuthSession(session_context): AuthSession,
     request: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    if request.method() != axum::http::Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
-    }
+    responses::ensure_post(request.method())?;
 
-    let (parts, body) = request.into_parts();
-    let headers = parts.headers;
+    let (_, body) = request.into_parts();
 
     let body_bytes = body::to_bytes(body, 256 * 1024).await.map_err(|err| {
         error!(?err, "failed to read reset_chat body");
@@ -40,35 +40,6 @@ pub async fn handle_reset_chat(
             (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
         })?
     };
-
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
-
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token for reset_chat");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
-        })?;
-
-    if !csrf_valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
-    }
-
-    let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to resolve session context for reset_chat");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
 
     let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref()).map_err(
         |err| match err {
@@ -93,7 +64,7 @@ pub async fn handle_reset_chat(
             .as_ref()
             .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
 
-        let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
+        let persistence = DataPersistence::new().map_err(responses::persistence_error_to_http)?;
 
         persistence
             .store_history(
@@ -102,53 +73,15 @@ pub async fn handle_reset_chat(
                 &[],
                 EncryptionMode::Fernet(key.as_slice()),
             )
-            .map_err(persistence_error_to_http)?;
+            .map_err(responses::persistence_error_to_http)?;
     }
 
-    build_json_response(
+    Ok(responses::json_response(
         StatusCode::OK,
         json!({
             "status": "success",
             "message": "Chat history has been reset.",
             "set_name": set_name
         }),
-    )
-}
-
-fn build_json_response(
-    status: StatusCode,
-    payload: serde_json::Value,
-) -> Result<Response<Body>, (StatusCode, String)> {
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(payload.to_string()))
-        .map_err(|err| {
-            error!(?err, "failed to build reset_chat response body");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
-        })
-}
-
-fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
-    match err {
-        PersistenceError::MissingEncryptionKey => {
-            (StatusCode::UNAUTHORIZED, "relogin required".to_string())
-        }
-        PersistenceError::InvalidSetName => {
-            (StatusCode::BAD_REQUEST, "invalid set name".to_string())
-        }
-        PersistenceError::InvalidUsername => {
-            (StatusCode::BAD_REQUEST, "invalid session".to_string())
-        }
-        other => {
-            error!(?other, "persistence error during reset_chat");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "persistence error".to_string(),
-            )
-        }
-    }
+    ))
 }

@@ -7,11 +7,7 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Method, Request, StatusCode},
 };
-use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::{
-    session,
-    user_store::{CreateOutcome, UserStore},
-};
+use chatbot_core::session::{self, SessionRequest};
 use chatbot_server::{build_router, resolve_static_root};
 use tower::ServiceExt;
 
@@ -32,22 +28,13 @@ fn setup_workspace() -> common::TestWorkspace {
     common::TestWorkspace::with_openai_provider()
 }
 
-fn seed_user(username: &str, password: &str) {
-    let mut store = UserStore::new().expect("initialise user store");
-    let hashed = hash(password, DEFAULT_COST).expect("hash password");
-    match store.create_user(username, &hashed) {
-        Ok(CreateOutcome::Created) | Ok(CreateOutcome::AlreadyExists) => {}
-        Err(err) => panic!("failed to create test user: {err}"),
-    }
-}
-
 #[tokio::test]
 async fn get_salt_returns_salt_for_user() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
     let username = "saltuser";
-    seed_user(username, "password123");
+    common::seed_user(username, "password123");
 
     let app = build_app();
 
@@ -66,8 +53,8 @@ async fn get_salt_returns_salt_for_user() {
         .await
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("valid json");
-    assert!(json.get("salt").is_some(), "salt field should be present");
-    assert!(!json["salt"].as_str().unwrap().is_empty(), "salt should not be empty");
+    assert_eq!(json["auth_salt"], common::fixed_auth_salt_b64());
+    assert_eq!(json["enc_salt"], common::fixed_enc_salt_b64());
 }
 
 #[tokio::test]
@@ -94,8 +81,10 @@ async fn get_salt_returns_fake_salt_for_non_existent_user() {
         .await
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("valid json");
-    assert!(json.get("salt").is_some());
-    assert!(!json["salt"].as_str().unwrap().is_empty());
+    assert!(json.get("auth_salt").is_some());
+    assert!(json.get("enc_salt").is_some());
+    assert!(!json["auth_salt"].as_str().unwrap().is_empty());
+    assert!(!json["enc_salt"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -104,34 +93,17 @@ async fn login_with_storage_key_uses_provided_key() {
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
     let username = "keyuser";
-    let password = "password123";
-    let fake_storage_key = "fake_derived_key_base64_string";
-    seed_user(username, password);
+    let auth_token = "password123";
+    let enc_key = common::fixed_enc_key_b64();
+    common::seed_user(username, auth_token);
 
     let app = build_app();
 
-    // 1. Get login page for CSRF
-    let get_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/login")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET /login");
-    let set_cookie = get_response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_owned();
-    let body = to_bytes(get_response.into_body(), 64 * 1024).await.unwrap();
-    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).unwrap()).unwrap();
-
-    // 2. Login with storage_key
     let payload = format!(
-        "username={}&password={}&csrf_token={}&storage_key={}",
+        "username={}&auth_token={}&enc_key={}",
         urlencoding::encode(username),
-        urlencoding::encode(password),
-        urlencoding::encode(&csrf),
-        urlencoding::encode(fake_storage_key)
+        urlencoding::encode(auth_token),
+        urlencoding::encode(&enc_key)
     );
 
     let post_response = app
@@ -141,19 +113,53 @@ async fn login_with_storage_key_uses_provided_key() {
                 .method(Method::POST)
                 .uri("/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, common::extract_cookie(&set_cookie))
                 .body(Body::from(payload))
                 .unwrap(),
         )
         .await
         .expect("POST /login");
 
-    assert_eq!(post_response.status(), StatusCode::FOUND);
-    let login_cookie = post_response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_owned();
-    let cookie_header = common::extract_cookie(&login_cookie);
+    assert_eq!(post_response.status(), StatusCode::OK);
 
-    // 3. Verify session has the provided key
-    let session = session::session_context(Some(&cookie_header)).expect("session context");
+    let session = session::session_context(SessionRequest {
+        authorization: Some(&common::auth_header(auth_token)),
+        auth_user: Some(username),
+        encryption_key: Some(&enc_key),
+        guest_session: None,
+    })
+    .expect("session context");
+
     let stored_key_bytes = session.encryption_key.expect("encryption key present");
-    assert_eq!(std::str::from_utf8(&stored_key_bytes).unwrap(), fake_storage_key);
+    assert_eq!(std::str::from_utf8(&stored_key_bytes).unwrap(), enc_key);
+}
+
+#[tokio::test]
+async fn login_rejects_plaintext_password_payload() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "plaintext-user";
+    common::seed_user(username, "derived-auth-token");
+
+    let app = build_app();
+
+    let payload = format!(
+        "username={}&password={}",
+        urlencoding::encode(username),
+        urlencoding::encode("hunter2")
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login plaintext");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

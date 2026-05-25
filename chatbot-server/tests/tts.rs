@@ -16,7 +16,6 @@ use chatbot_server::{build_router, resolve_static_root};
 use chatbot_test_support::TestWorkspace;
 use futures_util::stream;
 use once_cell::sync::Lazy;
-use regex::Regex;
 use serde_json::{json, Value};
 use tokio::{
     net::TcpListener,
@@ -25,10 +24,6 @@ use tokio::{
 use tower::ServiceExt;
 
 static TTS_TEST_MUTEX: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
-
-static META_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
-});
 
 const KOKORO_DEFAULT_VOICE: &str = "af_heart";
 const VOICE_SERVICE_SAMPLE_RATE: &str = "24000";
@@ -259,38 +254,7 @@ async fn kokoro_tts_returns_wav_audio() {
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
-
-    let home_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / response");
-
-    assert_eq!(home_response.status(), StatusCode::OK);
-
-    let set_cookie = home_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present")
-        .to_owned();
-
-    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
-        .await
-        .expect("read home body");
-    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
-    let csrf_token = META_TOKEN_RE
-        .captures(body_text)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-        .expect("csrf token in page");
-
-    let cookie_value = common::extract_cookie(&set_cookie);
+    let guest_session = "kokoro-tts-guest";
 
     let tts_payload = json!({"text": "Hello <think>ignore</think>"});
 
@@ -300,9 +264,8 @@ async fn kokoro_tts_returns_wav_audio() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/tts")
+                .header("X-Guest-Session", guest_session)
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("X-CSRF-Token", &csrf_token)
-                .header(header::COOKIE, &cookie_value)
                 .body(Body::from(
                     serde_json::to_vec(&tts_payload).expect("payload bytes"),
                 ))
@@ -379,36 +342,7 @@ async fn kokoro_tts_returns_error_when_service_fails() {
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
-
-    let home_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / response");
-
-    let set_cookie = home_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present")
-        .to_owned();
-
-    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
-        .await
-        .expect("read home body");
-    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
-    let csrf_token = META_TOKEN_RE
-        .captures(body_text)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-        .expect("csrf token in page");
-
-    let cookie_value = common::extract_cookie(&set_cookie);
+    let guest_session = "kokoro-tts-error";
 
     let tts_payload = json!({"text": "Failure case"});
 
@@ -418,9 +352,8 @@ async fn kokoro_tts_returns_error_when_service_fails() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/tts")
+                .header("X-Guest-Session", guest_session)
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("X-CSRF-Token", &csrf_token)
-                .header(header::COOKIE, &cookie_value)
                 .body(Body::from(
                     serde_json::to_vec(&tts_payload).expect("payload bytes"),
                 ))
@@ -477,35 +410,7 @@ async fn kokoro_tts_rejects_empty_text() {
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
-    let home_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / response");
-
-    let set_cookie = home_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present")
-        .to_owned();
-
-    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
-        .await
-        .expect("read home body");
-    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
-    let csrf_token = META_TOKEN_RE
-        .captures(body_text)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-        .expect("csrf token in page");
-
-    let cookie_value = common::extract_cookie(&set_cookie);
+    let guest_session = "kokoro-tts-empty";
 
     let response = app
         .clone()
@@ -513,9 +418,8 @@ async fn kokoro_tts_rejects_empty_text() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/tts")
+                .header("X-Guest-Session", guest_session)
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("X-CSRF-Token", &csrf_token)
-                .header(header::COOKIE, &cookie_value)
                 .body(Body::from(
                     serde_json::to_vec(&json!({"text": "    "})).expect("payload bytes"),
                 ))
@@ -748,35 +652,7 @@ async fn kokoro_strips_markdown_formatting() {
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
-    let home_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / response");
-
-    let set_cookie = home_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present")
-        .to_owned();
-
-    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
-        .await
-        .expect("read home body");
-    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
-    let csrf_token = META_TOKEN_RE
-        .captures(body_text)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-        .expect("csrf token in page");
-
-    let cookie_value = common::extract_cookie(&set_cookie);
+    let guest_session = "kokoro-tts-markdown";
 
     let input_text = "This is **bold** and *italic* text.";
     let expected_text = "This is bold and italic text.";
@@ -789,9 +665,8 @@ async fn kokoro_strips_markdown_formatting() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/tts")
+                .header("X-Guest-Session", guest_session)
                 .header(header::CONTENT_TYPE, "application/json")
-                .header("X-CSRF-Token", &csrf_token)
-                .header(header::COOKIE, &cookie_value)
                 .body(Body::from(
                     serde_json::to_vec(&tts_payload).expect("payload bytes"),
                 ))

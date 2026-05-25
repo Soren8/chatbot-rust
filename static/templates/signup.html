@@ -18,7 +18,6 @@
                     </div>
                     <div class="card-body">
                         <form action="/signup" method="post">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <div class="mb-3">
                                 <label for="username" class="form-label">Username:</label>
                                 <input type="text" class="form-control bg-dark text-light border-secondary" name="username" id="username" required>
@@ -42,5 +41,119 @@
     <!-- jQuery and Bootstrap JS -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js" {% if sri.jquery %}integrity="{{ sri.jquery }}" crossorigin="anonymous"{% else %}crossorigin="anonymous"{% endif %}></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" {% if sri.bootstrap_js %}integrity="{{ sri.bootstrap_js }}" crossorigin="anonymous"{% else %}crossorigin="anonymous"{% endif %}></script>
+    <script>
+        const PBKDF2_ITERATIONS = 600000;
+        const MASTER_BITS = 256;
+        const HKDF_BITS = 256;
+
+        function base64ToBytes(value) {
+            const binary = atob(value);
+            const out = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                out[i] = binary.charCodeAt(i);
+            }
+            return out;
+        }
+
+        function bytesToBase64(bytes) {
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        async function deriveMaster(password, authSaltB64) {
+            const enc = new TextEncoder();
+            const passwordKey = await window.crypto.subtle.importKey(
+                'raw',
+                enc.encode(password),
+                { name: 'PBKDF2' },
+                false,
+                ['deriveBits']
+            );
+            const derivedBits = await window.crypto.subtle.deriveBits(
+                {
+                    name: 'PBKDF2',
+                    salt: base64ToBytes(authSaltB64),
+                    iterations: PBKDF2_ITERATIONS,
+                    hash: 'SHA-256'
+                },
+                passwordKey,
+                MASTER_BITS
+            );
+            return new Uint8Array(derivedBits);
+        }
+
+        async function deriveHkdf(masterBytes, saltB64, infoLabel) {
+            const key = await window.crypto.subtle.importKey(
+                'raw',
+                masterBytes,
+                'HKDF',
+                false,
+                ['deriveBits']
+            );
+            const bits = await window.crypto.subtle.deriveBits(
+                {
+                    name: 'HKDF',
+                    hash: 'SHA-256',
+                    salt: base64ToBytes(saltB64),
+                    info: new TextEncoder().encode(infoLabel)
+                },
+                key,
+                HKDF_BITS
+            );
+            return bytesToBase64(new Uint8Array(bits));
+        }
+
+        $('form').on('submit', async function(e) {
+            e.preventDefault();
+            const username = $('#username').val().trim();
+            const password = $('#password').val();
+
+            if (!username || !password) {
+                alert('Username and password are required.');
+                return;
+            }
+
+            if (!window.crypto || !window.crypto.subtle) {
+                alert('Web Crypto is required for signup in this build.');
+                return;
+            }
+
+            try {
+                const saltResp = await fetch(`/auth/salt/${encodeURIComponent(username)}`);
+                if (!saltResp.ok) {
+                    throw new Error('Could not fetch signup salts');
+                }
+                const salts = await saltResp.json();
+                const master = await deriveMaster(password, salts.auth_salt);
+                const authToken = await deriveHkdf(master, salts.auth_salt, 'chatbot/auth/v1');
+
+                $('#password').val('');
+
+                const body = new URLSearchParams({
+                    username: username,
+                    auth_token: authToken,
+                    auth_salt: salts.auth_salt,
+                    enc_salt: salts.enc_salt
+                });
+                const signupResp = await fetch('/signup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString()
+                });
+                if (!signupResp.ok) {
+                    const message = await signupResp.text();
+                    throw new Error(message || 'Signup failed');
+                }
+
+                window.location.href = '/login';
+            } catch (err) {
+                console.error('Client-side signup failed', err);
+                alert(err && err.message ? err.message : 'Signup failed');
+            }
+        });
+    </script>
 </body>
 </html>

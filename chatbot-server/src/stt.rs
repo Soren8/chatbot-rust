@@ -3,13 +3,16 @@ use std::time::Duration;
 use axum::{
     body::Body,
     extract::{FromRequest, Multipart},
-    http::{header, Method, Request, Response, StatusCode},
+    http::{header, Request, Response, StatusCode},
 };
-use chatbot_core::{config, session};
+use chatbot_core::config;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::{debug, error};
+
+use crate::auth::Session as AuthSession;
+use crate::responses;
 
 const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 
@@ -20,35 +23,13 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .expect("stt http client")
 });
 
-pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
-    if request.method() != Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
-    }
+pub async fn handle_stt(
+    _session: AuthSession,
+    request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    responses::ensure_post(request.method())?;
 
     let (parts, body) = request.into_parts();
-    let headers = &parts.headers;
-
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_owned());
-
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|v| v.to_str().ok());
-
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token for /stt");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
-        })?;
-
-    if !csrf_valid {
-        return json_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token");
-    }
 
     // Parse the incoming multipart form to extract the audio field
     let rebuilt = Request::from_parts(parts, Body::from(body));

@@ -11,6 +11,100 @@ window.nativeLog = function(tag, msg) {
   }
 };
 
+const AUTH_TOKEN_KEY = 'chatbot.auth_token';
+const ENC_KEY_KEY = 'chatbot.enc_key';
+const USERNAME_KEY = 'chatbot.username';
+const AUTH_SCOPE_KEY = 'chatbot.auth_scope';
+const AUTH_META_KEY = 'chatbot.auth_meta';
+const GUEST_SESSION_KEY = 'chatbot.guest_session';
+
+function storageReaders() {
+  return [localStorage, sessionStorage];
+}
+
+function clearStoredAuth() {
+  storageReaders().forEach(function(storage) {
+    storage.removeItem(AUTH_TOKEN_KEY);
+    storage.removeItem(ENC_KEY_KEY);
+    storage.removeItem(USERNAME_KEY);
+    storage.removeItem(AUTH_SCOPE_KEY);
+    storage.removeItem(AUTH_META_KEY);
+  });
+}
+
+function readStoredAuth() {
+  const localToken = localStorage.getItem(AUTH_TOKEN_KEY);
+  const localUser = localStorage.getItem(USERNAME_KEY);
+  if (localToken && localUser) {
+    return {
+      scope: 'local',
+      authToken: localToken,
+      encKey: localStorage.getItem(ENC_KEY_KEY) || '',
+      username: localUser,
+      meta: JSON.parse(localStorage.getItem(AUTH_META_KEY) || 'null')
+    };
+  }
+  const sessionToken = sessionStorage.getItem(AUTH_TOKEN_KEY);
+  const sessionUser = sessionStorage.getItem(USERNAME_KEY);
+  if (sessionToken && sessionUser) {
+    return {
+      scope: 'session',
+      authToken: sessionToken,
+      encKey: sessionStorage.getItem(ENC_KEY_KEY) || '',
+      username: sessionUser,
+      meta: JSON.parse(sessionStorage.getItem(AUTH_META_KEY) || 'null')
+    };
+  }
+  return null;
+}
+
+function authStorage() {
+  if (window.AUTH_STATE && window.AUTH_STATE.scope === 'local') {
+    return localStorage;
+  }
+  return sessionStorage;
+}
+
+function persistAuthMeta() {
+  if (!window.AUTH_STATE || !window.AUTH_STATE.authToken) return;
+  authStorage().setItem(AUTH_META_KEY, JSON.stringify({
+    userTier: window.APP_DATA.userTier,
+    availableModels: window.APP_DATA.availableModels,
+    lastSet: window.APP_DATA.lastSet,
+    lastModel: window.APP_DATA.lastModel,
+    renderMarkdown: window.APP_DATA.renderMarkdown,
+    autoplayTTS: window.APP_DATA.autoplayTTS
+  }));
+}
+
+function randomSessionId() {
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function ensureGuestSession() {
+  let value = sessionStorage.getItem(GUEST_SESSION_KEY);
+  if (!value) {
+    value = randomSessionId();
+    sessionStorage.setItem(GUEST_SESSION_KEY, value);
+  }
+  return value;
+}
+
+function isSameOriginRequest(url) {
+  try {
+    const parsed = new URL(url, window.location.origin);
+    return parsed.origin === window.location.origin;
+  } catch (_) {
+    return false;
+  }
+}
+
 // Ensure config exists before any DOM-ready handlers use it
 try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
@@ -60,6 +154,31 @@ try {
     }
   } catch (_) {}
 } catch (e) { /* no-op */ }
+
+window.AUTH_STATE = (function() {
+  const stored = readStoredAuth();
+  const state = {
+    scope: stored ? stored.scope : 'session',
+    authToken: stored ? stored.authToken : '',
+    encKey: stored ? stored.encKey : '',
+    username: stored ? stored.username : '',
+    pendingEncKeySync: !!(stored && stored.encKey),
+    guestSession: ensureGuestSession()
+  };
+  if (stored && stored.meta) {
+    window.APP_DATA.loggedIn = true;
+    window.APP_DATA.userTier = stored.meta.userTier || window.APP_DATA.userTier;
+    window.APP_DATA.availableModels = stored.meta.availableModels || window.APP_DATA.availableModels;
+    window.APP_DATA.lastSet = stored.meta.lastSet || window.APP_DATA.lastSet || 'default';
+    window.APP_DATA.lastModel = stored.meta.lastModel || window.APP_DATA.lastModel;
+    window.APP_DATA.renderMarkdown = stored.meta.renderMarkdown !== undefined ? stored.meta.renderMarkdown : window.APP_DATA.renderMarkdown;
+    window.APP_DATA.autoplayTTS = stored.meta.autoplayTTS !== undefined ? stored.meta.autoplayTTS : window.APP_DATA.autoplayTTS;
+  } else if (stored) {
+    window.APP_DATA.loggedIn = true;
+    window.APP_DATA.lastSet = window.APP_DATA.lastSet || 'default';
+  }
+  return state;
+})();
 
 // ── Native Mic Bridge ────────────────────────────────────────────────────────
 (function() {
@@ -122,12 +241,31 @@ const SESSION_EXPIRED_SEND_MSG =
 
 const originalFetch = window.fetch;
 window.fetch = function(input, init) {
-  return originalFetch.apply(this, arguments).then(response => {
-    if (response.status === 401) {
-      let url = input;
-      if (input instanceof Request) {
-        url = input.url;
+  let url = input;
+  if (input instanceof Request) {
+    url = input.url;
+  }
+
+  const finalInit = init ? Object.assign({}, init) : {};
+  const headers = new Headers((input instanceof Request ? input.headers : undefined) || finalInit.headers || {});
+  if (typeof url === 'string' && isSameOriginRequest(url)) {
+    if (window.AUTH_STATE && window.AUTH_STATE.authToken && window.AUTH_STATE.username) {
+      headers.set('Authorization', 'Bearer ' + window.AUTH_STATE.authToken);
+      headers.set('X-Auth-User', window.AUTH_STATE.username);
+      if (window.AUTH_STATE.encKey && window.AUTH_STATE.pendingEncKeySync) {
+        headers.set('X-Enc-Key', window.AUTH_STATE.encKey);
       }
+    } else {
+      headers.set('X-Guest-Session', window.AUTH_STATE.guestSession);
+    }
+  }
+  finalInit.headers = headers;
+
+  return originalFetch.call(this, input, finalInit).then(response => {
+    if (response.status !== 401 && headers.has('X-Enc-Key')) {
+      window.AUTH_STATE.pendingEncKeySync = false;
+    }
+    if (response.status === 401) {
       if (typeof url === 'string' && (
         url.includes('/chat') ||
         url.includes('/update_memory') ||
@@ -135,6 +273,7 @@ window.fetch = function(input, init) {
       )) {
         return response;
       }
+      clearStoredAuth();
       window.location.href = '/login';
       throw new Error('Session expired');
     }
@@ -142,26 +281,11 @@ window.fetch = function(input, init) {
   });
 };
 
-try {
-  var appRoot = document.getElementById('app-root');
-  if (appRoot && appRoot.dataset) {
-    window.CSRF_TOKEN = appRoot.dataset.csrfToken || window.CSRF_TOKEN;
-  }
-  if (!window.CSRF_TOKEN) {
-    var meta = document.querySelector('meta[name="csrf-token"]');
-    if (meta) {
-      window.CSRF_TOKEN = meta.getAttribute('content');
-    }
-  }
-} catch (e) { /* no-op */ }
-
-function withCsrf(headers) {
-  var result = headers ? Object.assign({}, headers) : {};
-  if (window.CSRF_TOKEN) {
-    result['X-CSRF-Token'] = window.CSRF_TOKEN;
-  }
-  return result;
+function withAuth(headers) {
+  return headers ? Object.assign({}, headers) : {};
 }
+
+function withCsrf(headers) { return withAuth(headers); }
 
 // Settings panel behavior (collapse on small screens)
 $(function() {
@@ -340,6 +464,57 @@ function updateSearchToggleVisibility() {
         $searchToggle.removeClass('btn-primary').addClass('btn-outline-secondary');
         $searchToggle.attr('title', 'Web Search: OFF');
     }
+}
+
+function syncModelSelectOptions() {
+  const select = document.getElementById('modelSelect');
+  if (!select) return;
+  const models = (window.APP_DATA && window.APP_DATA.availableModels) || [];
+  const desiredValue = (window.APP_DATA && window.APP_DATA.lastModel) || select.value;
+  select.innerHTML = '';
+  models.forEach(function(model) {
+    const option = document.createElement('option');
+    option.value = model.provider_name;
+    option.textContent = model.provider_name;
+    option.setAttribute('data-tier', model.tier || 'free');
+    option.setAttribute('data-search', model.search ? 'true' : 'false');
+    select.appendChild(option);
+  });
+  if (desiredValue && Array.from(select.options).some(function(opt) { return opt.value === desiredValue; })) {
+    select.value = desiredValue;
+  }
+}
+
+function syncAuthUi() {
+  const loggedIn = !!(window.APP_DATA && window.APP_DATA.loggedIn);
+  $('#nav-login-link').toggle(!loggedIn);
+  $('#nav-logout-button').toggle(loggedIn);
+  $('#auth-set-controls').toggle(loggedIn);
+}
+
+async function bootstrapAuthenticatedAppData() {
+  if (!(window.AUTH_STATE && window.AUTH_STATE.authToken && window.AUTH_STATE.username)) {
+    syncAuthUi();
+    return;
+  }
+  const response = await fetch('/auth/bootstrap');
+  if (!response.ok) {
+    throw new Error('auth bootstrap failed');
+  }
+  const data = await response.json();
+  window.APP_DATA.loggedIn = !!data.logged_in;
+  window.APP_DATA.userTier = data.user_tier || 'free';
+  window.APP_DATA.availableModels = data.available_models || [];
+  window.APP_DATA.lastSet = data.last_set || 'default';
+  window.APP_DATA.lastModel = data.last_model || window.APP_DATA.lastModel;
+  window.APP_DATA.renderMarkdown = data.render_markdown !== undefined ? data.render_markdown : window.APP_DATA.renderMarkdown;
+  window.APP_DATA.autoplayTTS = data.autoplay_tts !== undefined ? data.autoplay_tts : window.APP_DATA.autoplayTTS;
+  window.AUTH_STATE.username = data.username || window.AUTH_STATE.username;
+  syncModelSelectOptions();
+  disablePremiumModels();
+  validateModelTier();
+  syncAuthUi();
+  persistAuthMeta();
 }
 
 // Append a message to the chat content
@@ -937,6 +1112,8 @@ $(document).on('click', '.delete-button', function(e) {
 
 // Main ready block
 $(document).ready(function() {
+  syncModelSelectOptions();
+  syncAuthUi();
   disablePremiumModels();
   updateSearchToggleVisibility();
 
@@ -947,6 +1124,15 @@ $(document).ready(function() {
     $('#check-render-markdown').prop('checked', window.APP_DATA.renderMarkdown);
     $('#check-autoplay-tts').prop('checked', window.APP_DATA.autoplayTTS);
   }
+
+  $('#nav-logout-button').on('click', function() {
+    fetch('/logout', { method: 'POST' })
+      .catch(err => console.debug('Logout request failed:', err))
+      .finally(function() {
+        clearStoredAuth();
+        window.location.href = '/login';
+      });
+  });
 
   // Image attachment handling
   let pendingImageData = null;
@@ -1052,8 +1238,10 @@ $(document).ready(function() {
 
       fetch('/update_preferences', {
           method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          headers: withAuth({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(preferences)
+      }).then(function() {
+          persistAuthMeta();
       }).catch(err => console.debug('Failed to save preferences:', err));
   }
 
@@ -1164,7 +1352,7 @@ $(document).ready(function() {
   });
 
   // Load sets for logged-in users
-  if (window.APP_DATA.loggedIn) {
+  if (window.APP_DATA.loggedIn || (window.AUTH_STATE && window.AUTH_STATE.authToken && window.AUTH_STATE.username)) {
     function formatAiMessage(text) {
       if (!text) return '';
       
@@ -1219,7 +1407,7 @@ $(document).ready(function() {
     }
 
     function loadSets(shouldTriggerChange = true) {
-      return fetch('/get_sets', { headers: withCsrf() })
+      return fetch('/get_sets', { headers: withAuth() })
         .then(r => r.json())
         .then(data => {
           const $selector = $('#set-selector');
@@ -1245,11 +1433,12 @@ $(document).ready(function() {
           }
         });
     }
+    window.loadSets = loadSets;
 
     $('#set-selector').on('change', function() {
       const setName = $(this).val();
       savePreferences();
-      fetch('/load_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
+      fetch('/load_set', { method: 'POST', headers: withAuth({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
         .then(async r => {
           if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
           if (!r.ok) {
@@ -2575,6 +2764,18 @@ $(document).ready(function() {
   if (!window.APP_DATA.loggedIn) {
     $('#user-system-prompt').val(window.DEFAULT_SYSTEM_PROMPT);
     $('#user-memory').val('');
+  }
+
+  if (window.AUTH_STATE && window.AUTH_STATE.authToken && window.AUTH_STATE.username) {
+    bootstrapAuthenticatedAppData()
+      .then(function() {
+        if (window.APP_DATA.loggedIn && typeof window.loadSets === 'function') {
+          window.loadSets(false);
+        }
+      })
+      .catch(function(err) {
+        console.debug('Auth bootstrap failed:', err);
+      });
   }
 
   $('#user-input').focus();

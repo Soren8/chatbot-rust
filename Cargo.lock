@@ -300,9 +300,14 @@ dependencies = [
 name = "chatbot-test-support"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64",
+ "bcrypt",
  "chatbot-core",
  "regex",
+ "serde_json",
  "tempfile",
+ "tower",
  "tracing-subscriber",
 ]
 

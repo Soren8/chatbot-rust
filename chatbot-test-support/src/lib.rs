@@ -1,11 +1,24 @@
-use chatbot_core::{config, persistence::DataPersistence, user_store::UserStore};
+use axum::{
+    body::Body,
+    http::{header, Method, Request, StatusCode},
+    Router,
+};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use bcrypt::hash;
+use chatbot_core::{
+    config,
+    persistence::DataPersistence,
+    user_store::{normalise_username, BCRYPT_COST, SALT_LEN, UserStore},
+};
 use regex::Regex;
+use serde_json::{json, Value};
 use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::Once,
 };
 use tempfile::TempDir;
+use tower::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
 static TRACING_INIT: Once = Once::new();
@@ -21,8 +34,17 @@ pub fn init_tracing() {
 }
 
 pub fn extract_csrf_token(html: &str) -> Option<String> {
-    let re = Regex::new(r#"name="csrf_token" value="([^"]+)""#).unwrap();
-    re.captures(html)
+    let hidden_input = Regex::new(r#"name="csrf_token" value="([^"]+)""#).unwrap();
+    if let Some(token) = hidden_input
+        .captures(html)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+    {
+        return Some(token);
+    }
+
+    let meta_tag = Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).unwrap();
+    meta_tag
+        .captures(html)
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
 }
 
@@ -33,6 +55,130 @@ pub fn extract_cookie(set_cookie: &str) -> String {
         .unwrap_or(set_cookie)
         .trim()
         .to_owned()
+}
+
+pub fn auth_header(auth_token: &str) -> String {
+    format!("Bearer {auth_token}")
+}
+
+pub fn fixed_auth_salt() -> [u8; SALT_LEN] {
+    [0x11; SALT_LEN]
+}
+
+pub fn fixed_enc_salt() -> [u8; SALT_LEN] {
+    [0x22; SALT_LEN]
+}
+
+pub fn fixed_auth_salt_b64() -> String {
+    STANDARD.encode(fixed_auth_salt())
+}
+
+pub fn fixed_enc_salt_b64() -> String {
+    STANDARD.encode(fixed_enc_salt())
+}
+
+pub fn fixed_enc_key_b64() -> String {
+    STANDARD.encode([0x33; 32])
+}
+
+pub fn seed_user(username: &str, auth_token: &str) {
+    seed_user_with_profile(username, auth_token, "free", None, None, true, false);
+}
+
+pub fn seed_user_with_profile(
+    username: &str,
+    auth_token: &str,
+    tier: &str,
+    last_set: Option<&str>,
+    last_model: Option<&str>,
+    render_markdown: bool,
+    autoplay_tts: bool,
+) {
+    let store = UserStore::new().expect("open user store");
+    let base_dir = store.data_dir().clone();
+    let users_path = base_dir.join("users.json");
+    let salts_dir = base_dir.join("salts");
+    fs::create_dir_all(&salts_dir).expect("create salts dir");
+
+    let normalised = normalise_username(username).expect("normalise username");
+    let hashed = hash(auth_token, BCRYPT_COST).expect("hash auth token");
+
+    let mut users = if users_path.exists() {
+        let raw = fs::read_to_string(&users_path).expect("read users.json");
+        serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+
+    users[normalised.clone()] = json!({
+        "auth_hash": hashed,
+        "tier": tier,
+        "last_set": last_set,
+        "last_model": last_model,
+        "render_markdown": render_markdown,
+        "autoplay_tts": autoplay_tts
+    });
+
+    fs::write(
+        &users_path,
+        serde_json::to_vec_pretty(&users).expect("serialize users"),
+    )
+    .expect("write users.json");
+
+    fs::write(
+        salts_dir.join(format!("{normalised}_auth_salt")),
+        fixed_auth_salt(),
+    )
+    .expect("write auth salt");
+    fs::write(
+        salts_dir.join(format!("{normalised}_enc_salt")),
+        fixed_enc_salt(),
+    )
+    .expect("write enc salt");
+}
+
+pub struct AuthedClient {
+    auth_token: String,
+    enc_key: String,
+    username: String,
+}
+
+impl AuthedClient {
+    pub async fn login(app: Router, username: &str, auth_token: &str) -> Self {
+        let enc_key = fixed_enc_key_b64();
+        let form_payload = format!(
+            "username={username}&auth_token={auth_token}&enc_key={enc_key}"
+        );
+
+        let login_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form_payload))
+                    .unwrap(),
+            )
+            .await
+            .expect("POST /login");
+
+        assert_eq!(login_response.status(), StatusCode::OK);
+
+        Self {
+            auth_token: auth_token.to_string(),
+            enc_key,
+            username: username.to_string(),
+        }
+    }
+
+    pub fn request(&self, method: Method, uri: &str) -> axum::http::request::Builder {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, auth_header(&self.auth_token))
+            .header("X-Auth-User", &self.username)
+            .header("X-Enc-Key", &self.enc_key)
+    }
 }
 
 pub struct TestWorkspace {

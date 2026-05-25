@@ -10,17 +10,14 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bcrypt::verify;
 use once_cell::sync::Lazy;
-use pbkdf2::pbkdf2_hmac;
 use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::Sha256;
 
 pub const DEFAULT_TIER: &str = "free";
-const SALT_LEN: usize = 16;
-const KEY_LEN: usize = 32;
-const PBKDF2_ITERATIONS: u32 = 100_000;
+pub const SALT_LEN: usize = 32;
+pub const BCRYPT_COST: u32 = 14;
 
 pub static USERNAME_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").unwrap());
@@ -40,7 +37,8 @@ pub fn normalise_username(input: &str) -> Result<String, String> {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct UserRecord {
-    password: String,
+    #[serde(alias = "password")]
+    auth_hash: String,
     #[serde(default = "default_tier")]
     tier: String,
     #[serde(default)]
@@ -137,7 +135,9 @@ impl UserStore {
     pub fn create_user(
         &mut self,
         username: &str,
-        hashed_password: &str,
+        hashed_auth_token: &str,
+        auth_salt: &[u8; SALT_LEN],
+        enc_salt: &[u8; SALT_LEN],
     ) -> Result<CreateOutcome, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let mut users = self.load_users()?;
@@ -146,9 +146,9 @@ impl UserStore {
         }
 
         users.insert(
-            normalised,
+            normalised.clone(),
             UserRecord {
-                password: hashed_password.to_string(),
+                auth_hash: hashed_auth_token.to_string(),
                 tier: DEFAULT_TIER.to_string(),
                 last_set: None,
                 last_model: None,
@@ -158,64 +158,61 @@ impl UserStore {
         );
 
         self.save_users(&users)?;
+        self.write_salt(&normalised, "auth", auth_salt)?;
+        self.write_salt(&normalised, "enc", enc_salt)?;
         Ok(CreateOutcome::Created)
     }
 
-    pub fn validate_user(&self, username: &str, password: &str) -> Result<bool, UserStoreError> {
+    pub fn validate_user(&self, username: &str, auth_token: &str) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
         if let Some(record) = users.get(&normalised) {
-            verify(password, &record.password)
+            verify(auth_token, &record.auth_hash)
                 .map_err(|err| UserStoreError::Crypto(err.to_string()))
         } else {
             Ok(false)
         }
     }
 
-    pub fn derive_encryption_key(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<Vec<u8>, UserStoreError> {
-        if password.is_empty() {
-            return Err(UserStoreError::Crypto("Password required".into()));
-        }
-
-        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let salt = self.get_or_create_salt(&normalised)?;
-
-        let mut derived = [0u8; KEY_LEN];
-        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
-        let encoded = STANDARD.encode(derived);
-        Ok(encoded.into_bytes())
-    }
-
-    pub fn get_client_salt(&self, username: &str) -> Result<String, UserStoreError> {
+    pub fn get_client_salts(&self, username: &str) -> Result<(String, String), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
 
         if !users.contains_key(&normalised) {
-            let mut salt = [0u8; SALT_LEN];
-            OsRng.fill_bytes(&mut salt);
-            return Ok(STANDARD.encode(salt));
+            return Ok((STANDARD.encode(random_salt()), STANDARD.encode(random_salt())));
         }
 
-        let salt = self.get_or_create_salt(&normalised)?;
-        Ok(STANDARD.encode(salt))
+        let auth_salt = self.read_salt(&normalised, "auth")?;
+        let enc_salt = self.read_salt(&normalised, "enc")?;
+        Ok((STANDARD.encode(auth_salt), STANDARD.encode(enc_salt)))
     }
 
-    fn get_or_create_salt(&self, normalised_username: &str) -> Result<[u8; SALT_LEN], UserStoreError> {
-        let salt_path = self.salts_dir.join(format!("{normalised_username}_salt"));
+    fn read_salt(
+        &self,
+        normalised_username: &str,
+        purpose: &str,
+    ) -> Result<[u8; SALT_LEN], UserStoreError> {
+        let salt_path = self
+            .salts_dir
+            .join(format!("{normalised_username}_{purpose}_salt"));
         let mut salt = [0u8; SALT_LEN];
-        if salt_path.exists() {
-            let mut file = File::open(&salt_path)?;
-            file.read_exact(&mut salt)?;
-        } else {
-            OsRng.fill_bytes(&mut salt);
-            let mut file = File::create(&salt_path)?;
-            file.write_all(&salt)?;
-        }
+        let mut file = File::open(&salt_path)?;
+        file.read_exact(&mut salt)?;
         Ok(salt)
+    }
+
+    fn write_salt(
+        &self,
+        normalised_username: &str,
+        purpose: &str,
+        salt: &[u8; SALT_LEN],
+    ) -> Result<(), UserStoreError> {
+        let salt_path = self
+            .salts_dir
+            .join(format!("{normalised_username}_{purpose}_salt"));
+        let mut file = File::create(&salt_path)?;
+        file.write_all(salt)?;
+        Ok(())
     }
 
     pub fn user_tier(&self, username: &str) -> Result<String, UserStoreError> {
@@ -308,4 +305,10 @@ impl UserStore {
         file.write_all(json.as_bytes())?;
         Ok(())
     }
+}
+
+fn random_salt() -> [u8; SALT_LEN] {
+    let mut salt = [0u8; SALT_LEN];
+    OsRng.fill_bytes(&mut salt);
+    salt
 }

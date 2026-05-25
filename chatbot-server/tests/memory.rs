@@ -2,20 +2,14 @@ use std::{env, fs};
 
 use axum::{
     body::{to_bytes, Body},
-    http::{header, Method, Request, StatusCode},
+    http::{header, Method, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_server::{build_router, resolve_static_root};
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde_json::json;
 use tower::ServiceExt;
 
 mod common;
-
-static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
-});
 
 #[tokio::test]
 async fn memory_and_prompt_endpoints_round_trip() {
@@ -53,103 +47,13 @@ async fn memory_and_prompt_endpoints_round_trip() {
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
-
-    let login_page = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/login")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET /login");
-
-    assert_eq!(login_page.status(), StatusCode::OK);
-    let mut session_cookie = login_page
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(common::extract_cookie)
-        .expect("initial session cookie");
-
-    let login_body = to_bytes(login_page.into_body(), 128 * 1024)
-        .await
-        .expect("read login body");
-    let login_csrf =
-        common::extract_csrf_token(std::str::from_utf8(&login_body).expect("login utf8"))
-            .expect("csrf token in login form");
-
-    let form_payload = format!(
-        "username={}&password={}&csrf_token={}",
-        urlencoding::encode(username),
-        urlencoding::encode(password),
-        urlencoding::encode(&login_csrf),
-    );
-
-    let login_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/login")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, &session_cookie)
-                .body(Body::from(form_payload))
-                .unwrap(),
-        )
-        .await
-        .expect("POST /login");
-
-    assert_eq!(login_response.status(), StatusCode::FOUND);
-    if let Some(value) = login_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-    {
-        session_cookie = common::extract_cookie(value);
-    }
-
-    let home_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/")
-                .header(header::COOKIE, &session_cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET /");
-
-    assert_eq!(home_response.status(), StatusCode::OK);
-    if let Some(value) = home_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-    {
-        session_cookie = common::extract_cookie(value);
-    }
-
-    let home_body = to_bytes(home_response.into_body(), 512 * 1024)
-        .await
-        .expect("home body");
-    let home_html = std::str::from_utf8(&home_body).expect("home utf8");
-    let csrf_token = CSRF_META_RE
-        .captures(home_html)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-        .expect("csrf token meta");
+    let client = common::AuthedClient::login(app.clone(), username, password).await;
 
     let update_memory_response = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/update_memory")
-                .header(header::COOKIE, &session_cookie)
-                .header("X-CSRF-Token", &csrf_token)
+            client
+                .request(Method::POST, "/update_memory")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
@@ -177,11 +81,8 @@ async fn memory_and_prompt_endpoints_round_trip() {
     let update_prompt_response = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/update_system_prompt")
-                .header(header::COOKIE, &session_cookie)
-                .header("X-CSRF-Token", &csrf_token)
+            client
+                .request(Method::POST, "/update_system_prompt")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
@@ -207,11 +108,8 @@ async fn memory_and_prompt_endpoints_round_trip() {
     let chat_response = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/chat")
-                .header(header::COOKIE, &session_cookie)
-                .header("X-CSRF-Token", &csrf_token)
+            client
+                .request(Method::POST, "/chat")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&chat_payload).expect("chat payload bytes"),
@@ -230,11 +128,8 @@ async fn memory_and_prompt_endpoints_round_trip() {
     let load_before_delete = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/load_set")
-                .header(header::COOKIE, &session_cookie)
-                .header("X-CSRF-Token", &csrf_token)
+            client
+                .request(Method::POST, "/load_set")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
@@ -262,11 +157,8 @@ async fn memory_and_prompt_endpoints_round_trip() {
     let delete_response = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/delete_message")
-                .header(header::COOKIE, &session_cookie)
-                .header("X-CSRF-Token", &csrf_token)
+            client
+                .request(Method::POST, "/delete_message")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
@@ -294,11 +186,8 @@ async fn memory_and_prompt_endpoints_round_trip() {
 
     let load_response = app
         .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/load_set")
-                .header(header::COOKIE, &session_cookie)
-                .header("X-CSRF-Token", &csrf_token)
+            client
+                .request(Method::POST, "/load_set")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),

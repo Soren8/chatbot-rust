@@ -4,39 +4,29 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{config, session, user_store::UserStore};
+use chatbot_core::{config, user_store::UserStore};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
 use tracing::{error, warn};
 
+use crate::auth::RequireUser;
+
 pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net data:; style-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com 'unsafe-inline'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com blob: 'wasm-unsafe-eval'; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
 
-#[derive(Serialize)]
-struct FrontendModel {
+#[derive(Clone, Serialize)]
+pub(crate) struct FrontendModel {
     provider_name: String,
     tier: String,
     search: bool,
 }
 
-pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
-    let cookie_header = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
-
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to prepare home context");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
-    })?;
-
-    let logged_in = bootstrap.username.is_some();
-    let user_details = resolve_user_details(bootstrap.username.as_deref());
+pub async fn handle_home(
+    _request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let logged_in = false;
+    let user_details = resolve_user_details(None);
 
     let config = config::app_config();
     let default_prompt = config.default_system_prompt.clone();
@@ -57,7 +47,6 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
         &user_details,
         &available_models,
         &default_prompt,
-        &bootstrap.csrf_token,
         sri,
         save_thoughts,
         send_thoughts,
@@ -70,18 +59,19 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
         )
     })?;
 
-    build_response(html, bootstrap)
+    build_response(html)
 }
 
-struct UserDetails {
-    tier: String,
-    last_set: Option<String>,
-    last_model: Option<String>,
-    render_markdown: bool,
-    autoplay_tts: bool,
+#[derive(Clone, Serialize)]
+pub(crate) struct UserDetails {
+    pub(crate) tier: String,
+    pub(crate) last_set: Option<String>,
+    pub(crate) last_model: Option<String>,
+    pub(crate) render_markdown: bool,
+    pub(crate) autoplay_tts: bool,
 }
 
-fn resolve_user_details(username: Option<&str>) -> UserDetails {
+pub(crate) fn resolve_user_details(username: Option<&str>) -> UserDetails {
     match username {
         Some(name) => {
             let store = match UserStore::new() {
@@ -108,7 +98,7 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
     }
 }
 
-fn build_available_models(
+pub(crate) fn build_available_models(
     provider_names: &[String],
     user_tier: &str,
     config: &std::sync::Arc<config::AppConfig>,
@@ -139,7 +129,6 @@ fn render_template(
     user_details: &UserDetails,
     available_models: &[FrontendModel],
     default_prompt: &str,
-    csrf_token: &str,
     sri: HashMap<String, String>,
     save_thoughts: bool,
     send_thoughts: bool,
@@ -155,7 +144,6 @@ fn render_template(
         autoplay_tts => user_details.autoplay_tts,
         available_llms => available_models,
         default_system_prompt => default_prompt,
-        csrf_token => csrf_token,
         sri => sri,
         save_thoughts => save_thoughts,
         send_thoughts => send_thoughts,
@@ -182,10 +170,7 @@ fn template_env() -> &'static Environment<'static> {
     })
 }
 
-fn build_response(
-    body: String,
-    bootstrap: session::HomeBootstrap,
-) -> Result<Response<Body>, (StatusCode, String)> {
+fn build_response(body: String) -> Result<Response<Body>, (StatusCode, String)> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -199,12 +184,6 @@ fn build_response(
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");
 
-    if let Ok(value) = HeaderValue::from_str(&bootstrap.set_cookie) {
-        builder = builder.header(header::SET_COOKIE, value);
-    } else {
-        warn!("discarding invalid Set-Cookie header from session manager");
-    }
-
     builder.body(Body::from(body)).map_err(|err| {
         error!(?err, "failed to build home response body");
         (
@@ -212,6 +191,60 @@ fn build_response(
             "response build error".to_string(),
         )
     })
+}
+
+#[derive(Serialize)]
+struct AuthBootstrapPayload {
+    logged_in: bool,
+    username: String,
+    user_tier: String,
+    last_set: Option<String>,
+    last_model: Option<String>,
+    render_markdown: bool,
+    autoplay_tts: bool,
+    available_models: Vec<FrontendModel>,
+}
+
+pub async fn handle_auth_bootstrap(
+    RequireUser(session): RequireUser,
+    _request: Request<Body>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let username = session.username.expect("RequireUser ensures username");
+    let user_details = resolve_user_details(Some(&username));
+    let config = config::app_config();
+    let available_models = build_available_models(config.provider_names(), &user_details.tier, &config);
+    let payload = AuthBootstrapPayload {
+        logged_in: true,
+        username,
+        user_tier: user_details.tier.clone(),
+        last_set: user_details.last_set.clone(),
+        last_model: user_details.last_model.clone(),
+        render_markdown: user_details.render_markdown,
+        autoplay_tts: user_details.autoplay_tts,
+        available_models,
+    };
+    let body = serde_json::to_vec(&payload).map_err(|err| {
+        error!(?err, "failed to serialize auth bootstrap payload");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response build error".to_string(),
+        )
+    })?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(Body::from(body))
+        .map_err(|err| {
+            error!(?err, "failed to build auth bootstrap response");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response build error".to_string(),
+            )
+        })
 }
 
 #[cfg(test)]
@@ -234,7 +267,6 @@ mod tests {
             search: false,
         }];
         let default_prompt = "system prompt";
-        let csrf_token = "csrf";
         let sri = HashMap::new();
         let save_thoughts = true;
         let send_thoughts = true;
@@ -244,7 +276,6 @@ mod tests {
             &user_details,
             &available_models,
             default_prompt,
-            csrf_token,
             sri,
             save_thoughts,
             send_thoughts,
