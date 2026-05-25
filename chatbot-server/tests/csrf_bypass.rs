@@ -121,7 +121,7 @@ async fn home_no_longer_sets_session_cookie_when_csrf_enabled() {
 }
 
 #[tokio::test]
-async fn login_plaintext_is_rejected_when_csrf_disabled() {
+async fn login_plaintext_still_checks_credentials_when_csrf_disabled() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_config(&chat_config(false));
@@ -141,7 +141,7 @@ async fn login_plaintext_is_rejected_when_csrf_disabled() {
         .await
         .expect("POST /login response");
 
-    assert_eq!(login_response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(login_response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

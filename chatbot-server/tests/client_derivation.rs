@@ -53,8 +53,8 @@ async fn get_salt_returns_salt_for_user() {
         .await
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("valid json");
-    assert_eq!(json["auth_salt"], common::fixed_auth_salt_b64());
-    assert_eq!(json["enc_salt"], common::fixed_enc_salt_b64());
+    assert_eq!(json["salt"], common::fixed_client_salt_b64());
+    assert_eq!(json["auth_mode"], "legacy_password");
 }
 
 #[tokio::test]
@@ -81,29 +81,27 @@ async fn get_salt_returns_fake_salt_for_non_existent_user() {
         .await
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("valid json");
-    assert!(json.get("auth_salt").is_some());
-    assert!(json.get("enc_salt").is_some());
-    assert!(!json["auth_salt"].as_str().unwrap().is_empty());
-    assert!(!json["enc_salt"].as_str().unwrap().is_empty());
+    assert!(json.get("salt").is_some());
+    assert_eq!(json["auth_mode"], "derived_token");
+    assert!(!json["salt"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn login_with_storage_key_uses_provided_key() {
+async fn legacy_login_uses_derived_storage_key() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
     let username = "keyuser";
-    let auth_token = "password123";
-    let enc_key = common::fixed_enc_key_b64();
-    common::seed_user(username, auth_token);
+    let password = "password123";
+    common::seed_user(username, password);
+    let storage_key = common::derive_storage_key(username, password);
 
     let app = build_app();
 
     let payload = format!(
-        "username={}&auth_token={}&enc_key={}",
+        "username={}&password={}",
         urlencoding::encode(username),
-        urlencoding::encode(auth_token),
-        urlencoding::encode(&enc_key)
+        urlencoding::encode(password),
     );
 
     let post_response = app
@@ -122,44 +120,67 @@ async fn login_with_storage_key_uses_provided_key() {
     assert_eq!(post_response.status(), StatusCode::OK);
 
     let session = session::session_context(SessionRequest {
-        authorization: Some(&common::auth_header(auth_token)),
+        authorization: Some(&common::auth_header(&storage_key)),
         auth_user: Some(username),
-        encryption_key: Some(&enc_key),
+        encryption_key: Some(&storage_key),
         guest_session: None,
     })
     .expect("session context");
 
     let stored_key_bytes = session.encryption_key.expect("encryption key present");
-    assert_eq!(std::str::from_utf8(&stored_key_bytes).unwrap(), enc_key);
+    assert_eq!(std::str::from_utf8(&stored_key_bytes).unwrap(), storage_key);
 }
 
 #[tokio::test]
-async fn login_rejects_plaintext_password_payload() {
+async fn migrated_login_accepts_auth_token_payload() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
     let username = "plaintext-user";
-    common::seed_user(username, "derived-auth-token");
+    let password = "hunter2";
+    common::seed_user(username, password);
+    let storage_key = common::derive_storage_key(username, password);
 
     let app = build_app();
 
-    let payload = format!(
+    let first_payload = format!(
         "username={}&password={}",
         urlencoding::encode(username),
-        urlencoding::encode("hunter2")
+        urlencoding::encode(password)
     );
 
-    let response = app
+    let first_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
                 .uri("/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(payload))
+                .body(Body::from(first_payload))
                 .unwrap(),
         )
         .await
         .expect("POST /login plaintext");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let second_payload = format!(
+        "username={}&auth_token={}&enc_key={}",
+        urlencoding::encode(username),
+        urlencoding::encode(&storage_key),
+        urlencoding::encode(&storage_key)
+    );
+    let second_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(second_payload))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login token");
+
+    assert_eq!(second_response.status(), StatusCode::OK);
 }

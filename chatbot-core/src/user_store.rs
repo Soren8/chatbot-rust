@@ -10,14 +10,18 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bcrypt::verify;
 use once_cell::sync::Lazy;
+use pbkdf2::pbkdf2_hmac;
 use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::Sha256;
 
 pub const DEFAULT_TIER: &str = "free";
-pub const SALT_LEN: usize = 32;
+pub const SALT_LEN: usize = 16;
 pub const BCRYPT_COST: u32 = 14;
+const KEY_LEN: usize = 32;
+const PBKDF2_ITERATIONS: u32 = 100_000;
 
 pub static USERNAME_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").unwrap());
@@ -37,8 +41,10 @@ pub fn normalise_username(input: &str) -> Result<String, String> {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct UserRecord {
-    #[serde(alias = "password")]
-    auth_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_hash: Option<String>,
     #[serde(default = "default_tier")]
     tier: String,
     #[serde(default)]
@@ -72,6 +78,12 @@ pub struct UserStore {
 pub enum CreateOutcome {
     Created,
     AlreadyExists,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginMode {
+    DerivedToken,
+    LegacyPassword,
 }
 
 #[derive(Debug)]
@@ -136,8 +148,7 @@ impl UserStore {
         &mut self,
         username: &str,
         hashed_auth_token: &str,
-        auth_salt: &[u8; SALT_LEN],
-        enc_salt: &[u8; SALT_LEN],
+        salt: &[u8; SALT_LEN],
     ) -> Result<CreateOutcome, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let mut users = self.load_users()?;
@@ -148,7 +159,8 @@ impl UserStore {
         users.insert(
             normalised.clone(),
             UserRecord {
-                auth_hash: hashed_auth_token.to_string(),
+                password: None,
+                auth_hash: Some(hashed_auth_token.to_string()),
                 tier: DEFAULT_TIER.to_string(),
                 last_set: None,
                 last_model: None,
@@ -158,8 +170,7 @@ impl UserStore {
         );
 
         self.save_users(&users)?;
-        self.write_salt(&normalised, "auth", auth_salt)?;
-        self.write_salt(&normalised, "enc", enc_salt)?;
+        self.write_salt(&normalised, salt)?;
         Ok(CreateOutcome::Created)
     }
 
@@ -167,49 +178,113 @@ impl UserStore {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
         if let Some(record) = users.get(&normalised) {
-            verify(auth_token, &record.auth_hash)
-                .map_err(|err| UserStoreError::Crypto(err.to_string()))
+            if let Some(auth_hash) = &record.auth_hash {
+                verify(auth_token, auth_hash).map_err(|err| UserStoreError::Crypto(err.to_string()))
+            } else {
+                Ok(false)
+            }
         } else {
             Ok(false)
         }
     }
 
-    pub fn get_client_salts(&self, username: &str) -> Result<(String, String), UserStoreError> {
+    pub fn validate_password(&self, username: &str, password: &str) -> Result<bool, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let users = self.load_users()?;
+        if let Some(record) = users.get(&normalised) {
+            if let Some(password_hash) = &record.password {
+                verify(password, password_hash)
+                    .map_err(|err| UserStoreError::Crypto(err.to_string()))
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn derive_encryption_key(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<Vec<u8>, UserStoreError> {
+        if password.is_empty() {
+            return Err(UserStoreError::Crypto("Password required".into()));
+        }
+
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let salt = self.get_or_create_salt(&normalised)?;
+
+        let mut derived = [0u8; KEY_LEN];
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
+        let encoded = STANDARD.encode(derived);
+        Ok(encoded.into_bytes())
+    }
+
+    pub fn login_mode(&self, username: &str) -> Result<LoginMode, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let users = self.load_users()?;
+        Ok(match users.get(&normalised) {
+            Some(record) if record.auth_hash.is_none() && record.password.is_some() => {
+                LoginMode::LegacyPassword
+            }
+            _ => LoginMode::DerivedToken,
+        })
+    }
+
+    pub fn ensure_auth_hash_from_password(
+        &mut self,
+        username: &str,
+        password: &str,
+        hashed_auth_token: &str,
+    ) -> Result<Vec<u8>, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let derived_key = self.derive_encryption_key(&normalised, password)?;
+        let mut users = self.load_users()?;
+        let Some(record) = users.get_mut(&normalised) else {
+            return Err(UserStoreError::Crypto("User not found".into()));
+        };
+
+        if record.auth_hash.is_none() {
+            record.auth_hash = Some(hashed_auth_token.to_string());
+            self.save_users(&users)?;
+        }
+
+        Ok(derived_key)
+    }
+
+    pub fn get_client_salt(&self, username: &str) -> Result<String, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
 
         if !users.contains_key(&normalised) {
-            return Ok((STANDARD.encode(random_salt()), STANDARD.encode(random_salt())));
+            return Ok(STANDARD.encode(random_salt()));
         }
 
-        let auth_salt = self.read_salt(&normalised, "auth")?;
-        let enc_salt = self.read_salt(&normalised, "enc")?;
-        Ok((STANDARD.encode(auth_salt), STANDARD.encode(enc_salt)))
+        let salt = self.get_or_create_salt(&normalised)?;
+        Ok(STANDARD.encode(salt))
     }
 
-    fn read_salt(
-        &self,
-        normalised_username: &str,
-        purpose: &str,
-    ) -> Result<[u8; SALT_LEN], UserStoreError> {
-        let salt_path = self
-            .salts_dir
-            .join(format!("{normalised_username}_{purpose}_salt"));
+    fn get_or_create_salt(&self, normalised_username: &str) -> Result<[u8; SALT_LEN], UserStoreError> {
+        let salt_path = self.salts_dir.join(format!("{normalised_username}_salt"));
         let mut salt = [0u8; SALT_LEN];
-        let mut file = File::open(&salt_path)?;
-        file.read_exact(&mut salt)?;
+        if salt_path.exists() {
+            let mut file = File::open(&salt_path)?;
+            file.read_exact(&mut salt)?;
+        } else {
+            OsRng.fill_bytes(&mut salt);
+            let mut file = File::create(&salt_path)?;
+            file.write_all(&salt)?;
+        }
         Ok(salt)
     }
 
     fn write_salt(
         &self,
         normalised_username: &str,
-        purpose: &str,
         salt: &[u8; SALT_LEN],
     ) -> Result<(), UserStoreError> {
-        let salt_path = self
-            .salts_dir
-            .join(format!("{normalised_username}_{purpose}_salt"));
+        let salt_path = self.salts_dir.join(format!("{normalised_username}_salt"));
         let mut file = File::create(&salt_path)?;
         file.write_all(salt)?;
         Ok(())

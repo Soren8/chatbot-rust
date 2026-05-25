@@ -32,16 +32,31 @@ function clearStoredAuth() {
   });
 }
 
+function readAuthMeta(storage) {
+  try {
+    return JSON.parse(storage.getItem(AUTH_META_KEY) || 'null');
+  } catch (_) {
+    return null;
+  }
+}
+
 function readStoredAuth() {
   const localToken = localStorage.getItem(AUTH_TOKEN_KEY);
   const localUser = localStorage.getItem(USERNAME_KEY);
-  if (localToken && localUser) {
+  const localMeta = readAuthMeta(localStorage);
+  if (localMeta && localMeta.expiresAt && Date.now() > localMeta.expiresAt) {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(ENC_KEY_KEY);
+    localStorage.removeItem(USERNAME_KEY);
+    localStorage.removeItem(AUTH_SCOPE_KEY);
+    localStorage.removeItem(AUTH_META_KEY);
+  } else if (localToken && localUser) {
     return {
       scope: 'local',
       authToken: localToken,
       encKey: localStorage.getItem(ENC_KEY_KEY) || '',
       username: localUser,
-      meta: JSON.parse(localStorage.getItem(AUTH_META_KEY) || 'null')
+      meta: localMeta
     };
   }
   const sessionToken = sessionStorage.getItem(AUTH_TOKEN_KEY);
@@ -52,7 +67,7 @@ function readStoredAuth() {
       authToken: sessionToken,
       encKey: sessionStorage.getItem(ENC_KEY_KEY) || '',
       username: sessionUser,
-      meta: JSON.parse(sessionStorage.getItem(AUTH_META_KEY) || 'null')
+      meta: readAuthMeta(sessionStorage)
     };
   }
   return null;
@@ -67,14 +82,16 @@ function authStorage() {
 
 function persistAuthMeta() {
   if (!window.AUTH_STATE || !window.AUTH_STATE.authToken) return;
-  authStorage().setItem(AUTH_META_KEY, JSON.stringify({
+  const nextMeta = Object.assign({}, window.AUTH_STATE.meta || {}, {
     userTier: window.APP_DATA.userTier,
     availableModels: window.APP_DATA.availableModels,
     lastSet: window.APP_DATA.lastSet,
     lastModel: window.APP_DATA.lastModel,
     renderMarkdown: window.APP_DATA.renderMarkdown,
     autoplayTTS: window.APP_DATA.autoplayTTS
-  }));
+  });
+  window.AUTH_STATE.meta = nextMeta;
+  authStorage().setItem(AUTH_META_KEY, JSON.stringify(nextMeta));
 }
 
 function randomSessionId() {
@@ -162,6 +179,7 @@ window.AUTH_STATE = (function() {
     authToken: stored ? stored.authToken : '',
     encKey: stored ? stored.encKey : '',
     username: stored ? stored.username : '',
+    meta: stored ? stored.meta : null,
     pendingEncKeySync: !!(stored && stored.encKey),
     guestSession: ensureGuestSession()
   };

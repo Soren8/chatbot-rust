@@ -42,9 +42,8 @@
     <script src="https://code.jquery.com/jquery-3.6.0.min.js" {% if sri.jquery %}integrity="{{ sri.jquery }}" crossorigin="anonymous"{% else %}crossorigin="anonymous"{% endif %}></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" {% if sri.bootstrap_js %}integrity="{{ sri.bootstrap_js }}" crossorigin="anonymous"{% else %}crossorigin="anonymous"{% endif %}></script>
     <script>
-        const PBKDF2_ITERATIONS = 600000;
-        const MASTER_BITS = 256;
-        const HKDF_BITS = 256;
+        const PBKDF2_ITERATIONS = 100000;
+        const DERIVED_BITS = 256;
 
         function base64ToBytes(value) {
             const binary = atob(value);
@@ -63,7 +62,7 @@
             return btoa(binary);
         }
 
-        async function deriveMaster(password, authSaltB64) {
+        async function deriveStorageKey(password, saltB64) {
             const enc = new TextEncoder();
             const passwordKey = await window.crypto.subtle.importKey(
                 'raw',
@@ -75,35 +74,14 @@
             const derivedBits = await window.crypto.subtle.deriveBits(
                 {
                     name: 'PBKDF2',
-                    salt: base64ToBytes(authSaltB64),
+                    salt: base64ToBytes(saltB64),
                     iterations: PBKDF2_ITERATIONS,
                     hash: 'SHA-256'
                 },
                 passwordKey,
-                MASTER_BITS
+                DERIVED_BITS
             );
-            return new Uint8Array(derivedBits);
-        }
-
-        async function deriveHkdf(masterBytes, saltB64, infoLabel) {
-            const key = await window.crypto.subtle.importKey(
-                'raw',
-                masterBytes,
-                'HKDF',
-                false,
-                ['deriveBits']
-            );
-            const bits = await window.crypto.subtle.deriveBits(
-                {
-                    name: 'HKDF',
-                    hash: 'SHA-256',
-                    salt: base64ToBytes(saltB64),
-                    info: new TextEncoder().encode(infoLabel)
-                },
-                key,
-                HKDF_BITS
-            );
-            return bytesToBase64(new Uint8Array(bits));
+            return bytesToBase64(new Uint8Array(derivedBits));
         }
 
         $('form').on('submit', async function(e) {
@@ -127,16 +105,14 @@
                     throw new Error('Could not fetch signup salts');
                 }
                 const salts = await saltResp.json();
-                const master = await deriveMaster(password, salts.auth_salt);
-                const authToken = await deriveHkdf(master, salts.auth_salt, 'chatbot/auth/v1');
+                const storageKey = await deriveStorageKey(password, salts.salt || salts.auth_salt);
 
                 $('#password').val('');
 
                 const body = new URLSearchParams({
                     username: username,
-                    auth_token: authToken,
-                    auth_salt: salts.auth_salt,
-                    enc_salt: salts.enc_salt
+                    auth_token: storageKey,
+                    salt: salts.salt || salts.auth_salt
                 });
                 const signupResp = await fetch('/signup', {
                     method: 'POST',

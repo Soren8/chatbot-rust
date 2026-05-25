@@ -52,23 +52,22 @@ pub async fn handle_signup_post(
 
     let username_raw = form.get("username").map(|s| s.trim()).unwrap_or("");
     let auth_token = form.get("auth_token").map(|s| s.trim()).unwrap_or("");
-    let auth_salt = form.get("auth_salt").map(|s| s.trim()).unwrap_or("");
-    let enc_salt = form.get("enc_salt").map(|s| s.trim()).unwrap_or("");
+    let salt = form
+        .get("salt")
+        .or_else(|| form.get("auth_salt"))
+        .or_else(|| form.get("enc_salt"))
+        .map(|s| s.trim())
+        .unwrap_or("");
     let plaintext_password = form.get("password").map(|s| s.as_str()).unwrap_or("");
 
-    if username_raw.is_empty() || auth_token.is_empty() || auth_salt.is_empty() || enc_salt.is_empty() {
+    if username_raw.is_empty() || auth_token.is_empty() || salt.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "Username and derived credentials are required.".to_string(),
         ));
     }
 
-    if !plaintext_password.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Plaintext password signup is no longer supported.".to_string(),
-        ));
-    }
+    let _ = plaintext_password;
 
     let username = match normalise_username(username_raw) {
         Ok(value) => value,
@@ -84,12 +83,11 @@ pub async fn handle_signup_post(
             "Unable to create user".to_string(),
         )
     })?;
-    let auth_salt = decode_salt(auth_salt)?;
-    let enc_salt = decode_salt(enc_salt)?;
+    let salt = decode_salt(salt)?;
 
     let mut store = UserStore::new().map_err(map_store_error)?;
 
-    match store.create_user(&username, &hashed, &auth_salt, &enc_salt) {
+    match store.create_user(&username, &hashed, &salt) {
         Ok(CreateOutcome::Created) => {
             let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
             tracing::info!(username = %username, ip = %ip, "User created");

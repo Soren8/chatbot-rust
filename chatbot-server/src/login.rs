@@ -6,9 +6,10 @@ use axum::{
     http::{header, HeaderValue, Request, Response, StatusCode},
     Json,
 };
+use bcrypt::hash;
 use chatbot_core::{
     config, session,
-    user_store::{normalise_username, UserStore, UserStoreError},
+    user_store::{normalise_username, LoginMode, UserStore, UserStoreError, BCRYPT_COST},
 };
 use minijinja::{context, AutoEscape, Environment};
 use serde_json::json;
@@ -23,10 +24,18 @@ pub async fn handle_get_salt(
     Path(username): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let store = UserStore::new().map_err(map_store_error)?;
-    let (auth_salt, enc_salt) = store
-        .get_client_salts(&username)
-        .map_err(map_store_error)?;
-    Ok(Json(json!({ "auth_salt": auth_salt, "enc_salt": enc_salt })))
+    let salt = store.get_client_salt(&username).map_err(map_store_error)?;
+    let auth_mode = match store.login_mode(&username).map_err(map_store_error)? {
+        LoginMode::LegacyPassword => "legacy_password",
+        LoginMode::DerivedToken => "derived_token",
+    };
+    Ok(Json(json!({
+        "salt": salt,
+        "auth_mode": auth_mode,
+        // Compatibility aliases for the newer client-side draft.
+        "auth_salt": salt,
+        "enc_salt": salt,
+    })))
 }
 
 pub async fn handle_login_get(
@@ -67,14 +76,7 @@ pub async fn handle_login_post(
     let enc_key = form.get("enc_key").map(|s| s.trim());
     let plaintext_password = form.get("password").map(|s| s.as_str()).unwrap_or("");
 
-    if !plaintext_password.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Plaintext password login is no longer supported.".to_string(),
-        ));
-    }
-
-    if username_raw.is_empty() || auth_token.is_empty() {
+    if username_raw.is_empty() || (auth_token.is_empty() && plaintext_password.is_empty()) {
         return invalid_credentials();
     }
 
@@ -83,19 +85,65 @@ pub async fn handle_login_post(
         Err(_) => return invalid_credentials(),
     };
 
-    let store = UserStore::new().map_err(map_store_error)?;
+    let mut store = UserStore::new().map_err(map_store_error)?;
 
-    let valid = store
-        .validate_user(&username, auth_token)
-        .map_err(map_store_error)?;
+    let mut session_auth_token = String::new();
+    let mut session_enc_key = enc_key
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
 
-    if !valid {
-        let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
-        tracing::info!(username = %username, ip = %ip, "Login failed");
-        return invalid_credentials();
+    if !auth_token.is_empty() {
+        let valid = store.validate_user(&username, auth_token).map_err(map_store_error)?;
+        if valid {
+            session_auth_token = auth_token.to_string();
+            if session_enc_key.is_none() {
+                session_enc_key = Some(auth_token.to_string());
+            }
+        }
     }
 
-    session::cache_login(&username, auth_token, enc_key).map_err(|err| {
+    if session_auth_token.is_empty() {
+        let valid = store
+            .validate_password(&username, plaintext_password)
+            .map_err(map_store_error)?;
+        if !valid {
+            let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+            tracing::info!(username = %username, ip = %ip, "Login failed");
+            return invalid_credentials();
+        }
+
+        let derived_key = store
+            .derive_encryption_key(&username, plaintext_password)
+            .map_err(map_store_error)?;
+        let derived_token = String::from_utf8(derived_key).map_err(|err| {
+            error!(?err, "derived auth token was not valid utf8");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to log in".to_string(),
+            )
+        })?;
+        let hashed_auth_token = hash(&derived_token, BCRYPT_COST).map_err(|err| {
+            error!(?err, "failed to hash derived auth token");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to log in".to_string(),
+            )
+        })?;
+        store
+            .ensure_auth_hash_from_password(&username, plaintext_password, &hashed_auth_token)
+            .map_err(map_store_error)?;
+        session_enc_key = Some(derived_token.clone());
+        session_auth_token = derived_token;
+    }
+
+    session::cache_login(
+        &username,
+        &session_auth_token,
+        session_enc_key
+            .as_deref()
+            .or(Some(session_auth_token.as_str())),
+    )
+    .map_err(|err| {
         error!(?err, "failed to cache login");
         (
             StatusCode::INTERNAL_SERVER_ERROR,

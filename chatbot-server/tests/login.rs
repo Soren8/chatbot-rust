@@ -77,16 +77,15 @@ async fn login_flow_returns_json_and_session_context() {
     let _guard = lock_test_mutex();
     let _workspace = setup_workspace();
     let username = "sessionuser";
-    let auth_token = "Sup3rS3cret!";
-    let enc_key = common::fixed_enc_key_b64();
-    common::seed_user(username, auth_token);
+    let password = "Sup3rS3cret!";
+    common::seed_user(username, password);
+    let storage_key = common::derive_storage_key(username, password);
 
     let app = build_app();
     let payload = format!(
-        "username={}&auth_token={}&enc_key={}",
+        "username={}&password={}",
         urlencoding::encode(username),
-        urlencoding::encode(auth_token),
-        urlencoding::encode(&enc_key)
+        urlencoding::encode(password),
     );
 
     let response = app
@@ -111,9 +110,9 @@ async fn login_flow_returns_json_and_session_context() {
     assert_eq!(json["username"], username);
 
     let session = session::session_context(SessionRequest {
-        authorization: Some(&common::auth_header(auth_token)),
+        authorization: Some(&common::auth_header(&storage_key)),
         auth_user: Some(username),
-        encryption_key: Some(&enc_key),
+        encryption_key: Some(&storage_key),
         guest_session: None,
     })
     .expect("session context after login");
@@ -122,26 +121,29 @@ async fn login_flow_returns_json_and_session_context() {
     assert_eq!(session.session_id, username);
     assert_eq!(
         std::str::from_utf8(&session.encryption_key.expect("enc key present")).unwrap(),
-        enc_key
+        storage_key
     );
 }
 
 #[tokio::test]
-async fn login_rejects_plaintext_password_payload() {
+async fn legacy_plaintext_password_login_backfills_token_auth() {
     common::init_tracing();
     let _guard = lock_test_mutex();
     let _workspace = setup_workspace();
     let username = "plaintext-user";
-    common::seed_user(username, "derived-auth-token");
+    let password = "hunter2";
+    common::seed_user(username, password);
+    let storage_key = common::derive_storage_key(username, password);
 
     let app = build_app();
     let payload = format!(
         "username={}&password={}",
         urlencoding::encode(username),
-        urlencoding::encode("hunter2")
+        urlencoding::encode(password)
     );
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -153,7 +155,26 @@ async fn login_rejects_plaintext_password_payload() {
         .await
         .expect("POST /login plaintext");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let second_login = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "username={}&auth_token={}&enc_key={}",
+                    urlencoding::encode(username),
+                    urlencoding::encode(&storage_key),
+                    urlencoding::encode(&storage_key)
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login derived token");
+
+    assert_eq!(second_login.status(), StatusCode::OK);
 }
 
 #[tokio::test]

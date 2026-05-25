@@ -152,12 +152,12 @@ async fn chat_stream_persists_history_for_logged_in_user() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
     const USERNAME: &str = "persisted_user";
-    const AUTH_TOKEN: &str = "S3cur3Pass!";
-    let enc_key = common::fixed_enc_key_b64();
-    common::seed_user(USERNAME, AUTH_TOKEN);
+    const PASSWORD: &str = "S3cur3Pass!";
+    common::seed_user(USERNAME, PASSWORD);
+    let enc_key = common::derive_storage_key(USERNAME, PASSWORD);
 
     let app = build_app();
-    let client = common::AuthedClient::login(app.clone(), USERNAME, AUTH_TOKEN).await;
+    let client = common::AuthedClient::login(app.clone(), USERNAME, PASSWORD).await;
 
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",

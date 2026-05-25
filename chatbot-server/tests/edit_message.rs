@@ -28,13 +28,13 @@ async fn edit_message_via_regenerate_endpoint() {
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     const USERNAME: &str = "edit_user";
-    const AUTH_TOKEN: &str = "Ed1tSecret!";
-    let enc_key = common::fixed_enc_key_b64();
-    common::seed_user(USERNAME, AUTH_TOKEN);
+    const PASSWORD: &str = "Ed1tSecret!";
+    common::seed_user(USERNAME, PASSWORD);
+    let enc_key = common::derive_storage_key(USERNAME, PASSWORD);
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
-    let client = common::AuthedClient::login(app.clone(), USERNAME, AUTH_TOKEN).await;
+    let client = common::AuthedClient::login(app.clone(), USERNAME, PASSWORD).await;
 
     // 1. Initial Chat
     env::set_var(

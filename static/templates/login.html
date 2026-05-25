@@ -50,9 +50,10 @@
         const ENC_KEY_KEY = 'chatbot.enc_key';
         const USERNAME_KEY = 'chatbot.username';
         const AUTH_SCOPE_KEY = 'chatbot.auth_scope';
-        const PBKDF2_ITERATIONS = 600000;
-        const MASTER_BITS = 256;
-        const HKDF_BITS = 256;
+        const AUTH_META_KEY = 'chatbot.auth_meta';
+        const PBKDF2_ITERATIONS = 100000;
+        const DERIVED_BITS = 256;
+        const REMEMBER_ME_MS = 30 * 24 * 60 * 60 * 1000;
 
         function base64ToBytes(value) {
             const binary = atob(value);
@@ -71,7 +72,7 @@
             return btoa(binary);
         }
 
-        async function deriveMaster(password, authSaltB64) {
+        async function deriveStorageKey(password, saltB64) {
             const enc = new TextEncoder();
             const passwordKey = await window.crypto.subtle.importKey(
                 'raw',
@@ -83,35 +84,14 @@
             const derivedBits = await window.crypto.subtle.deriveBits(
                 {
                     name: 'PBKDF2',
-                    salt: base64ToBytes(authSaltB64),
+                    salt: base64ToBytes(saltB64),
                     iterations: PBKDF2_ITERATIONS,
                     hash: 'SHA-256'
                 },
                 passwordKey,
-                MASTER_BITS
+                DERIVED_BITS
             );
-            return new Uint8Array(derivedBits);
-        }
-
-        async function deriveHkdf(masterBytes, saltB64, infoLabel) {
-            const key = await window.crypto.subtle.importKey(
-                'raw',
-                masterBytes,
-                'HKDF',
-                false,
-                ['deriveBits']
-            );
-            const bits = await window.crypto.subtle.deriveBits(
-                {
-                    name: 'HKDF',
-                    hash: 'SHA-256',
-                    salt: base64ToBytes(saltB64),
-                    info: new TextEncoder().encode(infoLabel)
-                },
-                key,
-                HKDF_BITS
-            );
-            return bytesToBase64(new Uint8Array(bits));
+            return bytesToBase64(new Uint8Array(derivedBits));
         }
 
         function clearStoredAuth() {
@@ -120,20 +100,28 @@
                 storage.removeItem(ENC_KEY_KEY);
                 storage.removeItem(USERNAME_KEY);
                 storage.removeItem(AUTH_SCOPE_KEY);
+                storage.removeItem(AUTH_META_KEY);
             });
         }
 
-        function storeAuth(username, authToken, encKey, remember) {
+        function storeAuth(username, authToken, encKey, remember, authMode) {
             clearStoredAuth();
             const storage = remember ? localStorage : sessionStorage;
+            const now = Date.now();
             storage.setItem(AUTH_TOKEN_KEY, authToken);
             storage.setItem(ENC_KEY_KEY, encKey);
             storage.setItem(USERNAME_KEY, username);
             storage.setItem(AUTH_SCOPE_KEY, remember ? 'local' : 'session');
+            storage.setItem(AUTH_META_KEY, JSON.stringify({
+                authMode: authMode,
+                createdAt: now,
+                expiresAt: remember ? now + REMEMBER_ME_MS : null
+            }));
         }
 
         $('form').on('submit', async function(e) {
             e.preventDefault();
+            const form = this;
             const username = $('#username').val().trim();
             const password = $('#password').val();
             const remember = $('#remember-device').is(':checked');
@@ -144,31 +132,33 @@
             }
 
             if (!window.crypto || !window.crypto.subtle) {
-                alert('Web Crypto is required for login in this build.');
+                form.submit();
                 return;
             }
 
             try {
                 const resp = await fetch(`/auth/salt/${encodeURIComponent(username)}`);
                 if (!resp.ok) {
-                    throw new Error('Could not fetch salts');
+                    form.submit();
+                    return;
                 }
 
                 const data = await resp.json();
-                const master = await deriveMaster(password, data.auth_salt);
-                const authToken = await deriveHkdf(master, data.auth_salt, 'chatbot/auth/v1');
-                const encKey = await deriveHkdf(master, data.enc_salt, 'chatbot/encryption/v1');
+                const storageKey = await deriveStorageKey(password, data.salt || data.auth_salt);
 
-                $('#password').val('');
-
-                const body = new URLSearchParams({
-                    username: username,
-                    auth_token: authToken,
-                    enc_key: encKey
-                });
+                const authMode = data.auth_mode || 'derived_token';
+                const body = new URLSearchParams({ username: username });
+                if (authMode === 'legacy_password') {
+                    body.set('password', password);
+                } else {
+                    body.set('auth_token', storageKey);
+                    body.set('enc_key', storageKey);
+                }
                 if (remember) {
                     body.set('remember_device', 'on');
                 }
+
+                $('#password').val('');
 
                 const loginResp = await fetch('/login', {
                     method: 'POST',
@@ -180,12 +170,12 @@
                     throw new Error(message || 'Login failed');
                 }
 
-                storeAuth(username, authToken, encKey, remember);
+                storeAuth(username, storageKey, storageKey, remember, authMode);
                 window.location.href = '/';
             } catch (err) {
                 console.error('Client-side login failed', err);
                 clearStoredAuth();
-                alert(err && err.message ? err.message : 'Login failed');
+                form.submit();
             }
         });
     </script>

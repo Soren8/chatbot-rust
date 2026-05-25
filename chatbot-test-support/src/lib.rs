@@ -1,4 +1,5 @@
 use axum::{
+    body::to_bytes,
     body::Body,
     http::{header, Method, Request, StatusCode},
     Router,
@@ -61,20 +62,28 @@ pub fn auth_header(auth_token: &str) -> String {
     format!("Bearer {auth_token}")
 }
 
-pub fn fixed_auth_salt() -> [u8; SALT_LEN] {
+pub fn fixed_client_salt() -> [u8; SALT_LEN] {
     [0x11; SALT_LEN]
 }
 
+pub fn fixed_auth_salt() -> [u8; SALT_LEN] {
+    fixed_client_salt()
+}
+
 pub fn fixed_enc_salt() -> [u8; SALT_LEN] {
-    [0x22; SALT_LEN]
+    fixed_client_salt()
+}
+
+pub fn fixed_client_salt_b64() -> String {
+    STANDARD.encode(fixed_client_salt())
 }
 
 pub fn fixed_auth_salt_b64() -> String {
-    STANDARD.encode(fixed_auth_salt())
+    fixed_client_salt_b64()
 }
 
 pub fn fixed_enc_salt_b64() -> String {
-    STANDARD.encode(fixed_enc_salt())
+    fixed_client_salt_b64()
 }
 
 pub fn fixed_enc_key_b64() -> String {
@@ -101,7 +110,7 @@ pub fn seed_user_with_profile(
     fs::create_dir_all(&salts_dir).expect("create salts dir");
 
     let normalised = normalise_username(username).expect("normalise username");
-    let hashed = hash(auth_token, BCRYPT_COST).expect("hash auth token");
+    let hashed = hash(auth_token, BCRYPT_COST).expect("hash password");
 
     let mut users = if users_path.exists() {
         let raw = fs::read_to_string(&users_path).expect("read users.json");
@@ -111,7 +120,7 @@ pub fn seed_user_with_profile(
     };
 
     users[normalised.clone()] = json!({
-        "auth_hash": hashed,
+        "password": hashed,
         "tier": tier,
         "last_set": last_set,
         "last_model": last_model,
@@ -126,15 +135,18 @@ pub fn seed_user_with_profile(
     .expect("write users.json");
 
     fs::write(
-        salts_dir.join(format!("{normalised}_auth_salt")),
-        fixed_auth_salt(),
+        salts_dir.join(format!("{normalised}_salt")),
+        fixed_client_salt(),
     )
-    .expect("write auth salt");
-    fs::write(
-        salts_dir.join(format!("{normalised}_enc_salt")),
-        fixed_enc_salt(),
-    )
-    .expect("write enc salt");
+    .expect("write salt");
+}
+
+pub fn derive_storage_key(username: &str, password: &str) -> String {
+    let store = UserStore::new().expect("open user store");
+    let derived = store
+        .derive_encryption_key(username, password)
+        .expect("derive storage key");
+    String::from_utf8(derived).expect("storage key utf8")
 }
 
 pub struct AuthedClient {
@@ -144,11 +156,35 @@ pub struct AuthedClient {
 }
 
 impl AuthedClient {
-    pub async fn login(app: Router, username: &str, auth_token: &str) -> Self {
-        let enc_key = fixed_enc_key_b64();
-        let form_payload = format!(
-            "username={username}&auth_token={auth_token}&enc_key={enc_key}"
-        );
+    pub async fn login(app: Router, username: &str, password: &str) -> Self {
+        let storage_key = derive_storage_key(username, password);
+        let salt_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/auth/salt/{username}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("GET /auth/salt");
+
+        assert_eq!(salt_response.status(), StatusCode::OK);
+        let salt_body = to_bytes(salt_response.into_body(), 64 * 1024)
+            .await
+            .expect("read salt body");
+        let salt_json: Value = serde_json::from_slice(&salt_body).expect("salt json");
+        let auth_mode = salt_json
+            .get("auth_mode")
+            .and_then(|value| value.as_str())
+            .unwrap_or("derived_token");
+
+        let form_payload = if auth_mode == "legacy_password" {
+            format!("username={username}&password={password}")
+        } else {
+            format!("username={username}&auth_token={storage_key}&enc_key={storage_key}")
+        };
 
         let login_response = app
             .oneshot(
@@ -165,8 +201,8 @@ impl AuthedClient {
         assert_eq!(login_response.status(), StatusCode::OK);
 
         Self {
-            auth_token: auth_token.to_string(),
-            enc_key,
+            auth_token: storage_key.clone(),
+            enc_key: storage_key,
             username: username.to_string(),
         }
     }

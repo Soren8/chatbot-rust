@@ -83,11 +83,10 @@ async fn signup_flow_creates_user_record() {
     );
     let auth_token = "Password123-derived-token";
     let payload = format!(
-        "username={}&auth_token={}&auth_salt={}&enc_salt={}",
+        "username={}&auth_token={}&salt={}",
         encode(&username),
         encode(auth_token),
-        encode(&common::fixed_auth_salt_b64()),
-        encode(&common::fixed_enc_salt_b64())
+        encode(&common::fixed_client_salt_b64())
     );
 
     let response = app

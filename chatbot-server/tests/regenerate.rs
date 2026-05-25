@@ -150,12 +150,12 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
     const USERNAME: &str = "regen_user";
-    const AUTH_TOKEN: &str = "R3genSecret!";
-    let enc_key = common::fixed_enc_key_b64();
-    common::seed_user(USERNAME, AUTH_TOKEN);
+    const PASSWORD: &str = "R3genSecret!";
+    common::seed_user(USERNAME, PASSWORD);
+    let enc_key = common::derive_storage_key(USERNAME, PASSWORD);
 
     let app = build_app();
-    let client = common::AuthedClient::login(app.clone(), USERNAME, AUTH_TOKEN).await;
+    let client = common::AuthedClient::login(app.clone(), USERNAME, PASSWORD).await;
 
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
@@ -247,12 +247,12 @@ async fn regenerate_updates_system_prompt_in_history() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
     const USERNAME: &str = "regen_sys_user";
-    const AUTH_TOKEN: &str = "SysP@ss!";
-    let enc_key = common::fixed_enc_key_b64();
-    common::seed_user(USERNAME, AUTH_TOKEN);
+    const PASSWORD: &str = "SysP@ss!";
+    common::seed_user(USERNAME, PASSWORD);
+    let enc_key = common::derive_storage_key(USERNAME, PASSWORD);
 
     let app = build_app();
-    let client = common::AuthedClient::login(app.clone(), USERNAME, AUTH_TOKEN).await;
+    let client = common::AuthedClient::login(app.clone(), USERNAME, PASSWORD).await;
 
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
