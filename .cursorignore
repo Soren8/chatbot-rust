@@ -1,0 +1,8 @@
+.env
+.config.yml
+provider-test.yml
+data/
+temp/
+target/
+.cargo/
+.docker/

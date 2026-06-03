@@ -4,6 +4,7 @@ app/__pycache__/*
 data/*
 chatbot-cuda/model_cache/
 .env
+!.devcontainer/stubs/.env
 .aider*
 .DS_Store
 provider-test.yml

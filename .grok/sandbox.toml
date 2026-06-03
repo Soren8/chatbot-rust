@@ -1,0 +1,13 @@
+# Grok Build sandbox profile for this repo (Landlock on Linux).
+# Used automatically when GROK_SANDBOX=chatbot-agent (set in devcontainer.json).
+# Also run manually: grok --sandbox chatbot-agent
+
+[profiles.chatbot-agent]
+extends = "workspace"
+deny = [
+  ".env",
+  ".config.yml",
+  "data",
+  "provider-test.yml",
+]
+read_only = [".config.yml.example"]

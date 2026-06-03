@@ -1,0 +1,40 @@
+{
+  "name": "PROJECT_NAME (agent-safe)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "remoteUser": "agent",
+  "updateRemoteUserUID": true,
+  "containerEnv": {
+    "CARGO_HOME": "/home/agent/.cargo",
+    "CARGO_TARGET_DIR": "/workspace/temp/.cargo/target",
+    "RUSTUP_HOME": "/home/agent/.rustup",
+    "GROK_SANDBOX": "chatbot-agent",
+    "INSTALL_GROK": "1"
+  },
+  "mounts": [
+    "source=PROJECT_SLUG-cargo-registry,target=/home/agent/.cargo/registry,type=volume",
+    "source=PROJECT_SLUG-cargo-git,target=/home/agent/.cargo/git,type=volume"
+  ],
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.targetDir": "/workspace/temp/.cargo/target"
+      }
+    }
+  },
+  "remoteEnv": {
+    "PATH": "/home/agent/.grok/bin:${containerEnv:PATH}"
+  },
+  "runArgs": ["--init"],
+  "postStartCommand": "echo 'Run production compose on the HOST; this container is for coding agents only.'"
+}

@@ -1,5 +1,11 @@
 # AGENTS.md - Development Guide
 
+## Agent devcontainer (secret-safe)
+
+- For coding agents (Grok Build, Cursor, etc.), use **Dev Containers: Reopen in Container** (see `.devcontainer/README.md`). Host `.env` / `.config.yml` are masked inside the container.
+- Run **`docker compose`** and integration tests on the **host**, not inside the devcontainer (no Docker socket; avoids loading host secrets into agent-driven Compose).
+- Inside the container, prefer `grok --sandbox chatbot-agent` (profile in `.grok/sandbox.toml`; `GROK_SANDBOX` is set in `devcontainer.json`).
+
 ## Build & Run Commands
 
 - Run Rust integration tests: `docker compose run --rm tests cargo test`
@@ -65,4 +71,5 @@ The Capacitor app loads JS/CSS from the running server; until `webserver` is reb
 - Update any relevant docs, checklists or todo lists at the end of a task. Only add content to docs, not checklists or todo lists.
 - NEVER add cache busting mechanisms (e.g., query parameters on script tags) unless the user explicitly asks for it. Assume the user knows how to clear their cache.
 - When using shell commands like `grep` or `find`, always ensure gitignored directories (e.g., `data/`, `temp/`, `target/`, `.git/`) are excluded to avoid noise and excessive token usage.
+- Do not read `.env`, `.config.yml`, or `data/` unless the user explicitly asks you to; in the devcontainer these paths are stubs or examples only.
 - The `/tts` endpoint uses a two-step "Pre-sign" pattern for browser compatibility: a `POST` to `/tts` submits text and receives a token, followed by a `GET /tts_stream/{token}` for native browser streaming.

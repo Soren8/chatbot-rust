@@ -1,0 +1,44 @@
+{
+  "name": "chatbot-rust (agent-safe)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "remoteUser": "agent",
+  "updateRemoteUserUID": true,
+  "containerEnv": {
+    "CARGO_HOME": "/home/agent/.cargo",
+    "CARGO_TARGET_DIR": "/workspace/temp/.cargo/target",
+    "RUSTUP_HOME": "/home/agent/.rustup",
+    "GROK_SANDBOX": "chatbot-agent",
+    "INSTALL_GROK": "1"
+  },
+  "mounts": [
+    "source=chatbot-rust-cargo-registry,target=/home/agent/.cargo/registry,type=volume",
+    "source=chatbot-rust-cargo-git,target=/home/agent/.cargo/git,type=volume",
+    "source=${localWorkspaceFolder}/.devcontainer/stubs/.env,target=/workspace/.env,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.config.yml.example,target=/workspace/.config.yml,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.devcontainer/stubs/data,target=/workspace/data,type=bind,readonly"
+  ],
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.targetDir": "/workspace/temp/.cargo/target"
+      }
+    }
+  },
+  "remoteEnv": {
+    "PATH": "/home/agent/.grok/bin:${containerEnv:PATH}"
+  },
+  "features": {},
+  "runArgs": ["--init"],
+  "postStartCommand": "echo 'Agent devcontainer: run the app via docker compose on the HOST, not inside this container.'"
+}
