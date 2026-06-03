@@ -1,4 +1,4 @@
-async function deriveKey(password, saltB64) {
+async function deriveKeyWebCrypto(password, saltB64) {
   try {
     const enc = new TextEncoder();
     const passwordKey = await window.crypto.subtle.importKey(
@@ -33,9 +33,23 @@ async function deriveKey(password, saltB64) {
     }
     return btoa(derivedStr);
   } catch (e) {
-    console.error('Derivation failed', e);
+    console.error('WebCrypto derivation failed', e);
     return null;
   }
+}
+
+async function deriveKeyForLogin(password, saltB64) {
+  if (window.NativeBridge && window.NativeBridge.isNativePlatform()) {
+    const result = await window.NativeBridge.callNativePlugin('NativeSecureKey', 'deriveKeyFromPassword', {
+      password: password,
+      salt: saltB64,
+    });
+    return result && result.key ? result.key : null;
+  }
+  if (!window.crypto || !window.crypto.subtle || !window.isSecureContext) {
+    return null;
+  }
+  return deriveKeyWebCrypto(password, saltB64);
 }
 
 $(function() {
@@ -50,46 +64,58 @@ $(function() {
       return;
     }
 
-    if (!window.crypto || !window.crypto.subtle) {
-      console.log('Web Crypto API not available. Using server-side derivation.');
-      form.submit();
-      return;
-    }
+    const isNative = window.NativeBridge && window.NativeBridge.isNativePlatform();
 
     try {
       const resp = await fetch(`/auth/salt/${encodeURIComponent(username)}`);
       if (!resp.ok) {
+        if (isNative) {
+          alert('Could not fetch encryption salt. Login cannot continue.');
+          return;
+        }
         console.warn('Could not fetch salt, falling back to server derivation');
         form.submit();
         return;
       }
 
       const data = await resp.json();
-      const derivedKey = await deriveKey(password, data.salt);
-
-      if (derivedKey) {
-        if (window.EncKey && window.EncKey.storeFromLogin) {
-          try {
-            await window.EncKey.storeFromLogin(derivedKey, 'indexeddb');
-            const ok = await window.EncKey.verifyStoredKey(derivedKey);
-            if (!ok) {
-              throw new Error('Encryption key did not persist on this device');
-            }
-          } catch (storeErr) {
-            console.error('Failed to store encryption key locally', storeErr);
-            alert('Could not save encryption key on this device. Login cannot continue.');
-            return;
-          }
-        }
-        $('<input>').attr({
-          type: 'hidden',
-          name: 'storage_key',
-          value: derivedKey,
-        }).appendTo(form);
-      } else {
-        alert('Could not derive encryption key. Login cannot continue.');
+      let derivedKey;
+      try {
+        derivedKey = await deriveKeyForLogin(password, data.salt);
+      } catch (deriveErr) {
+        console.error('Native derivation failed', deriveErr);
+        alert('Could not derive encryption key on this device. Login cannot continue.');
         return;
       }
+
+      if (!derivedKey) {
+        if (isNative) {
+          alert('Could not derive encryption key on this device. Login cannot continue.');
+          return;
+        }
+        console.log('Web Crypto unavailable. Using server-side derivation.');
+        form.submit();
+        return;
+      }
+
+      if (window.EncKey && window.EncKey.storeFromLogin) {
+        try {
+          await window.EncKey.storeFromLogin(derivedKey, 'indexeddb');
+          const ok = await window.EncKey.verifyStoredKey(derivedKey);
+          if (!ok) {
+            throw new Error('Encryption key did not persist on this device');
+          }
+        } catch (storeErr) {
+          console.error('Failed to store encryption key locally', storeErr);
+          alert('Could not save encryption key on this device. Login cannot continue.');
+          return;
+        }
+      }
+      $('<input>').attr({
+        type: 'hidden',
+        name: 'storage_key',
+        value: derivedKey,
+      }).appendTo(form);
     } catch (err) {
       console.error('Client side derivation process failed', err);
       alert('Encryption setup failed. Login cannot continue.');

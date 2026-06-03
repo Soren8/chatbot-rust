@@ -157,8 +157,8 @@
   }
 
   async function storeWrappedKey(rawKeyB64, mode) {
-    if (window.Capacitor && window.Capacitor.nativePromise) {
-      await window.Capacitor.nativePromise('NativeSecureKey', 'storeKey', { key: rawKeyB64 });
+    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
+      await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', { key: rawKeyB64 });
       cachedKey = rawKeyB64;
       await idbSet(MODE_KEY, 'native-keystore');
       return;
@@ -176,7 +176,14 @@
     cachedKey = rawKeyB64;
   }
 
+  function isNativeSecureStorage() {
+    return !!(global.NativeBridge && global.NativeBridge.isNativePlatform());
+  }
+
   async function verifyStoredKey(expectedB64) {
+    if (isNativeSecureStorage()) {
+      return cachedKey === expectedB64;
+    }
     cachedKey = null;
     const loaded = await loadWrappedKey();
     return loaded === expectedB64;
@@ -186,15 +193,17 @@
     if (cachedKey) {
       return cachedKey;
     }
-    if (window.Capacitor && window.Capacitor.nativePromise) {
+    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
-        const result = await window.Capacitor.nativePromise('NativeSecureKey', 'getKey', {});
+        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
         if (result && result.key) {
           cachedKey = result.key;
           return cachedKey;
         }
+        console.debug('enc-key: native keystore has no wrapped key yet');
       } catch (err) {
-        console.debug('native secure key read failed', err);
+        console.error('enc-key: native secure key read failed', err);
+        throw err;
       }
     }
     const mode = await idbGet(MODE_KEY);
@@ -228,9 +237,9 @@
   async function clearStoredKey() {
     cachedKey = null;
     sessionStorage.removeItem('chatbot_enc_key');
-    if (window.Capacitor && window.Capacitor.nativePromise) {
+    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
-        await window.Capacitor.nativePromise('NativeSecureKey', 'clearKey', {});
+        await global.NativeBridge.callNativePlugin('NativeSecureKey', 'clearKey', {});
       } catch (err) {
         console.debug('native secure key clear failed', err);
       }
@@ -251,17 +260,28 @@
     return derived;
   }
 
-  function supportsWebAuthnPrf() {
-    return !!(global.PublicKeyCredential && global.PublicKeyCredential.prototype.getClientExtensionResults);
+  async function supportsWebAuthnPrf() {
+    if (!global.PublicKeyCredential) {
+      return false;
+    }
+    if (typeof global.PublicKeyCredential.getClientCapabilities !== 'function') {
+      return false;
+    }
+    try {
+      const caps = await global.PublicKeyCredential.getClientCapabilities();
+      return !!(caps && caps.prf === true);
+    } catch (_) {
+      return false;
+    }
   }
 
   async function registerWebAuthnDeviceLock(displayName) {
-    if (!supportsWebAuthnPrf()) {
+    if (!(await supportsWebAuthnPrf())) {
       throw new Error('WebAuthn PRF is not supported in this browser');
     }
     const rawKeyB64 = cachedKey || (await loadWrappedKey());
     if (!rawKeyB64) {
-      throw new Error('Unlock your encryption key before enabling device lock');
+      throw new Error('Unlock your encryption key before enabling enhanced key cache security');
     }
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     const credential = await navigator.credentials.create({
@@ -399,6 +419,7 @@
     lock,
     clearStoredKey,
     supportsWebAuthnPrf,
+    isNativeSecureStorage,
     isSecureContext,
     hasWebCrypto,
   };

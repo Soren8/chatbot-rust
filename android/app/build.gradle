@@ -50,6 +50,7 @@ dependencies {
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation "androidx.biometric:biometric:1.1.0"
     implementation project(':capacitor-cordova-android-plugins')
 
     implementation "androidx.car.app:app:1.4.0"

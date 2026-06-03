@@ -14,10 +14,10 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        initialPlugins.add(NativeMicPlugin.class);
-        initialPlugins.add(NativeVoiceTtsPlugin.class);
-        initialPlugins.add(NativeSecureKeyPlugin.class);
-        initialPlugins.add(LoggerPlugin.class);
+        registerPlugin(NativeMicPlugin.class);
+        registerPlugin(NativeVoiceTtsPlugin.class);
+        registerPlugin(NativeSecureKeyPlugin.class);
+        registerPlugin(LoggerPlugin.class);
         super.onCreate(savedInstanceState);
     }
 

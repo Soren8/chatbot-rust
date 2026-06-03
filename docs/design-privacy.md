@@ -82,8 +82,8 @@ The in-memory `SessionStore` retains Fernet ciphertext blobs for history, memory
 | Tier | Platform | UX | Protection |
 | :--- | :--- | :--- | :--- |
 | **Option 2 (default web)** | Browser | Zero extra steps after login | Non-extractable AES-GCM wrap key in IndexedDB; wrapped data key persisted as blob. |
-| **Option 3 (opt-in web)** | Browser with WebAuthn PRF | One biometric/PIN per unlock | Wrapping secret derived from platform authenticator (Touch ID, Windows Hello, security key). Full profile copy on another machine is useless without the authenticator. Falls back to Option 2 when PRF is unsupported. |
-| **Option 4 (native default)** | Capacitor Android | Zero extra steps after login | Android Keystore AES/GCM wrap (`NativeSecureKey` plugin). iOS Keychain plugin follows the same pattern when the iOS target ships. |
+| **Option 3 (opt-in web)** | Browser with WebAuthn PRF | One biometric/PIN per unlock (manual opt-in) | Wrapping secret derived from platform authenticator (Touch ID, Windows Hello, security key). Full profile copy on another machine is useless without the authenticator. Falls back to Option 2 when PRF is unsupported. |
+| **Option 4 (native default)** | Capacitor Android | One fingerprint/PIN at login and on unlock | Android Keystore AES/GCM wrap with biometric/device-credential gate (`NativeSecureKey` plugin). Applied automatically at login on mobile; no WebAuthn button. iOS Keychain plugin follows the same pattern when the iOS target ships. |
 | **Session fallback** | Non-secure HTTP contexts | Same as login | Key held in `sessionStorage` only (development / legacy). |
 
 Enrollment flow: login derives the key client-side → server stores key verifier → client wraps key locally → raw key discarded from JS. Re-unlock: settings panel or automatic prompt on 401 from data endpoints.

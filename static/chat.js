@@ -202,6 +202,63 @@ function preloadEncryptionKey() {
   });
 }
 
+function showEncKeyGateLoading(message) {
+  var $encGate = $('#enc-key-gate');
+  if (!$encGate.length) {
+    return;
+  }
+  $encGate.removeClass('d-none');
+  $('#enc-key-gate-spinner').show();
+  $('#enc-key-gate-actions').addClass('d-none');
+  $encGate.find('.enc-key-gate-message').text(message || 'Loading encryption key…');
+}
+
+function showEncKeyGateError(err) {
+  var $encGate = $('#enc-key-gate');
+  if (!$encGate.length) {
+    return;
+  }
+  $('#enc-key-gate-spinner').hide();
+  $('#enc-key-gate-actions').removeClass('d-none');
+  var msg = err && err.message ? err.message : 'Encryption key unavailable.';
+  if (/authentication cancelled/i.test(msg)) {
+    msg = 'Unlock cancelled. Try again or sign out and log in.';
+  } else if (window.EncKey && window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
+    if (/not found|unavailable|failed to read/i.test(msg)) {
+      msg = 'Encryption key not found on this device. Sign out and log in again.';
+    }
+  }
+  $encGate.find('.enc-key-gate-message').text(msg);
+}
+
+function hideEncKeyGate() {
+  $('#enc-key-gate').addClass('d-none');
+}
+
+function beginEncKeyUnlockFlow() {
+  if (window.EncKey && window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
+    showEncKeyGateLoading('Confirm with fingerprint or device PIN…');
+  } else {
+    showEncKeyGateLoading('Loading encryption key…');
+  }
+  return waitForEncryptionKey()
+    .then(function() {
+      if (typeof window.loadChatSets !== 'function') {
+        throw new Error('Chat is still starting. Try again.');
+      }
+      showEncKeyGateLoading('Loading your sets…');
+      return window.loadChatSets();
+    })
+    .then(function() {
+      hideEncKeyGate();
+    })
+    .catch(function(err) {
+      console.error('encryption key unavailable on chat load', err);
+      showEncKeyGateError(err);
+      throw err;
+    });
+}
+
 async function response401Kind(response) {
   if (response.status !== 401) {
     return null;
@@ -247,7 +304,13 @@ async function ensureEncryptionKeyUnlocked() {
 }
 
 async function waitForEncryptionKey() {
-  var key = await preloadEncryptionKey();
+  if (!window.EncKey) {
+    throw new Error('Encryption key unavailable. Sign out and log in again.');
+  }
+  if (window.EncKey.lock) {
+    window.EncKey.lock();
+  }
+  var key = await window.EncKey.getKeyForRequest();
   if (key) {
     return key;
   }
@@ -281,18 +344,26 @@ async function fetchWithEncKey(input, init, retryOnUnlock) {
 $(function() {
   if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
     var $deviceLock = $('#enable-device-lock');
-    var $status = $('#device-lock-status');
-    if (window.EncKey.supportsWebAuthnPrf && window.EncKey.supportsWebAuthnPrf()) {
-      $deviceLock.show();
+    var $hint = $('#enc-key-storage-hint');
+    if (window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
+      if ($hint.length) {
+        $hint.text('Your chat key is protected by this device OS. Saved at login; fingerprint or PIN required to unlock.');
+      }
+    } else if (window.EncKey.supportsWebAuthnPrf) {
+      window.EncKey.supportsWebAuthnPrf().then(function(supported) {
+        if (supported) {
+          $deviceLock.show();
+        }
+      });
     }
     $deviceLock.on('click', function() {
       var name = window.APP_DATA.username || 'chatbot-user';
       window.EncKey.registerWebAuthnDeviceLock(name)
         .then(function() {
-          $status.text('Device lock enabled. Biometric unlock required after reload.');
+          $deviceLock.hide();
         })
         .catch(function(err) {
-          alert('Could not enable device lock: ' + (err && err.message ? err.message : err));
+          alert('Could not enhance encryption key cache security: ' + (err && err.message ? err.message : err));
         });
     });
   }
@@ -1296,35 +1367,6 @@ $(document).ready(function() {
 
   // Load sets for logged-in users (wait for encryption key from login storage first)
   if (window.APP_DATA.loggedIn) {
-    var $encGate = $('#enc-key-gate');
-    if ($encGate.length) {
-      $encGate.removeClass('d-none');
-    }
-    waitForEncryptionKey()
-      .then(function() {
-        if ($encGate.length) {
-          $encGate.addClass('d-none');
-        }
-        var $status = $('#device-lock-status');
-        if ($status.length) {
-          $status.text('Encryption key ready.');
-        }
-        loadSets();
-      })
-      .catch(function(err) {
-        console.error('encryption key unavailable on chat load', err);
-        if ($encGate.length) {
-          $encGate.find('.enc-key-gate-message').text(
-            err && err.message ? err.message : 'Encryption key unavailable.'
-          );
-        }
-        appendMessage(
-          '<strong>Error:</strong> ' + escapeHTML(err && err.message ? err.message : 'Encryption key unavailable.') +
-          ' <a href="/logout">Sign out</a> and log in again.',
-          'error-message'
-        );
-        throw err;
-      });
     function formatAiMessage(text) {
       if (!text) return '';
       
@@ -1426,6 +1468,7 @@ $(document).ready(function() {
             ' <a href="/logout">Sign out</a> and log in again if this persists.',
             'error-message'
           );
+          throw error;
         });
     }
 
@@ -1472,6 +1515,11 @@ $(document).ready(function() {
         })
         .catch(error => { appendMessage('<strong>Error:</strong> Failed to load set: ' + escapeHTML(error.message), 'error-message'); });
       });
+
+    beginEncKeyUnlockFlow();
+    $('#enc-key-retry').on('click', function() {
+      beginEncKeyUnlockFlow();
+    });
 
     $('#new-set').on('click', function() {
       const setName = prompt('Enter name for new set:');
