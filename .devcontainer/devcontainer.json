@@ -18,7 +18,7 @@
   "mounts": [
     "source=chatbot-rust-cargo-registry,target=/home/agent/.cargo/registry,type=volume",
     "source=chatbot-rust-cargo-git,target=/home/agent/.cargo/git,type=volume",
-    "source=${localWorkspaceFolder}/.devcontainer/stubs/.env,target=/workspace/.env,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.devcontainer/stubs/.env,target=/workspace/.env,type=bind,readonly,consistency=consistent",
     "source=${localWorkspaceFolder}/.config.yml.example,target=/workspace/.config.yml,type=bind,readonly",
     "source=${localWorkspaceFolder}/.devcontainer/stubs/data,target=/workspace/data,type=bind,readonly"
   ],
@@ -38,7 +38,13 @@
   "remoteEnv": {
     "PATH": "/home/agent/.grok/bin:${containerEnv:PATH}"
   },
-  "features": {},
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "version": "latest",
+      "enableNonRootDocker": "true",
+      "moby": false
+    }
+  },
   "runArgs": ["--init"],
-  "postStartCommand": "echo 'Agent devcontainer: run the app via docker compose on the HOST, not inside this container.'"
+  "postStartCommand": "echo 'Docker: use docker compose run --rm tests cargo test (build/test). Full stack with host secrets: compose up on the HOST.'"
 }

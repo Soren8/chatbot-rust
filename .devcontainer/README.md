@@ -1,6 +1,6 @@
 # Agent-safe dev container
 
-Coding agents (Grok Build, Cursor, Claude Code, etc.) run in a container where **host secret files are masked** by bind-mount overlays. The app itself still runs via `docker compose` on the **host**, where `.env` and `.config.yml` remain available.
+Coding agents (Grok Build, Cursor, Claude Code, etc.) run in a container where **host secret files are masked** by bind-mount overlays. Docker Compose uses the **host** Docker daemon (socket mounted) so agents can build images and run the test container without leaving the dev environment.
 
 ## Quick start
 
@@ -12,13 +12,16 @@ Coding agents (Grok Build, Cursor, Claude Code, etc.) run in a container where *
 grok --sandbox chatbot-agent
 # or rely on GROK_SANDBOX from devcontainer.json:
 grok
+
+# Build and integration tests (same as AGENTS.md)
+docker compose --progress plain build
+docker compose run --rm tests cargo test
 ```
 
-4. On the **host** (normal terminal, not inside the dev container):
+4. **Full stack with live API keys** (host `.env` / `.config.yml`): run on the host if `compose up` from the devcontainer does not see your secrets (workspace `.env` is a stub here):
 
 ```bash
 docker compose --progress plain up --build -d
-docker compose run --rm tests cargo test
 ```
 
 ## What is hidden inside the container
@@ -31,10 +34,13 @@ docker compose run --rm tests cargo test
 
 `post-create` runs `scripts/verify-secret-overlays.sh` and **fails** if overlays did not apply.
 
-## What is intentionally not provided
+Agents using **Read/grep** never see real secrets. **Compose** invoked from `/workspace` reads the stub `.env`, which is usually what you want for agents; use the host terminal for `compose up` when services need `${SECRET_KEY}` and provider keys from `.env`.
 
-- **No Docker socket** — agents must not run `docker compose up` for `webserver` here (that would read host `.env`). Run Compose on the host only.
-- **No GPU / voice-service** — use host Compose for the full stack.
+## Docker
+
+- **Host socket** via [docker-outside-of-docker](https://github.com/devcontainers/features/tree/main/src/docker-outside-of-docker) (`enableNonRootDocker` so user `agent` can run `docker`).
+- **`tests` service** — does not depend on workspace `.env` (keys are set in `docker-compose.yml`).
+- **GPU / voice-service** — still runs on the host daemon; no extra GPU wiring in the devcontainer.
 
 ## Layout
 

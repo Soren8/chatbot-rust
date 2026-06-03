@@ -35,6 +35,13 @@
   "remoteEnv": {
     "PATH": "/home/agent/.grok/bin:${containerEnv:PATH}"
   },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "version": "latest",
+      "enableNonRootDocker": "true",
+      "moby": false
+    }
+  },
   "runArgs": ["--init"],
-  "postStartCommand": "echo 'Run production compose on the HOST; this container is for coding agents only.'"
+  "postStartCommand": "echo 'Docker socket available: docker compose build / run tests from /workspace.'"
 }

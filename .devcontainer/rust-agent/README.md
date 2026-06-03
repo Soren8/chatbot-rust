@@ -52,6 +52,12 @@ cd /workspace
 
 Mount overlays apply to **all** tools in the container, not only Grok.
 
+## Docker Compose (host socket)
+
+`devcontainer.base.json` includes the **docker-outside-of-docker** feature so `agent` can run `docker compose build` and test containers. Copy that `features` block into each repo’s `devcontainer.json`.
+
+Compose run from `/workspace` uses the masked `.env` stub unless you change mounts — fine for CI-style tests; use the host for `compose up` with production secrets.
+
 ## Optional: skip Grok install
 
 In `devcontainer.json`:
