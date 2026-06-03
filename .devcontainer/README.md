@@ -1,28 +1,42 @@
 # Agent-safe dev container
 
-Coding agents (Grok Build, Cursor, Claude Code, etc.) run in a container where **host secret files are masked** by bind-mount overlays. Docker Compose uses the **host** Docker daemon (socket mounted) so agents can build images and run the test container without leaving the dev environment.
+Host secret files are masked by bind-mount overlays. Use **Docker only** via `agent-container.sh` (no npm devcontainers CLI).
 
-## Quick start
-
-1. Install [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) (Cursor includes this).
-2. **Reopen in Container** (Command Palette → `Dev Containers: Reopen in Container`).
-3. Inside the container:
+## Grok Build (recommended)
 
 ```bash
-grok --sandbox chatbot-agent
-# or rely on GROK_SANDBOX from devcontainer.json:
-grok
+# From repo root — first time builds the image and runs post-create (Rust, Grok CLI)
+.devcontainer/agent-container.sh up
 
-# Build and integration tests (same as AGENTS.md)
-docker compose --progress plain build
-docker compose run --rm tests cargo test
+# Grok TUI (authenticate on first launch)
+.devcontainer/agent-container.sh grok
+
+# Interactive shell
+.devcontainer/agent-container.sh shell
+
+# Tests
+.devcontainer/agent-container.sh exec docker compose run --rm tests cargo test
+
+# Stop
+.devcontainer/agent-container.sh down
 ```
 
-4. **Full stack with live API keys** (host `.env` / `.config.yml`): run on the host if `compose up` from the devcontainer does not see your secrets (workspace `.env` is a stub here):
+Optional alias in `~/.bashrc`:
+
+```bash
+alias agent-dev='/home/malakar/github/chatbot-rust/.devcontainer/agent-container.sh'
+# then: agent-dev up && agent-dev grok
+```
+
+**Full stack with host `.env`:** on the host (not in the agent container):
 
 ```bash
 docker compose --progress plain up --build -d
 ```
+
+## Cursor / VS Code (optional)
+
+Command Palette → **Dev Containers: Reopen in Container** uses the same `devcontainer.json` definition.
 
 ## What is hidden inside the container
 

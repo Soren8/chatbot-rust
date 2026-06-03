@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     curl \
+    docker-compose-plugin \
+    docker.io \
     git \
     libssl-dev \
     pkg-config \
