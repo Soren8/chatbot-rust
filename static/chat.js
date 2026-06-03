@@ -24,6 +24,7 @@ try {
         userTier: (cfg && cfg.userTier) || 'free',
         availableModels: (cfg && cfg.availableModels) || [],
         loggedIn: !!(cfg && cfg.loggedIn),
+        username: (cfg && cfg.username) || null,
         saveThoughts: cfg && cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
         sendThoughts: cfg && cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
         renderMarkdown: cfg && cfg.renderMarkdown !== undefined ? cfg.renderMarkdown : true,
@@ -177,6 +178,20 @@ function withCsrf(headers) {
   return result;
 }
 
+async function withCsrfAsync(headers) {
+  var result = headers ? Object.assign({}, headers) : {};
+  if (window.CSRF_TOKEN) {
+    result['X-CSRF-Token'] = window.CSRF_TOKEN;
+  }
+  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
+    var encKey = await window.EncKey.getKeyForRequest();
+    if (encKey) {
+      result['X-Enc-Key'] = encKey;
+    }
+  }
+  return result;
+}
+
 function preloadEncryptionKey() {
   if (!window.APP_DATA || !window.APP_DATA.loggedIn || !window.EncKey) {
     return Promise.resolve(null);
@@ -187,8 +202,37 @@ function preloadEncryptionKey() {
   });
 }
 
-function isEncryptionKeyRequiredResponse(response) {
-  return response.status === 401;
+async function response401Kind(response) {
+  if (response.status !== 401) {
+    return null;
+  }
+  var body = {};
+  try {
+    body = await response.clone().json();
+  } catch (_) {
+    return 'session';
+  }
+  var msg = (body.error || body.message || '').toString();
+  if (/encryption key|unlock|invalid encryption key/i.test(msg)) {
+    return 'enc_key';
+  }
+  return 'session';
+}
+
+async function handle401OrRetry(response, retryFn) {
+  var kind = await response401Kind(response);
+  if (kind === 'enc_key') {
+    var unlocked = await ensureEncryptionKeyUnlocked();
+    if (unlocked && retryFn) {
+      return retryFn();
+    }
+    throw new Error('Encryption key required. Please unlock.');
+  }
+  if (response.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Session expired');
+  }
+  return response;
 }
 
 async function ensureEncryptionKeyUnlocked() {
@@ -199,28 +243,35 @@ async function ensureEncryptionKeyUnlocked() {
   if (existing) {
     return existing;
   }
-  var username = window.APP_DATA.username;
-  if (!username) {
-    return null;
+  return window.EncKey.getKeyForRequest();
+}
+
+async function waitForEncryptionKey() {
+  var key = await preloadEncryptionKey();
+  if (key) {
+    return key;
   }
-  return window.EncKey.promptUnlock(username);
+  throw new Error('Encryption key unavailable. Sign out and log in again.');
 }
 
 async function fetchWithEncKey(input, init, retryOnUnlock) {
   var options = init ? Object.assign({}, init) : {};
-  options.headers = withCsrf(options.headers || {});
+  options.headers = await withCsrfAsync(options.headers || {});
   var response = await originalFetch(input, options);
   if (
     retryOnUnlock !== false &&
-    isEncryptionKeyRequiredResponse(response) &&
+    response.status === 401 &&
     window.APP_DATA &&
     window.APP_DATA.loggedIn &&
     window.EncKey
   ) {
-    var unlocked = await ensureEncryptionKeyUnlocked();
-    if (unlocked) {
-      options.headers = withCsrf(options.headers || {});
-      return originalFetch(input, options);
+    var kind = await response401Kind(response);
+    if (kind === 'enc_key') {
+      var unlocked = await ensureEncryptionKeyUnlocked();
+      if (unlocked) {
+        options.headers = await withCsrfAsync(options.headers || {});
+        return originalFetch(input, options);
+      }
     }
   }
   return response;
@@ -228,22 +279,12 @@ async function fetchWithEncKey(input, init, retryOnUnlock) {
 
 // Settings panel behavior (collapse on small screens)
 $(function() {
-  preloadEncryptionKey();
   if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
     var $deviceLock = $('#enable-device-lock');
-    var $unlockBtn = $('#unlock-encryption-key');
     var $status = $('#device-lock-status');
     if (window.EncKey.supportsWebAuthnPrf && window.EncKey.supportsWebAuthnPrf()) {
       $deviceLock.show();
     }
-    preloadEncryptionKey().then(function(key) {
-      if (!key) {
-        $unlockBtn.show();
-        $status.text('Encryption key locked on this device.');
-      } else {
-        $status.text('Encryption key ready.');
-      }
-    });
     $deviceLock.on('click', function() {
       var name = window.APP_DATA.username || 'chatbot-user';
       window.EncKey.registerWebAuthnDeviceLock(name)
@@ -253,14 +294,6 @@ $(function() {
         .catch(function(err) {
           alert('Could not enable device lock: ' + (err && err.message ? err.message : err));
         });
-    });
-    $unlockBtn.on('click', function() {
-      ensureEncryptionKeyUnlocked().then(function(key) {
-        if (key) {
-          $unlockBtn.hide();
-          $status.text('Encryption key ready.');
-        }
-      });
     });
   }
   try {
@@ -1261,8 +1294,37 @@ $(document).ready(function() {
     });
   });
 
-  // Load sets for logged-in users
+  // Load sets for logged-in users (wait for encryption key from login storage first)
   if (window.APP_DATA.loggedIn) {
+    var $encGate = $('#enc-key-gate');
+    if ($encGate.length) {
+      $encGate.removeClass('d-none');
+    }
+    waitForEncryptionKey()
+      .then(function() {
+        if ($encGate.length) {
+          $encGate.addClass('d-none');
+        }
+        var $status = $('#device-lock-status');
+        if ($status.length) {
+          $status.text('Encryption key ready.');
+        }
+        loadSets();
+      })
+      .catch(function(err) {
+        console.error('encryption key unavailable on chat load', err);
+        if ($encGate.length) {
+          $encGate.find('.enc-key-gate-message').text(
+            err && err.message ? err.message : 'Encryption key unavailable.'
+          );
+        }
+        appendMessage(
+          '<strong>Error:</strong> ' + escapeHTML(err && err.message ? err.message : 'Encryption key unavailable.') +
+          ' <a href="/logout">Sign out</a> and log in again.',
+          'error-message'
+        );
+        throw err;
+      });
     function formatAiMessage(text) {
       if (!text) return '';
       
@@ -1317,9 +1379,24 @@ $(document).ready(function() {
     }
 
     function loadSets(shouldTriggerChange = true) {
-      return fetch('/get_sets', { headers: withCsrf() })
+      async function fetchSets() {
+        return fetch('/get_sets', { headers: await withCsrfAsync() });
+      }
+      return fetchSets()
+        .then(function(r) {
+          if (r.status === 401) {
+            return handle401OrRetry(r, fetchSets);
+          }
+          if (!r.ok) {
+            throw new Error('Failed to load sets');
+          }
+          return r;
+        })
         .then(r => r.json())
         .then(data => {
+          if (!Array.isArray(data)) {
+            throw new Error('Unexpected sets response');
+          }
           const $selector = $('#set-selector');
           $selector.empty();
           let setExists = false;
@@ -1341,21 +1418,43 @@ $(document).ready(function() {
           if (shouldTriggerChange) {
             $selector.trigger('change');
           }
+        })
+        .catch(function(error) {
+          console.error('Failed to load sets:', error);
+          appendMessage(
+            '<strong>Error:</strong> Could not load saved sets: ' + escapeHTML(error.message || String(error)) +
+            ' <a href="/logout">Sign out</a> and log in again if this persists.',
+            'error-message'
+          );
         });
     }
+
+    window.loadChatSets = loadSets;
 
     $('#set-selector').on('change', function() {
       const setName = $(this).val();
       savePreferences();
-      fetch('/load_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
+      function fetchSet() {
+        return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
+          return fetch('/load_set', {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ set_name: setName })
+          });
+        });
+      }
+      fetchSet()
         .then(async r => {
-          if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+          if (r.status === 401) {
+            return handle401OrRetry(r, fetchSet);
+          }
           if (!r.ok) {
             try { const err = await r.json(); throw new Error(err && (err.error || err.message) || 'Failed to load set'); }
             catch (_) { throw new Error('Failed to load set'); }
           }
-          return r.json();
+          return r;
         })
+        .then(r => r.json())
         .then(data => {
           $('#user-system-prompt').val(data.system_prompt || '');
           $('#user-memory').val(data.memory || '');
@@ -1373,8 +1472,6 @@ $(document).ready(function() {
         })
         .catch(error => { appendMessage('<strong>Error:</strong> Failed to load set: ' + escapeHTML(error.message), 'error-message'); });
       });
-    // Populate sets after binding change handler so initial trigger loads data
-    loadSets();
 
     $('#new-set').on('click', function() {
       const setName = prompt('Enter name for new set:');

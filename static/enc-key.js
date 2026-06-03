@@ -66,16 +66,34 @@
     });
   }
 
-  async function ensureWrapKey() {
-    const existing = await idbGet(WRAP_KEY_ID);
-    if (existing) {
-      return existing;
-    }
-    const wrapKey = await crypto.subtle.generateKey(
+  async function generateWrapKey() {
+    return crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },
       false,
-      ['wrapKey', 'unwrapKey']
+      ['encrypt', 'decrypt']
     );
+  }
+
+  async function wrapKeyCanEncrypt(wrapKey) {
+    try {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrapKey, new Uint8Array([0]));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function ensureWrapKey() {
+    let existing = await idbGet(WRAP_KEY_ID);
+    if (existing && (await wrapKeyCanEncrypt(existing))) {
+      return existing;
+    }
+    if (existing) {
+      await idbDelete(WRAP_KEY_ID);
+      await idbDelete(WRAPPED_KEY_ID);
+    }
+    const wrapKey = await generateWrapKey();
     await idbSet(WRAP_KEY_ID, wrapKey);
     return wrapKey;
   }
@@ -97,35 +115,18 @@
     return bytes;
   }
 
-  async function importRawAesKey(rawKeyB64) {
+  async function wrapDataKey(rawKeyB64, aesKey) {
     const raw = decodeBase64(rawKeyB64);
-    return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, false, [
-      'wrapKey',
-      'unwrapKey',
-    ]);
-  }
-
-  async function wrapDataKey(rawKeyB64, wrapKey) {
-    const dataKey = await importRawAesKey(rawKeyB64);
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const wrapped = await crypto.subtle.wrapKey('raw', dataKey, wrapKey, { name: 'AES-GCM', iv });
-    return { iv: Array.from(iv), wrapped: Array.from(new Uint8Array(wrapped)) };
+    const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, raw);
+    return { iv: Array.from(iv), wrapped: Array.from(new Uint8Array(encrypted)) };
   }
 
-  async function unwrapDataKey(record, wrapKey) {
+  async function unwrapDataKey(record, aesKey) {
     const iv = new Uint8Array(record.iv);
-    const wrapped = new Uint8Array(record.wrapped);
-    const raw = await crypto.subtle.unwrapKey(
-      'raw',
-      wrapped,
-      wrapKey,
-      { name: 'AES-GCM', iv },
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt']
-    );
-    const exported = await crypto.subtle.exportKey('raw', raw);
-    return encodeBase64(new Uint8Array(exported));
+    const ciphertext = new Uint8Array(record.wrapped);
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
+    return encodeBase64(new Uint8Array(plain));
   }
 
   async function deriveKeyFromPassword(password, saltB64) {
@@ -175,6 +176,12 @@
     cachedKey = rawKeyB64;
   }
 
+  async function verifyStoredKey(expectedB64) {
+    cachedKey = null;
+    const loaded = await loadWrappedKey();
+    return loaded === expectedB64;
+  }
+
   async function loadWrappedKey() {
     if (cachedKey) {
       return cachedKey;
@@ -201,14 +208,21 @@
     }
     const record = await idbGet(WRAPPED_KEY_ID);
     if (!record) {
+      console.debug('enc-key: no wrapped key in IndexedDB');
       return null;
     }
     const wrapKey = await idbGet(WRAP_KEY_ID);
     if (!wrapKey) {
+      console.debug('enc-key: wrapping key missing from IndexedDB');
       return null;
     }
-    cachedKey = await unwrapDataKey(record, wrapKey);
-    return cachedKey;
+    try {
+      cachedKey = await unwrapDataKey(record, wrapKey);
+      return cachedKey;
+    } catch (err) {
+      console.error('enc-key: failed to unwrap stored key', err);
+      return null;
+    }
   }
 
   async function clearStoredKey() {
@@ -297,7 +311,7 @@
       prfResults.first,
       { name: 'AES-GCM', length: 256 },
       false,
-      ['wrapKey', 'unwrapKey']
+      ['encrypt', 'decrypt']
     );
     const wrapped = await wrapDataKey(rawKeyB64, prfKey);
     await idbSet(WRAPPED_KEY_ID, wrapped);
@@ -346,7 +360,7 @@
       prfResults.first,
       { name: 'AES-GCM', length: 256 },
       false,
-      ['wrapKey', 'unwrapKey']
+      ['encrypt', 'decrypt']
     );
     const record = await idbGet(WRAPPED_KEY_ID);
     if (!record) {
@@ -374,16 +388,9 @@
     cachedKey = null;
   }
 
-  async function promptUnlock(username) {
-    const password = global.prompt('Enter your password to unlock encrypted chats:');
-    if (!password) {
-      return null;
-    }
-    return unlockWithPassword(username, password);
-  }
-
   const EncKey = {
     storeFromLogin: storeWrappedKey,
+    verifyStoredKey,
     unlockWithPassword,
     unlockWithWebAuthn,
     registerWebAuthnDeviceLock,
@@ -391,7 +398,6 @@
     getKeyForRequestSync,
     lock,
     clearStoredKey,
-    promptUnlock,
     supportsWebAuthnPrf,
     isSecureContext,
     hasWebCrypto,
