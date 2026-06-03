@@ -11,13 +11,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     curl \
-    docker-compose-plugin \
     docker.io \
     git \
     libssl-dev \
     pkg-config \
     sudo \
     && rm -rf /var/lib/apt/lists/*
+
+# Compose v2 plugin (not in bookworm-slim apt); pin release + checksum from GitHub
+ARG COMPOSE_VERSION=2.32.4
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+      amd64) compose_arch=x86_64 ;; \
+      arm64) compose_arch=aarch64 ;; \
+      *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /usr/libexec/docker/cli-plugins; \
+    curl -fsSL \
+      "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${compose_arch}" \
+      -o /usr/libexec/docker/cli-plugins/docker-compose; \
+    curl -fsSL \
+      "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/checksums.txt" \
+      -o /tmp/compose-checksums.txt; \
+    expected="$(grep "docker-compose-linux-${compose_arch}" /tmp/compose-checksums.txt | awk '{print $1}')"; \
+    actual="$(sha256sum /usr/libexec/docker/cli-plugins/docker-compose | awk '{print $1}')"; \
+    test "${expected}" = "${actual}"; \
+    chmod +x /usr/libexec/docker/cli-plugins/docker-compose; \
+    docker compose version
 
 # Rust toolchain (same family as the project Dockerfile)
 ENV CARGO_HOME=/home/${USERNAME}/.cargo
