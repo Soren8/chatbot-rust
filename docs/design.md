@@ -33,7 +33,7 @@ This document captures the current architecture of the project and the potential
   - [x] Ensure password hashing uses a strong KDF with per-user salts.
   - [x] Provider metadata hygiene: the UI now receives only a sanitized model list (`provider_name`, `tier`), preventing accidental leakage of `api_key` or `base_url` values.
   - [x] Session isolation: anonymous users are assigned stable random guest IDs instead of the remote IP, eliminating cross-user memory leaks behind shared NAT gateways.
-  - [x] Encryption key handling: login derives a Fernet key per user, stores it in-memory with an idle timeout, and never keeps the raw password. All persistence helpers accept the derived key instead of the plaintext password.
+  - [x] Encryption key handling: login derives a Fernet key per user; the server stores only an HMAC key verifier (not the key itself). Clients send the key per request via `X-Enc-Key`, wrap it locally (IndexedDB / WebAuthn PRF / native keystore), and the server zeroizes it after each request. See [design-privacy.md](design-privacy.md#per-request-encryption-key-model).
   - [x] CSRF protection – every state-changing route validates a per-session token; the token is exposed to forms and Fetch calls, and the client attaches it automatically.
   - [x] Frontend sanitisation: set names rendered in the chat UI are escaped before insertion, closing stored-XSS vectors through crafted identifiers.
   - [x] CSP refinements: media sources now explicitly allow the `blob:` scheme used for streamed TTS playback while the rest of the policy remains locked down.
@@ -67,6 +67,9 @@ This document captures the current architecture of the project and the potential
   - [ ] Implement hybrid chat-history encryption:
         - [x] Derive a per-user data key from a user-supplied passphrase.
         - [x] Encrypt set names and metadata on disk to prevent leakage of conversation identifiers.
+        - [x] Per-request key transport: clients send `X-Enc-Key` on every authenticated data call; server validates against HMAC verifier and keeps ciphertext-only in-memory cache.
+        - [x] Tiered client key wrapping: IndexedDB non-extractable key (web default), WebAuthn PRF opt-in, Android Keystore on Capacitor.
+        - [ ] iOS Keychain plugin mirroring `NativeSecureKey` when the iOS Capacitor target is added.
         - [ ] Allow optional registration of multiple hardware authenticators
      (Touch ID, YubiKey, WebAuthn) for seamless unlock on trusted devices with fallback to the passphrase on new or unregistered devices.
 

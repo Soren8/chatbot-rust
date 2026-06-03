@@ -84,6 +84,7 @@ pub async fn handle_update_memory(
     let csrf_token = extract_csrf(&headers);
 
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
 
@@ -103,21 +104,33 @@ pub async fn handle_update_memory(
     }
 
     if let Some(username) = session.username.as_deref() {
-        let key = session
-            .encryption_key
+        if let Err(response) =
+            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        {
+            return build_service_response(response);
+        }
+        let key = encryption_key
             .as_ref()
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+            .expect("validated encryption key")
+            .as_bytes();
 
         persistence
             .store_memory(
                 username,
                 &set_name,
                 &memory_text,
-                EncryptionMode::Fernet(key.as_slice()),
+                EncryptionMode::Fernet(key),
             )
             .map_err(persistence_error_to_http)?;
 
-        session::update_session_memory(&session.session_id, &memory_text);
+        if let Err(response) = session::update_session_memory_for_request(
+            &session.session_id,
+            username,
+            &memory_text,
+            encryption_key.as_ref().expect("validated encryption key"),
+        ) {
+            return build_service_response(response);
+        }
 
         build_json_response(
             StatusCode::OK,
@@ -177,6 +190,7 @@ pub async fn handle_update_system_prompt(
     let csrf_token = extract_csrf(&headers);
 
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
 
@@ -199,21 +213,33 @@ pub async fn handle_update_system_prompt(
     }
 
     if let Some(username) = session.username.as_deref() {
-        let key = session
-            .encryption_key
+        if let Err(response) =
+            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        {
+            return build_service_response(response);
+        }
+        let key = encryption_key
             .as_ref()
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+            .expect("validated encryption key")
+            .as_bytes();
 
         persistence
             .store_system_prompt(
                 username,
                 &set_name,
                 &system_prompt,
-                EncryptionMode::Fernet(key.as_slice()),
+                EncryptionMode::Fernet(key),
             )
             .map_err(persistence_error_to_http)?;
 
-        session::update_session_system_prompt(&session.session_id, &system_prompt);
+        if let Err(response) = session::update_session_system_prompt_for_request(
+            &session.session_id,
+            username,
+            &system_prompt,
+            encryption_key.as_ref().expect("validated encryption key"),
+        ) {
+            return build_service_response(response);
+        }
 
         build_json_response(
             StatusCode::OK,
@@ -291,6 +317,7 @@ pub async fn handle_delete_message(
     let csrf_token = extract_csrf(&headers);
 
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
 
@@ -302,7 +329,18 @@ pub async fn handle_delete_message(
         )
     })?;
 
-    let mut history = session::session_history(&session.session_id);
+    let mut history = if let Some(username) = session.username.as_deref() {
+        match session::session_history_for_request(
+            &session.session_id,
+            Some(username),
+            encryption_key.as_ref(),
+        ) {
+            Ok(value) => value,
+            Err(response) => return build_service_response(response),
+        }
+    } else {
+        session::session_history(&session.session_id)
+    };
 
     if pair_index >= history.len() {
         return build_json_response(
@@ -321,25 +359,40 @@ pub async fn handle_delete_message(
 
     history.remove(pair_index);
 
-    session::update_session_history(&session.session_id, &history);
-
     if let Some(username) = session.username.as_deref() {
-        let key = session
-            .encryption_key
+        if let Err(response) = session::set_session_history_for_request(
+            &session.session_id,
+            Some(username),
+            history.clone(),
+            encryption_key.as_ref(),
+        ) {
+            return build_service_response(response);
+        }
+
+        let key = encryption_key
             .as_ref()
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+            .expect("validated encryption key")
+            .as_bytes();
 
         persistence
             .store_history(
                 username,
                 &set_name,
                 &history,
-                EncryptionMode::Fernet(key.as_slice()),
+                EncryptionMode::Fernet(key),
             )
             .map_err(persistence_error_to_http)?;
+    } else {
+        session::update_session_history(&session.session_id, &history);
     }
 
     build_json_response(StatusCode::OK, json!({"status": "success"}))
+}
+
+fn build_service_response(
+    response: session::ServiceResponse,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    crate::build_response(response).map_err(|(status, message)| (status, message))
 }
 
 fn ensure_post(request: &Request<Body>) -> Result<(), (StatusCode, String)> {

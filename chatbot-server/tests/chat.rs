@@ -353,6 +353,8 @@ async fn chat_stream_persists_history_for_logged_in_user() {
         "model_name": "default",
     });
 
+    let enc_key = common::derive_encryption_key_header(USERNAME, PASSWORD);
+
     let chat_response = app
         .clone()
         .oneshot(
@@ -361,6 +363,7 @@ async fn chat_stream_persists_history_for_logged_in_user() {
                 .uri("/chat")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::COOKIE, &home_cookie)
                 .body(Body::from(
                     serde_json::to_vec(&payload).expect("payload bytes"),

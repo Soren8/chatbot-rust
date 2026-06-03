@@ -35,6 +35,14 @@ pub fn extract_cookie(set_cookie: &str) -> String {
         .to_owned()
 }
 
+pub fn derive_encryption_key_header(username: &str, password: &str) -> String {
+    let store = UserStore::new().expect("initialise user store for test key");
+    let bytes = store
+        .derive_encryption_key(username, password)
+        .expect("derive encryption key for tests");
+    String::from_utf8(bytes).expect("encryption key should be valid utf8")
+}
+
 pub struct TestWorkspace {
     temp_dir: TempDir,
     original_cwd: PathBuf,

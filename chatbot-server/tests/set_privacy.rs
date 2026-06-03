@@ -129,6 +129,8 @@ async fn set_names_leak_repro() {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
         .expect("csrf token meta");
 
+    let enc_key = common::derive_encryption_key_header(username, password);
+
     let secret_set_name = "Top Secret Plans";
     let create_response = app
         .clone()
@@ -139,6 +141,7 @@ async fn set_names_leak_repro() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": secret_set_name})).expect("create payload"),
                 ))
@@ -169,6 +172,7 @@ async fn set_names_leak_repro() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::from(
                     serde_json::to_vec(&json!({
                         "message": "Hello",

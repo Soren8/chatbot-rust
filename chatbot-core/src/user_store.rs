@@ -9,6 +9,7 @@ use std::{
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bcrypt::verify;
+use hmac::{Hmac, Mac};
 use once_cell::sync::Lazy;
 use pbkdf2::pbkdf2_hmac;
 use rand::{rngs::OsRng, RngCore};
@@ -17,10 +18,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 
+use crate::config;
+
 pub const DEFAULT_TIER: &str = "free";
 const SALT_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const PBKDF2_ITERATIONS: u32 = 100_000;
+const KEY_VERIFIER_LABEL: &[u8] = b"chatbot-enc-key-v1";
 
 pub static USERNAME_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").unwrap());
@@ -69,6 +73,7 @@ pub struct UserStore {
     base_dir: PathBuf,
     users_file: PathBuf,
     salts_dir: PathBuf,
+    key_verifiers_dir: PathBuf,
 }
 
 pub enum CreateOutcome {
@@ -127,10 +132,16 @@ impl UserStore {
             fs::create_dir_all(&salts_dir)?;
         }
 
+        let key_verifiers_dir = base.join("key_verifiers");
+        if !key_verifiers_dir.exists() {
+            fs::create_dir_all(&key_verifiers_dir)?;
+        }
+
         Ok(Self {
             base_dir: base,
             users_file,
             salts_dir,
+            key_verifiers_dir,
         })
     }
 
@@ -188,6 +199,62 @@ impl UserStore {
         pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
         let encoded = STANDARD.encode(derived);
         Ok(encoded.into_bytes())
+    }
+
+    fn key_verifier_path(&self, normalised_username: &str) -> PathBuf {
+        self.key_verifiers_dir
+            .join(format!("{normalised_username}_kv"))
+    }
+
+    fn compute_key_verifier(key: &[u8]) -> [u8; 32] {
+        type HmacSha256 = Hmac<Sha256>;
+        let secret = config::app_config().secret_key.clone();
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts arbitrary key lengths");
+        mac.update(KEY_VERIFIER_LABEL);
+        mac.update(key);
+        mac.finalize().into_bytes().into()
+    }
+
+    pub fn ensure_key_verifier(&self, username: &str, key: &[u8]) -> Result<(), UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let path = self.key_verifier_path(&normalised);
+        let expected = Self::compute_key_verifier(key);
+
+        if path.exists() {
+            let mut stored = [0u8; 32];
+            let mut file = File::open(&path)?;
+            file.read_exact(&mut stored)?;
+            if !constant_time_eq(&stored, &expected) {
+                return Err(UserStoreError::Crypto("Encryption key mismatch".into()));
+            }
+            return Ok(());
+        }
+
+        let mut file = File::create(&path)?;
+        file.write_all(&expected)?;
+        Ok(())
+    }
+
+    pub fn verify_encryption_key(&self, username: &str, key: &[u8]) -> Result<bool, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let path = self.key_verifier_path(&normalised);
+        if !path.exists() {
+            return Ok(false);
+        }
+
+        let mut stored = [0u8; 32];
+        let mut file = File::open(&path)?;
+        file.read_exact(&mut stored)?;
+        Ok(constant_time_eq(
+            &stored,
+            &Self::compute_key_verifier(key),
+        ))
+    }
+
+    pub fn has_key_verifier(&self, username: &str) -> Result<bool, UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        Ok(self.key_verifier_path(&normalised).exists())
     }
 
     pub fn get_client_salt(&self, username: &str) -> Result<String, UserStoreError> {
@@ -308,4 +375,15 @@ impl UserStore {
         file.write_all(json.as_bytes())?;
         Ok(())
     }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (l, r) in left.iter().zip(right.iter()) {
+        diff |= l ^ r;
+    }
+    diff == 0
 }

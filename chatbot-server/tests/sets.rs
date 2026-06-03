@@ -131,6 +131,8 @@ async fn set_management_flow() {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
         .expect("csrf token meta");
 
+    let enc_key = common::derive_encryption_key_header(username, password);
+
     let get_sets_response = app
         .clone()
         .oneshot(
@@ -139,6 +141,7 @@ async fn set_management_flow() {
                 .uri("/get_sets")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -169,6 +172,7 @@ async fn set_management_flow() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": new_set_name})).expect("create payload"),
                 ))
@@ -195,6 +199,7 @@ async fn set_management_flow() {
                 .uri("/get_sets")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -227,6 +232,7 @@ async fn set_management_flow() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": new_set_name})).expect("load payload"),
                 ))
@@ -263,6 +269,7 @@ async fn set_management_flow() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": new_set_name})).expect("delete payload"),
                 ))
@@ -297,6 +304,7 @@ async fn set_management_flow() {
                 .uri("/get_sets")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .body(Body::empty())
                 .unwrap(),
         )

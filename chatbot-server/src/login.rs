@@ -138,8 +138,11 @@ pub async fn handle_login_post(
             .map_err(map_store_error)?
     };
 
-    let finalize = session::finalize_login(cookie_header.as_deref(), &username, &encryption_key)
-        .map_err(|err| {
+    store
+        .ensure_key_verifier(&username, &encryption_key)
+        .map_err(map_store_error)?;
+
+    let finalize = session::finalize_login(cookie_header.as_deref(), &username).map_err(|err| {
             error!(?err, "failed to finalize login");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

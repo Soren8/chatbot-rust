@@ -132,6 +132,8 @@ async fn edit_message_via_regenerate_endpoint() {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
         .expect("csrf token in page");
 
+    let enc_key = common::derive_encryption_key_header(USERNAME, PASSWORD);
+
     // 1. Initial Chat
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
@@ -152,6 +154,7 @@ async fn edit_message_via_regenerate_endpoint() {
                 .uri("/chat")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::COOKIE, &home_cookie)
                 .body(Body::from(serde_json::to_vec(&initial_payload).unwrap()))
                 .unwrap(),
@@ -182,6 +185,7 @@ async fn edit_message_via_regenerate_endpoint() {
                 .uri("/regenerate")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::COOKIE, &home_cookie)
                 .body(Body::from(serde_json::to_vec(&edit_payload).unwrap()))
                 .unwrap(),

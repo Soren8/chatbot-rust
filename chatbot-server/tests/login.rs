@@ -317,12 +317,11 @@ async fn session_context_reflects_logged_in_user() {
         session.session_id, username,
         "session id should track the username after login"
     );
-    let encryption_key = session
-        .encryption_key
-        .expect("encryption key present after login");
+
+    let store = UserStore::new().expect("user store");
     assert!(
-        !encryption_key.is_empty(),
-        "encryption key bytes should not be empty"
+        store.has_key_verifier(username).expect("check verifier"),
+        "login should register encryption key verifier"
     );
 }
 
@@ -419,9 +418,5 @@ async fn logout_clears_session_username() {
     assert!(
         session_after_logout.username.is_none(),
         "username should be cleared after logout"
-    );
-    assert!(
-        session_after_logout.encryption_key.is_none(),
-        "encryption key should be cleared after logout"
     );
 }

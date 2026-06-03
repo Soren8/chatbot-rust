@@ -16,6 +16,7 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         initialPlugins.add(NativeMicPlugin.class);
         initialPlugins.add(NativeVoiceTtsPlugin.class);
+        initialPlugins.add(NativeSecureKeyPlugin.class);
         initialPlugins.add(LoggerPlugin.class);
         super.onCreate(savedInstanceState);
     }

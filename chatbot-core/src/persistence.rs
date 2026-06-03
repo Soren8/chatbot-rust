@@ -187,10 +187,16 @@ impl DataPersistence {
         let contents = match encryption.as_ref() {
             Some(mode @ EncryptionMode::Fernet(_)) => match self.decrypt(&bytes, mode.borrow()) {
                 Ok(decrypted) => decrypted,
-                Err(_) => {
-                    is_plaintext = true;
-                    String::from_utf8_lossy(&bytes).into_owned()
+                Err(PersistenceError::DecryptionFailed) => {
+                    let lossy = String::from_utf8_lossy(&bytes);
+                    if serde_json::from_str::<HashMap<String, SetMetadata>>(&lossy).is_ok() {
+                        is_plaintext = true;
+                        lossy.into_owned()
+                    } else {
+                        return Err(PersistenceError::DecryptionFailed);
+                    }
                 }
+                Err(err) => return Err(err),
             },
             _ => {
                 is_plaintext = true;
@@ -354,11 +360,18 @@ impl DataPersistence {
         content: &str,
         encryption: EncryptionMode<'_>,
     ) -> Result<Vec<u8>, PersistenceError> {
+        Self::encrypt_bytes(content.as_bytes(), encryption)
+    }
+
+    pub fn encrypt_bytes(
+        content: &[u8],
+        encryption: EncryptionMode<'_>,
+    ) -> Result<Vec<u8>, PersistenceError> {
         match encryption {
-            EncryptionMode::Plaintext => Ok(content.as_bytes().to_vec()),
+            EncryptionMode::Plaintext => Ok(content.to_vec()),
             EncryptionMode::Fernet(key) => {
                 let fernet = Self::build_fernet(key)?;
-                Ok(fernet.encrypt(content.as_bytes()).into_bytes())
+                Ok(fernet.encrypt(content).into_bytes())
             }
         }
     }
@@ -368,15 +381,22 @@ impl DataPersistence {
         content: &[u8],
         encryption: EncryptionMode<'_>,
     ) -> Result<String, PersistenceError> {
+        let bytes = Self::decrypt_bytes(content, encryption)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    pub fn decrypt_bytes(
+        content: &[u8],
+        encryption: EncryptionMode<'_>,
+    ) -> Result<Vec<u8>, PersistenceError> {
         match encryption {
-            EncryptionMode::Plaintext => Ok(String::from_utf8_lossy(content).into_owned()),
+            EncryptionMode::Plaintext => Ok(content.to_vec()),
             EncryptionMode::Fernet(key) => {
                 let fernet = Self::build_fernet(key)?;
                 let token = std::str::from_utf8(content)?;
-                let decrypted = fernet
+                fernet
                     .decrypt(token)
-                    .map_err(|_| PersistenceError::DecryptionFailed)?;
-                Ok(String::from_utf8_lossy(&decrypted).into_owned())
+                    .map_err(|_| PersistenceError::DecryptionFailed)
             }
         }
     }

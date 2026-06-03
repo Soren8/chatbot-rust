@@ -86,6 +86,8 @@ pub async fn handle_regenerate(
         return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 
     let provider_config = match get_provider_config(if selected_model.is_empty() {
@@ -147,7 +149,12 @@ pub async fn handle_regenerate(
         send_thoughts,
     };
 
-    let prepare = session::regenerate_prepare(&session_context, &request_data, &provider_config);
+    let prepare = session::regenerate_prepare(
+        &session_context,
+        &request_data,
+        &provider_config,
+        encryption_key.as_ref(),
+    );
 
     if let Some(py_response) = prepare.error {
         return crate::build_response(py_response);
@@ -213,6 +220,7 @@ pub async fn handle_regenerate(
     let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
     let user_message = payload.message.clone();
+    let encryption_key_for_finalize = encryption_key.clone();
 
     let mut provider_stream = match provider_kind {
         ProviderKind::OpenAi(provider) => {
@@ -314,6 +322,7 @@ pub async fn handle_regenerate(
             &user_message,
             final_response,
             insertion_index,
+            encryption_key_for_finalize.as_ref(),
         ) {
             Ok(extra_chunks) => {
                 stream_lock.lock().unwrap().mark_released();
@@ -360,6 +369,7 @@ fn regenerate_finalize(
     user_message: &str,
     assistant_response: &str,
     insertion_index: Option<usize>,
+    encryption_key: Option<&chatbot_core::enc_key::EncryptionKey>,
 ) -> Result<Vec<String>> {
     Ok(session::regenerate_finalize(
         session,
@@ -367,5 +377,6 @@ fn regenerate_finalize(
         user_message,
         assistant_response,
         insertion_index,
+        encryption_key,
     ))
 }

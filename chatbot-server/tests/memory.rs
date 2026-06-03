@@ -142,6 +142,8 @@ async fn memory_and_prompt_endpoints_round_trip() {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
         .expect("csrf token meta");
 
+    let enc_key = common::derive_encryption_key_header(username, password);
+
     let update_memory_response = app
         .clone()
         .oneshot(
@@ -150,6 +152,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
                 .uri("/update_memory")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
@@ -182,6 +185,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
                 .uri("/update_system_prompt")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
@@ -212,6 +216,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
                 .uri("/chat")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&chat_payload).expect("chat payload bytes"),
@@ -235,6 +240,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
                 .uri("/load_set")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
@@ -267,6 +273,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
                 .uri("/delete_message")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
@@ -299,6 +306,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
                 .uri("/load_set")
                 .header(header::COOKIE, &session_cookie)
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),

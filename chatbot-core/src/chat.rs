@@ -274,7 +274,6 @@ mod tests {
                 search: false,
                 xai_search: true,
             },
-            encryption_key: None,
             test_chunks: None,
             send_thoughts: false,
         }

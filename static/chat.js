@@ -130,8 +130,16 @@ window.fetch = function(input, init) {
       }
       if (typeof url === 'string' && (
         url.includes('/chat') ||
+        url.includes('/regenerate') ||
+        url.includes('/get_sets') ||
+        url.includes('/load_set') ||
+        url.includes('/create_set') ||
+        url.includes('/delete_set') ||
+        url.includes('/rename_set') ||
         url.includes('/update_memory') ||
-        url.includes('/update_system_prompt')
+        url.includes('/update_system_prompt') ||
+        url.includes('/delete_message') ||
+        url.includes('/reset_chat')
       )) {
         return response;
       }
@@ -160,11 +168,101 @@ function withCsrf(headers) {
   if (window.CSRF_TOKEN) {
     result['X-CSRF-Token'] = window.CSRF_TOKEN;
   }
+  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
+    var encKey = window.EncKey.getKeyForRequestSync();
+    if (encKey) {
+      result['X-Enc-Key'] = encKey;
+    }
+  }
   return result;
+}
+
+function preloadEncryptionKey() {
+  if (!window.APP_DATA || !window.APP_DATA.loggedIn || !window.EncKey) {
+    return Promise.resolve(null);
+  }
+  return window.EncKey.getKeyForRequest().catch(function(err) {
+    console.debug('encryption key preload failed', err);
+    return null;
+  });
+}
+
+function isEncryptionKeyRequiredResponse(response) {
+  return response.status === 401;
+}
+
+async function ensureEncryptionKeyUnlocked() {
+  if (!window.APP_DATA || !window.APP_DATA.loggedIn || !window.EncKey) {
+    return null;
+  }
+  var existing = window.EncKey.getKeyForRequestSync();
+  if (existing) {
+    return existing;
+  }
+  var username = window.APP_DATA.username;
+  if (!username) {
+    return null;
+  }
+  return window.EncKey.promptUnlock(username);
+}
+
+async function fetchWithEncKey(input, init, retryOnUnlock) {
+  var options = init ? Object.assign({}, init) : {};
+  options.headers = withCsrf(options.headers || {});
+  var response = await originalFetch(input, options);
+  if (
+    retryOnUnlock !== false &&
+    isEncryptionKeyRequiredResponse(response) &&
+    window.APP_DATA &&
+    window.APP_DATA.loggedIn &&
+    window.EncKey
+  ) {
+    var unlocked = await ensureEncryptionKeyUnlocked();
+    if (unlocked) {
+      options.headers = withCsrf(options.headers || {});
+      return originalFetch(input, options);
+    }
+  }
+  return response;
 }
 
 // Settings panel behavior (collapse on small screens)
 $(function() {
+  preloadEncryptionKey();
+  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
+    var $deviceLock = $('#enable-device-lock');
+    var $unlockBtn = $('#unlock-encryption-key');
+    var $status = $('#device-lock-status');
+    if (window.EncKey.supportsWebAuthnPrf && window.EncKey.supportsWebAuthnPrf()) {
+      $deviceLock.show();
+    }
+    preloadEncryptionKey().then(function(key) {
+      if (!key) {
+        $unlockBtn.show();
+        $status.text('Encryption key locked on this device.');
+      } else {
+        $status.text('Encryption key ready.');
+      }
+    });
+    $deviceLock.on('click', function() {
+      var name = window.APP_DATA.username || 'chatbot-user';
+      window.EncKey.registerWebAuthnDeviceLock(name)
+        .then(function() {
+          $status.text('Device lock enabled. Biometric unlock required after reload.');
+        })
+        .catch(function(err) {
+          alert('Could not enable device lock: ' + (err && err.message ? err.message : err));
+        });
+    });
+    $unlockBtn.on('click', function() {
+      ensureEncryptionKeyUnlocked().then(function(key) {
+        if (key) {
+          $unlockBtn.hide();
+          $status.text('Encryption key ready.');
+        }
+      });
+    });
+  }
   try {
     var $collapseEl = $('#settingsCollapse');
     var collapseEl = $collapseEl[0];

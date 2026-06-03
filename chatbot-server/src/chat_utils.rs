@@ -2,8 +2,15 @@ use axum::{
     extract::ConnectInfo,
     http::{Extensions, HeaderMap},
 };
-use chatbot_core::session;
+use chatbot_core::{enc_key::EncryptionKey, session};
 use std::net::SocketAddr;
+
+pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
+    headers
+        .get("X-Enc-Key")
+        .and_then(|value| value.to_str().ok())
+        .and_then(EncryptionKey::from_header_value)
+}
 
 pub fn get_ip(headers: &HeaderMap, extensions: &Extensions) -> String {
     headers

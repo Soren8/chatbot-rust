@@ -247,6 +247,7 @@ dependencies = [
  "dashmap",
  "dotenvy",
  "fernet",
+ "hmac",
  "once_cell",
  "pbkdf2",
  "rand 0.8.5",
@@ -258,6 +259,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

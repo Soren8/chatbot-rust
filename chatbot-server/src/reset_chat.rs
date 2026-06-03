@@ -62,6 +62,8 @@ pub async fn handle_reset_chat(
         return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+
     let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to resolve session context for reset_chat");
         (
@@ -85,13 +87,16 @@ pub async fn handle_reset_chat(
         },
     )?;
 
-    session::update_session_history(&session_context.session_id, &[]);
-
     if let Some(username) = session_context.username.as_deref() {
-        let key = session_context
-            .encryption_key
+        if let Err(response) =
+            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        {
+            return build_service_response(response);
+        }
+        let key = encryption_key
             .as_ref()
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "relogin required".to_string()))?;
+            .expect("validated encryption key")
+            .as_bytes();
 
         let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
 
@@ -100,9 +105,20 @@ pub async fn handle_reset_chat(
                 username,
                 &set_name,
                 &[],
-                EncryptionMode::Fernet(key.as_slice()),
+                EncryptionMode::Fernet(key),
             )
             .map_err(persistence_error_to_http)?;
+
+        if let Err(response) = session::set_session_history_for_request(
+            &session_context.session_id,
+            Some(username),
+            Vec::new(),
+            encryption_key.as_ref(),
+        ) {
+            return build_service_response(response);
+        }
+    } else {
+        session::update_session_history(&session_context.session_id, &[]);
     }
 
     build_json_response(
@@ -130,6 +146,12 @@ fn build_json_response(
                 "response build error".to_string(),
             )
         })
+}
+
+fn build_service_response(
+    response: session::ServiceResponse,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    crate::build_response(response).map_err(|(status, message)| (status, message))
 }
 
 fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {

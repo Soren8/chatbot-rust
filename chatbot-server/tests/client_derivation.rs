@@ -152,8 +152,14 @@ async fn login_with_storage_key_uses_provided_key() {
     let login_cookie = post_response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_owned();
     let cookie_header = common::extract_cookie(&login_cookie);
 
-    // 3. Verify session has the provided key
+    let store = UserStore::new().expect("user store");
+    assert!(
+        store
+            .verify_encryption_key(username, fake_storage_key.as_bytes())
+            .expect("verify key"),
+        "login should register provided storage key verifier"
+    );
+
     let session = session::session_context(Some(&cookie_header)).expect("session context");
-    let stored_key_bytes = session.encryption_key.expect("encryption key present");
-    assert_eq!(std::str::from_utf8(&stored_key_bytes).unwrap(), fake_storage_key);
+    assert_eq!(session.username.as_deref(), Some(username));
 }

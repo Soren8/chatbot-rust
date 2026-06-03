@@ -316,6 +316,8 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
         .expect("csrf token in page");
 
+    let enc_key = common::derive_encryption_key_header(USERNAME, PASSWORD);
+
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
         serde_json::to_string(&vec!["initial chunk".to_string()]).expect("chunk json"),
@@ -336,6 +338,7 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
                 .uri("/chat")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::COOKIE, &home_cookie)
                 .body(Body::from(
                     serde_json::to_vec(&initial_payload).expect("payload bytes"),
@@ -371,6 +374,7 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
                 .uri("/regenerate")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::COOKIE, &home_cookie)
                 .body(Body::from(
                     serde_json::to_vec(&regen_payload).expect("payload bytes"),
@@ -499,6 +503,8 @@ async fn regenerate_updates_system_prompt_in_history() {
     let home_text = std::str::from_utf8(&home_body).unwrap();
     let csrf_token = CSRF_META_RE.captures(home_text).unwrap().get(1).unwrap().as_str().to_owned();
 
+    let enc_key = common::derive_encryption_key_header(USERNAME, PASSWORD);
+
     let initial_payload = json!({
         "message": "Hi",
         "system_prompt": "Old System Prompt",
@@ -514,6 +520,7 @@ async fn regenerate_updates_system_prompt_in_history() {
                 .uri("/chat")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::COOKIE, &auth_cookie)
                 .body(Body::from(serde_json::to_vec(&initial_payload).unwrap()))
                 .unwrap(),
@@ -543,6 +550,7 @@ async fn regenerate_updates_system_prompt_in_history() {
                 .uri("/regenerate")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
                 .header(header::COOKIE, &auth_cookie)
                 .body(Body::from(serde_json::to_vec(&regen_payload).unwrap()))
                 .unwrap(),

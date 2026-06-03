@@ -11,12 +11,21 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 use tracing::{debug, error, warn};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedSetPayload {
+    memory: String,
+    system_prompt: String,
+    history: Vec<(String, String)>,
+}
+
 use crate::{
     config::{self, ProviderConfig},
+    enc_key::EncryptionKey,
     persistence::{DataPersistence, EncryptionMode, PersistenceError},
     user_store::{normalise_username, UserStore, UserStoreError, DEFAULT_TIER},
 };
@@ -32,7 +41,6 @@ pub struct ServiceResponse {
 pub struct SessionContext {
     pub session_id: String,
     pub username: Option<String>,
-    pub encryption_key: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,7 +80,6 @@ pub struct ChatContext {
     pub encrypted: bool,
     pub model_name: String,
     pub provider: ProviderConfig,
-    pub encryption_key: Option<Vec<u8>>,
     pub test_chunks: Option<Vec<String>>,
     pub send_thoughts: bool,
 }
@@ -118,7 +125,6 @@ struct HttpSessionRecord {
     guest_id: String,
     username: Option<String>,
     csrf_token: String,
-    encryption_key: Option<Vec<u8>>,
     last_used: Instant,
 }
 
@@ -156,7 +162,6 @@ impl HttpSessionStore {
                 guest_id,
                 username: None,
                 csrf_token,
-                encryption_key: None,
                 last_used: now,
             },
         )
@@ -315,29 +320,28 @@ pub fn session_context(cookie_header: Option<&str>) -> Result<SessionContext, Se
     Ok(SessionContext {
         session_id,
         username: snapshot.username.clone(),
-        encryption_key: snapshot.encryption_key.clone(),
     })
 }
 
 pub fn finalize_login(
     cookie_header: Option<&str>,
     username: &str,
-    encryption_key: &[u8],
 ) -> Result<LoginFinalize, SessionError> {
     let store = HttpSessionStore::global();
     let mut sessions = store.sessions.lock().unwrap();
     let now = Instant::now();
     store.clean_expired(&mut sessions, now);
 
-    let (cookie_value, _) = store.ensure_record(&mut sessions, cookie_header, now);
-    let record = sessions
-        .get_mut(&cookie_value)
-        .expect("session record should exist");
+    if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+        sessions.remove(&cookie_value);
+    }
+
+    let (cookie_value, mut record) = store.new_record(now);
     record.username = Some(username.to_string());
-    record.encryption_key = Some(encryption_key.to_vec());
     record.last_used = now;
-    let session_id = session_identifier(record);
+    let session_id = session_identifier(&record);
     let set_cookie = store.build_set_cookie(&cookie_value);
+    sessions.insert(cookie_value, record);
     drop(sessions);
 
     Ok(LoginFinalize {
@@ -369,12 +373,14 @@ pub fn logout_user(cookie_header: Option<&str>) -> Result<LogoutFinalize, Sessio
 }
 
 struct SessionData {
-    system_prompt: String,
     memory: String,
+    system_prompt: String,
     history: Vec<(String, String)>,
     encrypted: bool,
     initialised: bool,
     last_used: Instant,
+    cipher_blob: Option<Vec<u8>>,
+    requires_cipher: bool,
 }
 
 struct SessionEntry {
@@ -383,7 +389,7 @@ struct SessionEntry {
 }
 
 impl SessionEntry {
-    fn new(default_prompt: &str) -> Self {
+    fn new(default_prompt: &str, requires_cipher: bool) -> Self {
         Self {
             data: Mutex::new(SessionData {
                 system_prompt: default_prompt.to_owned(),
@@ -392,6 +398,8 @@ impl SessionEntry {
                 encrypted: false,
                 initialised: false,
                 last_used: Instant::now(),
+                cipher_blob: None,
+                requires_cipher,
             }),
             locked: AtomicBool::new(false),
         }
@@ -445,7 +453,8 @@ impl SessionStore {
             return Arc::clone(&existing);
         }
 
-        let entry = Arc::new(SessionEntry::new(&self.default_prompt));
+        let requires_cipher = !session_id.starts_with(SESSION_GUEST_PREFIX);
+        let entry = Arc::new(SessionEntry::new(&self.default_prompt, requires_cipher));
         match self.entries.entry(session_id.to_string()) {
             dashmap::mapref::entry::Entry::Occupied(existing) => Arc::clone(&existing.get()),
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
@@ -493,6 +502,93 @@ pub fn release_session_lock(session_id: &str) {
     }
 }
 
+fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), ServiceResponse> {
+    if !data.requires_cipher {
+        return Ok(());
+    }
+    let payload = CachedSetPayload {
+        memory: data.memory.clone(),
+        system_prompt: data.system_prompt.clone(),
+        history: data.history.clone(),
+    };
+    let json = serde_json::to_string(&payload)
+        .map_err(|_| server_error("internal error while accessing chat history"))?;
+    let encrypted = DataPersistence::encrypt_bytes(json.as_bytes(), EncryptionMode::Fernet(key))
+        .map_err(|err| map_persistence_error("failed to seal session cache", &err))?;
+    data.cipher_blob = Some(encrypted);
+    data.memory.clear();
+    data.system_prompt.clear();
+    data.history.clear();
+    Ok(())
+}
+
+fn unseal_session_data(
+    data: &mut SessionData,
+    key: &[u8],
+    default_prompt: &str,
+) -> Result<(), ServiceResponse> {
+    if !data.requires_cipher {
+        return Ok(());
+    }
+    let Some(blob) = data.cipher_blob.as_ref() else {
+        if data.system_prompt.is_empty() {
+            data.system_prompt = default_prompt.to_owned();
+        }
+        return Ok(());
+    };
+    let decrypted = DataPersistence::decrypt_bytes(blob, EncryptionMode::Fernet(key))
+        .map_err(|err| map_persistence_error("failed to decrypt session cache", &err))?;
+    let payload: CachedSetPayload = serde_json::from_slice(&decrypted)
+        .map_err(|_| server_error("internal error while accessing chat history"))?;
+    data.memory = payload.memory;
+    data.system_prompt = payload.system_prompt;
+    data.history = payload.history;
+    Ok(())
+}
+
+pub fn validate_encryption_key_for_user(
+    username: &str,
+    key: Option<&EncryptionKey>,
+) -> Result<(), ServiceResponse> {
+    let Some(key) = key else {
+        return Err(unauthorized("Encryption key required. Please unlock."));
+    };
+
+    let store =
+        UserStore::new().map_err(|err| map_store_error("failed to open user store", &err))?;
+
+    if store
+        .has_key_verifier(username)
+        .map_err(|err| map_store_error("failed to check key verifier", &err))?
+    {
+        if !store
+            .verify_encryption_key(username, key.as_bytes())
+            .map_err(|err| map_store_error("failed to verify encryption key", &err))?
+        {
+            return Err(unauthorized("Invalid encryption key."));
+        }
+    } else {
+        store
+            .ensure_key_verifier(username, key.as_bytes())
+            .map_err(|_| unauthorized("Invalid encryption key."))?;
+    }
+
+    Ok(())
+}
+
+pub fn require_encryption_key<'a>(
+    username: Option<&str>,
+    key: Option<&'a EncryptionKey>,
+) -> Result<Option<&'a EncryptionKey>, ServiceResponse> {
+    match username {
+        Some(name) => {
+            validate_encryption_key_for_user(name, key)?;
+            Ok(key)
+        }
+        None => Ok(None),
+    }
+}
+
 // Additional chat/regenerate logic will be implemented here.
 
 fn normalise_set_name(candidate: Option<&str>) -> Result<String, ServiceResponse> {
@@ -507,25 +603,30 @@ fn initialise_session_data(
     data: &mut SessionData,
     session: &SessionContext,
     set_name: &str,
+    key: Option<&EncryptionKey>,
 ) -> Result<(), ServiceResponse> {
     if let Some(username) = session.username.as_deref() {
+        require_encryption_key(Some(username), key)?;
+        let key_bytes = key.expect("validated encryption key").as_bytes();
         let username =
             normalise_username(username).map_err(|_| invalid_request("invalid session"))?;
         let persistence = DataPersistence::new()
             .map_err(|err| map_persistence_error("failed to open persistence store", &err))?;
 
-        let encryption_mode = session
-            .encryption_key
-            .as_ref()
-            .map(|key| EncryptionMode::Fernet(key.as_slice()));
-
         let loaded = persistence
-            .load_set(&username, set_name, encryption_mode)
+            .load_set(
+                &username,
+                set_name,
+                Some(EncryptionMode::Fernet(key_bytes)),
+            )
             .map_err(|err| match err {
                 PersistenceError::MissingEncryptionKey => {
-                    unauthorized("Session expired or invalid. Please log in again.")
+                    unauthorized("Encryption key required. Please unlock.")
                 }
                 PersistenceError::InvalidSetName => invalid_request("invalid set name"),
+                PersistenceError::DecryptionFailed => {
+                    unauthorized("Invalid encryption key.")
+                }
                 other => map_persistence_error("failed to load user set", &other),
             })?;
 
@@ -541,6 +642,7 @@ fn initialise_session_data(
         data.system_prompt = resolve_default_prompt();
         data.history.clear();
         data.encrypted = false;
+        data.cipher_blob = None;
     }
 
     data.initialised = true;
@@ -549,20 +651,11 @@ fn initialise_session_data(
 }
 
 fn persist_system_prompt(
-    session: &SessionContext,
+    username: &str,
     set_name: &str,
     prompt: &str,
+    key: &[u8],
 ) -> Result<(), ServiceResponse> {
-    let Some(username) = session.username.as_deref() else {
-        return Ok(());
-    };
-
-    let Some(key) = session.encryption_key.as_ref() else {
-        return Err(unauthorized(
-            "Session expired or invalid. Please log in again.",
-        ));
-    };
-
     let persistence = DataPersistence::new()
         .map_err(|err| map_persistence_error("failed to open persistence store", &err))?;
 
@@ -571,7 +664,7 @@ fn persist_system_prompt(
             username,
             set_name,
             prompt,
-            EncryptionMode::Fernet(key.as_slice()),
+            EncryptionMode::Fernet(key),
         )
         .map_err(|err| map_persistence_error("failed to persist system prompt", &err))
 }
@@ -632,6 +725,7 @@ pub fn chat_prepare(
     session: &SessionContext,
     request: &ChatRequestData<'_>,
     provider: &ProviderConfig,
+    encryption_key: Option<&EncryptionKey>,
 ) -> ChatPrepareResult {
     let store = SessionStore::global();
     store.clean_expired();
@@ -666,7 +760,14 @@ pub fn chat_prepare(
         };
     }
 
-    let context = match build_chat_context(session, request, provider, &set_name, &entry) {
+    let context = match build_chat_context(
+        session,
+        request,
+        provider,
+        &set_name,
+        &entry,
+        encryption_key,
+    ) {
         Ok(ctx) => ctx,
         Err(response) => {
             entry.unlock();
@@ -689,16 +790,33 @@ fn build_chat_context(
     provider: &ProviderConfig,
     set_name: &str,
     entry: &Arc<SessionEntry>,
+    encryption_key: Option<&EncryptionKey>,
 ) -> Result<ChatContext, ServiceResponse> {
+    let default_prompt = resolve_default_prompt();
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 
-    if !data.initialised {
-        initialise_session_data(&mut data, session, set_name)?;
-    }
+    if data.requires_cipher {
+        let key = require_encryption_key(session.username.as_deref(), encryption_key)?;
+        let key_bytes = key.expect("validated encryption key").as_bytes();
+        if !data.initialised {
+            initialise_session_data(&mut data, session, set_name, encryption_key)?;
+        } else {
+            unseal_session_data(&mut data, key_bytes, &default_prompt)?;
+        }
 
-    if let Some(prompt) = request.system_prompt {
-        persist_system_prompt(session, set_name, prompt)?;
+        if let Some(prompt) = request.system_prompt {
+            if let Some(username) = session.username.as_deref() {
+                persist_system_prompt(username, set_name, prompt, key_bytes)?;
+            }
+            data.system_prompt = prompt.to_owned();
+        }
+    } else if !data.initialised {
+        initialise_session_data(&mut data, session, set_name, None)?;
+        if let Some(prompt) = request.system_prompt {
+            data.system_prompt = prompt.to_owned();
+        }
+    } else if let Some(prompt) = request.system_prompt {
         data.system_prompt = prompt.to_owned();
     }
 
@@ -723,7 +841,6 @@ fn build_chat_context(
         encrypted: request.encrypted,
         model_name,
         provider: provider.clone(),
-        encryption_key: session.encryption_key.clone(),
         test_chunks,
         send_thoughts: request.send_thoughts,
     })
@@ -734,6 +851,7 @@ pub fn chat_finalize(
     set_name: &str,
     user_message: &str,
     assistant_response: &str,
+    encryption_key: Option<&EncryptionKey>,
 ) -> Vec<String> {
     let store = SessionStore::global();
     let mut extras = Vec::new();
@@ -746,13 +864,17 @@ pub fn chat_finalize(
             data.last_used = Instant::now();
 
             if let Some(username) = session.username.as_deref() {
-                if let Err(msg) = persist_history(
-                    username,
-                    set_name,
-                    session.encryption_key.as_deref(),
-                    &data.history,
-                ) {
-                    extras.push(msg);
+                if let Ok(key) = require_encryption_key(Some(username), encryption_key) {
+                    let key_bytes = key.expect("validated encryption key").as_bytes();
+                    if let Err(msg) = persist_history(username, set_name, Some(key_bytes), &data.history)
+                    {
+                        extras.push(msg);
+                    }
+                    if let Err(response) = seal_session_data(&mut data, key_bytes) {
+                        error!(status = response.status, "failed to seal session cache after chat finalize");
+                    }
+                } else {
+                    extras.push("\n[Error] Failed to save chat history: missing encryption key".to_string());
                 }
             }
         }
@@ -767,6 +889,7 @@ pub fn regenerate_prepare(
     session: &SessionContext,
     request: &RegenerateRequestData<'_>,
     provider: &ProviderConfig,
+    encryption_key: Option<&EncryptionKey>,
 ) -> RegeneratePrepareResult {
     let store = SessionStore::global();
     store.clean_expired();
@@ -804,7 +927,14 @@ pub fn regenerate_prepare(
         };
     }
 
-    match build_regenerate_context(session, request, provider, &set_name, &entry) {
+    match build_regenerate_context(
+        session,
+        request,
+        provider,
+        &set_name,
+        &entry,
+        encryption_key,
+    ) {
         Ok((context, insertion_index)) => RegeneratePrepareResult {
             context: Some(context),
             insertion_index,
@@ -827,12 +957,34 @@ fn build_regenerate_context(
     provider: &ProviderConfig,
     set_name: &str,
     entry: &Arc<SessionEntry>,
+    encryption_key: Option<&EncryptionKey>,
 ) -> Result<(ChatContext, Option<usize>), ServiceResponse> {
+    let default_prompt = resolve_default_prompt();
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 
-    if !data.initialised {
-        initialise_session_data(&mut data, session, set_name)?;
+    if data.requires_cipher {
+        let key = require_encryption_key(session.username.as_deref(), encryption_key)?;
+        let key_bytes = key.expect("validated encryption key").as_bytes();
+        if !data.initialised {
+            initialise_session_data(&mut data, session, set_name, encryption_key)?;
+        } else {
+            unseal_session_data(&mut data, key_bytes, &default_prompt)?;
+        }
+
+        if let Some(prompt) = request.system_prompt {
+            if let Some(username) = session.username.as_deref() {
+                persist_system_prompt(username, set_name, prompt, key_bytes)?;
+            }
+            data.system_prompt = prompt.to_owned();
+        }
+    } else if !data.initialised {
+        initialise_session_data(&mut data, session, set_name, None)?;
+        if let Some(prompt) = request.system_prompt {
+            data.system_prompt = prompt.to_owned();
+        }
+    } else if let Some(prompt) = request.system_prompt {
+        data.system_prompt = prompt.to_owned();
     }
 
     let insertion_index = if let Some(index) = request.pair_index {
@@ -853,11 +1005,6 @@ fn build_regenerate_context(
     } else {
         None
     };
-
-    if let Some(prompt) = request.system_prompt {
-        persist_system_prompt(session, set_name, prompt)?;
-        data.system_prompt = prompt.to_owned();
-    }
 
     ensure_model_allowed(provider, session.username.as_deref())?;
     data.encrypted = request.encrypted;
@@ -886,7 +1033,6 @@ fn build_regenerate_context(
         encrypted: request.encrypted,
         model_name,
         provider: provider.clone(),
-        encryption_key: session.encryption_key.clone(),
         test_chunks,
         send_thoughts: request.send_thoughts,
     };
@@ -900,6 +1046,7 @@ pub fn regenerate_finalize(
     user_message: &str,
     assistant_response: &str,
     insertion_index: Option<usize>,
+    encryption_key: Option<&EncryptionKey>,
 ) -> Vec<String> {
     let store = SessionStore::global();
     let mut extras = Vec::new();
@@ -922,13 +1069,21 @@ pub fn regenerate_finalize(
             data.last_used = Instant::now();
 
             if let Some(username) = session.username.as_deref() {
-                if let Err(msg) = persist_history(
-                    username,
-                    set_name,
-                    session.encryption_key.as_deref(),
-                    &data.history,
-                ) {
-                    extras.push(msg);
+                if let Ok(key) = require_encryption_key(Some(username), encryption_key) {
+                    let key_bytes = key.expect("validated encryption key").as_bytes();
+                    if let Err(msg) =
+                        persist_history(username, set_name, Some(key_bytes), &data.history)
+                    {
+                        extras.push(msg);
+                    }
+                    if let Err(response) = seal_session_data(&mut data, key_bytes) {
+                        error!(
+                            status = response.status,
+                            "failed to seal session cache after regenerate finalize"
+                        );
+                    }
+                } else {
+                    extras.push("\n[Error] Failed to save chat history: missing encryption key".to_string());
                 }
             }
         }
@@ -982,6 +1137,112 @@ pub fn update_session_system_prompt(session_id: &str, prompt: &str) {
     }
 }
 
+pub fn update_session_memory_for_request(
+    session_id: &str,
+    username: &str,
+    memory: &str,
+    key: &EncryptionKey,
+) -> Result<(), ServiceResponse> {
+    let store = SessionStore::global();
+    let entry = store.entry(session_id);
+    let mut data = entry.data.lock().unwrap();
+    validate_encryption_key_for_user(username, Some(key))?;
+    let key_bytes = key.as_bytes();
+    unseal_session_data(&mut data, key_bytes, &resolve_default_prompt())?;
+    data.memory = memory.to_owned();
+    data.initialised = true;
+    data.last_used = Instant::now();
+    seal_session_data(&mut data, key_bytes)
+}
+
+pub fn update_session_system_prompt_for_request(
+    session_id: &str,
+    username: &str,
+    prompt: &str,
+    key: &EncryptionKey,
+) -> Result<(), ServiceResponse> {
+    let store = SessionStore::global();
+    let entry = store.entry(session_id);
+    let mut data = entry.data.lock().unwrap();
+    validate_encryption_key_for_user(username, Some(key))?;
+    let key_bytes = key.as_bytes();
+    unseal_session_data(&mut data, key_bytes, &resolve_default_prompt())?;
+    data.system_prompt = prompt.to_owned();
+    data.initialised = true;
+    data.last_used = Instant::now();
+    seal_session_data(&mut data, key_bytes)
+}
+
+pub fn replace_session_set(
+    session_id: &str,
+    username: Option<&str>,
+    memory: &str,
+    system_prompt: &str,
+    history: &[(String, String)],
+    encrypted: bool,
+    key: Option<&EncryptionKey>,
+) -> Result<(), ServiceResponse> {
+    let store = SessionStore::global();
+    let entry = store.entry(session_id);
+    let mut data = entry.data.lock().unwrap();
+    data.memory = memory.to_owned();
+    data.system_prompt = system_prompt.to_owned();
+    data.history = history.to_vec();
+    data.encrypted = encrypted;
+    data.initialised = true;
+    data.last_used = Instant::now();
+
+    if data.requires_cipher {
+        require_encryption_key(username, key)?;
+        let key_bytes = key.expect("validated encryption key").as_bytes();
+        seal_session_data(&mut data, key_bytes)?;
+    }
+
+    Ok(())
+}
+
+pub fn session_history_for_request(
+    session_id: &str,
+    username: Option<&str>,
+    key: Option<&EncryptionKey>,
+) -> Result<Vec<(String, String)>, ServiceResponse> {
+    let store = SessionStore::global();
+    let Some(entry) = store.entries.get(session_id) else {
+        return Ok(Vec::new());
+    };
+    let mut data = entry.data.lock().unwrap();
+    if data.requires_cipher {
+        require_encryption_key(username, key)?;
+        let key_bytes = key.expect("validated encryption key").as_bytes();
+        unseal_session_data(&mut data, key_bytes, &resolve_default_prompt())?;
+    }
+    Ok(data.history.clone())
+}
+
+pub fn set_session_history_for_request(
+    session_id: &str,
+    username: Option<&str>,
+    history: Vec<(String, String)>,
+    key: Option<&EncryptionKey>,
+) -> Result<(), ServiceResponse> {
+    let store = SessionStore::global();
+    let Some(entry) = store.entries.get(session_id) else {
+        return Ok(());
+    };
+    let mut data = entry.data.lock().unwrap();
+    data.history = history;
+    data.last_used = Instant::now();
+    data.initialised = true;
+
+    if data.requires_cipher {
+        require_encryption_key(username, key)?;
+        let key_bytes = key.expect("validated encryption key").as_bytes();
+        seal_session_data(&mut data, key_bytes)?;
+    }
+
+    Ok(())
+}
+
 pub fn update_session_history(session_id: &str, history: &[(String, String)]) {
     let store = SessionStore::global();
     let entry = store.entry(session_id);
@@ -1009,7 +1270,7 @@ mod tests {
 
     #[test]
     fn regenerate_truncates_future_context() {
-        let session_id = "test-session-regen";
+        let session_id = "guest_test-session-regen";
         let history = vec![
             ("User1".to_string(), "AI1".to_string()),
             ("User2".to_string(), "AI2".to_string()),
@@ -1023,7 +1284,6 @@ mod tests {
         let session = SessionContext {
             session_id: session_id.to_string(),
             username: None,
-            encryption_key: None,
         };
         
         let provider = ProviderConfig {
@@ -1051,7 +1311,7 @@ mod tests {
             send_thoughts: false,
         };
 
-        let result = regenerate_prepare(&session, &request, &provider);
+        let result = regenerate_prepare(&session, &request, &provider, None);
         assert!(result.error.is_none(), "regenerate_prepare failed: {:?}", result.error);
         
         let context = result.context.expect("context should be present");

@@ -54,19 +54,65 @@ We are moving to a **Per-Chat Privacy Model**. Users can choose the privacy leve
 | **Recoverable Chats** | Optional (Server Key) | Native / Default |
 | **Account Recovery** | Only restores access to Recoverable Chats | Only restores access to Recoverable Chats |
 
-## Current Architecture Status
-*As of Jan 2026*
+## Per-Request Encryption Key Model
+*Implemented June 2026*
 
-The system currently operates in a **Strict Private Mode**:
+Authenticated chat data requires **two independent secrets per request**:
+
+1. **Session cookie** — bearer token proving the HTTP session is logged in.
+2. **`X-Enc-Key` header** — the client-derived Fernet data key, sent on every data endpoint call.
+
+The server validates the presented key against a per-user **key verifier** (HMAC-SHA256 over the key material) before any decrypt. The key exists in server RAM only for the lifetime of that request, then is zeroized. Login establishes/rotates the verifier but **does not retain the key** after the redirect.
+
+### Threat model addressed
+
+| Attack | Mitigation |
+| :--- | :--- |
+| Stolen session cookie used on another machine | Server has no standing key; attacker has no client key store → decrypt fails (401). |
+| XSS exfiltrating raw key from `localStorage` | Default web store wraps the key with a non-extractable `CryptoKey` in IndexedDB; JS can unwrap-to-use but cannot export wrapping key bytes. |
+| Full browser profile theft | Partial mitigation with Option 2; full mitigation with device binding (Option 3/4 below). |
+| Server compromise while user idle | No standing key in session record or plaintext cache; only ciphertext on disk and in memory. |
+
+### Server-side cache (ciphertext-only)
+
+The in-memory `SessionStore` retains Fernet ciphertext blobs for history, memory, and system prompt — never decrypted plaintext across requests. Each request decrypts the working set with the presented key, processes the request, re-encrypts into the cache, and zeroizes plaintext. A hijacked cookie without the key sees only ciphertext.
+
+### Client-side key storage tiers
+
+| Tier | Platform | UX | Protection |
+| :--- | :--- | :--- | :--- |
+| **Option 2 (default web)** | Browser | Zero extra steps after login | Non-extractable AES-GCM wrap key in IndexedDB; wrapped data key persisted as blob. |
+| **Option 3 (opt-in web)** | Browser with WebAuthn PRF | One biometric/PIN per unlock | Wrapping secret derived from platform authenticator (Touch ID, Windows Hello, security key). Full profile copy on another machine is useless without the authenticator. Falls back to Option 2 when PRF is unsupported. |
+| **Option 4 (native default)** | Capacitor Android | Zero extra steps after login | Android Keystore AES/GCM wrap (`NativeSecureKey` plugin). iOS Keychain plugin follows the same pattern when the iOS target ships. |
+| **Session fallback** | Non-secure HTTP contexts | Same as login | Key held in `sessionStorage` only (development / legacy). |
+
+Enrollment flow: login derives the key client-side → server stores key verifier → client wraps key locally → raw key discarded from JS. Re-unlock: settings panel or automatic prompt on 401 from data endpoints.
+
+### Transport requirements
+
+- `X-Enc-Key` carries the raw derived key bytes (URL-safe base64 string).
+- Must travel over TLS (reverse-proxy terminated HTTPS in production).
+- Must **never** appear in access logs, `tracing` spans, or error reports. Proxies should scrub this header from logs.
+
+### Migration
+
+Existing users without a verifier get one created on the first authenticated request that presents a valid derived key (same key as password login). Until the client sends `X-Enc-Key`, encrypted endpoints return **401** with a clear unlock message.
+
+## Current Architecture Status
+*As of June 2026*
+
+The system currently operates in a **Strict Private Mode** with **per-request keying**:
 
 1.  **Authenticated Users:**
-    *   All user data is stored using **Private Mode** logic.
-    *   Keys are derived from the login password.
+    *   All user data is stored using **Private Mode** logic (Fernet at rest).
+    *   Keys are derived from the login password on the client.
+    *   The server stores only an HMAC key verifier, not the data key.
+    *   Clients wrap the key locally (IndexedDB non-extractable key by default; WebAuthn PRF opt-in; Android Keystore on native).
     *   **CRITICAL LIMITATION:** There is **NO Account Recovery**. Losing a password means permanent data loss.
     *   OAuth is not yet implemented.
 
 2.  **Anonymous Users:**
-    *   Guests operate in **Ephemeral Mode**.
+    *   Guests operate in **Ephemeral Mode** (no `X-Enc-Key` required).
 
 ## Roadmap
 

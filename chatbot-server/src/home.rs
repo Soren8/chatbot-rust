@@ -74,6 +74,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
 }
 
 struct UserDetails {
+    username: Option<String>,
     tier: String,
     last_set: Option<String>,
     last_model: Option<String>,
@@ -88,7 +89,14 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                 Ok(store) => store,
                 Err(err) => {
                     warn!(?err, "failed to open user store when resolving details");
-                    return UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None, render_markdown: true, autoplay_tts: false };
+                    return UserDetails {
+                        username: Some(name.to_string()),
+                        tier: FREE_TIER.to_string(),
+                        last_set: None,
+                        last_model: None,
+                        render_markdown: true,
+                        autoplay_tts: false,
+                    };
                 }
             };
 
@@ -102,9 +110,23 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                  (None, None, true, false)
             });
 
-            UserDetails { tier, last_set, last_model, render_markdown, autoplay_tts }
+            UserDetails {
+                username: Some(name.to_string()),
+                tier,
+                last_set,
+                last_model,
+                render_markdown,
+                autoplay_tts,
+            }
         }
-        None => UserDetails { tier: FREE_TIER.to_string(), last_set: None, last_model: None, render_markdown: true, autoplay_tts: false },
+        None => UserDetails {
+            username: None,
+            tier: FREE_TIER.to_string(),
+            last_set: None,
+            last_model: None,
+            render_markdown: true,
+            autoplay_tts: false,
+        },
     }
 }
 
@@ -148,6 +170,7 @@ fn render_template(
     let template = env.get_template("chat.html")?;
     template.render(context! {
         logged_in => logged_in,
+        username => user_details.username,
         user_tier => user_details.tier,
         last_set => user_details.last_set,
         last_model => user_details.last_model,
@@ -222,6 +245,7 @@ mod tests {
     fn renders_template_with_config() {
         let logged_in = true;
         let user_details = UserDetails {
+            username: Some("tester".to_string()),
             tier: "free".to_string(),
             last_set: None,
             last_model: None,

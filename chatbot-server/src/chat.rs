@@ -81,6 +81,8 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
     }
 
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 
     let provider_config = match get_provider_config(if selected_model.is_empty() {
@@ -158,7 +160,12 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         send_thoughts,
     };
 
-    let prepare = session::chat_prepare(&session_context, &request_data, &provider_config);
+    let prepare = session::chat_prepare(
+        &session_context,
+        &request_data,
+        &provider_config,
+        encryption_key.as_ref(),
+    );
 
     if let Some(py_response) = prepare.error {
         return crate::build_response(py_response);
@@ -222,6 +229,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
     let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
     let user_message = payload.message.clone();
+    let encryption_key_for_finalize = encryption_key.clone();
 
     let mut provider_stream = match provider_kind {
         ProviderKind::OpenAi(provider) => {
@@ -323,6 +331,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             &set_name,
             &user_message,
             final_response,
+            encryption_key_for_finalize.as_ref(),
         ) {
             Ok(extra_chunks) => {
                 stream_lock.lock().unwrap().mark_released();
@@ -368,11 +377,13 @@ fn finalize_chat(
     set_name: &str,
     user_message: &str,
     assistant_response: &str,
+    encryption_key: Option<&chatbot_core::enc_key::EncryptionKey>,
 ) -> Result<Vec<String>> {
     Ok(session::chat_finalize(
         session,
         set_name,
         user_message,
         assistant_response,
+        encryption_key,
     ))
 }

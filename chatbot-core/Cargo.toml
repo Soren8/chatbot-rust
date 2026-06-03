@@ -23,7 +23,9 @@ bcrypt = "0.15"
 pbkdf2 = "0.12"
 rand = { version = "0.8", features = ["std"] }
 sha2 = "0.10"
+hmac = "0.12"
 dashmap = "5"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -33,6 +33,7 @@ pub async fn handle_get_sets(
     }
 
     let cookie_header = extract_cookie(request.headers());
+    let encryption_key = crate::chat_utils::extract_enc_key(request.headers());
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for get_sets");
@@ -53,10 +54,12 @@ pub async fn handle_get_sets(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    let encryption_mode = session
-        .encryption_key
+    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+        return build_service_response(response);
+    }
+    let encryption_mode = encryption_key
         .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_slice()));
+        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
 
     let sets = persistence
         .list_sets(username, encryption_mode)
@@ -109,6 +112,7 @@ pub async fn handle_create_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for create_set");
@@ -129,10 +133,12 @@ pub async fn handle_create_set(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    let encryption_mode = session
-        .encryption_key
+    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+        return build_service_response(response);
+    }
+    let encryption_mode = encryption_key
         .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_slice()));
+        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
 
     let set_name = match DataPersistence::normalise_custom_set_name(&set_name_raw) {
         Ok(value) => value,
@@ -192,6 +198,7 @@ pub async fn handle_delete_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for delete_set");
@@ -212,10 +219,12 @@ pub async fn handle_delete_set(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    let encryption_mode = session
-        .encryption_key
+    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+        return build_service_response(response);
+    }
+    let encryption_mode = encryption_key
         .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_slice()));
+        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
 
     let set_name = match DataPersistence::normalise_set_name(Some(&set_name_raw)) {
         Ok(value) => value,
@@ -269,6 +278,7 @@ pub async fn handle_rename_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for rename_set");
@@ -289,10 +299,12 @@ pub async fn handle_rename_set(
     };
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    let encryption_mode = session
-        .encryption_key
+    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+        return build_service_response(response);
+    }
+    let encryption_mode = encryption_key
         .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_slice()));
+        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
 
     match persistence.rename_set(username, &payload.old_name, &payload.new_name, encryption_mode) {
         Ok(()) => build_json_response(StatusCode::OK, json!({"status": "success"})),
@@ -339,6 +351,7 @@ pub async fn handle_load_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
 
@@ -370,17 +383,25 @@ pub async fn handle_load_set(
         }
     };
 
-    let encryption_mode = session
-        .encryption_key
+    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+        return build_service_response(response);
+    }
+    let encryption_mode = encryption_key
         .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_slice()));
+        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
 
     let loaded = match persistence.load_set(username, &set_name, encryption_mode) {
         Ok(value) => value,
         Err(PersistenceError::MissingEncryptionKey) => {
             return build_json_response(
                 StatusCode::UNAUTHORIZED,
-                json!({"error": "relogin required"}),
+                json!({"error": "Encryption key required. Please unlock."}),
+            );
+        }
+        Err(PersistenceError::DecryptionFailed) => {
+            return build_json_response(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": "Invalid encryption key."}),
             );
         }
         Err(PersistenceError::InvalidSetName) => {
@@ -392,9 +413,17 @@ pub async fn handle_load_set(
         Err(err) => return Err(persistence_error_to_http(err)),
     };
 
-    session::update_session_memory(&session.session_id, &loaded.memory);
-    session::update_session_system_prompt(&session.session_id, &loaded.system_prompt);
-    session::update_session_history(&session.session_id, &loaded.history);
+    if let Err(response) = session::replace_session_set(
+        &session.session_id,
+        Some(username),
+        &loaded.memory,
+        &loaded.system_prompt,
+        &loaded.history,
+        loaded.encrypted,
+        encryption_key.as_ref(),
+    ) {
+        return build_service_response(response);
+    }
 
     let history_json = loaded
         .history
@@ -464,6 +493,10 @@ fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
             )
         }
     }
+}
+
+fn build_service_response(response: session::ServiceResponse) -> Result<Response<Body>, (StatusCode, String)> {
+    crate::build_response(response).map_err(|(status, message)| (status, message))
 }
 
 fn build_json_response(
