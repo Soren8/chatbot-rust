@@ -10,4 +10,3 @@ deny = [
   "data",
   "provider-test.yml",
 ]
-read_only = [".config.yml.example"]
