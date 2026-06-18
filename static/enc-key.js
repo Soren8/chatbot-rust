@@ -164,10 +164,7 @@
       return;
     }
     if (!hasWebCrypto() || !isSecureContext()) {
-      sessionStorage.setItem('chatbot_enc_key', rawKeyB64);
-      await idbSet(MODE_KEY, 'session-fallback');
-      cachedKey = rawKeyB64;
-      return;
+      throw new Error('Encryption key storage requires a secure context (HTTPS) or the native app.');
     }
     const wrapKey = await ensureWrapKey();
     const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
@@ -208,9 +205,10 @@
     }
     const mode = await idbGet(MODE_KEY);
     if (mode === 'session-fallback') {
-      const value = sessionStorage.getItem('chatbot_enc_key');
-      cachedKey = value;
-      return value;
+      sessionStorage.removeItem('chatbot_enc_key');
+      await idbDelete(MODE_KEY);
+      console.debug('enc-key: cleared legacy session-fallback storage');
+      return null;
     }
     if (mode === 'webauthn-prf') {
       return cachedKey;
@@ -397,9 +395,6 @@
   function getKeyForRequestSync() {
     if (cachedKey) {
       return cachedKey;
-    }
-    if (sessionStorage.getItem('chatbot_enc_key')) {
-      return sessionStorage.getItem('chatbot_enc_key');
     }
     return null;
   }
