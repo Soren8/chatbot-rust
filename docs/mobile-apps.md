@@ -161,7 +161,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 - Web UI updates (chat.js, CSS, templates) do not require rebuilding the APK; rebuild `webserver` to pick up static changes in the running server.
 - The device must have network access to the server (same WiFi or port-forwarded)
 - For car use, the server URL should point to the machine running `chatbot-server`
-- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for production flavor
+- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for production flavor. These http URLs are for the native app (which derives/stores keys via the OS plugin and does not rely on browser secure context). For any browser-based testing, use http://localhost or a https URL.
 - Server URL is read from the `server_url` string resource (flavor-specific) and passed to `VoiceScreen` via `CarContext.getString(R.string.server_url)`
 
 **Note**: WebView caching is disabled in `MainActivity.onStart()` via `setCacheMode(LOAD_NO_CACHE)` to ensure fresh loads during development.
@@ -305,7 +305,7 @@ Product flavors configure `server_url` string resource:
 - **emulator**: `http://10.0.2.2:80` (Android emulator's host loopback)
 - **production**: `http://desktop-1.tailfc0df0.ts.net:80`
 
-`network_security_config.xml` allows cleartext HTTP for emulator IP and tailscale domains.
+`network_security_config.xml` allows cleartext HTTP for emulator IP and tailscale domains (required for native; the app does not use Web Crypto secure context paths on mobile). For browser dev against the server, prefer localhost or https (e.g. Tailscale Serve).
 
 ---
 

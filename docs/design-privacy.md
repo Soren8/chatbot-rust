@@ -85,7 +85,9 @@ The in-memory `SessionStore` retains Fernet ciphertext blobs for history, memory
 | **Option 3 (opt-in web)** | Browser with WebAuthn PRF | One biometric/PIN per unlock (manual opt-in) | Wrapping secret derived from platform authenticator (Touch ID, Windows Hello, security key). Full profile copy on another machine is useless without the authenticator. Falls back to Option 2 when PRF is unsupported. |
 | **Option 4 (native default)** | Capacitor Android | One fingerprint/PIN at login and on unlock | Android Keystore AES/GCM wrap with biometric/device-credential gate (`NativeSecureKey` plugin). Applied automatically at login on mobile; no WebAuthn button. iOS Keychain plugin follows the same pattern when the iOS target ships. |
 
-Non-secure HTTP in a browser (no TLS, not localhost) cannot derive or store keys via Web Crypto; use HTTPS or the native app. There is no sessionStorage or other plaintext key fallback.
+Browsers grant secure context (required for Web Crypto + non-extractable IndexedDB key storage) for https:// origins and http://localhost (or 127.0.0.1). Plain HTTP to other LAN hostnames or IPs will not allow client-side key derivation/storage.
+
+For LAN/browser development with full Private Mode support, use Tailscale Serve (or equivalent) to terminate TLS on your node with publicly-trusted certs, or access via http://localhost. The native Capacitor app uses its own keystore plugin and works over plain HTTP. See the development notes in README.md.
 
 Enrollment flow: login derives the key client-side → server stores key verifier → client wraps key locally → raw key discarded from JS. Re-unlock: settings panel or automatic prompt on 401 from data endpoints.
 

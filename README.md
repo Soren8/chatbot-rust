@@ -41,6 +41,8 @@ Not a single line of code in this repository was written manually. Human work in
    RUST_BUILD_TARGET=debug by default, you may want to set it to release.
 1. Keep caches under `temp/` as described in `AGENTS.md`.
 
+**Secure context for browser dev (encryption keys):** Client-side key derivation and storage (required for Private Mode chat data) needs a browser secure context. Use `http://localhost` or https (recommended for LAN: run Tailscale Serve on the host pointing at the app, e.g. proxying to the published localhost port). Plain http://LAN-IP will cause login to fall back to server derivation and subsequent data operations to require unlock that cannot succeed in-browser. The native Android app works over HTTP using its NativeSecureKey plugin.
+
 ## Configuration
 - Provider and environment settings live in `.config.yml`; secrets should be injected through environment variables where possible.
 - Environment variables from `.env`/`.env.example` are consumed by Docker Compose for development defaults.
