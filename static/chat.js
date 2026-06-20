@@ -1091,6 +1091,14 @@ function handleDeleteMessage(buttonElement) {
       return;
     }
     const errMsg = (result.data && result.data.error) || `delete failed (${result.status})`;
+    if (result.status === 404 || (errMsg && /out of range/i.test(errMsg))) {
+      // Pair was never saved server-side (failed/stopped AI response) and only
+      // existed client-side in the DOM. Remove it locally without error.
+      aiMessageElement.remove();
+      userMessageElement.remove();
+      console.debug('Removed client-side-only message pair (server reported out of range)');
+      return;
+    }
     console.error('Server failed to delete message:', errMsg);
     appendMessage('<strong>Error:</strong> Failed to delete message: ' + escapeHTML(errMsg), 'error-message');
   })

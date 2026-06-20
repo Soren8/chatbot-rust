@@ -174,4 +174,33 @@ async fn delete_message_requires_index_and_matching_content() {
         .expect("POST /delete_message missing index");
 
     assert_eq!(missing_index.status(), StatusCode::BAD_REQUEST);
+
+    // New test case reproducing the bug: deleting a pair that was never saved
+    // server-side (e.g. failed or stopped AI generation, only existed in client DOM).
+    // Server correctly returns 404 "out of range". Client must still remove the
+    // pair client-side instead of showing error (see static/chat.js).
+    let client_only_pair = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/delete_message")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "pair_index": 0,
+                        "user_message": "user only",
+                        "ai_message": "",
+                        "set_name": "default",
+                    }))
+                    .expect("client only payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /delete_message client-only pair");
+
+    assert_eq!(client_only_pair.status(), StatusCode::NOT_FOUND);
 }
