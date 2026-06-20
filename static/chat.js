@@ -1051,7 +1051,7 @@ function handleDeleteMessage(buttonElement) {
 
   const userText = (userMessageElement.attr('data-original') || userMessageElement.find('.user-message-text').text() || userMessageElement.text() || '').replace(/^\s*You:\s*/, '').trim();
   const aiText = (aiMessageElement.attr('data-original') || (aiMessageElement.find('.ai-message-text').text() || '')).trim();
-  if (!userText || !aiText) {
+  if (!userText) {
     console.error('Cannot delete: missing message text');
     return;
   }

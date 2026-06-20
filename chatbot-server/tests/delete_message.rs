@@ -113,8 +113,8 @@ async fn delete_message_requires_index_and_matching_content() {
                 .body(Body::from(
                     serde_json::to_vec(&json!({
                         "pair_index": 0,
-                        "user_message": "repeat",
-                        "ai_message": "wrong answer",
+                        "user_message": "wrong user",
+                        "ai_message": "first answer",
                         "set_name": "default",
                     }))
                     .expect("mismatch payload"),

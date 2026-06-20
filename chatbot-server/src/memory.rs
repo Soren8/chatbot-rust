@@ -286,20 +286,14 @@ pub async fn handle_delete_message(
 
     let user_message = payload.user_message.unwrap_or_default();
     let trimmed = user_message.trim();
-    let ai_message = payload.ai_message.unwrap_or_default();
-    let ai_trimmed = ai_message.trim();
     if trimmed.is_empty() {
         return build_json_response(
             StatusCode::BAD_REQUEST,
             json!({"status": "error", "error": "user_message is required"}),
         );
     }
-    if ai_trimmed.is_empty() {
-        return build_json_response(
-            StatusCode::BAD_REQUEST,
-            json!({"status": "error", "error": "ai_message is required"}),
-        );
-    }
+    // AI text is no longer required for the check (allows deleting mid-generation or failed responses).
+    // Only user text + pair_index is used for verification.
     let pair_index = match payload.pair_index {
         Some(index) if index >= 0 => index as usize,
         _ => {
@@ -349,8 +343,8 @@ pub async fn handle_delete_message(
         );
     }
 
-    let (stored_user, stored_assistant) = &history[pair_index];
-    if stored_user.trim() != trimmed || stored_assistant.trim() != ai_trimmed {
+    let (stored_user, _stored_assistant) = &history[pair_index];
+    if stored_user.trim() != trimmed {
         return build_json_response(
             StatusCode::CONFLICT,
             json!({"status": "error", "error": "content mismatch at pair_index"}),
