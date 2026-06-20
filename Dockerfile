@@ -16,26 +16,31 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-too
 RUN /app/.cargo/bin/rustup component add rustfmt
 ENV PATH="/app/.cargo/bin:$PATH"
 
-# Build the Rust server
-FROM rust-tools AS rust-build
+# Fetch dependencies (only invalidates on Cargo.toml/lock changes)
+FROM rust-tools AS rust-deps
 ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 
 WORKDIR /build
-RUN mkdir -p chatbot-core/src chatbot-server/src chatbot-test-support/src
-RUN printf 'fn main() {}\n' > chatbot-server/src/main.rs \
-    && printf '' > chatbot-server/src/lib.rs \
-    && touch chatbot-core/src/lib.rs \
-    && touch chatbot-test-support/src/lib.rs
-
 COPY Cargo.toml Cargo.lock ./
 COPY chatbot-core/Cargo.toml ./chatbot-core/
 COPY chatbot-server/Cargo.toml ./chatbot-server/
 COPY chatbot-test-support/Cargo.toml ./chatbot-test-support/
 
+# Create stub sources so cargo can parse manifests for fetch (some crates like
+# chatbot-test-support have no src/ until full copy later)
+RUN mkdir -p chatbot-core/src chatbot-server/src chatbot-test-support/src \
+    && printf 'fn main() {}\n' > chatbot-server/src/main.rs \
+    && printf '' > chatbot-server/src/lib.rs \
+    && touch chatbot-core/src/lib.rs \
+    && touch chatbot-test-support/src/lib.rs
+
 RUN --mount=type=cache,target=/app/.cargo/registry \
     --mount=type=cache,target=/app/.cargo/git \
     cargo fetch
+
+# Build the Rust server (invalidates when source changes, but reuses dep cache)
+FROM rust-deps AS rust-build
 
 COPY chatbot-core /build/chatbot-core
 COPY chatbot-server /build/chatbot-server
