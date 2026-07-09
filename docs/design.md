@@ -8,7 +8,7 @@ This document captures the current architecture of the project and the potential
 - **HTTP stack** – `chatbot-server` exposes all routes via Axum. Templates are rendered with Minijinja, CSP headers are enforced by middleware, and state-changing endpoints require per-session CSRF tokens managed by the Rust session store. CSRF protection is configurable via `.config.yml` (and the `CSRF` environment variable); disabling it also removes the `Secure` flag from session cookies to support non-HTTPS development environments.
 - **Providers & chat flow** – The chat pipeline, provider abstractions, and TTS implementation are implemented in Rust and configured through `.config.yml`. Providers use async traits with streaming support and are exercised by cargo integration tests.
 - **Brave Search integration** – Non-XAI providers (OpenAI-compatible API) support web search via the Brave Search REST API. When `web_search=true` is requested, the server performs a two-phase call: first a non-streaming call with an OpenAI function-calling tool definition to let the model decide whether to search and craft the query, then (if a `brave_web_search` tool call is returned) the query is executed directly against the Brave Search API via `reqwest`, and the results are injected as a tool message before the final streaming response. XAI models retain their native search capability unchanged. Configured via the `BRAVE_API_KEY` environment variable.
-- **Sessions & storage** – Session state and chat history live in Rust-managed stores backed by on-disk encrypted files guarded through locks. Anonymous and authenticated flows share the same API surface.
+- **Sessions & storage** – Session state lives in a Rust-managed store. Chat history for authenticated users is moving to an embedded **redb** store of AEAD ciphertext blobs (see [design-history-store.md](design-history-store.md)); legacy path is per-user encrypted `sets.json`. Anonymous flows remain ephemeral/RAM-only.
 - **Tooling & operations** – Development and CI rely on Docker. The `tests` service runs `cargo test` and supporting checks, while the runtime image builds the Axum binary. Build caches, Cargo registries, and generated logs are mounted under `temp/` per `AGENTS.md`.
 
 ## Roadmap
@@ -76,7 +76,7 @@ This document captures the current architecture of the project and the potential
 - **Rate Limiting & Concurrency**
   - [ ] Replace the bespoke rate limiter with a production-ready alternative and support per-user + global caps.
   - [ ] Hook background cleanup jobs to purge expired sessions and chats proactively.
-  - [ ] Consider switching to Sled (or similar) for concurrent data storage while providing migrations for existing JSON data.
+  - [ ] Switch chat history durable storage to **redb** (opaque AEAD blobs + CAS versions); see [design-history-store.md](design-history-store.md). Replaces earlier Sled consideration.
   - [ ] Enhance test concurrency across integration suites.
 
 - **Error Handling & Logging**

@@ -26,6 +26,10 @@ sha2 = "0.10"
 hmac = "0.12"
 dashmap = "5"
 zeroize = { version = "1", features = ["zeroize_derive"] }
+redb = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

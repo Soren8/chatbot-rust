@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | Draft |
+| **Status** | In progress (PRs 1–3: domain types, redb store, HistoryService) |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 

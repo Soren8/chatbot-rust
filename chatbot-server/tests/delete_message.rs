@@ -153,6 +153,7 @@ async fn delete_message_requires_index_and_matching_content() {
     assert_eq!(out_of_range.status(), StatusCode::NOT_FOUND);
 
     let missing_index = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -190,7 +191,7 @@ async fn delete_message_requires_index_and_matching_content() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "pair_index": 0,
+                        "pair_index": 1,
                         "user_message": "user only",
                         "ai_message": "",
                         "set_name": "default",
