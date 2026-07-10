@@ -313,32 +313,35 @@ pub async fn handle_regenerate(
             }
         }
 
-        let clean_response = strip_think_tags(&response_text);
-        let final_response = if save_thoughts {
-            &response_text
+        if encountered_error {
+            // Do not persist partial/error-tainted assistant text.
+            stream_lock.lock().unwrap().release_if_needed();
         } else {
-            &clean_response
-        };
+            let clean_response = strip_think_tags(&response_text);
+            let final_response = if save_thoughts {
+                &response_text
+            } else {
+                &clean_response
+            };
 
-        match regenerate_finalize(
-            &session_context_for_finalize,
-            &set_name,
-            &user_message,
-            final_response,
-            insertion_index,
-            encryption_key_for_finalize.as_ref(),
-            prepare_capture.clone(),
-        ) {
-            Ok(extra_chunks) => {
-                stream_lock.lock().unwrap().mark_released();
-                for chunk in extra_chunks {
-                    yield Bytes::from(chunk.into_bytes());
+            match regenerate_finalize(
+                &session_context_for_finalize,
+                &set_name,
+                &user_message,
+                final_response,
+                insertion_index,
+                encryption_key_for_finalize.as_ref(),
+                prepare_capture.clone(),
+            ) {
+                Ok(extra_chunks) => {
+                    stream_lock.lock().unwrap().mark_released();
+                    for chunk in extra_chunks {
+                        yield Bytes::from(chunk.into_bytes());
+                    }
                 }
-            }
-            Err(err) => {
-                error!(?err, "regenerate_finalize failed");
-                stream_lock.lock().unwrap().release_if_needed();
-                if !encountered_error {
+                Err(err) => {
+                    error!(?err, "regenerate_finalize failed");
+                    stream_lock.lock().unwrap().release_if_needed();
                     let msg = "\n[Error] Failed to persist regenerated chat history".to_string();
                     yield Bytes::from(msg.into_bytes());
                 }

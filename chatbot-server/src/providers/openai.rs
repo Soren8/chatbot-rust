@@ -169,7 +169,14 @@ impl OpenAiProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
         if let Some(ref chunks) = self.test_chunks {
             let chunks = chunks.clone();
-            let stream = tokio_stream::iter(chunks.into_iter().map(Ok));
+            // Special token for tests: emit a stream error instead of a text chunk.
+            let stream = tokio_stream::iter(chunks.into_iter().map(|chunk| {
+                if chunk == "__STREAM_ERROR__" {
+                    Err(anyhow::anyhow!("injected test stream error"))
+                } else {
+                    Ok(chunk)
+                }
+            }));
             return Ok(Box::pin(stream));
         }
 

@@ -890,6 +890,55 @@ async fn reset_chat_clears_only_named_set() {
 }
 
 #[tokio::test]
+async fn provider_stream_error_does_not_persist_chat() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "stream_err_user", "StreamErr1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "stream_err_user", "StreamErr1!").await;
+
+    env::set_var(
+        "CHATBOT_TEST_OPENAI_CHUNKS",
+        r#"["partial","__STREAM_ERROR__"]"#,
+    );
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/chat")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &auth.cookie)
+                .header("X-CSRF-Token", &auth.csrf)
+                .header("X-Enc-Key", &auth.enc_key)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "message": "should-not-save",
+                        "set_name": "default"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("partial") || text.contains("Error"));
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
+
+    let loaded = load_set_by_name(&app, &auth, "default").await;
+    assert_eq!(
+        loaded["history"].as_array().map(|a| a.len()).unwrap_or(0),
+        0,
+        "failed stream must not append history"
+    );
+}
+
+#[tokio::test]
 async fn mutating_other_set_does_not_pollute_session_cache() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
