@@ -95,7 +95,7 @@ pub fn ensure_user_migrated(
         });
     }
 
-    // Ensure at least one default if legacy map was empty but file existed
+    // Ensure exactly one default flag after migration.
     if imports.is_empty() {
         imports.push(ImportSet {
             set_id: SetId::new(),
@@ -108,9 +108,21 @@ pub fn ensure_user_migrated(
             updated_at: 0,
         });
     } else if !imports.iter().any(|s| s.is_default) {
-        // Prefer name "default" if present
+        // Prefer name "default" if present; otherwise create an empty default set
+        // so ensure_default_set does not invent a second empty set later.
         if let Some(slot) = imports.iter_mut().find(|s| s.display_name == "default") {
             slot.is_default = true;
+        } else {
+            imports.push(ImportSet {
+                set_id: SetId::new(),
+                display_name: "default".into(),
+                memory: String::new(),
+                system_prompt: default_system_prompt.to_owned(),
+                history: Vec::new(),
+                is_default: true,
+                created_at: 0,
+                updated_at: 0,
+            });
         }
     }
 
@@ -333,6 +345,48 @@ mod tests {
         // Correct key still migrates
         let listed = svc.list_sets(user, &good).unwrap();
         assert_eq!(listed.len(), 1);
+    }
+
+    #[test]
+    fn migration_adds_default_when_legacy_has_only_custom_sets() {
+        let data = tempfile::tempdir().unwrap();
+        let redb_path = data.path().join("history").join("redb");
+        let key = key();
+        let user = "nodefault";
+
+        let persistence = DataPersistence::with_data_dir(data.path(), "sys").unwrap();
+        let mode = EncryptionMode::Fernet(key.as_bytes());
+        persistence
+            .create_set(user, "project-only", Some(mode))
+            .unwrap();
+        persistence
+            .store_history(
+                user,
+                "project-only",
+                &[("u".into(), "a".into())],
+                mode,
+            )
+            .unwrap();
+
+        let svc =
+            HistoryService::open_with_data_dir(&redb_path, data.path(), "sys").unwrap();
+        let listed = svc.list_sets(user, &key).unwrap();
+        assert!(
+            listed.iter().any(|s| s.is_default && s.display_name == "default"),
+            "migration must create a default set: {listed:?}"
+        );
+        assert!(
+            listed.iter().any(|s| s.display_name == "project-only"),
+            "custom set must remain"
+        );
+        let project = listed
+            .iter()
+            .find(|s| s.display_name == "project-only")
+            .unwrap();
+        let snap = svc.load(user, project.set_id, &key).unwrap();
+        assert_eq!(snap.history.len(), 1);
+        // Exactly one default flag
+        assert_eq!(listed.iter().filter(|s| s.is_default).count(), 1);
     }
 
     #[test]
