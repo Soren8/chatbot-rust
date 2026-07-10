@@ -671,25 +671,6 @@ fn initialise_session_data(
     Ok(())
 }
 
-fn persist_system_prompt(
-    username: &str,
-    set_name: &str,
-    prompt: &str,
-    key: &[u8],
-) -> Result<(), ServiceResponse> {
-    let persistence = DataPersistence::new()
-        .map_err(|err| map_persistence_error("failed to open persistence store", &err))?;
-
-    persistence
-        .store_system_prompt(
-            username,
-            set_name,
-            prompt,
-            EncryptionMode::Fernet(key),
-        )
-        .map_err(|err| map_persistence_error("failed to persist system prompt", &err))
-}
-
 fn ensure_model_allowed(
     provider: &ProviderConfig,
     username: Option<&str>,
@@ -1184,7 +1165,7 @@ fn build_regenerate_context(
     let mut prepare_capture = None;
     let mut set_id = None;
     let mut set_version = None;
-    let mut full_history: Vec<(String, String)>;
+    let full_history: Vec<(String, String)>;
     let memory_text: String;
     let system_prompt: String;
     let mut display_set_name = set_name.to_owned();
