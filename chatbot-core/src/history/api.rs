@@ -75,6 +75,12 @@ impl From<OpsError> for HistoryError {
             OpsError::PairIndexOutOfRange => HistoryError::InvalidInput("pair_index out of range"),
             OpsError::ContentMismatch => HistoryError::InvalidInput("content mismatch at pair_index"),
             OpsError::EmptyUserMessage => HistoryError::InvalidInput("empty user message"),
+            OpsError::EmptySetName => HistoryError::InvalidInput("empty set name"),
+            OpsError::HistoryTooLarge => HistoryError::InvalidInput("history too large"),
+            OpsError::MessageTooLarge => HistoryError::InvalidInput("message too large"),
+            OpsError::MemoryTooLarge => HistoryError::InvalidInput("memory too large"),
+            OpsError::PromptTooLarge => HistoryError::InvalidInput("system prompt too large"),
+            OpsError::DisplayNameTooLarge => HistoryError::InvalidInput("set name too large"),
         }
     }
 }
@@ -467,7 +473,7 @@ impl HistoryService {
                 current_version: snap.version,
             });
         }
-        let next = ops::update_memory(&snap, memory);
+        let next = ops::update_memory(&snap, memory)?;
         Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
     }
 
@@ -487,7 +493,7 @@ impl HistoryService {
                 current_version: snap.version,
             });
         }
-        let next = ops::update_system_prompt(&snap, prompt);
+        let next = ops::update_system_prompt(&snap, prompt)?;
         Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
     }
 

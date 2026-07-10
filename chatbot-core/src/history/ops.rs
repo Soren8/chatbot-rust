@@ -4,6 +4,17 @@
 
 use super::types::{HistoryPair, PrepareCapture, SetSnapshot, SetVersion};
 
+/// Maximum number of (user, assistant) pairs stored in one set.
+pub const MAX_HISTORY_PAIRS: usize = 2_000;
+/// Maximum characters per user or assistant message.
+pub const MAX_MESSAGE_CHARS: usize = 200_000;
+/// Maximum characters for set memory field.
+pub const MAX_MEMORY_CHARS: usize = 100_000;
+/// Maximum characters for system prompt.
+pub const MAX_PROMPT_CHARS: usize = 100_000;
+/// Maximum characters for display name.
+pub const MAX_DISPLAY_NAME_CHARS: usize = 200;
+
 /// Errors from pure history operations (content/index validation only).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OpsError {
@@ -13,6 +24,33 @@ pub enum OpsError {
     ContentMismatch,
     #[error("empty user message")]
     EmptyUserMessage,
+    #[error("empty set name")]
+    EmptySetName,
+    #[error("history too large")]
+    HistoryTooLarge,
+    #[error("message too large")]
+    MessageTooLarge,
+    #[error("memory too large")]
+    MemoryTooLarge,
+    #[error("system prompt too large")]
+    PromptTooLarge,
+    #[error("set name too large")]
+    DisplayNameTooLarge,
+}
+
+fn check_message_sizes(user_msg: &str, assistant_msg: &str) -> Result<(), OpsError> {
+    if user_msg.chars().count() > MAX_MESSAGE_CHARS || assistant_msg.chars().count() > MAX_MESSAGE_CHARS
+    {
+        return Err(OpsError::MessageTooLarge);
+    }
+    Ok(())
+}
+
+fn check_history_capacity(current_len: usize) -> Result<(), OpsError> {
+    if current_len >= MAX_HISTORY_PAIRS {
+        return Err(OpsError::HistoryTooLarge);
+    }
+    Ok(())
 }
 
 /// Append a chat pair to a snapshot (does not bump version — store does that on commit).
@@ -24,6 +62,8 @@ pub fn append_pair(
     if user_msg.trim().is_empty() {
         return Err(OpsError::EmptyUserMessage);
     }
+    check_message_sizes(user_msg, assistant_msg)?;
+    check_history_capacity(snapshot.history.len())?;
     let mut next = snapshot.clone();
     next.history
         .push((user_msg.to_owned(), assistant_msg.to_owned()));
@@ -55,22 +95,31 @@ pub fn reset_history(snapshot: &SetSnapshot) -> SetSnapshot {
     next
 }
 
-pub fn update_memory(snapshot: &SetSnapshot, memory: &str) -> SetSnapshot {
+pub fn update_memory(snapshot: &SetSnapshot, memory: &str) -> Result<SetSnapshot, OpsError> {
+    if memory.chars().count() > MAX_MEMORY_CHARS {
+        return Err(OpsError::MemoryTooLarge);
+    }
     let mut next = snapshot.clone();
     next.memory = memory.to_owned();
-    next
+    Ok(next)
 }
 
-pub fn update_system_prompt(snapshot: &SetSnapshot, prompt: &str) -> SetSnapshot {
+pub fn update_system_prompt(snapshot: &SetSnapshot, prompt: &str) -> Result<SetSnapshot, OpsError> {
+    if prompt.chars().count() > MAX_PROMPT_CHARS {
+        return Err(OpsError::PromptTooLarge);
+    }
     let mut next = snapshot.clone();
     next.system_prompt = prompt.to_owned();
-    next
+    Ok(next)
 }
 
 pub fn rename(snapshot: &SetSnapshot, new_name: &str) -> Result<SetSnapshot, OpsError> {
     let trimmed = new_name.trim();
     if trimmed.is_empty() {
-        return Err(OpsError::EmptyUserMessage);
+        return Err(OpsError::EmptySetName);
+    }
+    if trimmed.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        return Err(OpsError::DisplayNameTooLarge);
     }
     let mut next = snapshot.clone();
     next.display_name = trimmed.to_owned();
@@ -90,6 +139,8 @@ pub fn apply_regenerate(
         .filter(|s| !s.trim().is_empty())
         .ok_or(OpsError::EmptyUserMessage)?;
 
+    check_message_sizes(user_msg, assistant_response)?;
+
     let mut history = capture.history.clone();
     let pair: HistoryPair = (user_msg.to_owned(), assistant_response.to_owned());
 
@@ -103,15 +154,13 @@ pub fn apply_regenerate(
             if idx < history.len() {
                 history[idx] = pair;
             } else {
+                check_history_capacity(history.len())?;
                 history.push(pair);
             }
-            // Drop any pairs after the regenerated one? Product today keeps later pairs
-            // (regenerate middle keeps future). Match existing regenerate_finalize insert behavior:
-            // when prepare removed the pair, finalize inserted at index — later pairs stayed.
-            // With non-destructive prepare, replacing at idx preserves later pairs. Good.
         }
         None => {
             // Treat as append (chat-style) if no index — unusual for regenerate.
+            check_history_capacity(history.len())?;
             history.push(pair);
         }
     }
@@ -136,6 +185,8 @@ pub fn apply_chat_append(
     if user_msg.trim().is_empty() {
         return Err(OpsError::EmptyUserMessage);
     }
+    check_message_sizes(user_msg, assistant_msg)?;
+    check_history_capacity(capture.history.len())?;
     let mut history = capture.history.clone();
     history.push((user_msg.to_owned(), assistant_msg.to_owned()));
     Ok(SetSnapshot {
@@ -249,10 +300,38 @@ mod tests {
     #[test]
     fn rename_and_memory_ops() {
         let s = sample();
-        let s2 = update_memory(&s, "note");
+        let s2 = update_memory(&s, "note").unwrap();
         assert_eq!(s2.memory, "note");
         let s3 = rename(&s2, "  project  ").unwrap();
         assert_eq!(s3.display_name, "project");
+    }
+
+    #[test]
+    fn rejects_oversized_history_and_messages() {
+        let mut s = sample();
+        s.history = (0..MAX_HISTORY_PAIRS)
+            .map(|i| (format!("u{i}"), format!("a{i}")))
+            .collect();
+        assert!(matches!(
+            append_pair(&s, "more", "x"),
+            Err(OpsError::HistoryTooLarge)
+        ));
+
+        let s = sample();
+        let huge = "x".repeat(MAX_MESSAGE_CHARS + 1);
+        assert!(matches!(
+            append_pair(&s, &huge, "a"),
+            Err(OpsError::MessageTooLarge)
+        ));
+        assert!(matches!(
+            update_memory(&s, &"m".repeat(MAX_MEMORY_CHARS + 1)),
+            Err(OpsError::MemoryTooLarge)
+        ));
+        assert!(matches!(
+            rename(&s, &"n".repeat(MAX_DISPLAY_NAME_CHARS + 1)),
+            Err(OpsError::DisplayNameTooLarge)
+        ));
+        assert!(matches!(rename(&s, "  "), Err(OpsError::EmptySetName)));
     }
 
     #[test]
