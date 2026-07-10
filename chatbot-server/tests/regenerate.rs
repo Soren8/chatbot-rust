@@ -511,7 +511,7 @@ async fn regenerate_updates_system_prompt_in_history() {
         "model_name": "default",
     });
 
-    let _ = app
+    let chat_res = app
         .clone()
         .oneshot(
             Request::builder()
@@ -526,6 +526,9 @@ async fn regenerate_updates_system_prompt_in_history() {
         )
         .await
         .unwrap();
+    assert_eq!(chat_res.status(), StatusCode::OK);
+    // Drain stream so chat_finalize runs before regenerate.
+    let _ = to_bytes(chat_res.into_body(), 1024 * 1024).await.unwrap();
 
     // Regenerate with NEW system prompt
     env::set_var(

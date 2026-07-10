@@ -1259,13 +1259,8 @@ fn build_regenerate_context(
         *cap = cap.clone().with_regenerate(insertion_index, request.message);
     }
 
-    // Guest path: still adjust in-memory history for finalize insert semantics
-    // (issue follow-up makes this non-destructive for guests too).
-    if !data.requires_cipher {
-        if insertion_index < data.history.len() {
-            data.history.remove(insertion_index);
-        }
-    }
+    // Guest and authed: prepare is non-destructive. Model context is a prefix only;
+    // shared history is replaced at finalize.
 
     ensure_model_allowed(provider, session.username.as_deref())?;
     data.encrypted = request.encrypted;
@@ -1404,8 +1399,8 @@ pub fn regenerate_finalize_with_capture(
             } else {
                 let pair = (user_message.to_owned(), assistant_response.to_owned());
                 if let Some(index) = insertion_index {
-                    if index <= data.history.len() {
-                        data.history.insert(index, pair);
+                    if index < data.history.len() {
+                        data.history[index] = pair;
                     } else {
                         data.history.push(pair);
                     }
@@ -1658,13 +1653,26 @@ mod tests {
         assert_eq!(context.history.len(), 1, "Context history should have 1 item");
         assert_eq!(context.history[0].0, "User1");
         
-        // The stored session history should contain everything except the removed item (User2)
-        // So it should have User1 and User3
+        // Prepare is non-destructive: full history remains until finalize.
         let stored_history = session_history(session_id);
-        assert_eq!(stored_history.len(), 2, "Stored history should have 2 items");
+        assert_eq!(stored_history.len(), 3, "Stored history unchanged after prepare");
         assert_eq!(stored_history[0].0, "User1");
-        assert_eq!(stored_history[1].0, "User3");
-        
+        assert_eq!(stored_history[1].0, "User2");
+        assert_eq!(stored_history[2].0, "User3");
+
+        regenerate_finalize(
+            &session,
+            "default",
+            "User2",
+            "new-a2",
+            result.insertion_index,
+            None,
+        );
+        let after = session_history(session_id);
+        assert_eq!(after.len(), 3);
+        assert_eq!(after[1], ("User2".into(), "new-a2".into()));
+        assert_eq!(after[2].0, "User3");
+
         // Cleanup
         release_session_lock(session_id);
     }
