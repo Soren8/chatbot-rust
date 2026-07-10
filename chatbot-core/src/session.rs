@@ -26,6 +26,9 @@ struct CachedSetPayload {
 use crate::{
     config::{self, ProviderConfig},
     enc_key::EncryptionKey,
+    history::{
+        HistoryError, HistoryService, PrepareCapture, SetId, SetSnapshot, SetVersion,
+    },
     persistence::{DataPersistence, EncryptionMode, PersistenceError},
     user_store::{normalise_username, UserStore, UserStoreError, DEFAULT_TIER},
 };
@@ -74,6 +77,8 @@ pub struct ChatContext {
     pub session_id: String,
     pub username: Option<String>,
     pub set_name: String,
+    pub set_id: Option<SetId>,
+    pub set_version: Option<SetVersion>,
     pub memory_text: String,
     pub system_prompt: String,
     pub history: Vec<(String, String)>,
@@ -82,6 +87,8 @@ pub struct ChatContext {
     pub provider: ProviderConfig,
     pub test_chunks: Option<Vec<String>>,
     pub send_thoughts: bool,
+    /// Immutable prepare snapshot for authenticated durable commits.
+    pub prepare_capture: Option<PrepareCapture>,
 }
 
 pub struct ChatPrepareResult {
@@ -796,21 +803,44 @@ fn build_chat_context(
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 
+    let mut prepare_capture = None;
+    let mut set_id = None;
+    let mut set_version = None;
+
     if data.requires_cipher {
         let key = require_encryption_key(session.username.as_deref(), encryption_key)?;
-        let key_bytes = key.expect("validated encryption key").as_bytes();
-        if !data.initialised {
-            initialise_session_data(&mut data, session, set_name, encryption_key)?;
-        } else {
-            unseal_session_data(&mut data, key_bytes, &default_prompt)?;
+        let key = key.expect("validated encryption key");
+        let username = session.username.as_deref().expect("cipher requires user");
+
+        let mut snapshot = load_history_snapshot(username, set_name, key)?;
+        if let Some(prompt) = request.system_prompt {
+            if prompt != snapshot.system_prompt {
+                let new_v = HistoryService::global()
+                    .map_err(map_history_error)?
+                    .update_system_prompt(
+                        username,
+                        snapshot.set_id,
+                        snapshot.version,
+                        prompt,
+                        key,
+                    )
+                    .map_err(map_history_error)?;
+                snapshot.system_prompt = prompt.to_owned();
+                snapshot.version = new_v;
+            }
         }
 
-        if let Some(prompt) = request.system_prompt {
-            if let Some(username) = session.username.as_deref() {
-                persist_system_prompt(username, set_name, prompt, key_bytes)?;
-            }
-            data.system_prompt = prompt.to_owned();
-        }
+        // Refresh session cache from durable snapshot (display only; not SoT for finalize).
+        data.memory = snapshot.memory.clone();
+        data.system_prompt = snapshot.system_prompt.clone();
+        data.history = snapshot.history.clone();
+        data.encrypted = true;
+        data.initialised = true;
+        let _ = seal_session_data(&mut data, key.as_bytes());
+
+        set_id = Some(snapshot.set_id);
+        set_version = Some(snapshot.version);
+        prepare_capture = Some(PrepareCapture::from_snapshot(&snapshot));
     } else if !data.initialised {
         initialise_session_data(&mut data, session, set_name, None)?;
         if let Some(prompt) = request.system_prompt {
@@ -831,18 +861,35 @@ fn build_chat_context(
 
     let test_chunks = resolve_test_chunks(provider);
 
+    let (memory_text, system_prompt, history) = if let Some(ref cap) = prepare_capture {
+        (
+            cap.memory.clone(),
+            cap.system_prompt.clone(),
+            cap.history.clone(),
+        )
+    } else {
+        (
+            data.memory.clone(),
+            data.system_prompt.clone(),
+            data.history.clone(),
+        )
+    };
+
     Ok(ChatContext {
         session_id: session.session_id.clone(),
         username: session.username.clone(),
         set_name: set_name.to_owned(),
-        memory_text: data.memory.clone(),
-        system_prompt: data.system_prompt.clone(),
-        history: data.history.clone(),
+        set_id,
+        set_version,
+        memory_text,
+        system_prompt,
+        history,
         encrypted: request.encrypted,
         model_name,
         provider: provider.clone(),
         test_chunks,
         send_thoughts: request.send_thoughts,
+        prepare_capture,
     })
 }
 
@@ -853,29 +900,105 @@ pub fn chat_finalize(
     assistant_response: &str,
     encryption_key: Option<&EncryptionKey>,
 ) -> Vec<String> {
+    chat_finalize_with_capture(
+        session,
+        set_name,
+        user_message,
+        assistant_response,
+        encryption_key,
+        None,
+    )
+}
+
+/// Finalize chat using an optional prepare capture (preferred for authed users).
+pub fn chat_finalize_with_capture(
+    session: &SessionContext,
+    set_name: &str,
+    user_message: &str,
+    assistant_response: &str,
+    encryption_key: Option<&EncryptionKey>,
+    prepare_capture: Option<PrepareCapture>,
+) -> Vec<String> {
     let store = SessionStore::global();
     let mut extras = Vec::new();
 
     if let Some(entry) = store.entries.get(&session.session_id) {
         {
             let mut data = entry.data.lock().unwrap();
-            data.history
-                .push((user_message.to_owned(), assistant_response.to_owned()));
             data.last_used = Instant::now();
 
             if let Some(username) = session.username.as_deref() {
-                if let Ok(key) = require_encryption_key(Some(username), encryption_key) {
-                    let key_bytes = key.expect("validated encryption key").as_bytes();
-                    if let Err(msg) = persist_history(username, set_name, Some(key_bytes), &data.history)
-                    {
-                        extras.push(msg);
+                match require_encryption_key(Some(username), encryption_key) {
+                    Ok(Some(key)) => {
+                        let commit = if let Some(capture) = prepare_capture.as_ref() {
+                            HistoryService::global().and_then(|hs| {
+                                hs.commit_chat_append(
+                                    username,
+                                    capture,
+                                    user_message,
+                                    assistant_response,
+                                    key,
+                                )
+                            })
+                        } else {
+                            match load_history_snapshot(username, set_name, key) {
+                                Ok(snap) => HistoryService::global().and_then(|hs| {
+                                    hs.append_pair(
+                                        username,
+                                        snap.set_id,
+                                        snap.version,
+                                        user_message,
+                                        assistant_response,
+                                        key,
+                                    )
+                                }),
+                                Err(_) => Err(HistoryError::Internal),
+                            }
+                        };
+                        match commit {
+                            Ok(_) => {
+                                if let Ok(snap) =
+                                    load_history_snapshot(username, set_name, key)
+                                {
+                                    data.history = snap.history;
+                                    data.memory = snap.memory;
+                                    data.system_prompt = snap.system_prompt;
+                                } else {
+                                    data.history.push((
+                                        user_message.to_owned(),
+                                        assistant_response.to_owned(),
+                                    ));
+                                }
+                                if let Err(response) = seal_session_data(&mut data, key.as_bytes())
+                                {
+                                    error!(
+                                        status = response.status,
+                                        "failed to seal session cache after chat finalize"
+                                    );
+                                }
+                            }
+                            Err(HistoryError::Conflict { .. }) => {
+                                extras.push(
+                                    "\n[Error] Chat history conflict — reload the set and retry."
+                                        .to_string(),
+                                );
+                            }
+                            Err(err) => {
+                                error!(?err, "failed to commit chat history");
+                                extras.push("\n[Error] Failed to save chat history".to_string());
+                            }
+                        }
                     }
-                    if let Err(response) = seal_session_data(&mut data, key_bytes) {
-                        error!(status = response.status, "failed to seal session cache after chat finalize");
+                    _ => {
+                        extras.push(
+                            "\n[Error] Failed to save chat history: missing encryption key"
+                                .to_string(),
+                        );
                     }
-                } else {
-                    extras.push("\n[Error] Failed to save chat history: missing encryption key".to_string());
                 }
+            } else {
+                data.history
+                    .push((user_message.to_owned(), assistant_response.to_owned()));
             }
         }
 
@@ -883,6 +1006,44 @@ pub fn chat_finalize(
     }
 
     extras
+}
+
+fn load_history_snapshot(
+    username: &str,
+    set_name: &str,
+    key: &EncryptionKey,
+) -> Result<SetSnapshot, ServiceResponse> {
+    let hs = HistoryService::global().map_err(map_history_error)?;
+    match hs.find_by_display_name(username, set_name, key) {
+        Ok(Some(snap)) => Ok(snap),
+        Ok(None) if set_name == "default" => hs
+            .ensure_default_set(username, key)
+            .map_err(map_history_error),
+        Ok(None) => Err(invalid_request("invalid set name")),
+        Err(err) => Err(map_history_error(err)),
+    }
+}
+
+fn map_history_error(err: HistoryError) -> ServiceResponse {
+    match err {
+        HistoryError::MissingKey | HistoryError::DecryptFailed => {
+            unauthorized("Encryption key required. Please unlock.")
+        }
+        HistoryError::NotFound => invalid_request("invalid set name"),
+        HistoryError::Conflict { current_version } => build_json_response(
+            409,
+            json!({
+                "error": "version_conflict",
+                "current_version": current_version.get(),
+            }),
+        ),
+        HistoryError::InvalidInput(msg) => invalid_request(msg),
+        HistoryError::Forbidden => forbidden("forbidden"),
+        HistoryError::Internal => {
+            error!("history service internal error");
+            server_error("internal error while accessing chat history")
+        }
+    }
 }
 
 pub fn regenerate_prepare(
@@ -959,52 +1120,90 @@ fn build_regenerate_context(
     entry: &Arc<SessionEntry>,
     encryption_key: Option<&EncryptionKey>,
 ) -> Result<(ChatContext, Option<usize>), ServiceResponse> {
-    let default_prompt = resolve_default_prompt();
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 
+    let mut prepare_capture = None;
+    let mut set_id = None;
+    let mut set_version = None;
+    let mut full_history: Vec<(String, String)>;
+    let memory_text: String;
+    let system_prompt: String;
+
     if data.requires_cipher {
         let key = require_encryption_key(session.username.as_deref(), encryption_key)?;
-        let key_bytes = key.expect("validated encryption key").as_bytes();
-        if !data.initialised {
-            initialise_session_data(&mut data, session, set_name, encryption_key)?;
-        } else {
-            unseal_session_data(&mut data, key_bytes, &default_prompt)?;
-        }
-
+        let key = key.expect("validated encryption key");
+        let username = session.username.as_deref().expect("cipher requires user");
+        let mut snapshot = load_history_snapshot(username, set_name, key)?;
         if let Some(prompt) = request.system_prompt {
-            if let Some(username) = session.username.as_deref() {
-                persist_system_prompt(username, set_name, prompt, key_bytes)?;
+            if prompt != snapshot.system_prompt {
+                let new_v = HistoryService::global()
+                    .map_err(map_history_error)?
+                    .update_system_prompt(
+                        username,
+                        snapshot.set_id,
+                        snapshot.version,
+                        prompt,
+                        key,
+                    )
+                    .map_err(map_history_error)?;
+                snapshot.system_prompt = prompt.to_owned();
+                snapshot.version = new_v;
             }
-            data.system_prompt = prompt.to_owned();
         }
-    } else if !data.initialised {
-        initialise_session_data(&mut data, session, set_name, None)?;
+        data.memory = snapshot.memory.clone();
+        data.system_prompt = snapshot.system_prompt.clone();
+        data.history = snapshot.history.clone();
+        data.initialised = true;
+        let _ = seal_session_data(&mut data, key.as_bytes());
+
+        full_history = snapshot.history.clone();
+        memory_text = snapshot.memory.clone();
+        system_prompt = snapshot.system_prompt.clone();
+        set_id = Some(snapshot.set_id);
+        set_version = Some(snapshot.version);
+        prepare_capture = Some(PrepareCapture::from_snapshot(&snapshot));
+    } else {
+        if !data.initialised {
+            initialise_session_data(&mut data, session, set_name, None)?;
+        }
         if let Some(prompt) = request.system_prompt {
             data.system_prompt = prompt.to_owned();
         }
-    } else if let Some(prompt) = request.system_prompt {
-        data.system_prompt = prompt.to_owned();
+        full_history = data.history.clone();
+        memory_text = data.memory.clone();
+        system_prompt = data.system_prompt.clone();
     }
 
+    // Non-destructive: compute insertion index without mutating durable/shared history.
     let insertion_index = if let Some(index) = request.pair_index {
-        if index >= 0 && (index as usize) < data.history.len() {
-            data.history.remove(index as usize);
+        if index >= 0 && (index as usize) < full_history.len() {
             Some(index as usize)
         } else {
             None
         }
-    } else if data
-        .history
+    } else if full_history
         .last()
         .map(|(user, _)| user == request.message)
         .unwrap_or(false)
     {
-        data.history.pop();
-        Some(data.history.len())
+        Some(full_history.len().saturating_sub(1))
     } else {
         None
     };
+
+    if let (Some(cap), Some(idx)) = (prepare_capture.as_mut(), insertion_index) {
+        *cap = cap.clone().with_regenerate(idx, request.message);
+    }
+
+    // Guest path: still adjust in-memory history for finalize insert semantics
+    if !data.requires_cipher {
+        if let Some(idx) = insertion_index {
+            if idx < data.history.len() {
+                data.history.remove(idx);
+            }
+        }
+    }
 
     ensure_model_allowed(provider, session.username.as_deref())?;
     data.encrypted = request.encrypted;
@@ -1018,23 +1217,26 @@ fn build_regenerate_context(
     let test_chunks = resolve_test_chunks(provider);
 
     let history = if let Some(index) = insertion_index {
-        data.history.iter().take(index).cloned().collect()
+        full_history.into_iter().take(index).collect()
     } else {
-        data.history.clone()
+        full_history
     };
 
     let context = ChatContext {
         session_id: session.session_id.clone(),
         username: session.username.clone(),
         set_name: set_name.to_owned(),
-        memory_text: data.memory.clone(),
-        system_prompt: data.system_prompt.clone(),
+        set_id,
+        set_version,
+        memory_text,
+        system_prompt,
         history,
         encrypted: request.encrypted,
         model_name,
         provider: provider.clone(),
         test_chunks,
         send_thoughts: request.send_thoughts,
+        prepare_capture,
     };
 
     Ok((context, insertion_index))
@@ -1048,42 +1250,107 @@ pub fn regenerate_finalize(
     insertion_index: Option<usize>,
     encryption_key: Option<&EncryptionKey>,
 ) -> Vec<String> {
+    regenerate_finalize_with_capture(
+        session,
+        set_name,
+        user_message,
+        assistant_response,
+        insertion_index,
+        encryption_key,
+        None,
+    )
+}
+
+pub fn regenerate_finalize_with_capture(
+    session: &SessionContext,
+    set_name: &str,
+    user_message: &str,
+    assistant_response: &str,
+    insertion_index: Option<usize>,
+    encryption_key: Option<&EncryptionKey>,
+    prepare_capture: Option<PrepareCapture>,
+) -> Vec<String> {
     let store = SessionStore::global();
     let mut extras = Vec::new();
 
     if let Some(entry) = store.entries.get(&session.session_id) {
         {
             let mut data = entry.data.lock().unwrap();
-            let pair = (user_message.to_owned(), assistant_response.to_owned());
-
-            if let Some(index) = insertion_index {
-                if index <= data.history.len() {
-                    data.history.insert(index, pair);
-                } else {
-                    data.history.push(pair);
-                }
-            } else {
-                data.history.push(pair);
-            }
-
             data.last_used = Instant::now();
 
             if let Some(username) = session.username.as_deref() {
-                if let Ok(key) = require_encryption_key(Some(username), encryption_key) {
-                    let key_bytes = key.expect("validated encryption key").as_bytes();
-                    if let Err(msg) =
-                        persist_history(username, set_name, Some(key_bytes), &data.history)
-                    {
-                        extras.push(msg);
+                match require_encryption_key(Some(username), encryption_key) {
+                    Ok(Some(key)) => {
+                        let commit = if let Some(mut capture) = prepare_capture {
+                            if capture.insertion_index.is_none() {
+                                if let Some(idx) = insertion_index {
+                                    capture = capture.with_regenerate(idx, user_message);
+                                }
+                            }
+                            HistoryService::global().and_then(|hs| {
+                                hs.commit_regenerate(username, &capture, assistant_response, key)
+                            })
+                        } else {
+                            match load_history_snapshot(username, set_name, key) {
+                                Ok(snap) => {
+                                    let mut cap = PrepareCapture::from_snapshot(&snap);
+                                    if let Some(idx) = insertion_index {
+                                        cap = cap.with_regenerate(idx, user_message);
+                                    }
+                                    HistoryService::global().and_then(|hs| {
+                                        hs.commit_regenerate(
+                                            username,
+                                            &cap,
+                                            assistant_response,
+                                            key,
+                                        )
+                                    })
+                                }
+                                Err(_) => Err(HistoryError::Internal),
+                            }
+                        };
+                        match commit {
+                            Ok(_) => {
+                                if let Ok(snap) =
+                                    load_history_snapshot(username, set_name, key)
+                                {
+                                    data.history = snap.history;
+                                    data.memory = snap.memory;
+                                    data.system_prompt = snap.system_prompt;
+                                }
+                                let _ = seal_session_data(&mut data, key.as_bytes());
+                            }
+                            Err(HistoryError::Conflict { .. }) => {
+                                extras.push(
+                                    "\n[Error] Chat history conflict — reload the set and retry."
+                                        .to_string(),
+                                );
+                            }
+                            Err(err) => {
+                                error!(?err, "failed to commit regenerate history");
+                                extras.push(
+                                    "\n[Error] Failed to save chat history".to_string(),
+                                );
+                            }
+                        }
                     }
-                    if let Err(response) = seal_session_data(&mut data, key_bytes) {
-                        error!(
-                            status = response.status,
-                            "failed to seal session cache after regenerate finalize"
+                    _ => {
+                        extras.push(
+                            "\n[Error] Failed to save chat history: missing encryption key"
+                                .to_string(),
                         );
                     }
+                }
+            } else {
+                let pair = (user_message.to_owned(), assistant_response.to_owned());
+                if let Some(index) = insertion_index {
+                    if index <= data.history.len() {
+                        data.history.insert(index, pair);
+                    } else {
+                        data.history.push(pair);
+                    }
                 } else {
-                    extras.push("\n[Error] Failed to save chat history: missing encryption key".to_string());
+                    data.history.push(pair);
                 }
             }
         }
@@ -1092,29 +1359,6 @@ pub fn regenerate_finalize(
     }
 
     extras
-}
-
-fn persist_history(
-    username: &str,
-    set_name: &str,
-    encryption_key: Option<&[u8]>,
-    history: &[(String, String)],
-) -> Result<(), String> {
-    let Some(key) = encryption_key else {
-        return Err("\n[Error] Failed to save chat history: missing encryption key".to_string());
-    };
-
-    let persistence = DataPersistence::new().map_err(|err| {
-        error!(?err, "failed to open persistence store for chat history");
-        "\n[Error] Unexpected error saving chat history".to_string()
-    })?;
-
-    persistence
-        .store_history(username, set_name, history, EncryptionMode::Fernet(key))
-        .map_err(|err| {
-            error!(?err, "failed to persist chat history");
-            "\n[Error] Failed to save chat history".to_string()
-        })
 }
 
 pub fn update_session_memory(session_id: &str, memory: &str) {

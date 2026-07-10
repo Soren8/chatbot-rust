@@ -3,7 +3,8 @@ use axum::{
     http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    persistence::{DataPersistence, EncryptionMode, PersistenceError},
+    history::{HistoryError, HistoryService},
+    persistence::{DataPersistence, PersistenceError},
     session,
 };
 use serde::Deserialize;
@@ -86,8 +87,6 @@ pub async fn handle_update_memory(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for update_memory");
         (
@@ -109,25 +108,18 @@ pub async fn handle_update_memory(
         {
             return build_service_response(response);
         }
-        let key = encryption_key
-            .as_ref()
-            .expect("validated encryption key")
-            .as_bytes();
-
-        persistence
-            .store_memory(
-                username,
-                &set_name,
-                &memory_text,
-                EncryptionMode::Fernet(key),
-            )
-            .map_err(persistence_error_to_http)?;
+        let key = encryption_key.as_ref().expect("validated encryption key");
+        let history = HistoryService::global().map_err(history_error_to_tuple)?;
+        let snap = resolve_set_by_name(&history, username, &set_name, key)?;
+        let version = history
+            .update_memory(username, snap.set_id, snap.version, &memory_text, key)
+            .map_err(history_error_to_tuple)?;
 
         if let Err(response) = session::update_session_memory_for_request(
             &session.session_id,
             username,
             &memory_text,
-            encryption_key.as_ref().expect("validated encryption key"),
+            key,
         ) {
             return build_service_response(response);
         }
@@ -137,7 +129,9 @@ pub async fn handle_update_memory(
             json!({
                 "status": "success",
                 "message": "Memory saved to disk",
-                "storage": "disk"
+                "storage": "disk",
+                "version": version.get(),
+                "set_id": snap.set_id.to_string(),
             }),
         )
     } else {
@@ -192,8 +186,6 @@ pub async fn handle_update_system_prompt(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(
             ?err,
@@ -218,25 +210,18 @@ pub async fn handle_update_system_prompt(
         {
             return build_service_response(response);
         }
-        let key = encryption_key
-            .as_ref()
-            .expect("validated encryption key")
-            .as_bytes();
-
-        persistence
-            .store_system_prompt(
-                username,
-                &set_name,
-                &system_prompt,
-                EncryptionMode::Fernet(key),
-            )
-            .map_err(persistence_error_to_http)?;
+        let key = encryption_key.as_ref().expect("validated encryption key");
+        let history = HistoryService::global().map_err(history_error_to_tuple)?;
+        let snap = resolve_set_by_name(&history, username, &set_name, key)?;
+        let version = history
+            .update_system_prompt(username, snap.set_id, snap.version, &system_prompt, key)
+            .map_err(history_error_to_tuple)?;
 
         if let Err(response) = session::update_session_system_prompt_for_request(
             &session.session_id,
             username,
             &system_prompt,
-            encryption_key.as_ref().expect("validated encryption key"),
+            key,
         ) {
             return build_service_response(response);
         }
@@ -246,7 +231,9 @@ pub async fn handle_update_system_prompt(
             json!({
                 "status": "success",
                 "message": "System prompt saved to disk",
-                "storage": "disk"
+                "storage": "disk",
+                "version": version.get(),
+                "set_id": snap.set_id.to_string(),
             }),
         )
     } else {
@@ -313,8 +300,6 @@ pub async fn handle_delete_message(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for delete_message");
         (
@@ -323,26 +308,72 @@ pub async fn handle_delete_message(
         )
     })?;
 
-    let mut history = if let Some(username) = session.username.as_deref() {
-        match session::session_history_for_request(
-            &session.session_id,
-            Some(username),
-            encryption_key.as_ref(),
-        ) {
-            Ok(value) => value,
-            Err(response) => return build_service_response(response),
+    if let Some(username) = session.username.as_deref() {
+        if let Err(response) =
+            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        {
+            return build_service_response(response);
         }
-    } else {
-        session::session_history(&session.session_id)
-    };
+        let key = encryption_key.as_ref().expect("validated encryption key");
+        let history_svc = HistoryService::global().map_err(history_error_to_tuple)?;
+        let snap = resolve_set_by_name(&history_svc, username, &set_name, key)?;
+        if pair_index >= snap.history.len() {
+            return build_json_response(
+                StatusCode::NOT_FOUND,
+                json!({"status": "error", "error": "pair_index out of range"}),
+            );
+        }
+        match history_svc.delete_pair(
+            username,
+            snap.set_id,
+            snap.version,
+            pair_index,
+            trimmed,
+            key,
+        ) {
+            Ok(version) => {
+                let mut remaining = snap.history;
+                remaining.remove(pair_index);
+                if let Err(response) = session::set_session_history_for_request(
+                    &session.session_id,
+                    Some(username),
+                    remaining,
+                    encryption_key.as_ref(),
+                ) {
+                    return build_service_response(response);
+                }
+                return build_json_response(
+                    StatusCode::OK,
+                    json!({
+                        "status": "success",
+                        "version": version.get(),
+                        "set_id": snap.set_id.to_string(),
+                    }),
+                );
+            }
+            Err(HistoryError::InvalidInput("content mismatch at pair_index")) => {
+                return build_json_response(
+                    StatusCode::CONFLICT,
+                    json!({"status": "error", "error": "content mismatch at pair_index"}),
+                );
+            }
+            Err(HistoryError::InvalidInput("pair_index out of range")) => {
+                return build_json_response(
+                    StatusCode::NOT_FOUND,
+                    json!({"status": "error", "error": "pair_index out of range"}),
+                );
+            }
+            Err(err) => return Err(history_error_to_tuple(err)),
+        }
+    }
 
+    let mut history = session::session_history(&session.session_id);
     if pair_index >= history.len() {
         return build_json_response(
             StatusCode::NOT_FOUND,
             json!({"status": "error", "error": "pair_index out of range"}),
         );
     }
-
     let (stored_user, _stored_assistant) = &history[pair_index];
     if stored_user.trim() != trimmed {
         return build_json_response(
@@ -350,36 +381,8 @@ pub async fn handle_delete_message(
             json!({"status": "error", "error": "content mismatch at pair_index"}),
         );
     }
-
     history.remove(pair_index);
-
-    if let Some(username) = session.username.as_deref() {
-        if let Err(response) = session::set_session_history_for_request(
-            &session.session_id,
-            Some(username),
-            history.clone(),
-            encryption_key.as_ref(),
-        ) {
-            return build_service_response(response);
-        }
-
-        let key = encryption_key
-            .as_ref()
-            .expect("validated encryption key")
-            .as_bytes();
-
-        persistence
-            .store_history(
-                username,
-                &set_name,
-                &history,
-                EncryptionMode::Fernet(key),
-            )
-            .map_err(persistence_error_to_http)?;
-    } else {
-        session::update_session_history(&session.session_id, &history);
-    }
-
+    session::update_session_history(&session.session_id, &history);
     build_json_response(StatusCode::OK, json!({"status": "success"}))
 }
 
@@ -449,6 +452,45 @@ fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
                 "persistence error".to_string(),
             )
         }
+    }
+}
+
+fn history_error_to_tuple(err: HistoryError) -> (StatusCode, String) {
+    match err {
+        HistoryError::MissingKey | HistoryError::DecryptFailed => (
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.".to_string(),
+        ),
+        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".to_string()),
+        HistoryError::Conflict { current_version } => (
+            StatusCode::CONFLICT,
+            format!("version_conflict:{}", current_version.get()),
+        ),
+        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.to_string()),
+        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
+        HistoryError::Internal => {
+            error!("internal history error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "history store error".to_string(),
+            )
+        }
+    }
+}
+
+fn resolve_set_by_name(
+    history: &HistoryService,
+    username: &str,
+    set_name: &str,
+    key: &chatbot_core::enc_key::EncryptionKey,
+) -> Result<chatbot_core::history::SetSnapshot, (StatusCode, String)> {
+    match history.find_by_display_name(username, set_name, key) {
+        Ok(Some(snap)) => Ok(snap),
+        Ok(None) if set_name == "default" => history
+            .ensure_default_set(username, key)
+            .map_err(history_error_to_tuple),
+        Ok(None) => Err((StatusCode::BAD_REQUEST, "set not found".to_string())),
+        Err(err) => Err(history_error_to_tuple(err)),
     }
 }
 

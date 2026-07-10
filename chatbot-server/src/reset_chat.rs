@@ -4,7 +4,8 @@ use axum::{
     http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    persistence::{DataPersistence, EncryptionMode, PersistenceError},
+    history::{HistoryError, HistoryService},
+    persistence::{DataPersistence, PersistenceError},
     session,
 };
 use serde::Deserialize;
@@ -93,21 +94,21 @@ pub async fn handle_reset_chat(
         {
             return build_service_response(response);
         }
-        let key = encryption_key
-            .as_ref()
-            .expect("validated encryption key")
-            .as_bytes();
-
-        let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-
-        persistence
-            .store_history(
-                username,
-                &set_name,
-                &[],
-                EncryptionMode::Fernet(key),
-            )
-            .map_err(persistence_error_to_http)?;
+        let key = encryption_key.as_ref().expect("validated encryption key");
+        let history = HistoryService::global().map_err(history_error_to_http)?;
+        let snap = match history.find_by_display_name(username, &set_name, key) {
+            Ok(Some(s)) => s,
+            Ok(None) if set_name == "default" => history
+                .ensure_default_set(username, key)
+                .map_err(history_error_to_http)?,
+            Ok(None) => {
+                return Err((StatusCode::BAD_REQUEST, "set not found".to_string()));
+            }
+            Err(err) => return Err(history_error_to_http(err)),
+        };
+        let version = history
+            .reset_history(username, snap.set_id, snap.version, key)
+            .map_err(history_error_to_http)?;
 
         if let Err(response) = session::set_session_history_for_request(
             &session_context.session_id,
@@ -117,10 +118,20 @@ pub async fn handle_reset_chat(
         ) {
             return build_service_response(response);
         }
-    } else {
-        session::update_session_history(&session_context.session_id, &[]);
+
+        return build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "message": "Chat history has been reset.",
+                "set_name": set_name,
+                "set_id": snap.set_id.to_string(),
+                "version": version.get(),
+            }),
+        );
     }
 
+    session::update_session_history(&session_context.session_id, &[]);
     build_json_response(
         StatusCode::OK,
         json!({
@@ -154,22 +165,24 @@ fn build_service_response(
     crate::build_response(response).map_err(|(status, message)| (status, message))
 }
 
-fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
+fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
     match err {
-        PersistenceError::MissingEncryptionKey => {
-            (StatusCode::UNAUTHORIZED, "relogin required".to_string())
-        }
-        PersistenceError::InvalidSetName => {
-            (StatusCode::BAD_REQUEST, "invalid set name".to_string())
-        }
-        PersistenceError::InvalidUsername => {
-            (StatusCode::BAD_REQUEST, "invalid session".to_string())
-        }
-        other => {
-            error!(?other, "persistence error during reset_chat");
+        HistoryError::MissingKey | HistoryError::DecryptFailed => (
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.".to_string(),
+        ),
+        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".to_string()),
+        HistoryError::Conflict { current_version } => (
+            StatusCode::CONFLICT,
+            format!("version_conflict:{}", current_version.get()),
+        ),
+        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.to_string()),
+        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
+        HistoryError::Internal => {
+            error!("internal history error during reset_chat");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "persistence error".to_string(),
+                "history store error".to_string(),
             )
         }
     }

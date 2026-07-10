@@ -221,7 +221,54 @@ async fn set_management_flow() {
         "new set not present"
     );
 
-    seed_plaintext_set(&workspace.path().join("user_sets"), username, new_set_name);
+    // Seed content via HistoryService-backed memory/prompt endpoints
+    let mem_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/update_memory")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "set_name": new_set_name,
+                        "memory": "Important notes",
+                        "logged_in": true,
+                    }))
+                    .expect("memory payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /update_memory");
+    assert_eq!(mem_response.status(), StatusCode::OK);
+
+    let prompt_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/update_system_prompt")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "set_name": new_set_name,
+                        "system_prompt": "Study hard",
+                        "logged_in": true,
+                    }))
+                    .expect("prompt payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /update_system_prompt");
+    assert_eq!(prompt_response.status(), StatusCode::OK);
 
     let load_response = app
         .clone()
@@ -254,11 +301,13 @@ async fn set_management_flow() {
         load_json.get("memory").and_then(|v| v.as_str()),
         Some("Important notes")
     );
+    assert!(load_json.get("set_id").and_then(|v| v.as_str()).is_some());
+    assert!(load_json.get("version").and_then(|v| v.as_u64()).is_some());
     let history_items = load_json
         .get("history")
         .and_then(|v| v.as_array())
         .expect("history array");
-    assert_eq!(history_items.len(), 2);
+    assert_eq!(history_items.len(), 0);
 
     let delete_response = app
         .clone()
@@ -287,14 +336,6 @@ async fn set_management_flow() {
         delete_json.get("status"),
         Some(&serde_json::Value::String("success".into()))
     );
-
-    let user_set_dir = workspace.path().join("user_sets").join(username);
-    assert!(!user_set_dir
-        .join(format!("{}_memory.txt", new_set_name))
-        .exists());
-    assert!(!user_set_dir
-        .join(format!("{}_history.json", new_set_name))
-        .exists());
 
     let final_sets_response = app
         .clone()

@@ -11,7 +11,8 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
-    persistence::{DataPersistence, EncryptionMode},
+    enc_key::EncryptionKey,
+    history::HistoryService,
     user_store::UserStore,
 };
 use chatbot_server::{build_router, resolve_static_root};
@@ -200,11 +201,13 @@ async fn edit_message_via_regenerate_endpoint() {
 
     // 3. Verify persistence
     let store = UserStore::new().unwrap();
-    let key = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
-    let persistence = DataPersistence::new().unwrap();
-    let loaded = persistence
-        .load_set(USERNAME, "default", Some(EncryptionMode::Fernet(key.as_slice())))
-        .unwrap();
+    let key_bytes = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
+    let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap()).unwrap();
+    let history = HistoryService::global().unwrap();
+    let loaded = history
+        .find_by_display_name(USERNAME, "default", &key)
+        .unwrap()
+        .expect("default set");
 
     assert_eq!(loaded.history.len(), 1);
     assert_eq!(loaded.history[0].0, "Edited message");

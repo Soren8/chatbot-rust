@@ -219,6 +219,7 @@ pub async fn handle_regenerate(
 
     let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
+    let prepare_capture = context.prepare_capture.clone();
     let user_message = payload.message.clone();
     let encryption_key_for_finalize = encryption_key.clone();
 
@@ -323,6 +324,7 @@ pub async fn handle_regenerate(
             final_response,
             insertion_index,
             encryption_key_for_finalize.as_ref(),
+            prepare_capture.clone(),
         ) {
             Ok(extra_chunks) => {
                 stream_lock.lock().unwrap().mark_released();
@@ -370,13 +372,15 @@ fn regenerate_finalize(
     assistant_response: &str,
     insertion_index: Option<usize>,
     encryption_key: Option<&chatbot_core::enc_key::EncryptionKey>,
+    prepare_capture: Option<chatbot_core::history::PrepareCapture>,
 ) -> Result<Vec<String>> {
-    Ok(session::regenerate_finalize(
+    Ok(session::regenerate_finalize_with_capture(
         session,
         set_name,
         user_message,
         assistant_response,
         insertion_index,
         encryption_key,
+        prepare_capture,
     ))
 }

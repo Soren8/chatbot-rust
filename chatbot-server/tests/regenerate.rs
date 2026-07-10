@@ -11,7 +11,8 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
-    persistence::{DataPersistence, EncryptionMode},
+    enc_key::EncryptionKey,
+    history::HistoryService,
     user_store::UserStore,
 };
 use chatbot_server::{build_router, resolve_static_root};
@@ -397,18 +398,16 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 
     let store = UserStore::new().expect("open user store");
-    let key = store
+    let key_bytes = store
         .derive_encryption_key(USERNAME, PASSWORD)
         .expect("derive encryption key");
-
-    let persistence = DataPersistence::new().expect("data persistence init");
-    let loaded = persistence
-        .load_set(
-            USERNAME,
-            "default",
-            Some(EncryptionMode::Fernet(key.as_slice())),
-        )
-        .expect("load persisted set");
+    let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap())
+        .expect("enc key");
+    let history = HistoryService::global().expect("history service");
+    let loaded = history
+        .find_by_display_name(USERNAME, "default", &key)
+        .expect("find")
+        .expect("default");
 
     assert_eq!(
         loaded.history.len(),
@@ -563,9 +562,13 @@ async fn regenerate_updates_system_prompt_in_history() {
 
     // Verify Persistence
     let store = UserStore::new().unwrap();
-    let key = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
-    let persistence = DataPersistence::new().unwrap();
-    let loaded = persistence.load_set(USERNAME, "default", Some(EncryptionMode::Fernet(key.as_slice()))).unwrap();
+    let key_bytes = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
+    let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap()).unwrap();
+    let history = HistoryService::global().unwrap();
+    let loaded = history
+        .find_by_display_name(USERNAME, "default", &key)
+        .unwrap()
+        .expect("default set");
 
     assert_eq!(loaded.system_prompt, "New System Prompt", "System prompt should be updated after regenerate");
 }

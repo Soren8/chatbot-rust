@@ -11,7 +11,8 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
-    persistence::{DataPersistence, EncryptionMode},
+    enc_key::EncryptionKey,
+    history::HistoryService,
     user_store::UserStore,
 };
 use chatbot_server::{build_router, resolve_static_root};
@@ -381,32 +382,30 @@ async fn chat_stream_persists_history_for_logged_in_user() {
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 
     let store = UserStore::new().expect("open user store");
-    let key = store
+    let key_bytes = store
         .derive_encryption_key(USERNAME, PASSWORD)
         .expect("derive encryption key");
+    let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap())
+        .expect("enc key");
 
-    let persistence = DataPersistence::new().expect("data persistence init");
-    let loaded = persistence
-        .load_set(
-            USERNAME,
-            "default",
-            Some(EncryptionMode::Fernet(key.as_slice())),
-        )
-        .expect("load persisted set");
+    let history = HistoryService::global().expect("history service");
+    let snap = history
+        .find_by_display_name(USERNAME, "default", &key)
+        .expect("find default")
+        .expect("default set exists");
 
-    assert!(loaded.encrypted, "history set should be marked encrypted");
     assert_eq!(
-        loaded.history.len(),
+        snap.history.len(),
         1,
         "first chat persists single history entry"
     );
-    assert_eq!(loaded.history[0].0, "Hello from rust");
+    assert_eq!(snap.history[0].0, "Hello from rust");
     assert!(
-        loaded.history[0].1.contains("streamed chunk"),
+        snap.history[0].1.contains("streamed chunk"),
         "assistant response should include streamed chunk"
     );
     assert_eq!(
-        loaded.system_prompt, "Custom prompt",
+        snap.system_prompt, "Custom prompt",
         "system prompt update should be stored on disk"
     );
 }

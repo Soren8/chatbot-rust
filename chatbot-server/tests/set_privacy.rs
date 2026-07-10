@@ -152,17 +152,31 @@ async fn set_names_leak_repro() {
 
     assert_eq!(create_response.status(), StatusCode::OK);
 
-    // Verify privacy on disk
-    let user_set_dir = workspace.path().join("user_sets").join(username);
-    let sets_json_path = user_set_dir.join("sets.json");
-    
-    let sets_json_content = fs::read_to_string(&sets_json_path).expect("read sets.json");
-    // It should NOT be valid JSON (because it's encrypted with Fernet)
-    let is_json = serde_json::from_str::<serde_json::Value>(&sets_json_content).is_ok();
-    assert!(!is_json, "sets.json should be encrypted, but it's valid JSON: {}", sets_json_content);
-    assert!(!sets_json_content.contains(secret_set_name), "Leaked set name in encrypted sets.json!");
+    // Durable store is redb; sensitive display names must not appear in plaintext on disk.
+    let redb_path = workspace.path().join("history").join("redb");
+    assert!(redb_path.exists(), "redb store should exist after create_set");
+    let redb_bytes = fs::read(&redb_path).expect("read redb");
+    assert!(
+        !redb_bytes
+            .windows(secret_set_name.len())
+            .any(|w| w == secret_set_name.as_bytes()),
+        "Leaked set name in redb file"
+    );
 
-    // We also need to save some data to see the filenames
+    // Legacy name-keyed history files must not exist
+    let user_set_dir = workspace.path().join("user_sets").join(username);
+    let history_file = user_set_dir.join(format!("{}_history.json", secret_set_name));
+    assert!(
+        !history_file.exists(),
+        "History file should NOT exist with plaintext name: {}",
+        history_file.display()
+    );
+
+    // Chat into the set still works via display name
+    env::set_var(
+        "CHATBOT_TEST_OPENAI_CHUNKS",
+        r#"["hi"]"#,
+    );
     let save_response = app
         .clone()
         .oneshot(
@@ -188,8 +202,13 @@ async fn set_names_leak_repro() {
     let _ = to_bytes(save_response.into_body(), 1024 * 1024)
         .await
         .expect("read chat response body");
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 
-    // Filenames should NOT exist (everything is in sets.json)
-    let history_file = user_set_dir.join(format!("{}_history.json", secret_set_name));
-    assert!(!history_file.exists(), "History file should NOT exist with plaintext name: {}", history_file.display());
+    let redb_bytes = fs::read(&redb_path).expect("read redb after chat");
+    assert!(
+        !redb_bytes
+            .windows(secret_set_name.len())
+            .any(|w| w == secret_set_name.as_bytes()),
+        "Leaked set name in redb file after chat"
+    );
 }

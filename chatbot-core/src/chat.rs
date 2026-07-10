@@ -255,6 +255,8 @@ mod tests {
             session_id: "session-1".into(),
             username: Some("user".into()),
             set_name: "default".into(),
+            set_id: None,
+            set_version: None,
             memory_text: memory.into(),
             system_prompt: "You are helpful.".into(),
             history,
@@ -276,6 +278,7 @@ mod tests {
             },
             test_chunks: None,
             send_thoughts: false,
+            prepare_capture: None,
         }
     }
 

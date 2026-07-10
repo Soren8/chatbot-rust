@@ -873,7 +873,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     body: JSON.stringify({
       message: userText,
       system_prompt: $('#user-system-prompt').val(),
-      set_name: $('#set-selector').val() || 'default',
+      set_name: (function(){ const $o=$('#set-selector option:selected'); return $o.attr('data-name')||$o.text()||'default'; })(),
       model_name: $('#modelSelect').val(),
       pair_index: pairIndex,
       web_search: $('#web-search-toggle').hasClass('btn-primary'),
@@ -1076,7 +1076,7 @@ function handleDeleteMessage(buttonElement) {
       pair_index: pairIndex,
       user_message: userText,
       ai_message: aiText,
-      set_name: $('#set-selector').val() || 'default'
+      set_name: (function(){ const $o=$('#set-selector option:selected'); return $o.attr('data-name')||$o.text()||'default'; })()
     })
   })
   .then(r => {
@@ -1450,18 +1450,27 @@ $(document).ready(function() {
           const $selector = $('#set-selector');
           $selector.empty();
           let setExists = false;
+          let preferredId = window.APP_DATA.lastSetId || null;
+          let preferredName = window.APP_DATA.lastSet || null;
           $.each(data, function(_, setInfo) {
             const setName = setInfo.name;
-            $('<option>').val(setName).text(setName).appendTo($selector);
-            if (window.APP_DATA.lastSet && setName === window.APP_DATA.lastSet) {
-                setExists = true;
+            const setId = setInfo.set_id || setName;
+            const $opt = $('<option>')
+              .val(setId)
+              .text(setName)
+              .attr('data-name', setName)
+              .attr('data-version', setInfo.version != null ? setInfo.version : '');
+            $opt.appendTo($selector);
+            if (preferredId && setId === preferredId) setExists = true;
+            else if (!preferredId && preferredName && setName === preferredName) {
+              setExists = true;
+              preferredId = setId;
             }
           });
           
-          if (setExists) {
-              $selector.val(window.APP_DATA.lastSet);
-          } else if (window.APP_DATA.lastSet) {
-              // If last set was deleted or invalid, fallback to default but don't persist yet
+          if (setExists && preferredId) {
+              $selector.val(preferredId);
+          } else if (preferredName || preferredId) {
               console.debug('Last set not found, falling back to default');
           }
 
@@ -1483,14 +1492,19 @@ $(document).ready(function() {
     window.loadChatSets = loadSets;
 
     $('#set-selector').on('change', function() {
-      const setName = $(this).val();
+      const $opt = $(this).find('option:selected');
+      const setId = $(this).val();
+      const setName = $opt.attr('data-name') || setId;
+      window.APP_DATA.lastSetId = setId;
+      window.APP_DATA.lastSet = setName;
+      window.APP_DATA.setVersion = $opt.attr('data-version') || null;
       savePreferences();
       function fetchSet() {
         return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
           return fetch('/load_set', {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ set_name: setName })
+            body: JSON.stringify({ set_id: setId, set_name: setName })
           });
         });
       }
@@ -1507,6 +1521,11 @@ $(document).ready(function() {
         })
         .then(r => r.json())
         .then(data => {
+          if (data.set_id) window.APP_DATA.lastSetId = data.set_id;
+          if (data.name) window.APP_DATA.lastSet = data.name;
+          if (data.version != null) window.APP_DATA.setVersion = data.version;
+          $opt.attr('data-version', data.version != null ? data.version : '');
+          if (data.name) $opt.attr('data-name', data.name).text(data.name);
           $('#user-system-prompt').val(data.system_prompt || '');
           $('#user-memory').val(data.memory || '');
           $('#chat-content').empty();
@@ -1536,10 +1555,12 @@ $(document).ready(function() {
           .then(r => r.json())
           .then(data => {
             if (data.status === 'success') {
-              loadSets(false).then(() => { 
-                $('#set-selector').val(setName); 
-                // Trigger change to load the newly created set
-                $('#set-selector').trigger('change'); 
+              const newId = data.set_id;
+              window.APP_DATA.lastSetId = newId;
+              window.APP_DATA.lastSet = data.name || setName;
+              loadSets(false).then(() => {
+                if (newId) $('#set-selector').val(newId);
+                $('#set-selector').trigger('change');
               });
               appendMessage('<strong>System:</strong> Created new set: ' + escapeHTML(setName), 'system-message');
             } else {
@@ -1550,8 +1571,10 @@ $(document).ready(function() {
     });
 
     $('#rename-set').on('click', function() {
-      const oldName = $('#set-selector').val();
-      if (oldName === 'default') {
+      const $opt = $('#set-selector option:selected');
+      const setId = $('#set-selector').val();
+      const oldName = $opt.attr('data-name') || setId;
+      if (oldName === 'default' || $opt.attr('data-name') === 'default') {
         appendMessage('<strong>Error:</strong> Cannot rename default set', 'error-message');
         return;
       }
@@ -1560,13 +1583,21 @@ $(document).ready(function() {
         fetch('/rename_set', {
           method: 'POST',
           headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ old_name: oldName, new_name: newName })
+          body: JSON.stringify({
+            set_id: setId,
+            old_name: oldName,
+            new_name: newName,
+            expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
+          })
         })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'success') {
+            window.APP_DATA.lastSet = newName;
+            window.APP_DATA.lastSetId = data.set_id || setId;
+            if (data.version != null) window.APP_DATA.setVersion = data.version;
             loadSets(false).then(() => {
-              $('#set-selector').val(newName);
+              $('#set-selector').val(window.APP_DATA.lastSetId);
               appendMessage('<strong>System:</strong> Renamed set to: ' + escapeHTML(newName), 'system-message');
             });
           } else {
@@ -1580,10 +1611,20 @@ $(document).ready(function() {
     });
 
     $('#delete-set').on('click', function() {
-      const setName = $('#set-selector').val();
+      const $opt = $('#set-selector option:selected');
+      const setId = $('#set-selector').val();
+      const setName = $opt.attr('data-name') || setId;
       if (setName === 'default') { appendMessage('<strong>Error:</strong> Cannot delete default set', 'error-message'); return; }
       if (confirm('Are you sure you want to delete set: ' + setName + '?')) {
-        fetch('/delete_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
+        fetch('/delete_set', {
+          method: 'POST',
+          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            set_id: setId,
+            set_name: setName,
+            expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
+          })
+        })
           .then(r => r.json())
           .then(data => {
             if (data.status === 'success') { loadSets(); appendMessage('<strong>System:</strong> Deleted set: ' + escapeHTML(setName), 'system-message'); }
@@ -1593,10 +1634,15 @@ $(document).ready(function() {
     });
   }
 
+  function activeSetName() {
+    const $opt = $('#set-selector option:selected');
+    return $opt.attr('data-name') || $opt.text() || 'default';
+  }
+
   // Save buttons
   $('#save-system-prompt').on('click', function() {
     const sysPromptText = $('#user-system-prompt').val();
-    const setName = $('#set-selector').val() || 'default';
+    const setName = activeSetName();
     fetch('/update_system_prompt', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
@@ -1619,7 +1665,7 @@ $(document).ready(function() {
 
   $('#save-memory').on('click', function() {
     const memText = $('#user-memory').val();
-    const setName = $('#set-selector').val() || 'default';
+    const setName = activeSetName();
     fetch('/update_memory', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
@@ -1650,7 +1696,7 @@ $(document).ready(function() {
     const message = $userInputElement.val().trim();
     if (!message && !pendingImageData) return;
     const systemPrompt = $systemPromptElement.val() || window.DEFAULT_SYSTEM_PROMPT;
-    const activeSet = ($('#set-selector').val() || 'default');
+    const activeSet = (typeof activeSetName === 'function' ? activeSetName() : ($('#set-selector option:selected').attr('data-name') || 'default'));
 
     // Build message content with optional image
     let fullMessage = message;
@@ -1884,7 +1930,7 @@ $(document).ready(function() {
   });
 
   $('#reset-chat').on('click', function() {
-    const setName = $('#set-selector').val() || 'default';
+    const setName = typeof activeSetName === 'function' ? activeSetName() : 'default';
     if (confirm(`Are you sure you want to reset the chat history for set: ${setName}?`)) {
       fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
         .then(r => { if (!r.ok) return r.json().then(err => { throw new Error(err.message || 'Failed to reset chat'); }); return r.json(); })

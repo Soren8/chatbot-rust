@@ -3,7 +3,8 @@ use axum::{
     http::{header, Method, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    persistence::{DataPersistence, EncryptionMode, PersistenceError},
+    history::{HistoryError, HistoryService, SetId, SetVersion},
+    persistence::DataPersistence,
     session,
 };
 use serde::Deserialize;
@@ -11,15 +12,25 @@ use serde_json::json;
 use tracing::error;
 
 #[derive(Deserialize, Default)]
-struct SetNameRequest {
+struct SetRequest {
     #[serde(default)]
     set_name: Option<String>,
+    #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
+    expected_version: Option<u64>,
 }
 
 #[derive(Deserialize)]
 struct RenameSetRequest {
-    old_name: String,
-    new_name: String,
+    #[serde(default)]
+    old_name: Option<String>,
+    #[serde(default)]
+    new_name: Option<String>,
+    #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
+    expected_version: Option<u64>,
 }
 
 pub async fn handle_get_sets(
@@ -53,29 +64,36 @@ pub async fn handle_get_sets(
         }
     };
 
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+    if let Err(response) =
+        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+    {
         return build_service_response(response);
     }
-    let encryption_mode = encryption_key
-        .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
+    let key = encryption_key.as_ref().expect("validated encryption key");
 
-    let sets = persistence
-        .list_sets(username, encryption_mode)
-        .map_err(persistence_error_to_http)?;
+    let history = HistoryService::global().map_err(history_error_to_http)?;
+    // Ensure at least default exists for new accounts
+    if history.list_sets(username, key).map_err(history_error_to_http)?.is_empty() {
+        history
+            .ensure_default_set(username, key)
+            .map_err(history_error_to_http)?;
+    }
 
-    let mut sets_vec: Vec<(String, chatbot_core::persistence::SetMetadata)> = sets.into_iter().collect();
-    sets_vec.sort_by(|a, b| b.1.modified.partial_cmp(&a.1.modified).unwrap_or(std::cmp::Ordering::Equal));
-
-    let payload = json!(sets_vec.into_iter().map(|(name, meta)| {
-        json!({
-            "name": name,
-            "created": meta.created,
-            "modified": meta.modified,
-            "encrypted": meta.encrypted
+    let sets = history.list_sets(username, key).map_err(history_error_to_http)?;
+    let payload = json!(sets
+        .into_iter()
+        .map(|s| {
+            json!({
+                "set_id": s.set_id.to_string(),
+                "name": s.display_name,
+                "version": s.version.get(),
+                "modified": (s.updated_at as f64) / 1000.0,
+                "created": (s.updated_at as f64) / 1000.0,
+                "is_default": s.is_default,
+                "encrypted": true
+            })
         })
-    }).collect::<Vec<_>>());
+        .collect::<Vec<_>>());
 
     build_json_response(StatusCode::OK, payload)
 }
@@ -99,9 +117,9 @@ pub async fn handle_create_set(
     })?;
 
     let payload = if body_bytes.is_empty() {
-        SetNameRequest::default()
+        SetRequest::default()
     } else {
-        serde_json::from_slice::<SetNameRequest>(&body_bytes).map_err(|err| {
+        serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /create_set");
             (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
         })?
@@ -132,13 +150,12 @@ pub async fn handle_create_set(
         }
     };
 
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+    if let Err(response) =
+        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+    {
         return build_service_response(response);
     }
-    let encryption_mode = encryption_key
-        .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
+    let key = encryption_key.as_ref().expect("validated encryption key");
 
     let set_name = match DataPersistence::normalise_custom_set_name(&set_name_raw) {
         Ok(value) => value,
@@ -153,16 +170,25 @@ pub async fn handle_create_set(
         }
     };
 
-    match persistence.create_set(username, &set_name, encryption_mode) {
-        Ok(_) => build_json_response(StatusCode::OK, json!({"status": "success"})),
-        Err(PersistenceError::InvalidSetName) => build_json_response(
+    let history = HistoryService::global().map_err(history_error_to_http)?;
+    match history.create_set(username, &set_name, key) {
+        Ok(summary) => build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "set_id": summary.set_id.to_string(),
+                "name": summary.display_name,
+                "version": summary.version.get(),
+            }),
+        ),
+        Err(HistoryError::InvalidInput(_)) => build_json_response(
             StatusCode::OK,
             json!({
                 "status": "error",
                 "error": "Set already exists or invalid name"
             }),
         ),
-        Err(err) => Err(persistence_error_to_http(err)),
+        Err(err) => Err(history_error_to_http(err)),
     }
 }
 
@@ -185,15 +211,13 @@ pub async fn handle_delete_set(
     })?;
 
     let payload = if body_bytes.is_empty() {
-        SetNameRequest::default()
+        SetRequest::default()
     } else {
-        serde_json::from_slice::<SetNameRequest>(&body_bytes).map_err(|err| {
+        serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /delete_set");
             (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
         })?
     };
-
-    let set_name_raw = payload.set_name.unwrap_or_default();
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
@@ -218,37 +242,57 @@ pub async fn handle_delete_set(
         }
     };
 
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+    if let Err(response) =
+        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+    {
         return build_service_response(response);
     }
-    let encryption_mode = encryption_key
-        .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
+    let key = encryption_key.as_ref().expect("validated encryption key");
+    let history = HistoryService::global().map_err(history_error_to_http)?;
 
-    let set_name = match DataPersistence::normalise_set_name(Some(&set_name_raw)) {
-        Ok(value) => value,
-        Err(_) => {
+    let snap = match resolve_set(
+        &history,
+        username,
+        payload.set_id.as_deref(),
+        payload.set_name.as_deref(),
+        key,
+    ) {
+        Ok(s) => s,
+        Err(err) => {
             return build_json_response(
-                StatusCode::BAD_REQUEST,
-                json!({
-                    "status": "error",
-                    "error": "invalid set name"
-                }),
+                StatusCode::OK,
+                json!({"status": "error", "error": err}),
             );
         }
     };
 
-    match persistence.delete_set(username, &set_name, encryption_mode) {
-        Ok(()) => build_json_response(StatusCode::OK, json!({"status": "success"})),
-        Err(PersistenceError::InvalidSetName) => build_json_response(
+    if snap.is_default || snap.display_name == "default" {
+        return build_json_response(
             StatusCode::OK,
+            json!({"status": "error", "error": "Cannot delete set"}),
+        );
+    }
+
+    let expected = payload
+        .expected_version
+        .map(SetVersion)
+        .unwrap_or(snap.version);
+
+    match history.delete_set(username, snap.set_id, expected, key) {
+        Ok(()) => build_json_response(StatusCode::OK, json!({"status": "success"})),
+        Err(HistoryError::Conflict { current_version }) => build_json_response(
+            StatusCode::CONFLICT,
             json!({
-                "status": "error",
-                "error": "Cannot delete set"
+                "error": "version_conflict",
+                "set_id": snap.set_id.to_string(),
+                "current_version": current_version.get(),
             }),
         ),
-        Err(err) => Err(persistence_error_to_http(err)),
+        Err(HistoryError::InvalidInput(_)) => build_json_response(
+            StatusCode::OK,
+            json!({"status": "error", "error": "Cannot delete set"}),
+        ),
+        Err(err) => Err(history_error_to_http(err)),
     }
 }
 
@@ -298,24 +342,77 @@ pub async fn handle_rename_set(
         }
     };
 
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
-    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+    if let Err(response) =
+        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+    {
         return build_service_response(response);
     }
-    let encryption_mode = encryption_key
-        .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
+    let key = encryption_key.as_ref().expect("validated encryption key");
+    let new_name_raw = payload.new_name.unwrap_or_default();
+    let new_name = match DataPersistence::normalise_custom_set_name(&new_name_raw) {
+        Ok(v) => v,
+        Err(_) => {
+            return build_json_response(
+                StatusCode::OK,
+                json!({
+                    "status": "error",
+                    "error": "Invalid set name or set already exists"
+                }),
+            );
+        }
+    };
 
-    match persistence.rename_set(username, &payload.old_name, &payload.new_name, encryption_mode) {
-        Ok(()) => build_json_response(StatusCode::OK, json!({"status": "success"})),
-        Err(PersistenceError::InvalidSetName) => build_json_response(
+    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let snap = match resolve_set(
+        &history,
+        username,
+        payload.set_id.as_deref(),
+        payload.old_name.as_deref(),
+        key,
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            return build_json_response(
+                StatusCode::OK,
+                json!({
+                    "status": "error",
+                    "error": "Invalid set name or set already exists"
+                }),
+            );
+        }
+    };
+
+    let expected = payload
+        .expected_version
+        .map(SetVersion)
+        .unwrap_or(snap.version);
+
+    match history.rename_set(username, snap.set_id, expected, &new_name, key) {
+        Ok(version) => build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "set_id": snap.set_id.to_string(),
+                "name": new_name,
+                "version": version.get(),
+            }),
+        ),
+        Err(HistoryError::Conflict { current_version }) => build_json_response(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "version_conflict",
+                "set_id": snap.set_id.to_string(),
+                "current_version": current_version.get(),
+            }),
+        ),
+        Err(HistoryError::InvalidInput(_)) => build_json_response(
             StatusCode::OK,
             json!({
                 "status": "error",
                 "error": "Invalid set name or set already exists"
             }),
         ),
-        Err(err) => Err(persistence_error_to_http(err)),
+        Err(err) => Err(history_error_to_http(err)),
     }
 }
 
@@ -338,22 +435,18 @@ pub async fn handle_load_set(
     })?;
 
     let payload = if body_bytes.is_empty() {
-        SetNameRequest::default()
+        SetRequest::default()
     } else {
-        serde_json::from_slice::<SetNameRequest>(&body_bytes).map_err(|err| {
+        serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /load_set");
             (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
         })?
     };
 
-    let set_name_raw = payload.set_name.unwrap_or_default();
-
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
-
-    let persistence = DataPersistence::new().map_err(persistence_error_to_http)?;
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for load_set");
@@ -373,53 +466,35 @@ pub async fn handle_load_set(
         }
     };
 
-    let set_name = match DataPersistence::normalise_set_name(Some(&set_name_raw)) {
-        Ok(value) => value,
-        Err(_) => {
-            return build_json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error": "invalid request"}),
-            );
-        }
-    };
-
-    if let Err(response) = session::validate_encryption_key_for_user(username, encryption_key.as_ref()) {
+    if let Err(response) =
+        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+    {
         return build_service_response(response);
     }
-    let encryption_mode = encryption_key
-        .as_ref()
-        .map(|key| EncryptionMode::Fernet(key.as_bytes()));
+    let key = encryption_key.as_ref().expect("validated encryption key");
+    let history = HistoryService::global().map_err(history_error_to_http)?;
 
-    let loaded = match persistence.load_set(username, &set_name, encryption_mode) {
-        Ok(value) => value,
-        Err(PersistenceError::MissingEncryptionKey) => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Encryption key required. Please unlock."}),
-            );
+    let loaded = match resolve_set(
+        &history,
+        username,
+        payload.set_id.as_deref(),
+        payload.set_name.as_deref(),
+        key,
+    ) {
+        Ok(s) => s,
+        Err(msg) => {
+            return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
         }
-        Err(PersistenceError::DecryptionFailed) => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Invalid encryption key."}),
-            );
-        }
-        Err(PersistenceError::InvalidSetName) => {
-            return build_json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error": "invalid request"}),
-            );
-        }
-        Err(err) => return Err(persistence_error_to_http(err)),
     };
 
+    // Keep session cache in sync for chat path until full PrepareCapture cutover.
     if let Err(response) = session::replace_session_set(
         &session.session_id,
         Some(username),
         &loaded.memory,
         &loaded.system_prompt,
         &loaded.history,
-        loaded.encrypted,
+        true,
         encryption_key.as_ref(),
     ) {
         return build_service_response(response);
@@ -434,12 +509,40 @@ pub async fn handle_load_set(
     build_json_response(
         StatusCode::OK,
         json!({
+            "set_id": loaded.set_id.to_string(),
+            "name": loaded.display_name,
+            "version": loaded.version.get(),
             "memory": loaded.memory,
             "system_prompt": loaded.system_prompt,
             "history": history_json,
-            "encrypted": loaded.encrypted
+            "encrypted": true,
+            "is_default": loaded.is_default,
         }),
     )
+}
+
+fn resolve_set(
+    history: &HistoryService,
+    username: &str,
+    set_id: Option<&str>,
+    set_name: Option<&str>,
+    key: &chatbot_core::enc_key::EncryptionKey,
+) -> Result<chatbot_core::history::SetSnapshot, &'static str> {
+    if let Some(id_str) = set_id.filter(|s| !s.trim().is_empty()) {
+        let id = SetId::parse(id_str).map_err(|_| "invalid set_id")?;
+        return history
+            .load(username, id, key)
+            .map_err(|_| "set not found");
+    }
+    let name = set_name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("default");
+    match history.find_by_display_name(username, name, key) {
+        Ok(Some(snap)) => Ok(snap),
+        Ok(None) if name == "default" => history
+            .ensure_default_set(username, key)
+            .map_err(|_| "set not found"),
+        Ok(None) => Err("set not found"),
+        Err(_) => Err("set not found"),
+    }
 }
 
 fn extract_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -468,34 +571,41 @@ fn validate_csrf(
     })?;
 
     if !valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Invalid or missing CSRF token".to_string(),
+        ));
     }
 
     Ok(())
 }
 
-fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
+fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
     match err {
-        PersistenceError::InvalidUsername => {
-            (StatusCode::BAD_REQUEST, "invalid session".to_string())
-        }
-        PersistenceError::InvalidSetName => {
-            (StatusCode::BAD_REQUEST, "invalid set name".to_string())
-        }
-        PersistenceError::MissingEncryptionKey => {
-            (StatusCode::UNAUTHORIZED, "relogin required".to_string())
-        }
-        other => {
-            error!(?other, "persistence failure");
+        HistoryError::MissingKey | HistoryError::DecryptFailed => (
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.".to_string(),
+        ),
+        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".to_string()),
+        HistoryError::Conflict { current_version } => (
+            StatusCode::CONFLICT,
+            format!("version_conflict:{}", current_version.get()),
+        ),
+        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.to_string()),
+        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
+        HistoryError::Internal => {
+            error!("internal history error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "persistence error".to_string(),
+                "history store error".to_string(),
             )
         }
     }
 }
 
-fn build_service_response(response: session::ServiceResponse) -> Result<Response<Body>, (StatusCode, String)> {
+fn build_service_response(
+    response: session::ServiceResponse,
+) -> Result<Response<Body>, (StatusCode, String)> {
     crate::build_response(response).map_err(|(status, message)| (status, message))
 }
 

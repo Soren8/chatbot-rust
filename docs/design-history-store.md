@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | In progress (PRs 1–4: domain, redb, HistoryService, sets.json migration) |
+| **Status** | In progress (PRs 1–8 wired: sets/chat/regenerate/delete/reset/memory via HistoryService; client set_id) |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 

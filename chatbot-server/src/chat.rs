@@ -228,6 +228,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
 
     let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
+    let prepare_capture = context.prepare_capture.clone();
     let user_message = payload.message.clone();
     let encryption_key_for_finalize = encryption_key.clone();
 
@@ -332,6 +333,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
             &user_message,
             final_response,
             encryption_key_for_finalize.as_ref(),
+            prepare_capture.clone(),
         ) {
             Ok(extra_chunks) => {
                 stream_lock.lock().unwrap().mark_released();
@@ -378,12 +380,14 @@ fn finalize_chat(
     user_message: &str,
     assistant_response: &str,
     encryption_key: Option<&chatbot_core::enc_key::EncryptionKey>,
+    prepare_capture: Option<chatbot_core::history::PrepareCapture>,
 ) -> Result<Vec<String>> {
-    Ok(session::chat_finalize(
+    Ok(session::chat_finalize_with_capture(
         session,
         set_name,
         user_message,
         assistant_response,
         encryption_key,
+        prepare_capture,
     ))
 }
