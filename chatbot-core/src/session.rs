@@ -1237,32 +1237,33 @@ fn build_regenerate_context(
     }
 
     // Non-destructive: compute insertion index without mutating durable/shared history.
+    // Fail fast on invalid indices so we never stream then fail commit.
     let insertion_index = if let Some(index) = request.pair_index {
-        if index >= 0 && (index as usize) < full_history.len() {
-            Some(index as usize)
-        } else {
-            None
+        if index < 0 || (index as usize) >= full_history.len() {
+            return Err(invalid_request("pair_index out of range"));
         }
+        index as usize
     } else if full_history
         .last()
         .map(|(user, _)| user == request.message)
         .unwrap_or(false)
     {
-        Some(full_history.len().saturating_sub(1))
+        full_history.len().saturating_sub(1)
     } else {
-        None
+        return Err(invalid_request(
+            "pair_index is required when message is not the last user turn",
+        ));
     };
 
-    if let (Some(cap), Some(idx)) = (prepare_capture.as_mut(), insertion_index) {
-        *cap = cap.clone().with_regenerate(idx, request.message);
+    if let Some(cap) = prepare_capture.as_mut() {
+        *cap = cap.clone().with_regenerate(insertion_index, request.message);
     }
 
     // Guest path: still adjust in-memory history for finalize insert semantics
+    // (issue follow-up makes this non-destructive for guests too).
     if !data.requires_cipher {
-        if let Some(idx) = insertion_index {
-            if idx < data.history.len() {
-                data.history.remove(idx);
-            }
+        if insertion_index < data.history.len() {
+            data.history.remove(insertion_index);
         }
     }
 
@@ -1277,11 +1278,7 @@ fn build_regenerate_context(
 
     let test_chunks = resolve_test_chunks(provider);
 
-    let history = if let Some(index) = insertion_index {
-        full_history.into_iter().take(index).collect()
-    } else {
-        full_history
-    };
+    let history = full_history.into_iter().take(insertion_index).collect();
 
     let context = ChatContext {
         session_id: session.session_id.clone(),
@@ -1300,7 +1297,7 @@ fn build_regenerate_context(
         prepare_capture,
     };
 
-    Ok((context, insertion_index))
+    Ok((context, Some(insertion_index)))
 }
 
 pub fn regenerate_finalize(

@@ -440,11 +440,7 @@ async fn regenerate_prepare_without_finalize_keeps_durable_history() {
     let before = load_set_by_name(&app, &auth, "default").await;
     assert_eq!(before["history"].as_array().unwrap().len(), 2);
 
-    // Start regenerate then drop body without reading to end — server still finalizes on stream
-    // drop in many runtimes, so instead verify non-destructive prepare via HistoryService:
-    // advance would only happen on successful finalize. Simulate abort by not calling regenerate
-    // and asserting prepare-side store is unchanged after a failed-style path:
-    // Call regenerate with invalid pair_index so prepare fails early without commit.
+    // Invalid pair_index must fail before streaming (no durable change, no partial save).
     env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["should-not-persist"]"#);
     let res = app
         .clone()
@@ -468,14 +464,24 @@ async fn regenerate_prepare_without_finalize_keeps_durable_history() {
         )
         .await
         .unwrap();
-    // May stream OK with insertion_index None (append-style) — drain it
-    let _ = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "invalid pair_index must fail prepare"
+    );
+    let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    let err_text = String::from_utf8_lossy(&body);
+    assert!(
+        err_text.to_lowercase().contains("pair_index")
+            || err_text.to_lowercase().contains("out of range"),
+        "unexpected error body: {err_text}"
+    );
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 
-    // Core guarantee: original pairs still present (at least 2)
+    // Core guarantee: original pairs still present (exactly 2)
     let after = load_set_by_name(&app, &auth, "default").await;
     let hist = after["history"].as_array().unwrap();
-    assert!(hist.len() >= 2);
+    assert_eq!(hist.len(), 2);
     assert_eq!(hist[0][0], "keep-me");
     assert_eq!(hist[1][0], "also-keep");
 }
