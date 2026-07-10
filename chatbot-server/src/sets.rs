@@ -487,10 +487,11 @@ pub async fn handle_load_set(
         }
     };
 
-    // Keep session cache in sync for chat path until full PrepareCapture cutover.
+    // Keep session cache in sync for the loaded set only (keyed by set_id).
     if let Err(response) = session::replace_session_set(
         &session.session_id,
         Some(username),
+        Some(loaded.set_id),
         &loaded.memory,
         &loaded.system_prompt,
         &loaded.history,

@@ -884,6 +884,62 @@ async fn reset_chat_clears_only_named_set() {
 }
 
 #[tokio::test]
+async fn mutating_other_set_does_not_pollute_session_cache() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "cache_iso_user", "CacheIso1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "cache_iso_user", "CacheIso1!").await;
+
+    create_set(&app, &auth, "alpha").await;
+    create_set(&app, &auth, "beta").await;
+    chat(&app, &auth, "alpha", "alpha-only", None).await;
+    chat(&app, &auth, "beta", "beta-only", None).await;
+
+    // Session cache now mirrors beta (last chat). Mutate alpha history on durable store.
+    let alpha = load_set_by_name(&app, &auth, "alpha").await;
+    assert_eq!(alpha["history"].as_array().unwrap().len(), 1);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/delete_message")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &auth.cookie)
+                .header("X-CSRF-Token", &auth.csrf)
+                .header("X-Enc-Key", &auth.enc_key)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "pair_index": 0,
+                        "user_message": "alpha-only",
+                        "set_name": "alpha"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Durable alpha empty
+    let alpha_after = load_set_by_name(&app, &auth, "alpha").await;
+    assert_eq!(alpha_after["history"].as_array().unwrap().len(), 0);
+
+    // Session still mirrors beta content: chat append on beta should keep beta's first message
+    chat(&app, &auth, "beta", "beta-second", None).await;
+    let beta = load_set_by_name(&app, &auth, "beta").await;
+    let hist = beta["history"].as_array().unwrap();
+    assert_eq!(hist.len(), 2);
+    assert_eq!(hist[0][0], "beta-only");
+    assert_eq!(hist[1][0], "beta-second");
+}
+
+#[tokio::test]
 async fn chat_and_regenerate_prefer_set_id_over_name() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();

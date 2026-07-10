@@ -113,6 +113,7 @@ pub async fn handle_reset_chat(
         if let Err(response) = session::set_session_history_for_request(
             &session_context.session_id,
             Some(username),
+            Some(snap.set_id),
             Vec::new(),
             encryption_key.as_ref(),
         ) {

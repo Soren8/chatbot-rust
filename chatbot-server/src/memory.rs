@@ -118,6 +118,7 @@ pub async fn handle_update_memory(
         if let Err(response) = session::update_session_memory_for_request(
             &session.session_id,
             username,
+            snap.set_id,
             &memory_text,
             key,
         ) {
@@ -220,6 +221,7 @@ pub async fn handle_update_system_prompt(
         if let Err(response) = session::update_session_system_prompt_for_request(
             &session.session_id,
             username,
+            snap.set_id,
             &system_prompt,
             key,
         ) {
@@ -337,6 +339,7 @@ pub async fn handle_delete_message(
                 if let Err(response) = session::set_session_history_for_request(
                     &session.session_id,
                     Some(username),
+                    Some(snap.set_id),
                     remaining,
                     encryption_key.as_ref(),
                 ) {

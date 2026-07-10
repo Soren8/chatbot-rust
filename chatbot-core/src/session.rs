@@ -21,6 +21,8 @@ struct CachedSetPayload {
     memory: String,
     system_prompt: String,
     history: Vec<(String, String)>,
+    #[serde(default)]
+    set_id: Option<String>,
 }
 
 use crate::{
@@ -387,6 +389,8 @@ struct SessionData {
     memory: String,
     system_prompt: String,
     history: Vec<(String, String)>,
+    /// Which durable set the in-memory cache currently mirrors (authed only).
+    active_set_id: Option<SetId>,
     encrypted: bool,
     initialised: bool,
     last_used: Instant,
@@ -406,6 +410,7 @@ impl SessionEntry {
                 system_prompt: default_prompt.to_owned(),
                 memory: String::new(),
                 history: Vec::new(),
+                active_set_id: None,
                 encrypted: false,
                 initialised: false,
                 last_used: Instant::now(),
@@ -521,6 +526,7 @@ fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), ServiceRe
         memory: data.memory.clone(),
         system_prompt: data.system_prompt.clone(),
         history: data.history.clone(),
+        set_id: data.active_set_id.map(|id| id.to_string()),
     };
     let json = serde_json::to_string(&payload)
         .map_err(|_| server_error("internal error while accessing chat history"))?;
@@ -554,6 +560,10 @@ fn unseal_session_data(
     data.memory = payload.memory;
     data.system_prompt = payload.system_prompt;
     data.history = payload.history;
+    data.active_set_id = payload
+        .set_id
+        .as_deref()
+        .and_then(|s| SetId::parse(s).ok());
     Ok(())
 }
 
@@ -851,6 +861,7 @@ fn build_chat_context(
         data.memory = snapshot.memory.clone();
         data.system_prompt = snapshot.system_prompt.clone();
         data.history = snapshot.history.clone();
+        data.active_set_id = Some(snapshot.set_id);
         data.encrypted = true;
         data.initialised = true;
         let _ = seal_session_data(&mut data, key.as_bytes());
@@ -981,11 +992,15 @@ pub fn chat_finalize_with_capture(
                                     data.history = snap.history;
                                     data.memory = snap.memory;
                                     data.system_prompt = snap.system_prompt;
+                                    data.active_set_id = Some(snap.set_id);
                                 } else {
                                     data.history.push((
                                         user_message.to_owned(),
                                         assistant_response.to_owned(),
                                     ));
+                                    if let Some(id) = reload_id {
+                                        data.active_set_id = Some(id);
+                                    }
                                 }
                                 if let Err(response) = seal_session_data(&mut data, key.as_bytes())
                                 {
@@ -1199,6 +1214,7 @@ fn build_regenerate_context(
         data.memory = snapshot.memory.clone();
         data.system_prompt = snapshot.system_prompt.clone();
         data.history = snapshot.history.clone();
+        data.active_set_id = Some(snapshot.set_id);
         data.initialised = true;
         let _ = seal_session_data(&mut data, key.as_bytes());
 
@@ -1363,6 +1379,7 @@ pub fn regenerate_finalize_with_capture(
                                     data.history = snap.history;
                                     data.memory = snap.memory;
                                     data.system_prompt = snap.system_prompt;
+                                    data.active_set_id = Some(snap.set_id);
                                 }
                                 let _ = seal_session_data(&mut data, key.as_bytes());
                             }
@@ -1427,9 +1444,11 @@ pub fn update_session_system_prompt(session_id: &str, prompt: &str) {
     }
 }
 
+/// Update session memory only when the cache currently mirrors `set_id`.
 pub fn update_session_memory_for_request(
     session_id: &str,
     username: &str,
+    set_id: SetId,
     memory: &str,
     key: &EncryptionKey,
 ) -> Result<(), ServiceResponse> {
@@ -1439,15 +1458,22 @@ pub fn update_session_memory_for_request(
     validate_encryption_key_for_user(username, Some(key))?;
     let key_bytes = key.as_bytes();
     unseal_session_data(&mut data, key_bytes, &resolve_default_prompt())?;
+    if data.active_set_id != Some(set_id) {
+        // Durable store was updated; leave cache alone so another set stays intact.
+        let _ = seal_session_data(&mut data, key_bytes);
+        return Ok(());
+    }
     data.memory = memory.to_owned();
     data.initialised = true;
     data.last_used = Instant::now();
     seal_session_data(&mut data, key_bytes)
 }
 
+/// Update session system prompt only when the cache currently mirrors `set_id`.
 pub fn update_session_system_prompt_for_request(
     session_id: &str,
     username: &str,
+    set_id: SetId,
     prompt: &str,
     key: &EncryptionKey,
 ) -> Result<(), ServiceResponse> {
@@ -1457,6 +1483,10 @@ pub fn update_session_system_prompt_for_request(
     validate_encryption_key_for_user(username, Some(key))?;
     let key_bytes = key.as_bytes();
     unseal_session_data(&mut data, key_bytes, &resolve_default_prompt())?;
+    if data.active_set_id != Some(set_id) {
+        let _ = seal_session_data(&mut data, key_bytes);
+        return Ok(());
+    }
     data.system_prompt = prompt.to_owned();
     data.initialised = true;
     data.last_used = Instant::now();
@@ -1466,6 +1496,7 @@ pub fn update_session_system_prompt_for_request(
 pub fn replace_session_set(
     session_id: &str,
     username: Option<&str>,
+    set_id: Option<SetId>,
     memory: &str,
     system_prompt: &str,
     history: &[(String, String)],
@@ -1478,6 +1509,7 @@ pub fn replace_session_set(
     data.memory = memory.to_owned();
     data.system_prompt = system_prompt.to_owned();
     data.history = history.to_vec();
+    data.active_set_id = set_id;
     data.encrypted = encrypted;
     data.initialised = true;
     data.last_used = Instant::now();
@@ -1509,9 +1541,11 @@ pub fn session_history_for_request(
     Ok(data.history.clone())
 }
 
+/// Replace session history only when the cache currently mirrors `set_id` (authed).
 pub fn set_session_history_for_request(
     session_id: &str,
     username: Option<&str>,
+    set_id: Option<SetId>,
     history: Vec<(String, String)>,
     key: Option<&EncryptionKey>,
 ) -> Result<(), ServiceResponse> {
@@ -1520,7 +1554,23 @@ pub fn set_session_history_for_request(
         return Ok(());
     };
     let mut data = entry.data.lock().unwrap();
+    if let Some(expected) = set_id {
+        if data.requires_cipher {
+            if let Some(k) = key {
+                let _ = unseal_session_data(&mut data, k.as_bytes(), &resolve_default_prompt());
+            }
+            if data.active_set_id != Some(expected) {
+                if let Some(k) = key {
+                    let _ = seal_session_data(&mut data, k.as_bytes());
+                }
+                return Ok(());
+            }
+        }
+    }
     data.history = history;
+    if let Some(id) = set_id {
+        data.active_set_id = Some(id);
+    }
     data.last_used = Instant::now();
     data.initialised = true;
 
