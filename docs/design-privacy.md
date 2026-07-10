@@ -108,7 +108,7 @@ The system currently operates in a **Strict Private Mode** with **per-request ke
 
 1.  **Authenticated Users:**
     *   Durable chat sets live in **redb** as AEAD (AES-256-GCM + HKDF) ciphertext blobs via `HistoryService` (see [design-history-store.md](design-history-store.md)). Display names are only inside ciphertext.
-    *   Session working-set cache still seals with **Fernet** (one blob per session + `active_set_id`; multi-set cache not done).
+    *   Optional multi-set ciphertext cache keyed `(user, set_id)`; session may still hold a Fernet-sealed **working mirror** of the active set for the request path (not durable SoT).
     *   Keys are derived from the login password on the client.
     *   The server stores only an HMAC key verifier, not the data key.
     *   Clients wrap the key locally (IndexedDB non-extractable key by default; WebAuthn PRF opt-in; Android Keystore on native).

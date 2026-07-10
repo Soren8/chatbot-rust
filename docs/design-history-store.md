@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | **Phase 1 durable path live.** redb + `HistoryService`, AEAD+AAD, lazy `sets.json` migration, `PrepareCapture` + CAS chat/regenerate, non-destructive regenerate, `active_set_id`, uniqueness/limits, `history_robustness` tests. **Open (PR plan 9–11):** multi-set session ciphertext cache `(user_id, set_id)`; remove legacy `DataPersistence` history RMW; client `set_id`/`expected_version` on all mutations + 409 auto-reload UX; standardise conflict JSON bodies. |
+| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` reload UX. Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 
@@ -22,18 +22,19 @@ Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message row
 
 ## Background & Motivation
 
-### Current architecture (as of Phase 1)
+### Current architecture (post cutover)
 
 | Layer | Location | Behavior |
 | :--- | :--- | :--- |
 | Durable store | `chatbot-core/src/history/` (`HistoryService` + sealed redb) | `{HOST_DATA_DIR}/history/redb`: per-`set_id` AEAD ciphertext + meta (version, ownership, `is_default`); CAS on version |
-| Migration | `history/migration.rs` | Lazy per-user import from `user_sets/{user}/sets.json` → redb, then rename to `.migrated.bak` |
-| Session cache | `chatbot-core/src/session.rs` | Still **one** ciphertext blob per `session_id` plus `active_set_id`; not yet multi-set `(user, set_id)` cache |
-| Chat / regenerate | `chat_prepare` / `*_finalize_with_capture` | `PrepareCapture` freezes `{set_id, version, history}`; finalize commits via HistoryService CAS only |
-| Sets / memory / reset | `sets.rs`, `memory.rs`, `reset_chat.rs` | Route through `HistoryService`; `set_name` still accepted as transition shim |
-| Client | `static/chat.js` | Partial `set_id`/`version` tracking; rename/delete_set send `expected_version`; chat/delete/memory often name-only |
+| Multi-set cache | `history/cache.rs` (`SetCache`) | Ciphertext entries keyed `(user_id, set_id)`; optional; never SoT |
+| Migration format | `chatbot-core/src/legacy_sets_json/` (**permanent**) | Read/seed pre-redb `sets.json` (+ split-file legacy); orchestrated by `history/migration.rs` into redb; bak = `sets.json.migrated.bak` |
+| Session | `session.rs` | Guest RAM history; authed working mirror only (`active_set_id`); durability via HistoryService |
+| Chat / regenerate | prepare/finalize + capture | Immutable `PrepareCapture`; CAS commit |
+| Mutations | sets / memory / reset / delete | `set_id` preferred; `expected_version` for CAS; 409 `version_conflict` JSON |
+| Client | `static/chat.js` | `activeSetPayload()` sends `set_id` + `expected_version`; 409 → toast + reload set, preserve draft |
 
-**Open residual risk:** session layout is still single-blob; cache is not multi-set; legacy `DataPersistence` history methods remain for migration/tests; client 409 UX incomplete.
+**Operator cleanup:** After one stable redb release, optional delete of `data/user_sets/*/sets.json.migrated.bak`. Keep bak if you may roll back to an image without redb.
 
 ### Legacy architecture (pre-redb; fixed by this design)
 

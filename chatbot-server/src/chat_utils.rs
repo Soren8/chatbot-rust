@@ -1,8 +1,13 @@
 use axum::{
     extract::ConnectInfo,
-    http::{Extensions, HeaderMap},
+    http::{Extensions, HeaderMap, StatusCode},
 };
-use chatbot_core::{enc_key::EncryptionKey, session};
+use chatbot_core::{
+    enc_key::EncryptionKey,
+    history::{HistoryError, SetId, SetVersion},
+    session,
+};
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 
 pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
@@ -59,5 +64,54 @@ impl ChatLockGuard {
 impl Drop for ChatLockGuard {
     fn drop(&mut self) {
         self.release_if_needed();
+    }
+}
+
+/// Standard CAS conflict body for durable set mutations.
+pub fn version_conflict_json(set_id: SetId, current_version: SetVersion) -> Value {
+    json!({
+        "error": "version_conflict",
+        "set_id": set_id.to_string(),
+        "current_version": current_version.get(),
+        "message": "Set was modified; reload and retry."
+    })
+}
+
+pub fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
+    match err {
+        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".into()),
+        HistoryError::Conflict { current_version } => (
+            StatusCode::CONFLICT,
+            json!({
+                "error": "version_conflict",
+                "current_version": current_version.get(),
+                "message": "Set was modified; reload and retry."
+            })
+            .to_string(),
+        ),
+        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
+        HistoryError::DecryptFailed | HistoryError::MissingKey => (
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required or invalid. Please unlock.".into(),
+        ),
+        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.into()),
+        HistoryError::Internal => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal history error".into(),
+        ),
+    }
+}
+
+/// Map history errors for JSON endpoints; CONFLICT returns structured body via the pair.
+pub fn history_conflict_or_err(
+    err: HistoryError,
+    set_id: SetId,
+) -> Result<(StatusCode, Value), (StatusCode, String)> {
+    match err {
+        HistoryError::Conflict { current_version } => Ok((
+            StatusCode::CONFLICT,
+            version_conflict_json(set_id, current_version),
+        )),
+        other => Err(history_error_to_http(other)),
     }
 }

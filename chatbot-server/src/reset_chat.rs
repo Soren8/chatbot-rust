@@ -4,8 +4,7 @@ use axum::{
     http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    history::{HistoryError, HistoryService},
-    persistence::{DataPersistence, PersistenceError},
+    history::{self, HistoryError, HistoryService, SetId, SetVersion},
     session,
 };
 use serde::Deserialize;
@@ -16,6 +15,10 @@ use tracing::error;
 struct ResetChatRequest {
     #[serde(default)]
     set_name: Option<String>,
+    #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
+    expected_version: Option<u64>,
 }
 
 pub async fn handle_reset_chat(
@@ -73,20 +76,10 @@ pub async fn handle_reset_chat(
         )
     })?;
 
-    let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref()).map_err(
-        |err| match err {
-            PersistenceError::InvalidSetName => {
-                (StatusCode::BAD_REQUEST, "invalid set name".to_string())
-            }
-            other => {
-                error!(?other, "failed to normalise set name");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "invalid request".to_string(),
-                )
-            }
-        },
-    )?;
+    let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(|err| {
+        error!(?err, "failed to normalise set name");
+        (StatusCode::BAD_REQUEST, "invalid set name".to_string())
+    })?;
 
     if let Some(username) = session_context.username.as_deref() {
         if let Err(response) =
@@ -96,19 +89,38 @@ pub async fn handle_reset_chat(
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = HistoryService::global().map_err(history_error_to_http)?;
-        let snap = match history.find_by_display_name(username, &set_name, key) {
-            Ok(Some(s)) => s,
-            Ok(None) if set_name == "default" => history
-                .ensure_default_set(username, key)
-                .map_err(history_error_to_http)?,
-            Ok(None) => {
-                return Err((StatusCode::BAD_REQUEST, "set not found".to_string()));
+        let snap = if let Some(raw) = payload.set_id.as_deref() {
+            let id = SetId::parse(raw)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid set_id".to_string()))?;
+            history
+                .load(username, id, key)
+                .map_err(history_error_to_http)?
+        } else {
+            match history.find_by_display_name(username, &set_name, key) {
+                Ok(Some(s)) => s,
+                Ok(None) if set_name == "default" => history
+                    .ensure_default_set(username, key)
+                    .map_err(history_error_to_http)?,
+                Ok(None) => {
+                    return Err((StatusCode::BAD_REQUEST, "set not found".to_string()));
+                }
+                Err(err) => return Err(history_error_to_http(err)),
+            }
+        };
+        let expected = payload
+            .expected_version
+            .map(SetVersion)
+            .unwrap_or(snap.version);
+        let version = match history.reset_history(username, snap.set_id, expected, key) {
+            Ok(v) => v,
+            Err(HistoryError::Conflict { current_version }) => {
+                return build_json_response(
+                    StatusCode::CONFLICT,
+                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
+                );
             }
             Err(err) => return Err(history_error_to_http(err)),
         };
-        let version = history
-            .reset_history(username, snap.set_id, snap.version, key)
-            .map_err(history_error_to_http)?;
 
         if let Err(response) = session::set_session_history_for_request(
             &session_context.session_id,
@@ -167,24 +179,5 @@ fn build_service_response(
 }
 
 fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
-    match err {
-        HistoryError::MissingKey | HistoryError::DecryptFailed => (
-            StatusCode::UNAUTHORIZED,
-            "Encryption key required. Please unlock.".to_string(),
-        ),
-        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".to_string()),
-        HistoryError::Conflict { current_version } => (
-            StatusCode::CONFLICT,
-            format!("version_conflict:{}", current_version.get()),
-        ),
-        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.to_string()),
-        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
-        HistoryError::Internal => {
-            error!("internal history error during reset_chat");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "history store error".to_string(),
-            )
-        }
-    }
+    crate::chat_utils::history_error_to_http(err)
 }

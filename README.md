@@ -14,7 +14,7 @@ Not a single line of code in this repository was written manually. Human work in
 - Comprehensive integration tests (`cargo test`) covering routes, session flows, and external service stubs.
 
 ## Repository Layout
-- `chatbot-core/` – core business logic, configuration, history store, persistence helpers, and session manager.
+- `chatbot-core/` – core business logic, configuration, history store (redb), permanent `legacy_sets_json` migration, Fernet helpers, and session manager.
 - `chatbot-server/` – Axum HTTP server, route handlers, LLM/TTS providers, middleware, and integration tests.
 - `chatbot-test-support/` – shared fixtures and helpers for integration tests.
 - `data/` – gitignored persistence for chats, sessions, and users.

@@ -3,8 +3,7 @@ use axum::{
     http::{header, Method, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    history::{HistoryError, HistoryService, SetId, SetVersion},
-    persistence::DataPersistence,
+    history::{self, HistoryError, HistoryService, SetId, SetVersion},
     session,
 };
 use serde::Deserialize;
@@ -157,7 +156,7 @@ pub async fn handle_create_set(
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
 
-    let set_name = match DataPersistence::normalise_custom_set_name(&set_name_raw) {
+    let set_name = match history::normalise_custom_set_name(&set_name_raw) {
         Ok(value) => value,
         Err(_) => {
             return build_json_response(
@@ -349,7 +348,7 @@ pub async fn handle_rename_set(
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
     let new_name_raw = payload.new_name.unwrap_or_default();
-    let new_name = match DataPersistence::normalise_custom_set_name(&new_name_raw) {
+    let new_name = match history::normalise_custom_set_name(&new_name_raw) {
         Ok(v) => v,
         Err(_) => {
             return build_json_response(
@@ -582,26 +581,7 @@ fn validate_csrf(
 }
 
 fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
-    match err {
-        HistoryError::MissingKey | HistoryError::DecryptFailed => (
-            StatusCode::UNAUTHORIZED,
-            "Encryption key required. Please unlock.".to_string(),
-        ),
-        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".to_string()),
-        HistoryError::Conflict { current_version } => (
-            StatusCode::CONFLICT,
-            format!("version_conflict:{}", current_version.get()),
-        ),
-        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.to_string()),
-        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
-        HistoryError::Internal => {
-            error!("internal history error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "history store error".to_string(),
-            )
-        }
-    }
+    crate::chat_utils::history_error_to_http(err)
 }
 
 fn build_service_response(

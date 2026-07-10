@@ -11,6 +11,7 @@ use once_cell::sync::OnceCell;
 use thiserror::Error;
 use tracing::error;
 
+use super::cache::SetCache;
 use super::migration;
 use super::ops::{self, OpsError};
 use super::store::{RedbHistoryStore, StoreError};
@@ -91,6 +92,8 @@ static GLOBAL: OnceCell<HistoryService> = OnceCell::new();
 #[derive(Clone)]
 pub struct HistoryService {
     store: Arc<RedbHistoryStore>,
+    /// Optional multi-set ciphertext cache; never authoritative.
+    cache: SetCache,
     default_system_prompt: String,
     /// Host data dir containing `user_sets/` for legacy migration.
     data_dir: PathBuf,
@@ -126,9 +129,27 @@ impl HistoryService {
         let store = RedbHistoryStore::open(redb_path).map_err(HistoryError::from)?;
         Ok(Self {
             store: Arc::new(store),
+            cache: SetCache::new(),
             default_system_prompt: default_system_prompt.into(),
             data_dir: data_dir.into(),
         })
+    }
+
+    fn remember(&self, user: &str, snap: &SetSnapshot, key: &EncryptionKey) {
+        if let Err(err) = self.cache.put_snapshot(user, snap, key) {
+            tracing::debug!(?err, "set_cache_put_failed");
+        }
+    }
+
+    fn remember_after_commit(
+        &self,
+        user: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<(), HistoryError> {
+        let snap = self.store.load_snapshot(user, set_id, key)?;
+        self.remember(user, &snap, key);
+        Ok(())
     }
 
     /// Test/helper: open a fresh service at a path without touching the process global.
@@ -193,7 +214,11 @@ impl HistoryService {
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        Ok(self.store.load_snapshot(&user, set_id, key)?)
+        // Cache is optional acceleration; redb remains SoT. Prefer store load so
+        // `is_default` and CAS version always match durable meta.
+        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        self.remember(&user, &snap, key);
+        Ok(snap)
     }
 
     /// Resolve display name → set_id for transition shims (decrypts all sets).
@@ -239,14 +264,18 @@ impl HistoryService {
 
         let set_id = SetId::new();
         let is_default = name == "default";
-        Ok(self.store.create_set(
+        let summary = self.store.create_set(
             &user,
             set_id,
             name,
             &self.default_system_prompt,
             is_default,
             key,
-        )?)
+        )?;
+        if let Ok(snap) = self.store.load_snapshot(&user, summary.set_id, key) {
+            self.remember(&user, &snap, key);
+        }
+        Ok(summary)
     }
 
     /// Ensure a default set exists (empty history). Returns its snapshot.
@@ -303,7 +332,9 @@ impl HistoryService {
         let next = ops::rename(&snap, new_name)?;
         // Reject collision with any other set (same name on self is a no-op rename).
         self.ensure_display_name_available(&user, &next.display_name, Some(set_id), key)?;
-        Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
+        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
+        let _ = self.remember_after_commit(&user, set_id, key);
+        Ok(v)
     }
 
     /// Returns `Ok` if `name` is free, or already owned by `except_set_id`.
@@ -344,10 +375,10 @@ impl HistoryService {
         if snap.is_default {
             return Err(HistoryError::InvalidInput("cannot delete default set"));
         }
-        Ok(self.store.delete_set(&user, set_id, expected)?)
+        self.store.delete_set(&user, set_id, expected)?;
+        self.cache.invalidate(&user, set_id);
+        Ok(())
     }
-
-    // --- content mutations (all CAS) ---
 
     pub fn commit_snapshot(
         &self,
@@ -358,10 +389,15 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        Ok(self
+        let v = self
             .store
-            .commit_snapshot(&user, expected, snapshot, key)?)
+            .commit_snapshot(&user, expected, snapshot, key)?;
+        let _ = self.remember_after_commit(&user, snapshot.set_id, key);
+        Ok(v)
     }
+
+
+    // --- content mutations (all CAS) ---
 
     pub fn append_pair(
         &self,
@@ -381,7 +417,9 @@ impl HistoryService {
             });
         }
         let next = ops::append_pair(&snap, user_msg, assistant_msg)?;
-        Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
+        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
+        let _ = self.remember_after_commit(&user, set_id, key);
+        Ok(v)
     }
 
     /// Commit chat finalize from an immutable prepare capture (ignores live cache content).
@@ -396,9 +434,11 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let next = ops::apply_chat_append(capture, user_msg, assistant_msg)?;
-        Ok(self
+        let v = self
             .store
-            .commit_snapshot(&user, capture.version, &next, key)?)
+            .commit_snapshot(&user, capture.version, &next, key)?;
+        let _ = self.remember_after_commit(&user, capture.set_id, key);
+        Ok(v)
     }
 
     /// Commit regenerate/edit from prepare capture.
@@ -412,9 +452,11 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let next = ops::apply_regenerate(capture, assistant_response)?;
-        Ok(self
+        let v = self
             .store
-            .commit_snapshot(&user, capture.version, &next, key)?)
+            .commit_snapshot(&user, capture.version, &next, key)?;
+        let _ = self.remember_after_commit(&user, capture.set_id, key);
+        Ok(v)
     }
 
     pub fn delete_pair(
@@ -435,7 +477,9 @@ impl HistoryService {
             });
         }
         let next = ops::delete_pair(&snap, pair_index, expected_user_msg)?;
-        Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
+        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
+        let _ = self.remember_after_commit(&user, set_id, key);
+        Ok(v)
     }
 
     pub fn reset_history(
@@ -454,7 +498,9 @@ impl HistoryService {
             });
         }
         let next = ops::reset_history(&snap);
-        Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
+        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
+        let _ = self.remember_after_commit(&user, set_id, key);
+        Ok(v)
     }
 
     pub fn update_memory(
@@ -474,7 +520,9 @@ impl HistoryService {
             });
         }
         let next = ops::update_memory(&snap, memory)?;
-        Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
+        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
+        let _ = self.remember_after_commit(&user, set_id, key);
+        Ok(v)
     }
 
     pub fn update_system_prompt(
@@ -494,7 +542,9 @@ impl HistoryService {
             });
         }
         let next = ops::update_system_prompt(&snap, prompt)?;
-        Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
+        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
+        let _ = self.remember_after_commit(&user, set_id, key);
+        Ok(v)
     }
 
     /// Build a prepare capture from durable state (source of truth).

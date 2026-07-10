@@ -192,6 +192,49 @@ async function withCsrfAsync(headers) {
   return result;
 }
 
+
+function activeSetPayload(extra) {
+  var $o = $('#set-selector option:selected');
+  var payload = Object.assign({}, extra || {});
+  payload.set_name = $o.attr('data-name') || $o.text() || 'default';
+  var setId = window.APP_DATA.lastSetId || $o.val();
+  if (setId) payload.set_id = setId;
+  if (window.APP_DATA.setVersion != null && window.APP_DATA.setVersion !== '') {
+    payload.expected_version = Number(window.APP_DATA.setVersion);
+  }
+  return payload;
+}
+
+function noteSetVersionFromResponse(data) {
+  if (!data) return;
+  if (data.set_id) window.APP_DATA.lastSetId = data.set_id;
+  if (data.version != null) window.APP_DATA.setVersion = data.version;
+}
+
+function handleVersionConflict(response, data) {
+  var msg = (data && data.message) || 'Chat was modified in another tab. Reloading…';
+  if (typeof appendMessage === 'function') {
+    appendMessage('<strong>System:</strong> ' + escapeHTML(msg), 'system-message');
+  }
+  var draft = '';
+  try { draft = $('#user-input').val() || ''; } catch (e) {}
+  if (typeof loadSets === 'function') {
+    return loadSets(true).then(function() {
+      if (draft) {
+        try { $('#user-input').val(draft); } catch (e) {}
+      }
+    });
+  }
+  return Promise.resolve();
+}
+
+function parseJsonOrEmpty(response) {
+  return response.text().then(function(t) {
+    if (!t) return {};
+    try { return JSON.parse(t); } catch (e) { return { error: t }; }
+  });
+}
+
 function preloadEncryptionKey() {
   if (!window.APP_DATA || !window.APP_DATA.loggedIn || !window.EncKey) {
     return Promise.resolve(null);
@@ -870,17 +913,15 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
   fetch('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
     signal: currentAbortController.signal,
-    body: JSON.stringify({
+    body: JSON.stringify(activeSetPayload({
       message: userText,
       system_prompt: $('#user-system-prompt').val(),
-      set_name: (function(){ const $o=$('#set-selector option:selected'); return $o.attr('data-name')||$o.text()||'default'; })(),
-      set_id: window.APP_DATA.lastSetId || $('#set-selector option:selected').val() || undefined,
       model_name: $('#modelSelect').val(),
       pair_index: pairIndex,
       web_search: $('#web-search-toggle').hasClass('btn-primary'),
       save_thoughts: $('#check-save-thoughts').is(':checked'),
       send_thoughts: $('#check-send-thoughts').is(':checked')
-    })
+    }))
   })
   .then(response => {
     if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
@@ -1073,12 +1114,11 @@ function handleDeleteMessage(buttonElement) {
   fetch('/delete_message', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
+    body: JSON.stringify(activeSetPayload({
       pair_index: pairIndex,
       user_message: userText,
-      ai_message: aiText,
-      set_name: (function(){ const $o=$('#set-selector option:selected'); return $o.attr('data-name')||$o.text()||'default'; })()
-    })
+      ai_message: aiText
+    }))
   })
   .then(r => {
     if (r.status === 401) { window.location.href = '/login'; return null; }
@@ -1086,7 +1126,11 @@ function handleDeleteMessage(buttonElement) {
   })
   .then(result => {
     if (!result) return;
+    if (result.status === 409 || (result.data && result.data.error === 'version_conflict')) {
+      return handleVersionConflict(null, result.data);
+    }
     if (result.ok && result.data && result.data.status === 'success') {
+      noteSetVersionFromResponse(result.data);
       aiMessageElement.remove();
       userMessageElement.remove();
       return;
@@ -1647,17 +1691,19 @@ $(document).ready(function() {
     fetch('/update_system_prompt', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
+      body: JSON.stringify(activeSetPayload({
         system_prompt: sysPromptText,
-        set_name: setName,
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
-      })
+      }))
     })
       .then(r => r.json())
       .then(data => {
         if (data.status === 'success') {
+          noteSetVersionFromResponse(data);
           appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
+        } else if (data.error === 'version_conflict') {
+          return handleVersionConflict(null, data);
         }
         else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save system prompt.'), 'error-message');
       })
@@ -1670,17 +1716,19 @@ $(document).ready(function() {
     fetch('/update_memory', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
+      body: JSON.stringify(activeSetPayload({
         memory: memText,
-        set_name: setName,
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
-      })
+      }))
     })
       .then(r => r.json())
       .then(data => {
         if (data.status === 'success') {
+          noteSetVersionFromResponse(data);
           appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
+        } else if (data.error === 'version_conflict') {
+          return handleVersionConflict(null, data);
         }
         else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save memory.'), 'error-message');
       })
@@ -1715,16 +1763,14 @@ $(document).ready(function() {
     appendMessage(userMessageHtml, 'user-message');
     const $pendingUserMessage = $('#chat-content .message.user-message').last();
 
-    const requestData = {
+    const requestData = activeSetPayload({
       message: fullMessage,
       system_prompt: systemPrompt,
-      set_name: activeSet,
-      set_id: window.APP_DATA.lastSetId || $('#set-selector option:selected').val() || undefined,
       model_name: $('#modelSelect').val(),
       web_search: $('#web-search-toggle').hasClass('btn-primary'),
       save_thoughts: $('#check-save-thoughts').is(':checked'),
       send_thoughts: $('#check-send-thoughts').is(':checked')
-    };
+    });
 
     if (currentAbortController) currentAbortController.abort();
     currentAbortController = new AbortController();
@@ -1934,7 +1980,7 @@ $(document).ready(function() {
   $('#reset-chat').on('click', function() {
     const setName = typeof activeSetName === 'function' ? activeSetName() : 'default';
     if (confirm(`Are you sure you want to reset the chat history for set: ${setName}?`)) {
-      fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
+      fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(activeSetPayload({})) })
         .then(r => { if (!r.ok) return r.json().then(err => { throw new Error(err.message || 'Failed to reset chat'); }); return r.json(); })
         .then(response => {
           if (response.status === 'success') {

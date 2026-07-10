@@ -3,8 +3,7 @@ use axum::{
     http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    history::{HistoryError, HistoryService},
-    persistence::{DataPersistence, PersistenceError},
+    history::{self, HistoryError, HistoryService, SetId, SetVersion},
     session,
 };
 use serde::Deserialize;
@@ -20,6 +19,10 @@ struct UpdateMemoryRequest {
     #[serde(default)]
     set_name: Option<String>,
     #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
+    expected_version: Option<u64>,
+    #[serde(default)]
     _encrypted: Option<bool>,
     #[serde(default)]
     logged_in: Option<bool>,
@@ -31,6 +34,10 @@ struct UpdateSystemPromptRequest {
     system_prompt: Option<String>,
     #[serde(default)]
     set_name: Option<String>,
+    #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
+    expected_version: Option<u64>,
     #[serde(default)]
     _encrypted: Option<bool>,
     #[serde(default)]
@@ -47,6 +54,10 @@ struct DeleteMessageRequest {
     ai_message: Option<String>,
     #[serde(default)]
     set_name: Option<String>,
+    #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
+    expected_version: Option<u64>,
 }
 
 pub async fn handle_update_memory(
@@ -78,8 +89,8 @@ pub async fn handle_update_memory(
         );
     }
 
-    let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
-        .map_err(persistence_error_to_http)?;
+    let set_name = history::normalise_set_name(payload.set_name.as_deref())
+        .map_err(|e| map_name_err(e))?;
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
@@ -110,10 +121,28 @@ pub async fn handle_update_memory(
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = HistoryService::global().map_err(history_error_to_tuple)?;
-        let snap = resolve_set_by_name(&history, username, &set_name, key)?;
-        let version = history
-            .update_memory(username, snap.set_id, snap.version, &memory_text, key)
-            .map_err(history_error_to_tuple)?;
+        let snap = resolve_set(
+            &history,
+            username,
+            payload.set_id.as_deref(),
+            Some(&set_name),
+            key,
+        )?;
+        let expected = payload
+            .expected_version
+            .map(SetVersion)
+            .unwrap_or(snap.version);
+        let version = match history.update_memory(username, snap.set_id, expected, &memory_text, key)
+        {
+            Ok(v) => v,
+            Err(HistoryError::Conflict { current_version }) => {
+                return build_json_response(
+                    StatusCode::CONFLICT,
+                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
+                );
+            }
+            Err(err) => return Err(history_error_to_tuple(err)),
+        };
 
         if let Err(response) = session::update_session_memory_for_request(
             &session.session_id,
@@ -178,8 +207,7 @@ pub async fn handle_update_system_prompt(
         );
     }
 
-    let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
-        .map_err(persistence_error_to_http)?;
+    let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(map_name_err)?;
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
@@ -213,10 +241,33 @@ pub async fn handle_update_system_prompt(
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = HistoryService::global().map_err(history_error_to_tuple)?;
-        let snap = resolve_set_by_name(&history, username, &set_name, key)?;
-        let version = history
-            .update_system_prompt(username, snap.set_id, snap.version, &system_prompt, key)
-            .map_err(history_error_to_tuple)?;
+        let snap = resolve_set(
+            &history,
+            username,
+            payload.set_id.as_deref(),
+            Some(&set_name),
+            key,
+        )?;
+        let expected = payload
+            .expected_version
+            .map(SetVersion)
+            .unwrap_or(snap.version);
+        let version = match history.update_system_prompt(
+            username,
+            snap.set_id,
+            expected,
+            &system_prompt,
+            key,
+        ) {
+            Ok(v) => v,
+            Err(HistoryError::Conflict { current_version }) => {
+                return build_json_response(
+                    StatusCode::CONFLICT,
+                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
+                );
+            }
+            Err(err) => return Err(history_error_to_tuple(err)),
+        };
 
         if let Err(response) = session::update_session_system_prompt_for_request(
             &session.session_id,
@@ -293,8 +344,7 @@ pub async fn handle_delete_message(
         }
     };
 
-    let set_name = DataPersistence::normalise_set_name(payload.set_name.as_deref())
-        .map_err(persistence_error_to_http)?;
+    let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(map_name_err)?;
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
@@ -318,17 +368,27 @@ pub async fn handle_delete_message(
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history_svc = HistoryService::global().map_err(history_error_to_tuple)?;
-        let snap = resolve_set_by_name(&history_svc, username, &set_name, key)?;
+        let snap = resolve_set(
+            &history_svc,
+            username,
+            payload.set_id.as_deref(),
+            Some(&set_name),
+            key,
+        )?;
         if pair_index >= snap.history.len() {
             return build_json_response(
                 StatusCode::NOT_FOUND,
                 json!({"status": "error", "error": "pair_index out of range"}),
             );
         }
+        let expected = payload
+            .expected_version
+            .map(SetVersion)
+            .unwrap_or(snap.version);
         match history_svc.delete_pair(
             username,
             snap.set_id,
-            snap.version,
+            expected,
             pair_index,
             trimmed,
             key,
@@ -352,6 +412,12 @@ pub async fn handle_delete_message(
                         "version": version.get(),
                         "set_id": snap.set_id.to_string(),
                     }),
+                );
+            }
+            Err(HistoryError::Conflict { current_version }) => {
+                return build_json_response(
+                    StatusCode::CONFLICT,
+                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
                 );
             }
             Err(HistoryError::InvalidInput("content mismatch at pair_index")) => {
@@ -437,59 +503,39 @@ fn validate_csrf(
     Ok(())
 }
 
-fn persistence_error_to_http(err: PersistenceError) -> (StatusCode, String) {
+fn history_error_to_tuple(err: HistoryError) -> (StatusCode, String) {
+    crate::chat_utils::history_error_to_http(err)
+}
+
+fn map_name_err(err: chatbot_core::persistence::PersistenceError) -> (StatusCode, String) {
     match err {
-        PersistenceError::InvalidUsername => {
-            (StatusCode::BAD_REQUEST, "invalid session".to_string())
-        }
-        PersistenceError::InvalidSetName => {
-            (StatusCode::BAD_REQUEST, "invalid set name".to_string())
-        }
-        PersistenceError::MissingEncryptionKey => {
-            (StatusCode::UNAUTHORIZED, "relogin required".to_string())
+        chatbot_core::persistence::PersistenceError::InvalidSetName => {
+            (StatusCode::BAD_REQUEST, "invalid set name".into())
         }
         other => {
-            error!(?other, "persistence failure");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "persistence error".to_string(),
-            )
+            error!(?other, "set name normalisation failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "invalid request".into())
         }
     }
 }
 
-fn history_error_to_tuple(err: HistoryError) -> (StatusCode, String) {
-    match err {
-        HistoryError::MissingKey | HistoryError::DecryptFailed => (
-            StatusCode::UNAUTHORIZED,
-            "Encryption key required. Please unlock.".to_string(),
-        ),
-        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".to_string()),
-        HistoryError::Conflict { current_version } => (
-            StatusCode::CONFLICT,
-            format!("version_conflict:{}", current_version.get()),
-        ),
-        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.to_string()),
-        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
-        HistoryError::Internal => {
-            error!("internal history error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "history store error".to_string(),
-            )
-        }
-    }
-}
-
-fn resolve_set_by_name(
+fn resolve_set(
     history: &HistoryService,
     username: &str,
-    set_name: &str,
+    set_id: Option<&str>,
+    set_name: Option<&str>,
     key: &chatbot_core::enc_key::EncryptionKey,
 ) -> Result<chatbot_core::history::SetSnapshot, (StatusCode, String)> {
-    match history.find_by_display_name(username, set_name, key) {
+    if let Some(raw) = set_id {
+        let id = SetId::parse(raw).map_err(|_| {
+            (StatusCode::BAD_REQUEST, "invalid set_id".to_string())
+        })?;
+        return history.load(username, id, key).map_err(history_error_to_tuple);
+    }
+    let name = set_name.unwrap_or("default");
+    match history.find_by_display_name(username, name, key) {
         Ok(Some(snap)) => Ok(snap),
-        Ok(None) if set_name == "default" => history
+        Ok(None) if name == "default" => history
             .ensure_default_set(username, key)
             .map_err(history_error_to_tuple),
         Ok(None) => Err((StatusCode::BAD_REQUEST, "set not found".to_string())),

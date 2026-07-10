@@ -1,4 +1,8 @@
 //! Lazy one-shot migration from legacy `user_sets/{user}/sets.json` into redb.
+//!
+//! **On-disk format readers live permanently in [`crate::legacy_sets_json`].**
+//! This file only orchestrates import into the sealed redb store.
+
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -6,10 +10,13 @@ use std::sync::{Mutex, OnceLock};
 use dashmap::DashMap;
 use tracing::{info, warn};
 
+use crate::enc_key::EncryptionKey;
+use crate::legacy_sets_json::{
+    EncryptionMode, LegacySetsStore, PersistenceError, MIGRATED_BAK_FILENAME,
+};
+
 use super::store::{ImportSet, RedbHistoryStore, StoreError};
 use super::types::SetId;
-use crate::enc_key::EncryptionKey;
-use crate::persistence::{DataPersistence, EncryptionMode, PersistenceError};
 
 fn migration_locks() -> &'static DashMap<String, Mutex<()>> {
     static LOCKS: OnceLock<DashMap<String, Mutex<()>>> = OnceLock::new();
@@ -20,7 +27,7 @@ fn migration_locks() -> &'static DashMap<String, Mutex<()>> {
 ///
 /// - If META flag set → no-op.
 /// - If no `sets.json` → mark migrated empty.
-/// - Else decrypt via `DataPersistence`, bulk-import, flag, rename to `.migrated.bak`.
+/// - Else decrypt via `LegacySetsStore`, bulk-import, flag, rename to `.migrated.bak`.
 pub fn ensure_user_migrated(
     store: &RedbHistoryStore,
     data_dir: &Path,
@@ -44,7 +51,7 @@ pub fn ensure_user_migrated(
         return Ok(());
     }
 
-    let persistence = DataPersistence::with_data_dir(data_dir, default_system_prompt)
+    let persistence = LegacySetsStore::with_data_dir(data_dir, default_system_prompt)
         .map_err(|err| map_persistence(err))?;
 
     let sets_path = persistence
@@ -53,7 +60,7 @@ pub fn ensure_user_migrated(
 
     if !sets_path.exists() {
         // Already bak'd or brand-new user
-        let bak = sets_path.with_extension("json.migrated.bak");
+        let bak = sets_path.parent().map(|p| p.join(MIGRATED_BAK_FILENAME)).unwrap_or_else(|| PathBuf::from(MIGRATED_BAK_FILENAME));
         if bak.exists() {
             // File was renamed earlier but flag missing — do not re-import; just flag.
             store.mark_user_migrated_empty(user)?;
@@ -141,8 +148,8 @@ pub fn ensure_user_migrated(
 fn rename_legacy_sets_json(sets_path: &Path) {
     let bak = sets_path
         .parent()
-        .map(|p| p.join("sets.json.migrated.bak"))
-        .unwrap_or_else(|| PathBuf::from("sets.json.migrated.bak"));
+        .map(|p| p.join(MIGRATED_BAK_FILENAME))
+        .unwrap_or_else(|| PathBuf::from(MIGRATED_BAK_FILENAME));
 
     if let Err(err) = std::fs::rename(sets_path, &bak) {
         warn!(
@@ -174,7 +181,7 @@ mod tests {
     use super::*;
     use crate::history::api::HistoryService;
     use crate::history::types::SetVersion;
-    use crate::persistence::{DataPersistence, EncryptionMode};
+    use crate::legacy_sets_json::{EncryptionMode, LegacySetsStore};
 
     fn key() -> EncryptionKey {
         let fernet_key = fernet::Fernet::generate_key();
@@ -189,7 +196,7 @@ mod tests {
         let user = "miguser";
 
         let persistence =
-            DataPersistence::with_data_dir(data.path(), "You are helpful.").unwrap();
+            LegacySetsStore::with_data_dir(data.path(), "You are helpful.").unwrap();
         let mode = EncryptionMode::Fernet(key.as_bytes());
         persistence
             .store_history(
@@ -323,7 +330,7 @@ mod tests {
         let user = "wrongkey";
 
         let persistence =
-            DataPersistence::with_data_dir(data.path(), "sys").unwrap();
+            LegacySetsStore::with_data_dir(data.path(), "sys").unwrap();
         let mode = EncryptionMode::Fernet(good.as_bytes());
         persistence
             .store_history(user, "default", &[("x".into(), "y".into())], mode)
@@ -354,7 +361,7 @@ mod tests {
         let key = key();
         let user = "nodefault";
 
-        let persistence = DataPersistence::with_data_dir(data.path(), "sys").unwrap();
+        let persistence = LegacySetsStore::with_data_dir(data.path(), "sys").unwrap();
         let mode = EncryptionMode::Fernet(key.as_bytes());
         persistence
             .create_set(user, "project-only", Some(mode))

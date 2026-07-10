@@ -32,7 +32,7 @@ use crate::{
         HistoryError, HistoryService, PrepareCapture, SetId, SetSnapshot, SetVersion,
     },
     persistence::{DataPersistence, EncryptionMode, PersistenceError},
-    user_store::{normalise_username, UserStore, UserStoreError, DEFAULT_TIER},
+    user_store::{UserStore, UserStoreError, DEFAULT_TIER},
 };
 
 #[derive(Debug, Clone)]
@@ -613,59 +613,33 @@ pub fn require_encryption_key<'a>(
 // Additional chat/regenerate logic will be implemented here.
 
 fn normalise_set_name(candidate: Option<&str>) -> Result<String, ServiceResponse> {
-    DataPersistence::normalise_set_name(candidate).map_err(|_| invalid_request("invalid set name"))
+    crate::history::normalise_set_name(candidate).map_err(|_| invalid_request("invalid set name"))
 }
 
 fn resolve_default_prompt() -> String {
     SessionStore::global().default_prompt.clone()
 }
 
+/// Guest-only session bootstrap. Authenticated users always load via HistoryService.
 fn initialise_session_data(
     data: &mut SessionData,
     session: &SessionContext,
     set_name: &str,
-    key: Option<&EncryptionKey>,
+    _key: Option<&EncryptionKey>,
 ) -> Result<(), ServiceResponse> {
-    if let Some(username) = session.username.as_deref() {
-        require_encryption_key(Some(username), key)?;
-        let key_bytes = key.expect("validated encryption key").as_bytes();
-        let username =
-            normalise_username(username).map_err(|_| invalid_request("invalid session"))?;
-        let persistence = DataPersistence::new()
-            .map_err(|err| map_persistence_error("failed to open persistence store", &err))?;
-
-        let loaded = persistence
-            .load_set(
-                &username,
-                set_name,
-                Some(EncryptionMode::Fernet(key_bytes)),
-            )
-            .map_err(|err| match err {
-                PersistenceError::MissingEncryptionKey => {
-                    unauthorized("Encryption key required. Please unlock.")
-                }
-                PersistenceError::InvalidSetName => invalid_request("invalid set name"),
-                PersistenceError::DecryptionFailed => {
-                    unauthorized("Invalid encryption key.")
-                }
-                other => map_persistence_error("failed to load user set", &other),
-            })?;
-
-        data.memory = loaded.memory;
-        data.system_prompt = loaded.system_prompt;
-        data.history = loaded.history;
-        data.encrypted = loaded.encrypted;
-    } else {
-        if set_name != "default" {
-            return Err(unauthorized("Login required for custom sets"));
-        }
-        data.memory.clear();
-        data.system_prompt = resolve_default_prompt();
-        data.history.clear();
-        data.encrypted = false;
-        data.cipher_blob = None;
+    if session.username.is_some() {
+        // Authed paths must use HistoryService + PrepareCapture, not sets.json.
+        return Err(invalid_request("authenticated session must load via history store"));
     }
-
+    if set_name != "default" {
+        return Err(unauthorized("Login required for custom sets"));
+    }
+    data.memory.clear();
+    data.system_prompt = resolve_default_prompt();
+    data.history.clear();
+    data.encrypted = false;
+    data.cipher_blob = None;
+    data.active_set_id = None;
     data.initialised = true;
     data.last_used = Instant::now();
     Ok(())
@@ -1466,6 +1440,10 @@ pub fn update_session_system_prompt_for_request(
     seal_session_data(&mut data, key_bytes)
 }
 
+/// Update the **session working mirror** for the active set only.
+///
+/// Not durable. Authenticated durability is exclusively via [`HistoryService`].
+/// Prefer this only after a successful HistoryService load/commit for `set_id`.
 pub fn replace_session_set(
     session_id: &str,
     username: Option<&str>,
