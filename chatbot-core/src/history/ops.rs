@@ -6,12 +6,12 @@ use super::types::{HistoryPair, PrepareCapture, SetSnapshot, SetVersion};
 
 /// Maximum number of (user, assistant) pairs stored in one set.
 pub const MAX_HISTORY_PAIRS: usize = 2_000;
-/// Maximum characters per user or assistant message.
-pub const MAX_MESSAGE_CHARS: usize = 200_000;
-/// Maximum characters for set memory field.
-pub const MAX_MEMORY_CHARS: usize = 100_000;
-/// Maximum characters for system prompt.
-pub const MAX_PROMPT_CHARS: usize = 100_000;
+/// Maximum characters per user or assistant message (chat request body allows ~5MB).
+pub const MAX_MESSAGE_CHARS: usize = 1_000_000;
+/// Maximum characters for set memory field (aligned under `/update_memory` 1MB body cap).
+pub const MAX_MEMORY_CHARS: usize = 900_000;
+/// Maximum characters for system prompt (same body cap as memory).
+pub const MAX_PROMPT_CHARS: usize = 900_000;
 /// Maximum characters for display name.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 200;
 
