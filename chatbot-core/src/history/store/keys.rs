@@ -40,7 +40,6 @@ pub fn parse_user_set_key(key: &[u8]) -> Option<(String, SetId)> {
     Some((user, set_id))
 }
 
-#[allow(dead_code)] // used by migration (PR 4)
 pub fn migrated_user_meta_key(user_id: &str) -> String {
     format!("migrated_user:{user_id}")
 }

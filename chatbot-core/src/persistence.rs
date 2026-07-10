@@ -99,13 +99,29 @@ pub struct DataPersistence {
 impl DataPersistence {
     pub fn new() -> Result<Self, PersistenceError> {
         let config = app_config();
-        let sets_dir = config.host_data_dir.join("user_sets");
-        fs::create_dir_all(&sets_dir)?;
+        Self::with_data_dir(
+            config.host_data_dir.clone(),
+            config.default_system_prompt.clone(),
+        )
+    }
 
+    /// Open persistence under an arbitrary data root (`{data_dir}/user_sets`).
+    pub fn with_data_dir(
+        data_dir: impl Into<PathBuf>,
+        default_system_prompt: impl Into<String>,
+    ) -> Result<Self, PersistenceError> {
+        let sets_dir = data_dir.into().join("user_sets");
+        fs::create_dir_all(&sets_dir)?;
         Ok(Self {
             sets_dir,
-            default_system_prompt: config.default_system_prompt.clone(),
+            default_system_prompt: default_system_prompt.into(),
         })
+    }
+
+    /// Path to the user's legacy `sets.json` (if any).
+    pub fn sets_json_path(&self, username: &str) -> Result<PathBuf, PersistenceError> {
+        let username = Self::normalise_username(username)?;
+        Ok(self.sets_dir.join(username).join("sets.json"))
     }
 
     pub fn normalise_username(username: &str) -> Result<String, PersistenceError> {

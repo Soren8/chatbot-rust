@@ -3,13 +3,14 @@
 //! All HTTP handlers and session orchestration must go through [`HistoryService`].
 //! redb handles, raw keys, and free-form blob writes are not exposed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use once_cell::sync::OnceCell;
 use thiserror::Error;
 use tracing::error;
 
+use super::migration;
 use super::ops::{self, OpsError};
 use super::store::{RedbHistoryStore, StoreError};
 use super::types::{PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
@@ -78,6 +79,8 @@ static GLOBAL: OnceCell<HistoryService> = OnceCell::new();
 pub struct HistoryService {
     store: Arc<RedbHistoryStore>,
     default_system_prompt: String,
+    /// Host data dir containing `user_sets/` for legacy migration.
+    data_dir: PathBuf,
 }
 
 impl HistoryService {
@@ -86,25 +89,59 @@ impl HistoryService {
         GLOBAL.get_or_try_init(|| {
             let config = app_config();
             let path = config.host_data_dir.join("history").join("redb");
-            Self::open(path, config.default_system_prompt.clone())
+            Self::open_with_data_dir(
+                path,
+                config.host_data_dir.clone(),
+                config.default_system_prompt.clone(),
+            )
         })
     }
 
-    pub fn open(path: impl AsRef<Path>, default_system_prompt: impl Into<String>) -> Result<Self, HistoryError> {
-        let store = RedbHistoryStore::open(path).map_err(HistoryError::from)?;
+    pub fn open(
+        path: impl AsRef<Path>,
+        default_system_prompt: impl Into<String>,
+    ) -> Result<Self, HistoryError> {
+        let config = app_config();
+        Self::open_with_data_dir(path, config.host_data_dir.clone(), default_system_prompt)
+    }
+
+    pub fn open_with_data_dir(
+        redb_path: impl AsRef<Path>,
+        data_dir: impl Into<PathBuf>,
+        default_system_prompt: impl Into<String>,
+    ) -> Result<Self, HistoryError> {
+        let store = RedbHistoryStore::open(redb_path).map_err(HistoryError::from)?;
         Ok(Self {
             store: Arc::new(store),
             default_system_prompt: default_system_prompt.into(),
+            data_dir: data_dir.into(),
         })
     }
 
     /// Test/helper: open a fresh service at a path without touching the process global.
     pub fn open_ephemeral(path: impl AsRef<Path>) -> Result<Self, HistoryError> {
-        Self::open(path, "You are a helpful assistant.")
+        let path = path.as_ref();
+        let data_dir = path
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        Self::open_with_data_dir(path, data_dir, "You are a helpful assistant.")
     }
 
     pub fn db_path(&self) -> &Path {
         self.store.path()
+    }
+
+    fn ensure_migrated(&self, user: &str, key: &EncryptionKey) -> Result<(), HistoryError> {
+        migration::ensure_user_migrated(
+            &self.store,
+            &self.data_dir,
+            &self.default_system_prompt,
+            user,
+            key,
+        )
+        .map_err(HistoryError::from)
     }
 
     // --- reads ---
@@ -115,6 +152,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<Vec<SetSummary>, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let ids = self.store.list_set_ids(&user)?;
         let mut out = Vec::with_capacity(ids.len());
         for (set_id, updated_at) in ids {
@@ -141,6 +179,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         Ok(self.store.load_snapshot(&user, set_id, key)?)
     }
 
@@ -169,6 +208,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetSummary, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let name = display_name.trim();
         if name.is_empty() {
             return Err(HistoryError::InvalidInput("empty set name"));
@@ -198,6 +238,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         for summary in self.list_sets(&user, key)? {
             if summary.is_default || summary.display_name == "default" {
                 return self.load(&user, summary.set_id, key);
@@ -223,6 +264,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
@@ -244,6 +286,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<(), HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         // Verify ownership + decrypt access (key valid) before delete
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
@@ -267,6 +310,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         Ok(self
             .store
             .commit_snapshot(&user, expected, snapshot, key)?)
@@ -282,6 +326,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
@@ -302,6 +347,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let next = ops::apply_chat_append(capture, user_msg, assistant_msg)?;
         Ok(self
             .store
@@ -317,6 +363,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let next = ops::apply_regenerate(capture, assistant_response)?;
         Ok(self
             .store
@@ -333,6 +380,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
@@ -351,6 +399,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
@@ -370,6 +419,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
@@ -389,6 +439,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {

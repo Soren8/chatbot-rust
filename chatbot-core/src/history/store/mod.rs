@@ -16,10 +16,22 @@ use super::types::{
     BlobFormat, SetId, SetPayloadV1, SetSnapshot, SetSummary, SetVersion,
 };
 use crate::enc_key::EncryptionKey;
-use keys::{set_id_key, user_set_key, user_sets_prefix};
+use keys::{migrated_user_meta_key, set_id_key, user_set_key, user_sets_prefix};
 use tables::{
     SetMetaValue, META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, USER_SETS,
 };
+
+/// One set to insert during legacy migration (pre-sealed in one txn).
+pub struct ImportSet {
+    pub set_id: SetId,
+    pub display_name: String,
+    pub memory: String,
+    pub system_prompt: String,
+    pub history: Vec<(String, String)>,
+    pub is_default: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -355,7 +367,7 @@ impl RedbHistoryStore {
     }
 
     /// Load meta only (for list without full decrypt of names — caller decrypts).
-    #[allow(dead_code)] // used by migration / future list optimizations
+    #[allow(dead_code)]
     pub fn load_meta(&self, set_id: SetId) -> Result<SetMetaValue, StoreError> {
         let txn = self.db.begin_read()?;
         let meta_table = txn.open_table(SETS_META)?;
@@ -365,6 +377,106 @@ impl RedbHistoryStore {
             .ok_or(StoreError::NotFound)?;
         SetMetaValue::decode(existing.value())
             .ok_or_else(|| StoreError::Database("corrupt set meta".into()))
+    }
+
+    pub fn is_user_migrated(&self, user_id: &str) -> Result<bool, StoreError> {
+        let txn = self.db.begin_read()?;
+        let meta = txn.open_table(META)?;
+        let key = migrated_user_meta_key(user_id);
+        Ok(meta.get(key.as_str())?.is_some())
+    }
+
+    /// Insert many sets and mark the user migrated in a single write transaction.
+    ///
+    /// Returns the number of sets inserted (0 if the user was already marked migrated).
+    pub fn import_sets_and_mark_migrated(
+        &self,
+        user_id: &str,
+        sets: &[ImportSet],
+        key: &EncryptionKey,
+    ) -> Result<usize, StoreError> {
+        if self.is_user_migrated(user_id)? {
+            return Ok(0);
+        }
+
+        let version = SetVersion(1);
+        let mut prepared: Vec<(SetId, Vec<u8>, Vec<u8>, u64)> = Vec::with_capacity(sets.len());
+        for set in sets {
+            let payload = SetPayloadV1 {
+                display_name: set.display_name.clone(),
+                memory: set.memory.clone(),
+                system_prompt: set.system_prompt.clone(),
+                history: set.history.clone(),
+            };
+            let blob = crypto::seal_blob(
+                user_id,
+                set.set_id,
+                version,
+                BlobFormat::AeadV1,
+                &payload,
+                key,
+            )?;
+            let meta = SetMetaValue {
+                user_id: user_id.to_owned(),
+                version,
+                created_at: set.created_at,
+                updated_at: set.updated_at,
+                is_default: set.is_default,
+                blob_format: BlobFormat::AeadV1,
+            };
+            prepared.push((set.set_id, meta.encode(), blob, set.updated_at));
+        }
+
+        let mig_key = migrated_user_meta_key(user_id);
+        let txn = self.db.begin_write()?;
+        let inserted = {
+            let already = {
+                let meta_tbl = txn.open_table(META)?;
+                let flag = meta_tbl.get(mig_key.as_str())?.is_some();
+                flag
+            };
+            if already {
+                0usize
+            } else {
+                let mut count = 0usize;
+                {
+                    let mut meta_table = txn.open_table(SETS_META)?;
+                    let mut blob_table = txn.open_table(SETS_BLOB)?;
+                    let mut user_table = txn.open_table(USER_SETS)?;
+                    for (set_id, meta_bytes, blob, updated_at) in &prepared {
+                        let id_key = set_id_key(*set_id);
+                        let exists = meta_table.get(id_key.as_slice())?.is_some();
+                        if exists {
+                            continue;
+                        }
+                        meta_table.insert(id_key.as_slice(), meta_bytes.as_slice())?;
+                        blob_table.insert(id_key.as_slice(), blob.as_slice())?;
+                        user_table.insert(user_set_key(user_id, *set_id).as_slice(), *updated_at)?;
+                        count += 1;
+                    }
+                }
+                let mut meta_tbl = txn.open_table(META)?;
+                meta_tbl.insert(mig_key.as_str(), [1u8].as_slice())?;
+                count
+            }
+        };
+        txn.commit()?;
+        Ok(inserted)
+    }
+
+    /// Mark user migrated with no sets (no legacy file).
+    pub fn mark_user_migrated_empty(&self, user_id: &str) -> Result<(), StoreError> {
+        let mig_key = migrated_user_meta_key(user_id);
+        let txn = self.db.begin_write()?;
+        {
+            let mut meta_tbl = txn.open_table(META)?;
+            let missing = meta_tbl.get(mig_key.as_str())?.is_none();
+            if missing {
+                meta_tbl.insert(mig_key.as_str(), [1u8].as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
     }
 }
 
