@@ -327,7 +327,7 @@ impl RedbHistoryStore {
             }
             meta.version = new_version;
             meta.updated_at = now;
-            meta.is_default = snapshot.is_default;
+            // is_default is lifecycle metadata only; content commits cannot flip it.
             meta.blob_format = BlobFormat::AeadV1;
             let meta_bytes = meta.encode();
             meta_table.insert(id_key.as_slice(), meta_bytes.as_slice())?;
@@ -695,5 +695,26 @@ mod tests {
             store.delete_set("alice", set_id, SetVersion(1)),
             Err(StoreError::InvalidInput)
         ));
+    }
+
+    #[test]
+    fn commit_snapshot_cannot_flip_is_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("history.redb")).unwrap();
+        let key = key();
+        let set_id = SetId::new();
+        store
+            .create_set("alice", set_id, "chat", "sys", false, &key)
+            .unwrap();
+        let mut snap = store.load_snapshot("alice", set_id, &key).unwrap();
+        assert!(!snap.is_default);
+        snap.is_default = true;
+        snap.history.push(("u".into(), "a".into()));
+        store
+            .commit_snapshot("alice", SetVersion(1), &snap, &key)
+            .unwrap();
+        let reloaded = store.load_snapshot("alice", set_id, &key).unwrap();
+        assert!(!reloaded.is_default, "content commit must not flip is_default");
+        assert_eq!(reloaded.history.len(), 1);
     }
 }
