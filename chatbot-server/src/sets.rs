@@ -8,9 +8,10 @@ use chatbot_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tracing::error;
-
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
+    map_serialization_err, map_session_err, HttpError,
+};
 
 #[derive(Deserialize, Default)]
 struct SetRequest {
@@ -44,10 +45,8 @@ pub async fn handle_get_sets(
     let cookie_header = extract_cookie(request.headers());
     let encryption_key = crate::chat_utils::extract_enc_key(request.headers());
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for get_sets");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::get_sets::session"))?;
 
     let username = match session.username.as_deref() {
         Some(value) => value,
@@ -103,18 +102,15 @@ pub async fn handle_create_set(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read /create_set body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 128 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "sets::create_set"))?;
 
     let payload = if body_bytes.is_empty() {
         SetRequest::default()
     } else {
-        serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
-            error!(?err, "invalid JSON payload for /create_set");
-            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-        })?
+        serde_json::from_slice::<SetRequest>(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "sets::create_set"))?
     };
 
     let set_name_raw = payload.set_name.unwrap_or_default();
@@ -124,10 +120,8 @@ pub async fn handle_create_set(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for create_set");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::create_set::session"))?;
 
     let username = match session.username.as_deref() {
         Some(value) => value,
@@ -191,18 +185,15 @@ pub async fn handle_delete_set(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read /delete_set body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 128 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "sets::delete_set"))?;
 
     let payload = if body_bytes.is_empty() {
         SetRequest::default()
     } else {
-        serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
-            error!(?err, "invalid JSON payload for /delete_set");
-            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-        })?
+        serde_json::from_slice::<SetRequest>(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "sets::delete_set"))?
     };
 
     let cookie_header = extract_cookie(&headers);
@@ -210,10 +201,8 @@ pub async fn handle_delete_set(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for delete_set");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::delete_set::session"))?;
 
     let username = match session.username.as_deref() {
         Some(value) => value,
@@ -289,25 +278,20 @@ pub async fn handle_rename_set(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read /rename_set body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 128 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "sets::rename_set"))?;
 
-    let payload: RenameSetRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "invalid JSON payload for /rename_set");
-        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-    })?;
+    let payload: RenameSetRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "sets::rename_set"))?;
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for rename_set");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::rename_set::session"))?;
 
     let username = match session.username.as_deref() {
         Some(value) => value,
@@ -403,18 +387,15 @@ pub async fn handle_load_set(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read /load_set body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 128 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "sets::load_set"))?;
 
     let payload = if body_bytes.is_empty() {
         SetRequest::default()
     } else {
-        serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
-            error!(?err, "invalid JSON payload for /load_set");
-            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-        })?
+        serde_json::from_slice::<SetRequest>(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "sets::load_set"))?
     };
 
     let cookie_header = extract_cookie(&headers);
@@ -422,10 +403,8 @@ pub async fn handle_load_set(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for load_set");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::load_set::session"))?;
 
     let username = match session.username.as_deref() {
         Some(value) => value,
@@ -534,10 +513,8 @@ fn validate_csrf(
     cookie_header: Option<&str>,
     csrf_token: Option<&str>,
 ) -> Result<(), HttpError> {
-    let valid = session::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
-        error!(?err, "failed to validate CSRF token for sets endpoint");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let valid = session::validate_csrf_token(cookie_header, csrf_token)
+        .map_err(|err| map_session_err(err, "sets::csrf"))?;
 
     if !valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
@@ -560,17 +537,12 @@ fn build_json_response(
     status: StatusCode,
     payload: serde_json::Value,
 ) -> Result<Response<Body>, HttpError> {
-    let body = serde_json::to_vec(&payload).map_err(|err| {
-        error!(?err, "failed to serialize JSON response");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response serialization failed")
-    })?;
+    let body = serde_json::to_vec(&payload)
+        .map_err(|err| map_serialization_err(err, "sets::json_response"))?;
 
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
-        .map_err(|err| {
-            error!(?err, "failed to build HTTP response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "sets::json_response"))
 }

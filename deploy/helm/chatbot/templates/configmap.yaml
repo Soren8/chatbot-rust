@@ -1,0 +1,20 @@
+{{- if .Values.webserver.config.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "chatbot.fullname" . }}-config
+  labels:
+    {{- include "chatbot.labels" . | nindent 4 }}
+data:
+  .config.yml: |
+    # Replace with your provider configuration (see repo .config.yml structure).
+    voice_service_host: 127.0.0.1
+    voice_service_port: 5100
+    session_timeout: 604800
+    llms:
+      - provider_name: default
+        type: openai
+        model_name: gpt-4o-mini
+        base_url: https://api.openai.com/v1
+        context_size: 128000
+{{- end }}

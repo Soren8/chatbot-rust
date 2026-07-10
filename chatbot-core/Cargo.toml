@@ -17,6 +17,7 @@ regex = "1"
 serde_yaml = "0.9"
 dotenvy = "0.15"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 thiserror = "1.0"
 fernet = { version = "0.2", default-features = false, features = ["openssl"] }
 bcrypt = "0.15"

@@ -164,6 +164,14 @@ impl HttpSessionStore {
         sessions.retain(|_, record| now.duration_since(record.last_used) <= timeout);
     }
 
+    fn purge_expired(&self) -> usize {
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap();
+        let before = sessions.len();
+        self.clean_expired(&mut sessions, now);
+        before.saturating_sub(sessions.len())
+    }
+
     fn new_record(&self, now: Instant) -> (String, HttpSessionRecord) {
         let cookie_value = random_token(COOKIE_TOKEN_BYTES);
         let guest_id = random_token(GUEST_TOKEN_BYTES);
@@ -464,6 +472,12 @@ impl SessionStore {
         });
     }
 
+    fn purge_expired(&self) -> usize {
+        let before = self.entries.len();
+        self.clean_expired();
+        before.saturating_sub(self.entries.len())
+    }
+
     fn entry(&self, session_id: &str) -> Arc<SessionEntry> {
         if let Some(existing) = self.entries.get(session_id) {
             return Arc::clone(&existing);
@@ -509,6 +523,28 @@ fn unauthorized(message: &str) -> ServiceResponse {
 
 fn server_error(message: &str) -> ServiceResponse {
     build_json_response(500, json!({ "error": message }))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionPurgeStats {
+    pub http_sessions_removed: usize,
+    pub chat_sessions_removed: usize,
+}
+
+impl SessionPurgeStats {
+    pub fn total_removed(&self) -> usize {
+        self.http_sessions_removed + self.chat_sessions_removed
+    }
+}
+
+/// Proactively drop expired HTTP and chat session records (also runs lazily on requests).
+pub fn purge_expired_sessions() -> SessionPurgeStats {
+    let http_sessions_removed = HttpSessionStore::global().purge_expired();
+    let chat_sessions_removed = SessionStore::global().purge_expired();
+    SessionPurgeStats {
+        http_sessions_removed,
+        chat_sessions_removed,
+    }
 }
 
 pub fn release_session_lock(session_id: &str) {

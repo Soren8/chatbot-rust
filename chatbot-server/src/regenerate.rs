@@ -19,7 +19,10 @@ use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::chat_utils::ChatLockGuard;
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
+    HttpError,
+};
 use crate::providers::message_utils::parse_message_content;
 use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
@@ -58,15 +61,12 @@ pub async fn handle_regenerate(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 5 * 1024 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read regenerate request body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 5 * 1024 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "regenerate::post"))?;
 
-    let payload: RegenerateRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "invalid regenerate request payload");
-        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-    })?;
+    let payload: RegenerateRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "regenerate::post"))?;
 
     let cookie_header = headers
         .get(header::COOKIE)
@@ -76,11 +76,8 @@ pub async fn handle_regenerate(
         .get("X-CSRF-Token")
         .and_then(|value| value.to_str().ok());
 
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-        })?;
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "regenerate::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
@@ -121,10 +118,8 @@ pub async fn handle_regenerate(
         return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type"));
     }
 
-    let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to resolve session context");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session_context = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "regenerate::post::session"))?;
 
     let app_config = app_config();
     let save_thoughts = payload.save_thoughts.unwrap_or(app_config.save_thoughts);
@@ -345,9 +340,8 @@ pub async fn handle_regenerate(
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(body_stream))
         .map_err(|err| {
-            error!(?err, "failed to build regenerate response");
             lock_guard.lock().unwrap().release_if_needed();
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
+            map_response_build_err(err, "regenerate::post::response")
         })?;
 
     debug!("/regenerate request handled via Rust path");

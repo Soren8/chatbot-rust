@@ -8,9 +8,11 @@ use chatbot_core::{config, session, user_store::UserStore};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
-use tracing::{error, warn};
+use tracing::warn;
 
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    log_and_api_error, map_response_build_err, map_session_err, HttpError,
+};
 
 pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net data:; style-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com 'unsafe-inline'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com blob: 'wasm-unsafe-eval'; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
@@ -29,10 +31,8 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
 
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to prepare home context");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let bootstrap = session::prepare_home_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "home::get"))?;
 
     let logged_in = bootstrap.username.is_some();
     let user_details = resolve_user_details(bootstrap.username.as_deref());
@@ -62,8 +62,12 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         send_thoughts,
     )
     .map_err(|err| {
-        error!(?err, "failed to render home template");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "template error")
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "template error",
+            "home::get::render",
+            err,
+        )
     })?;
 
     build_response(html, bootstrap)
@@ -224,10 +228,9 @@ fn build_response(
         warn!("discarding invalid Set-Cookie header from session manager");
     }
 
-    builder.body(Body::from(body)).map_err(|err| {
-        error!(?err, "failed to build home response body");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-    })
+    builder
+        .body(Body::from(body))
+        .map_err(|err| map_response_build_err(err, "home::get::response"))
 }
 
 #[cfg(test)]

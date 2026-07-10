@@ -11,9 +11,8 @@ path = "src/lib.rs"
 anyhow = "1.0"
 axum = { version = "0.7", features = ["multipart"] }
 chatbot-core = { path = "../chatbot-core" }
-tokio = { version = "1.37", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "time"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tower-http = { version = "0.5", features = ["fs"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
@@ -38,5 +37,6 @@ async-openai = "0.32.4"
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tracing-appender = "0.2"
 chatbot-test-support = { path = "../chatbot-test-support" }

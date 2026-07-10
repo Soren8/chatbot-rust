@@ -8,9 +8,10 @@ use chatbot_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tracing::error;
-
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, map_body_read_err, map_json_parse_err, map_session_err, map_user_store_err,
+    HttpError,
+};
 
 #[derive(Deserialize)]
 struct UpdatePreferencesRequest {
@@ -30,15 +31,12 @@ pub async fn handle_update_preferences(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 1024).await.map_err(|err| {
-        error!(?err, "failed to read body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "preferences::post"))?;
 
-    let payload: UpdatePreferencesRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "invalid JSON payload");
-        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-    })?;
+    let payload: UpdatePreferencesRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "preferences::post"))?;
 
     let cookie_header = headers
         .get(header::COOKIE)
@@ -49,26 +47,19 @@ pub async fn handle_update_preferences(
         .get("X-CSRF-Token")
         .and_then(|value| value.to_str().ok());
 
-    let valid_csrf = session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(
-        |err| {
-            error!(?err, "failed to validate CSRF");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-        },
-    )?;
+    let valid_csrf = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "preferences::post::csrf"))?;
 
     if !valid_csrf {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid CSRF token"));
     }
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "preferences::post::session"))?;
 
     if let Some(username) = session.username {
         let mut store = UserStore::new().map_err(|err| {
-            error!(?err, "failed to open user store");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "store error")
+            map_user_store_err(err, "preferences::post::open_store", "store error")
         })?;
 
         store
@@ -80,8 +71,7 @@ pub async fn handle_update_preferences(
                 payload.autoplay_tts,
             )
             .map_err(|err| {
-                error!(?err, "failed to update preferences");
-                api_error(StatusCode::INTERNAL_SERVER_ERROR, "store error")
+                map_user_store_err(err, "preferences::post::update", "store error")
             })?;
     }
 

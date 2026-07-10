@@ -70,6 +70,9 @@ services:
       SECRET_KEY: ${SECRET_KEY}
       HOST_DATA_DIR: ${HOST_DATA_DIR:-/app/data}
       RUST_LOG: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-plain}
+      LOG_ANSI: ${LOG_ANSI:-true}
+      SESSION_PURGE_INTERVAL_SECS: ${SESSION_PURGE_INTERVAL_SECS:-300}
       CHATBOT_BIND_ADDR: ${CHATBOT_BIND_ADDR:-0.0.0.0:80}
       CHATBOT_STATIC_ROOT: /app/static
 

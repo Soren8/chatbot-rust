@@ -16,7 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, error};
 
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
+    map_serialization_err, map_session_err, HttpError,
+};
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const SAMPLE_RATE_HZ: u32 = 25_200;
@@ -106,11 +109,8 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .get("X-CSRF-Token")
         .and_then(|value| value.to_str().ok());
 
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token for /tts");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-        })?;
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "tts::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
@@ -138,19 +138,16 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         return Err(api_error(StatusCode::BAD_REQUEST, "JSON body required"));
     }
 
-    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
-        error!(?err, "failed to read TTS request body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|err| map_body_read_err(err, "tts::post"))?;
 
     if body_bytes.is_empty() {
         return Err(api_error(StatusCode::BAD_REQUEST, "No text provided"));
     }
 
-    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "invalid JSON payload for /tts");
-        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-    })?;
+    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "tts::post"))?;
 
     let raw_text = match payload.text {
         Some(text) if !text.is_empty() => text,
@@ -177,19 +174,14 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
 
     // Return the token as JSON
     let payload = json!({ "token": token });
-    let body = serde_json::to_vec(&payload).map_err(|err| {
-        error!(?err, "failed to serialize tts token response");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "serialization error")
-    })?;
+    let body = serde_json::to_vec(&payload)
+        .map_err(|err| map_serialization_err(err, "tts::post::token_response"))?;
 
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
-        .map_err(|err| {
-            error!(?err, "failed to build tts token response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "tts::post::token_response"))
 }
 
 pub async fn handle_tts_stream(
@@ -296,15 +288,12 @@ pub async fn handle_api_tts(
     let ip = crate::chat_utils::get_ip(&parts.headers, &parts.extensions);
     tracing::info!(ip = %ip, "API TTS request");
 
-    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
-        error!(?err, "failed to read /api/tts body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|err| map_body_read_err(err, "tts::api_tts"))?;
 
-    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "invalid JSON payload for /api/tts");
-        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-    })?;
+    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "tts::api_tts"))?;
 
     let backend_request = match build_backend_request(payload) {
         Ok(request) => request,
@@ -354,15 +343,12 @@ pub async fn handle_api_tts_stream(
     }
 
     let (_, body) = request.into_parts();
-    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
-        error!(?err, "failed to read /api/tts/stream body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|err| map_body_read_err(err, "tts::api_tts_stream"))?;
 
-    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "invalid JSON payload for /api/tts/stream");
-        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-    })?;
+    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "tts::api_tts_stream"))?;
 
     let backend_request = match build_backend_request(payload) {
         Ok(request) => request,
@@ -409,10 +395,7 @@ pub async fn handle_api_tts_stream(
             "inline; filename=tts-stream.wav",
         )
         .body(Body::from_stream(combined_stream))
-        .map_err(|err| {
-            error!(?err, "failed to build streaming TTS response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "tts::api_tts_stream::response"))
 }
 
 async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
@@ -497,10 +480,7 @@ async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, HttpE
             "inline; filename=tts-stream.wav",
         )
         .body(Body::from_stream(stream))
-        .map_err(|err| {
-            error!(?err, "failed to build streaming TTS response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "tts::fish_speech_stream::response"))
 }
 
 
@@ -658,10 +638,7 @@ async fn handle_kokoro_tts_stream(
         .header(header::CONTENT_TYPE, "audio/wav")
         .header(header::CONTENT_DISPOSITION, "inline; filename=tts-stream.wav")
         .body(Body::from_stream(combined_stream))
-        .map_err(|err| {
-            error!(?err, "failed to build Kokoro streaming TTS response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "tts::kokoro_stream::response"))
 }
 
 fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, String> {
@@ -900,10 +877,7 @@ fn build_audio_response(bytes: Vec<u8>) -> Result<Response<Body>, HttpError> {
         .header(header::CONTENT_TYPE, "audio/wav")
         .header(header::CONTENT_DISPOSITION, "inline; filename=tts.wav")
         .body(Body::from(bytes))
-        .map_err(|err| {
-            error!(?err, "failed to build audio response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "tts::audio_response"))
 }
 
 fn extract_backend_error(status: reqwest::StatusCode, body: &[u8]) -> String {

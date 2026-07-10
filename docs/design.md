@@ -75,14 +75,14 @@ This document captures the current architecture of the project and the potential
 
 - **Rate Limiting & Concurrency**
   - [ ] Add a production-ready rate limiter with per-user + global caps (today only a per-session generate lock → HTTP 429; no request rate limiter).
-  - [ ] Hook background cleanup jobs to purge expired sessions and chats proactively.
+  - [x] Hook background cleanup jobs to purge expired sessions and chats proactively (`session::purge_expired_sessions` + `SESSION_PURGE_INTERVAL_SECS` background task).
   - [x] Durable chat history on **redb** via `HistoryService` (AEAD+AAD, CAS, PrepareCapture, multi-set `SetCache`, permanent `legacy_sets_json` migration, client `set_id`/`expected_version` + 409 reload UX). See [design-history-store.md](design-history-store.md). Operator: delete `sets.json.migrated.bak` only after a stable redb release.
   - [ ] Enhance test concurrency across integration suites.
 
 - **Error Handling & Logging**
   - [x] Standardize on JSON error responses with proper HTTP status codes rather than plain text (`http_error::HttpError` / `api_error` across `chatbot-server` routes; integration test `http_errors.rs`).
-  - [ ] Narrow error scopes; only catch expected exceptions and add contextual logging before rethrowing.
-  - [ ] Centralize logging configuration with structured output.
+  - [x] Narrow error scopes; only catch expected exceptions and add contextual logging before rethrowing (`http_error` typed mappers: `map_session_err`, `map_user_store_err`, `map_history_err`, etc.).
+  - [x] Centralize logging configuration with structured output (`chatbot_core::logging::init_logging`; `LOG_FORMAT=json|plain`, `LOG_ANSI`, `RUST_LOG`/`LOG_LEVEL`).
 
 - **Code Quality & Style**
   - [ ] Enforce consistent formatting and lint rules via pre-commit.
@@ -97,7 +97,7 @@ This document captures the current architecture of the project and the potential
 - **Docker & Deployment**
   - [x] Optimize the `Dockerfile` with a multi-stage build so that only artifacts ship in the final image.
   - [x] Health checks for orchestrators — `GET /health` liveness JSON; Compose `healthcheck` on **webserver** (curl, honours `CHATBOT_BIND_ADDR` port); optional deep readiness via `GET /health?deep=true` (redb + voice-service probes, 503 when degraded).
-  - [ ] Provide sample deployment configurations (e.g., Docker Compose overrides, Kubernetes/Helm charts) for self-hosted and cloud environments.
+  - [x] Provide sample deployment configurations (e.g., Docker Compose overrides, Kubernetes/Helm charts) for self-hosted and cloud environments (`deploy/compose/`, `deploy/helm/chatbot/`).
 
 - **LLM Provider Abstraction**
   - [x] Async provider interface with streaming (OpenAI-compatible + XAI adapters in `chatbot-server/src/providers/`).

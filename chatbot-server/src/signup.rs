@@ -7,14 +7,17 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
     config, session,
-    user_store::{normalise_username, CreateOutcome, UserStore, UserStoreError},
+    user_store::{normalise_username, CreateOutcome, UserStore},
 };
 use minijinja::{context, AutoEscape, Environment};
 use serde_urlencoded::from_bytes;
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::home::SECURITY_CSP;
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, log_and_api_error, map_body_read_err, map_form_parse_err, map_response_build_err,
+    map_session_err, map_user_store_err, HttpError,
+};
 
 pub async fn handle_signup_get(
     request: Request<Body>,
@@ -25,10 +28,8 @@ pub async fn handle_signup_get(
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
 
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to bootstrap signup context");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let bootstrap = session::prepare_home_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "signup::get"))?;
 
     let config = config::app_config();
     let sri = config.cdn_sri.clone();
@@ -37,8 +38,12 @@ pub async fn handle_signup_get(
     let set_cookie = bootstrap.set_cookie;
 
     let html = render_signup_template(&csrf_token, &sri).map_err(|err| {
-        error!(?err, "failed to render signup template");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "template error")
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "template error",
+            "signup::get::render",
+            err,
+        )
     })?;
 
     build_signup_response(html, set_cookie)
@@ -55,15 +60,12 @@ pub async fn handle_signup_post(
         .and_then(|value| value.to_str().ok())
         .map(|s| s.to_owned());
 
-    let body_bytes = body::to_bytes(body, 64 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read signup body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 64 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "signup::post"))?;
 
-    let form: HashMap<String, String> = from_bytes(&body_bytes).map_err(|err| {
-        error!(?err, "failed to parse signup form");
-        api_error(StatusCode::BAD_REQUEST, "Invalid form payload")
-    })?;
+    let form: HashMap<String, String> =
+        from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "signup::post"))?;
 
     let username_raw = form.get("username").map(|s| s.trim()).unwrap_or("");
     let password = form.get("password").map(|s| s.as_str()).unwrap_or("");
@@ -73,11 +75,8 @@ pub async fn handle_signup_post(
         return Err(api_error(StatusCode::BAD_REQUEST, "Username and password required."));
     }
 
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-        })?;
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "signup::post::csrf"))?;
 
     if !csrf_valid {
         return Ok(Response::builder()
@@ -95,11 +94,17 @@ pub async fn handle_signup_post(
     };
 
     let hashed = hash(password, DEFAULT_COST).map_err(|err| {
-        error!(?err, "failed to hash password");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create user")
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unable to create user",
+            "signup::post::hash",
+            err,
+        )
     })?;
 
-    let mut store = UserStore::new().map_err(map_store_error)?;
+    let mut store = UserStore::new().map_err(|err| {
+        map_user_store_err(err, "signup::post", "Unable to create user")
+    })?;
 
     match store.create_user(&username, &hashed) {
         Ok(CreateOutcome::Created) => {
@@ -110,8 +115,7 @@ pub async fn handle_signup_post(
             return Err(api_error(StatusCode::BAD_REQUEST, "User already exists."));
         }
         Err(err) => {
-            error!(?err, "failed to persist new user");
-            return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create user"));
+            return Err(map_user_store_err(err, "signup::post::create_user", "Unable to create user"));
         }
     }
 
@@ -119,15 +123,7 @@ pub async fn handle_signup_post(
         .status(StatusCode::FOUND)
         .header(header::LOCATION, HeaderValue::from_static("/login"))
         .body(Body::empty())
-        .map_err(|err| {
-            error!(?err, "failed to build redirect response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create user")
-        })
-}
-
-fn map_store_error(err: UserStoreError) -> HttpError {
-    error!(?err, "user store error");
-    api_error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create user")
+        .map_err(|err| map_response_build_err(err, "signup::post::redirect"))
 }
 
 fn render_signup_template(
@@ -169,10 +165,9 @@ fn build_signup_response(
         }
     }
 
-    builder.body(Body::from(body)).map_err(|err| {
-        error!(?err, "failed to build signup response");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-    })
+    builder
+        .body(Body::from(body))
+        .map_err(|err| map_response_build_err(err, "signup::get::response"))
 }
 
 fn template_env() -> &'static Environment<'static> {

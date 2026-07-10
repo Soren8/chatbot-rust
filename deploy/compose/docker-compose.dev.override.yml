@@ -1,0 +1,14 @@
+# Local development override (debug build, human-readable logs).
+# Usage:
+#   docker compose -f docker-compose.yml -f deploy/compose/docker-compose.dev.override.yml up --build
+
+services:
+  webserver:
+    build:
+      args:
+        RUST_BUILD_PROFILE: debug
+    environment:
+      LOG_FORMAT: plain
+      LOG_ANSI: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      SESSION_PURGE_INTERVAL_SECS: ${SESSION_PURGE_INTERVAL_SECS:-60}

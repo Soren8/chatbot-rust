@@ -1,0 +1,6 @@
+apiVersion: v2
+name: chatbot
+description: Sample Helm chart for the chatbot Rust webserver (voice-service is host/GPU-specific; see values).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

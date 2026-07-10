@@ -6,13 +6,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chatbot_core::session::ServiceResponse;
+use chatbot_core::{logging, session::ServiceResponse};
 use std::{env, net::SocketAddr, path::PathBuf};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 use tracing::{error, info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod background;
 mod brave;
 mod chat;
 pub mod chat_utils;
@@ -35,18 +35,12 @@ mod tools;
 mod tts;
 
 pub async fn run() -> anyhow::Result<()> {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(env::var("LOG_LEVEL").unwrap_or_else(|_| "info".into()))
-        });
-
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    logging::init_logging();
 
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
+
+    background::spawn_session_purge_task();
 
     let app = build_router(static_root);
 

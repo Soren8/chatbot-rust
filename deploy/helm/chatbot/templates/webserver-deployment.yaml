@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chatbot.fullname" . }}-webserver
+  labels:
+    {{- include "chatbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webserver
+spec:
+  replicas: {{ .Values.webserver.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "chatbot.labels" . | nindent 6 }}
+      app.kubernetes.io/component: webserver
+  template:
+    metadata:
+      labels:
+        {{- include "chatbot.labels" . | nindent 8 }}
+        app.kubernetes.io/component: webserver
+    spec:
+      {{- if .Values.webserver.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      containers:
+        - name: webserver
+          image: "{{ .Values.webserver.image.repository }}:{{ .Values.webserver.image.tag }}"
+          imagePullPolicy: {{ .Values.webserver.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.webserver.service.port }}
+              protocol: TCP
+          env:
+            - name: CHATBOT_BIND_ADDR
+              value: {{ .Values.webserver.bindAddr | quote }}
+            {{- range $key, $value := .Values.webserver.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range $key, $value := .Values.webserver.secretEnv }}
+            {{- if $value }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health?deep=true
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          volumeMounts:
+            {{- if .Values.webserver.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.webserver.persistence.mountPath }}
+            {{- end }}
+            {{- if .Values.webserver.config.enabled }}
+            - name: config
+              mountPath: {{ .Values.webserver.config.mountPath }}
+              subPath: .config.yml
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.webserver.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.webserver.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "chatbot.fullname" . }}-data
+        {{- end }}
+        {{- if .Values.webserver.config.enabled }}
+        - name: config
+          configMap:
+            name: {{ include "chatbot.fullname" . }}-config
+        {{- end }}

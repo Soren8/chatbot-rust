@@ -1,0 +1,22 @@
+# Production-oriented Compose override. Usage from repo root:
+#   docker compose -f docker-compose.yml -f deploy/compose/docker-compose.prod.override.yml up -d --build
+#
+# Requires host `.env` with SECRET_KEY and provider API keys (see `.env.example` if present).
+
+services:
+  webserver:
+    build:
+      args:
+        RUST_BUILD_PROFILE: release
+    environment:
+      LOG_FORMAT: json
+      LOG_ANSI: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SESSION_PURGE_INTERVAL_SECS: ${SESSION_PURGE_INTERVAL_SECS:-300}
+    depends_on:
+      voice-service:
+        condition: service_healthy
+
+  voice-service:
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}

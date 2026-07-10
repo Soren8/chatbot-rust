@@ -8,9 +8,10 @@ use chatbot_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tracing::error;
-
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
+    map_serialization_err, map_session_err, HttpError,
+};
 
 const MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
 
@@ -69,18 +70,15 @@ pub async fn handle_update_memory(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
-        error!(?err, "failed to read /update_memory body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
+        .await
+        .map_err(|err| map_body_read_err(err, "memory::update_memory"))?;
 
     let payload = if body_bytes.is_empty() {
         UpdateMemoryRequest::default()
     } else {
-        serde_json::from_slice::<UpdateMemoryRequest>(&body_bytes).map_err(|err| {
-            error!(?err, "invalid JSON payload for /update_memory");
-            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-        })?
+        serde_json::from_slice::<UpdateMemoryRequest>(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "memory::update_memory"))?
     };
 
     let memory_text = payload.memory.unwrap_or_default();
@@ -100,10 +98,8 @@ pub async fn handle_update_memory(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for update_memory");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "memory::update_memory::session"))?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
         return build_json_response(
@@ -184,18 +180,15 @@ pub async fn handle_update_system_prompt(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
-        error!(?err, "failed to read /update_system_prompt body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
+        .await
+        .map_err(|err| map_body_read_err(err, "memory::update_system_prompt"))?;
 
     let payload = if body_bytes.is_empty() {
         UpdateSystemPromptRequest::default()
     } else {
-        serde_json::from_slice::<UpdateSystemPromptRequest>(&body_bytes).map_err(|err| {
-            error!(?err, "invalid JSON payload for /update_system_prompt");
-            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-        })?
+        serde_json::from_slice::<UpdateSystemPromptRequest>(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "memory::update_system_prompt"))?
     };
 
     let system_prompt = payload.system_prompt.unwrap_or_default();
@@ -215,11 +208,7 @@ pub async fn handle_update_system_prompt(
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(
-            ?err,
-            "failed to obtain session context for update_system_prompt"
-        );
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
+        map_session_err(err, "memory::update_system_prompt::session")
     })?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
@@ -306,18 +295,15 @@ pub async fn handle_delete_message(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
-        error!(?err, "failed to read /delete_message body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
+        .await
+        .map_err(|err| map_body_read_err(err, "memory::delete_message"))?;
 
     let payload = if body_bytes.is_empty() {
         DeleteMessageRequest::default()
     } else {
-        serde_json::from_slice::<DeleteMessageRequest>(&body_bytes).map_err(|err| {
-            error!(?err, "invalid JSON payload for /delete_message");
-            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-        })?
+        serde_json::from_slice::<DeleteMessageRequest>(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "memory::delete_message"))?
     };
 
     let user_message = payload.user_message.unwrap_or_default();
@@ -348,10 +334,8 @@ pub async fn handle_delete_message(
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to obtain session context for delete_message");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "memory::delete_message::session"))?;
 
     if let Some(username) = session.username.as_deref() {
         if let Err(response) =
@@ -478,10 +462,8 @@ fn validate_csrf(
     cookie_header: Option<&str>,
     csrf_token: Option<&str>,
 ) -> Result<(), HttpError> {
-    let valid = session::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
-        error!(?err, "failed to validate CSRF token for memory endpoint");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let valid = session::validate_csrf_token(cookie_header, csrf_token)
+        .map_err(|err| map_session_err(err, "memory::csrf"))?;
 
     if !valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
@@ -499,10 +481,12 @@ fn map_name_err(err: chatbot_core::persistence::PersistenceError) -> HttpError {
         chatbot_core::persistence::PersistenceError::InvalidSetName => {
             api_error(StatusCode::BAD_REQUEST, "invalid set name")
         }
-        other => {
-            error!(?other, "set name normalisation failed");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid request")
-        }
+        other => log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid request",
+            "memory::normalise_set_name",
+            other,
+        ),
     }
 }
 
@@ -534,17 +518,12 @@ fn build_json_response(
     status: StatusCode,
     payload: serde_json::Value,
 ) -> Result<Response<Body>, HttpError> {
-    let body = serde_json::to_vec(&payload).map_err(|err| {
-        error!(?err, "failed to serialize JSON response");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response serialization failed")
-    })?;
+    let body = serde_json::to_vec(&payload)
+        .map_err(|err| map_serialization_err(err, "memory::json_response"))?;
 
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
-        .map_err(|err| {
-            error!(?err, "failed to build HTTP response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "memory::json_response"))
 }

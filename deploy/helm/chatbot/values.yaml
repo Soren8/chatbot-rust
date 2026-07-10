@@ -1,0 +1,43 @@
+webserver:
+  image:
+    repository: chatbot-rust
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  # Match root docker-compose host networking for local GPU voice-service on :5100.
+  hostNetwork: true
+  service:
+    type: ClusterIP
+    port: 80
+  bindAddr: "0.0.0.0:80"
+  resources: {}
+  env:
+    LOG_FORMAT: json
+    LOG_ANSI: "false"
+    LOG_LEVEL: info
+    SESSION_PURGE_INTERVAL_SECS: "300"
+    HOST_DATA_DIR: /app/data
+    CHATBOT_STATIC_ROOT: /app/static
+  secretEnv:
+    # Populate via --set or a sealed-secrets / external-secrets integration.
+    SECRET_KEY: ""
+    OPENAI_API_KEY: ""
+    OPENROUTER_API_KEY: ""
+    XAI_API_KEY: ""
+    BRAVE_API_KEY: ""
+  persistence:
+    enabled: true
+    size: 10Gi
+    mountPath: /app/data
+  config:
+    # Inline stub; mount real .config.yml content in production.
+    enabled: true
+    mountPath: /app/.config.yml
+
+voiceService:
+  enabled: false
+  image:
+    repository: chatbot-voice-service
+    tag: latest
+  hostNetwork: true
+  port: 5100

@@ -9,9 +9,10 @@ use chatbot_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tracing::error;
-
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
+    map_session_err, HttpError,
+};
 
 #[derive(Deserialize, Default)]
 struct ResetChatRequest {
@@ -33,18 +34,15 @@ pub async fn handle_reset_chat(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, 256 * 1024).await.map_err(|err| {
-        error!(?err, "failed to read reset_chat body");
-        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
-    })?;
+    let body_bytes = body::to_bytes(body, 256 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "reset_chat::post"))?;
 
     let payload: ResetChatRequest = if body_bytes.is_empty() {
         ResetChatRequest::default()
     } else {
-        serde_json::from_slice(&body_bytes).map_err(|err| {
-            error!(?err, "invalid reset_chat payload");
-            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
-        })?
+        serde_json::from_slice(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "reset_chat::post"))?
     };
 
     let cookie_header = headers
@@ -55,11 +53,8 @@ pub async fn handle_reset_chat(
         .get("X-CSRF-Token")
         .and_then(|value| value.to_str().ok());
 
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token for reset_chat");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-        })?;
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "reset_chat::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
@@ -67,14 +62,21 @@ pub async fn handle_reset_chat(
 
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
-    let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to resolve session context for reset_chat");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let session_context = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "reset_chat::post::session"))?;
 
     let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(|err| {
-        error!(?err, "failed to normalise set name");
-        api_error(StatusCode::BAD_REQUEST, "invalid set name")
+        match err {
+            chatbot_core::persistence::PersistenceError::InvalidSetName => {
+                api_error(StatusCode::BAD_REQUEST, "invalid set name")
+            }
+            other => log_and_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid set name",
+                "reset_chat::post::normalise_set_name",
+                other,
+            ),
+        }
     })?;
 
     if let Some(username) = session_context.username.as_deref() {
@@ -159,10 +161,7 @@ fn build_json_response(
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(payload.to_string()))
-        .map_err(|err| {
-            error!(?err, "failed to build reset_chat response body");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "reset_chat::post::response"))
 }
 
 fn build_service_response(

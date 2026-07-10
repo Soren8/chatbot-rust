@@ -11,7 +11,10 @@ use reqwest::Client;
 use serde_json::Value;
 use tracing::{debug, error};
 
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
+    map_serialization_err, map_session_err, HttpError,
+};
 
 const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 
@@ -39,11 +42,8 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .get("X-CSRF-Token")
         .and_then(|v| v.to_str().ok());
 
-    let csrf_valid =
-        session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
-            error!(?err, "failed to validate CSRF token for /stt");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-        })?;
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "stt::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
@@ -54,8 +54,12 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     let mut multipart: Multipart = Multipart::from_request(rebuilt, &())
         .await
         .map_err(|err| {
-            error!(?err, "failed to parse multipart form for /stt");
-            api_error(StatusCode::BAD_REQUEST, "invalid multipart form")
+            log_and_api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid multipart form",
+                "stt::post::multipart",
+                err,
+            )
         })?;
 
     let mut audio_data: Option<Vec<u8>> = None;
@@ -71,10 +75,10 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
             if let Some(fname) = field.file_name() {
                 audio_file_name = fname.to_owned();
             }
-            let data: bytes::Bytes = field.bytes().await.map_err(|err| {
-                error!(?err, "failed to read audio field bytes");
-                api_error(StatusCode::BAD_REQUEST, "failed to read audio data")
-            })?;
+            let data: bytes::Bytes = field
+                .bytes()
+                .await
+                .map_err(|err| map_body_read_err(err, "stt::post::audio"))?;
             if data.len() > MAX_AUDIO_BYTES {
                 return Err(api_error(StatusCode::BAD_REQUEST, "audio file too large"));
             }
@@ -100,8 +104,12 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .file_name(audio_file_name)
         .mime_str(&audio_content_type)
         .map_err(|err| {
-            error!(?err, "invalid audio content-type for STT multipart");
-            api_error(StatusCode::BAD_REQUEST, "unsupported audio format")
+            log_and_api_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported audio format",
+                "stt::post::audio_content_type",
+                err,
+            )
         })?;
 
     let form = reqwest::multipart::Form::new().part("audio", audio_part);
@@ -129,24 +137,17 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     }
 
     // The voice service returns {"text": "..."} — forward it directly
-    let parsed: Value = serde_json::from_slice(&body_bytes).map_err(|err| {
-        error!(?err, "failed to parse STT response JSON");
-        api_error(StatusCode::BAD_GATEWAY, "invalid response from voice service")
-    })?;
+    let parsed: Value = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "stt::post::voice_response"))?;
 
-    let out = serde_json::to_vec(&parsed).map_err(|err| {
-        error!(?err, "failed to serialize STT response");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "serialization error")
-    })?;
+    let out = serde_json::to_vec(&parsed)
+        .map_err(|err| map_serialization_err(err, "stt::post::response"))?;
 
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(out))
-        .map_err(|err| {
-            error!(?err, "failed to build STT response");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })
+        .map_err(|err| map_response_build_err(err, "stt::post::response"))
 }
 
 fn extract_error(status: reqwest::StatusCode, body: &[u8]) -> String {

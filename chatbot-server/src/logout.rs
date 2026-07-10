@@ -3,9 +3,9 @@ use axum::{
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use chatbot_core::session;
-use tracing::error;
-
-use crate::http_error::{api_error, HttpError};
+use crate::http_error::{
+    log_and_api_error, map_response_build_err, map_session_err, HttpError,
+};
 
 pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let headers = request.headers();
@@ -20,10 +20,8 @@ pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, Htt
         .and_then(|ctx| ctx.username)
         .unwrap_or_else(|| "guest".to_string());
 
-    let finalize = session::logout_user(cookie_header.as_deref()).map_err(|err| {
-        error!(?err, "failed to perform logout");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
-    })?;
+    let finalize = session::logout_user(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "logout::post"))?;
 
     tracing::info!(username = %username, ip = %ip, "Logout successful");
 
@@ -32,14 +30,17 @@ pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, Htt
         .header(header::LOCATION, HeaderValue::from_static("/"));
 
     let set_cookie = HeaderValue::from_str(&finalize.set_cookie).map_err(|err| {
-        error!(?err, "invalid Set-Cookie header from logout");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session error",
+            "logout::post::set_cookie",
+            err,
+        )
     })?;
 
     builder = builder.header(header::SET_COOKIE, set_cookie);
 
-    builder.body(Body::empty()).map_err(|err| {
-        error!(?err, "failed to build logout response");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-    })
+    builder
+        .body(Body::empty())
+        .map_err(|err| map_response_build_err(err, "logout::post::response"))
 }
