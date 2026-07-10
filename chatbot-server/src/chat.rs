@@ -139,13 +139,18 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
 
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
     let username = session_context.username.as_deref().unwrap_or("guest");
-    let set_name = payload.set_name.as_deref().unwrap_or("default");
+    // Prefer non-sensitive set_id in logs; display names are privacy-sensitive.
+    let set_log = payload
+        .set_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("name-fallback");
 
     tracing::info!(
         username = %username,
         ip = %ip,
         model = %selected_model,
-        set = %set_name,
+        set_id = %set_log,
         "Chat request received"
     );
 
