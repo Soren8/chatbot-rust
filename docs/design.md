@@ -96,7 +96,7 @@ This document captures the current architecture of the project and the potential
 
 - **Docker & Deployment**
   - [x] Optimize the `Dockerfile` with a multi-stage build so that only artifacts ship in the final image.
-  - [x] Health-check endpoint: `GET /health` returns JSON `{ "status": "healthy" }` (`chatbot-server`). Open: wire a Compose healthcheck on the `webserver` service (voice-service already has one); optional deeper probes (redb / voice reachability).
+  - [ ] Health checks for orchestrators — **partial**: `GET /health` exists and returns JSON `{ "status": "healthy" }` (`chatbot-server`, integration test). Still open: Compose `healthcheck` on the **webserver** service (voice-service already has one); optional readiness probes (redb open, voice-service reachability). Do not mark complete until webserver is healthchecked in Compose at minimum.
   - [ ] Provide sample deployment configurations (e.g., Docker Compose overrides, Kubernetes/Helm charts) for self-hosted and cloud environments.
 
 - **LLM Provider Abstraction**
