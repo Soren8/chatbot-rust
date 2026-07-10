@@ -4,11 +4,11 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
-- **Workspace layout** – The Cargo workspace lives at the repository root. It contains three crates: `chatbot-core` (business logic, config, providers, persistence), `chatbot-server` (Axum HTTP server and route handlers), and `chatbot-test-support` (shared fixtures for integration tests). Shared resources such as templates and static assets reside in `static/`, while persisted runtime data is stored under `data/`.
-- **HTTP stack** – `chatbot-server` exposes all routes via Axum. Templates are rendered with Minijinja, CSP headers are enforced by middleware, and state-changing endpoints require per-session CSRF tokens managed by the Rust session store. CSRF protection is configurable via `.config.yml` (and the `CSRF` environment variable); disabling it also removes the `Secure` flag from session cookies to support non-HTTPS development environments.
-- **Providers & chat flow** – The chat pipeline, provider abstractions, and TTS implementation are implemented in Rust and configured through `.config.yml`. Providers use async traits with streaming support and are exercised by cargo integration tests.
+- **Workspace layout** – The Cargo workspace lives at the repository root. It contains three crates: `chatbot-core` (business logic, config, history, persistence, sessions), `chatbot-server` (Axum HTTP server, route handlers, and LLM/TTS provider adapters under `chatbot-server/src/providers/`), and `chatbot-test-support` (shared fixtures for integration tests). Shared resources such as templates and static assets reside in `static/`, while persisted runtime data is stored under `data/`.
+- **HTTP stack** – `chatbot-server` exposes all routes via Axum, including `GET /health` for liveness. Templates are rendered with Minijinja, CSP headers are enforced by middleware, and state-changing endpoints require per-session CSRF tokens managed by the Rust session store. CSRF protection is configurable via `.config.yml` (and the `CSRF` environment variable); disabling it also removes the `Secure` flag from session cookies to support non-HTTPS development environments.
+- **Providers & chat flow** – The chat pipeline is orchestrated in Rust and configured through `.config.yml`. Provider implementations (OpenAI-compatible, XAI) live in `chatbot-server` and use async traits with streaming support, exercised by cargo integration tests.
 - **Brave Search integration** – Non-XAI providers (OpenAI-compatible API) support web search via the Brave Search REST API. When `web_search=true` is requested, the server performs a two-phase call: first a non-streaming call with an OpenAI function-calling tool definition to let the model decide whether to search and craft the query, then (if a `brave_web_search` tool call is returned) the query is executed directly against the Brave Search API via `reqwest`, and the results are injected as a tool message before the final streaming response. XAI models retain their native search capability unchanged. Configured via the `BRAVE_API_KEY` environment variable.
-- **Sessions & storage** – Session state lives in a Rust-managed store. Chat history for authenticated users is moving to an embedded **redb** store of AEAD ciphertext blobs (see [design-history-store.md](design-history-store.md)); legacy path is per-user encrypted `sets.json`. Anonymous flows remain ephemeral/RAM-only.
+- **Sessions & storage** – Session state lives in a Rust-managed in-memory store. Chat history for authenticated users is stored in an embedded **redb** database of AEAD ciphertext blobs via `HistoryService` (see [design-history-store.md](design-history-store.md)). Legacy per-user encrypted `sets.json` is migration-only (lazy import into redb, then `.migrated.bak`). Anonymous flows remain ephemeral/RAM-only. Open follow-ups: multi-set session ciphertext cache, full client `set_id`/`expected_version` plumbing, and removal of residual `DataPersistence` history helpers.
 - **Tooling & operations** – Development and CI rely on Docker. The `tests` service runs `cargo test` and supporting checks, while the runtime image builds the Axum binary. Build caches, Cargo registries, and generated logs are mounted under `temp/` per `AGENTS.md`.
 
 ## Roadmap
@@ -60,7 +60,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Require a non-default `SECRET_KEY` via environment; remove hardcoded fallbacks.
   - [x] Store all API keys and sensitive settings in environment variables only; avoid checking secrets into Git.
   - [ ] Validate `.config.yml` against a schema to catch missing or invalid fields.
-  - [ ] Protect `.env` and `.config.yml` from AI agent access. These files contain live secrets and must never be read by cloud-connected tools. Options (in order of robustness):
+  - [ ] Protect `.env` and `.config.yml` from AI agent access. These files contain live secrets and must never be read by cloud-connected tools. **Partial today:** Grok/agent devcontainer secret overlays and sandbox config mask host secrets for agents. Remaining options (in order of robustness):
     1. **Dedicated agent user + Linux ACLs**: Create an `aiagent` user, use `setfacl -m u:aiagent:--- .env .config.yml` to deny access to secret files only, run all AI agents (`claude`, `opencode`, etc.) as that user. Agent retains full read access to the rest of the codebase.
     2. **Runtime secret injection**: Eliminate plaintext `.env` entirely. Use a secrets manager (1Password CLI `op run`, `sops`/`age`, `pass`, Doppler) to inject secrets at `docker compose up` time so nothing sensitive exists on disk.
     3. **Agent-specific hooks** (partial, per-tool only): Claude Code hooks can block Read/Bash access to matching file paths, but this does not generalize to other agents.
@@ -74,9 +74,9 @@ This document captures the current architecture of the project and the potential
      (Touch ID, YubiKey, WebAuthn) for seamless unlock on trusted devices with fallback to the passphrase on new or unregistered devices.
 
 - **Rate Limiting & Concurrency**
-  - [ ] Replace the bespoke rate limiter with a production-ready alternative and support per-user + global caps.
+  - [ ] Add a production-ready rate limiter with per-user + global caps (today only a per-session generate lock → HTTP 429; no request rate limiter).
   - [ ] Hook background cleanup jobs to purge expired sessions and chats proactively.
-  - [ ] Switch chat history durable storage to **redb** (opaque AEAD blobs + CAS versions); see [design-history-store.md](design-history-store.md). Replaces earlier Sled consideration.
+  - [x] Durable chat history on **redb** (opaque AEAD blobs + CAS versions) via `HistoryService`; see [design-history-store.md](design-history-store.md). Remaining cutover work: multi-set session cache, remove legacy `DataPersistence` history APIs, client version/409 UX.
   - [ ] Enhance test concurrency across integration suites.
 
 - **Error Handling & Logging**
@@ -96,28 +96,29 @@ This document captures the current architecture of the project and the potential
 
 - **Docker & Deployment**
   - [x] Optimize the `Dockerfile` with a multi-stage build so that only artifacts ship in the final image.
-  - [ ] Add a health-check endpoint so orchestrators can verify service readiness.
+  - [x] Health-check endpoint: `GET /health` returns JSON `{ "status": "healthy" }` (`chatbot-server`). Open: wire a Compose healthcheck on the `webserver` service (voice-service already has one); optional deeper probes (redb / voice reachability).
   - [ ] Provide sample deployment configurations (e.g., Docker Compose overrides, Kubernetes/Helm charts) for self-hosted and cloud environments.
 
 - **LLM Provider Abstraction**
-  - [ ] Consider adding an async provider interface for non-blocking streaming across all providers.
+  - [x] Async provider interface with streaming (OpenAI-compatible + XAI adapters in `chatbot-server/src/providers/`).
   - [ ] Document provider-specific fields (e.g., base URLs) and include example configs.
   - [ ] Break out LLM providers into a git submodule so they can be shared and consumed by other projects or front ends.
   - [ ] Establish semantic versioning and backward-compatibility guarantees for the provider interface.
 
 - **Mobile Frontends**
-  - [ ] Capacitor Android shell — wrap existing web UI in native Android app
-  - [ ] Native microphone plugin — bypass browser audio restrictions on mobile
-  - [ ] Android Auto integration — native `CarAppService` for voice-only AA interface
+  - [x] Capacitor Android shell — wrap existing web UI in native Android app (server-pull WebView)
+  - [x] Native microphone plugin — bypass browser audio restrictions on mobile
+  - [x] Android Auto integration — native `CarAppService` for voice-only AA interface
   - [ ] iOS support via Capacitor (same codebase, low priority)
-  - See [mobile-apps.md](mobile-apps.md) for full plan.
+  - See [mobile-apps.md](mobile-apps.md) for full plan and AA distribution constraints.
 
 - **Voice Mode** — Default TTS provider is `kokoro`; select Qwen3-TTS with `tts_provider: "qwen"` in `.config.yml`.
-  - [ ] Silero VAD voice activity detection.
+  - [x] Silero VAD voice activity detection on **desktop/browser** (`static/deps/vad/`, `chat.js`).
+  - [x] Native mobile VAD — RMS-based `NativeMicUtteranceVAD` on Capacitor (no Silero in WebView); Android Auto `VoiceScreen` also uses RMS. See [mobile-apps.md](mobile-apps.md).
   - [ ] Whisper Large v3 turbo.
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml`. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.
-  - [ ] Fish Speech S2 — natively supports low TTFA streaming; evaluate for production use.
+  - [ ] Fish Speech S2 — natively supports low TTFA streaming; evaluate for production use (code path exists; not production default).
   - [x] Qwen3-TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "qwen"` in `.config.yml`. Uses `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` model with voice cloning support via `tts_voice` (default "Ryan"). Note: the official `qwen-tts` pip package synthesizes the full waveform before returning (no streaming API); community forks exist with true streaming but require auditing. Consider Fish Speech S2 as an alternative with natively low TTFA.
   - [x] Parakeet STT — NVIDIA Parakeet TDT 0.6B v2 for speech-to-text, vertically integrated into `chatbot-cuda` voice-service.
 

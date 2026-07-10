@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | Phase 1 complete (HistoryService wired; set_id on chat/regenerate; session active_set_id; uniqueness, limits, non-destructive regenerate, stream-error finalize skip) |
+| **Status** | **Phase 1 durable path live.** redb + `HistoryService`, AEAD+AAD, lazy `sets.json` migration, `PrepareCapture` + CAS chat/regenerate, non-destructive regenerate, `active_set_id`, uniqueness/limits, `history_robustness` tests. **Open (PR plan 9–11):** multi-set session ciphertext cache `(user_id, set_id)`; remove legacy `DataPersistence` history RMW; client `set_id`/`expected_version` on all mutations + 409 auto-reload UX; standardise conflict JSON bodies. |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 
@@ -12,9 +12,9 @@
 
 ## Overview
 
-Production-like long sessions can lose a large fraction of chat history (~80% after refresh) even when the client UI still looks correct. Root causes are architectural: a session cache keyed only by username (no active `set_id`), non-atomic RMW of a monolithic encrypted `sets.json`, destructive mutations during regenerate prepare, and treating the in-RAM session cache as authoritative over durable storage.
+Production-like long sessions can lose a large fraction of chat history (~80% after refresh) even when the client UI still looks correct. Root causes were architectural: a session cache keyed only by username (no active `set_id`), non-atomic RMW of a monolithic encrypted `sets.json`, destructive mutations during regenerate prepare, and treating the in-RAM session cache as authoritative over durable storage.
 
-This design replaces the file-backed `DataPersistence` history path with an embedded **redb** store of opaque AEAD ciphertext blobs plus non-sensitive structural metadata (`set_id`, version, timestamps, ownership). All durable and in-memory history access goes through a narrow, invariant-enforcing API in `chatbot-core` (`history` module). Handlers and session orchestration never touch redb keys, free-form history vectors, or ciphertext layout. Mutations are prepare/commit with CAS on version; conflicts return HTTP 409 and force client reload.
+This design replaces the file-backed `DataPersistence` history path with an embedded **redb** store of opaque AEAD ciphertext blobs plus non-sensitive structural metadata (`set_id`, version, timestamps, ownership). All durable history access goes through a narrow, invariant-enforcing API in `chatbot-core` (`history` module). Mutations are prepare/commit with CAS on version; conflicts return HTTP 409 and force client reload.
 
 Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message rows). Set display names live only inside ciphertext. Legacy `data/user_sets/{user}/sets.json` is migrated once into redb.
 
@@ -22,21 +22,33 @@ Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message row
 
 ## Background & Motivation
 
-### Current architecture (as implemented)
+### Current architecture (as of Phase 1)
 
 | Layer | Location | Behavior |
 | :--- | :--- | :--- |
-| Durable store | `chatbot-core/src/persistence.rs` (`DataPersistence`) | Per-user `data/user_sets/{username}/sets.json`: entire `HashMap<set_name, SetMetadata{data: SetData{memory, system_prompt, history}}>` Fernet-encrypted as one blob; written via non-atomic `fs::write` |
-| Session cache | `chatbot-core/src/session.rs` (`SessionStore` / `SessionData`) | One entry per **session_id** (username for authed users); holds ciphertext blob for memory + prompt + history; **no active set_id** |
-| Chat path | `chat_prepare` → stream → `chat_finalize` | Finalize appends to RAM history and `store_history(username, set_name, …)` using request `set_name` |
-| Regenerate | `regenerate_prepare` | **Removes** history pair from session before stream succeeds (`data.history.remove` / `pop`) |
-| Load set | `sets::handle_load_set` → `replace_session_set` | Overwrites the single session blob with the loaded set |
-| Delete / reset | `memory.rs`, `reset_chat.rs` | Mutate history vector in session + call `store_history` |
+| Durable store | `chatbot-core/src/history/` (`HistoryService` + sealed redb) | `{HOST_DATA_DIR}/history/redb`: per-`set_id` AEAD ciphertext + meta (version, ownership, `is_default`); CAS on version |
+| Migration | `history/migration.rs` | Lazy per-user import from `user_sets/{user}/sets.json` → redb, then rename to `.migrated.bak` |
+| Session cache | `chatbot-core/src/session.rs` | Still **one** ciphertext blob per `session_id` plus `active_set_id`; not yet multi-set `(user, set_id)` cache |
+| Chat / regenerate | `chat_prepare` / `*_finalize_with_capture` | `PrepareCapture` freezes `{set_id, version, history}`; finalize commits via HistoryService CAS only |
+| Sets / memory / reset | `sets.rs`, `memory.rs`, `reset_chat.rs` | Route through `HistoryService`; `set_name` still accepted as transition shim |
+| Client | `static/chat.js` | Partial `set_id`/`version` tracking; rename/delete_set send `expected_version`; chat/delete/memory often name-only |
 
-Key call sites today:
+**Open residual risk:** session layout is still single-blob; cache is not multi-set; legacy `DataPersistence` history methods remain for migration/tests; client 409 UX incomplete.
+
+### Legacy architecture (pre-redb; fixed by this design)
+
+| Layer | Location | Behavior |
+| :--- | :--- | :--- |
+| Durable store | `chatbot-core/src/persistence.rs` (`DataPersistence`) | Per-user `data/user_sets/{username}/sets.json`: entire map Fernet-encrypted as one blob; non-atomic `fs::write` |
+| Session cache | `SessionStore` / `SessionData` | One entry per session; **no** `active_set_id`; treated as SoT |
+| Chat path | finalize | Appended to RAM then `store_history` by `set_name` |
+| Regenerate | prepare | **Removed** history pair before stream success |
+| Load set | `replace_session_set` | Overwrote the single session blob |
+
+Key call sites (legacy; migration helpers still reference some of these):
 
 - `DataPersistence::store_history` / `load_set` / `write_sets` — [`chatbot-core/src/persistence.rs`](../chatbot-core/src/persistence.rs)
-- `chat_prepare` / `chat_finalize` / `regenerate_prepare` / `regenerate_finalize` / `replace_session_set` — [`chatbot-core/src/session.rs`](../chatbot-core/src/session.rs)
+- `chat_prepare` / `chat_finalize` / `regenerate_*` / `replace_session_set` — [`chatbot-core/src/session.rs`](../chatbot-core/src/session.rs)
 - Handlers: [`chatbot-server/src/chat.rs`](../chatbot-server/src/chat.rs), [`regenerate.rs`](../chatbot-server/src/regenerate.rs), [`memory.rs`](../chatbot-server/src/memory.rs), [`reset_chat.rs`](../chatbot-server/src/reset_chat.rs), [`sets.rs`](../chatbot-server/src/sets.rs)
 - Client set switch: `static/chat.js` (`POST /load_set` on `#set-selector` change)
 

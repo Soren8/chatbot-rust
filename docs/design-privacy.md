@@ -102,12 +102,13 @@ Enrollment flow: login derives the key client-side → server stores key verifie
 Existing users without a verifier get one created on the first authenticated request that presents a valid derived key (same key as password login). Until the client sends `X-Enc-Key`, encrypted endpoints return **401** with a clear unlock message.
 
 ## Current Architecture Status
-*As of June 2026*
+*As of July 2026*
 
-The system currently operates in a **Strict Private Mode** with **per-request keying**:
+The system currently operates in a **Strict Private Mode** with **per-request keying**. Per-chat mode selection (Private / Recoverable / Ephemeral dropdown) is **not** implemented yet — all authenticated durable data uses Private Mode rules.
 
 1.  **Authenticated Users:**
-    *   All user data is stored using **Private Mode** logic (Fernet at rest).
+    *   Durable chat sets live in **redb** as AEAD (AES-256-GCM + HKDF) ciphertext blobs via `HistoryService` (see [design-history-store.md](design-history-store.md)). Display names are only inside ciphertext.
+    *   Session working-set cache still seals with **Fernet** (one blob per session + `active_set_id`; multi-set cache not done).
     *   Keys are derived from the login password on the client.
     *   The server stores only an HMAC key verifier, not the data key.
     *   Clients wrap the key locally (IndexedDB non-extractable key by default; WebAuthn PRF opt-in; Android Keystore on native).
@@ -115,7 +116,7 @@ The system currently operates in a **Strict Private Mode** with **per-request ke
     *   OAuth is not yet implemented.
 
 2.  **Anonymous Users:**
-    *   Guests operate in **Ephemeral Mode** (no `X-Enc-Key` required).
+    *   Guests operate in **Ephemeral Mode** (RAM-only history, no redb, no `X-Enc-Key` required).
 
 ## Roadmap
 

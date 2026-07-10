@@ -10,11 +10,10 @@ The web frontend is the only interface. This creates three issues:
 
 ## Constraints
 
-- Voice mode uses VAD barge-in (already in `chat.js` with Silero VAD + MediaRecorder).
+- Voice mode uses VAD barge-in: Silero on desktop/browser; RMS (`NativeMicUtteranceVAD`) on Capacitor + Android Auto.
 - Android Auto requires a native `CarAppService` — no framework bypasses this.
 - iOS support is low priority but desired as a side effect.
-- Existing web UI (`static/chat.js`, ~2000 lines Bootstrap/jQuery) must be reused with minimal changes.
-- VAD stays as Silero in Capacitor WebView; native VAD is post-baseline optimization only.
+- Existing web UI (`static/chat.js`, Bootstrap/jQuery) must be reused with minimal changes.
 - **Server-pull model**: The app loads web content from the running `chatbot-server` instead of bundling static assets. Web UI updates do not require rebuilding the APK, but they **do** require rebuilding the `webserver` Docker image (`docker compose up --build -d webserver`) because `static/` is baked into the image.
 
 ## Recommendation: Capacitor Android + Native Android Auto Module
@@ -30,25 +29,19 @@ Capacitor wraps the existing web UI in a native Android shell. The WebView loads
 │  │     Capacitor WebView       │    │    Android Auto      │  │
 │  │  ┌───────────────────────┐  │    │    (Native Java)     │  │
 │  │  │  chat.js              │  │    │                      │  │
-│  │  │  - Silero VAD         │  │    │  ChatbotCarAppService│  │
-│  │  │  - TTS playback       │  │    │  - Voice input       │  │
-│  │  │  - Chat UI            │  │    │  - REST calls        │  │
-│  │  └───────────┬───────────┘  │    │  - TTS output        │  │
-│  │              │              │    │  - Exit button        │  │
-│  │              ▼              │    └──────────────────────┘  │
-│  │  ┌───────────────────────┐  │                             │
-│  │  │  NativeMicPlugin.java │  │                             │
-│  │  │  - 16kHz mono PCM    │  │                             │
-│  │  │  - base64 to JS bridge│  │                             │
-│  │  └───────────────────────┘  │                             │
+│  │  │  - NativeMicUtterance │  │    │  ChatbotCarAppService│  │
+│  │  │    VAD (RMS)          │  │    │  - Voice input (RMS) │  │
+│  │  │  - NativeVoiceTts     │  │    │  - REST / TTS        │  │
+│  │  │  - Chat UI            │  │    │  - Exit button        │  │
+│  │  └───────────┬───────────┘  │    └──────────────────────┘  │
 │  │              │              │                             │
 │  │              ▼              │                             │
 │  │  ┌───────────────────────┐  │                             │
-│  │  │  NativeMicVADBridge   │  │                             │
-│  │  │  - ScriptProcessor    │  │                             │
-│  │  │  - MediaStreamDest    │  │                             │
-│  │  │  - Feeds Silero VAD   │  │                             │
+│  │  │  NativeMicPlugin.java │  │                             │
+│  │  │  - 16kHz mono PCM     │  │                             │
+│  │  │  - VOICE_COMMUNICATION│  │                             │
 │  │  └───────────────────────┘  │                             │
+│  │  Desktop browser: Silero VAD (not shown)                  │
 │  └─────────────────────────────┘                             │
 └──────────────────────────────┼────────────────────────────────┘
                                │   REST API
@@ -99,22 +92,23 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 **Goal**: Voice mode works reliably without browser restrictions.
 
 1. Write `NativeMicPlugin.java`:
-   - Uses `AudioRecord` for 16kHz mono PCM capture
-   - Sends audio data to JS via Capacitor events (`nativeMicData`)
+   - Uses `AudioRecord` for 16kHz mono PCM capture (`VOICE_COMMUNICATION` for hardware AEC/NS/AGC)
+   - Sends fixed 20 ms frames to JS via Capacitor events (`nativeMicData`)
    - Handles audio focus and wake locks
    - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` to web layer
 
-2. `NativeMicVADBridge` class in `chat.js`:
-   - Creates AudioContext + ScriptProcessorNode + MediaStreamDestination
-   - Feeds native mic chunks (base64 → Float32) through queue to ScriptProcessorNode
-   - ScriptProcessorNode outputs to MediaStreamDestination's stream
-   - Silero VAD's `createVAD()` receives the stream with custom `getStream` override
-   - Handles onSpeechStart, onSpeechEnd callbacks
+2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — **RMS-only**, not Silero):
+   - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
+   - 600 ms PCM pre-roll; skips utterance detection during TTS; RMS barge-in while TTS plays
+   - 400 ms cooldown after TTS before listening resumes
+   - `NativeVoiceTtsPlugin` plays `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so AEC tracks TTS
+
+3. Desktop/browser still uses Silero VAD (`static/deps/vad/`) with `getUserMedia` when not on Capacitor.
 
 **Key Bugs Fixed**:
-1. Silero VAD's `start()` internally calls `navigator.mediaDevices.getUserMedia()` even when a stream is passed, so the `getStream` override was required.
-2. After speech detection, calling `pause()`/`start()` or `destroy()`/`createVAD()` on the VAD broke subsequent detection — the VAD must be left running continuously without interruption.
-3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Solution: use `AudioSource.VOICE_COMMUNICATION` which enables hardware AEC/echo suppression.
+1. Early experiments feeding Silero via ScriptProcessor/`NativeMicVADBridge` were abandoned on native: Silero + WebView audio breaks during TTS; RMS matches Android Auto `VoiceScreen`.
+2. After speech detection, restarting Silero (`pause`/`start` or recreate) broke subsequent detection on WebView — native path avoids Silero entirely.
+3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Solution: `AudioSource.VOICE_COMMUNICATION` + voice-communication TTS usage.
 
 **Effort**: ~1 week.
 
@@ -170,31 +164,25 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 ## VAD Implementation Notes
 
-### Silero VAD in Capacitor WebView
+### Native (Capacitor) vs desktop VAD
 
-Silero VAD runs in the Capacitor WebView with a native mic bridge. Key implementation details:
+1. **NativeMicPlugin.java** — 16kHz mono PCM via `AudioRecord` (`VOICE_COMMUNICATION`, AEC/NS/**AGC**), 20 ms frames → `nativeMicData`.
 
-1. **NativeMicPlugin.java** captures 16kHz mono PCM via `AudioRecord` (`VOICE_COMMUNICATION`, AEC/NS/**AGC**), emits fixed **20 ms** frames to JS via `notifyListeners('nativeMicData', ...)`
+2. **`static/native-audio.js`** — PCM16 WAV helpers for STT upload and related buffering.
 
-2. **`static/native-audio.js`** — PCM16 WAV encoding (no float clamp bug), `PcmSampleBuffer` for gapless ScriptProcessor feeding, prefetch before VAD start
+3. **`NativeMicUtteranceVAD`** (chat.js) — RMS-only on native PCM (same approach as `VoiceScreen.java`):
+   - No Silero / WebView `AudioContext` on the native path
+   - **600 ms PCM pre-roll**; skip utterance start during TTS; RMS barge-in; **400 ms** post-TTS cooldown
 
-3. **`NativeMicUtteranceVAD`** (chat.js) — RMS-only on native PCM (same as `VoiceScreen.java`):
-   - No Silero / WebView `AudioContext`
-   - **600 ms PCM pre-roll** at utterance start
-   - Skips utterance detection during TTS session; barge-in via RMS while audio plays
-   - **400 ms cooldown** after TTS before listening resumes
+4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so hardware AEC cancels TTS (HTML `<audio>` uses the media route and breaks AEC).
 
-4. **`NativeVoiceTtsPlugin.java`** — plays `/tts_stream/{token}` via `AudioTrack` with `USAGE_VOICE_COMMUNICATION` so hardware AEC cancels TTS echo on the mic path (HTML `<audio>` uses the media route and breaks AEC).
-
-5. **Critical VAD behavior**: After `onSpeechEnd` fires, the VAD must be left running. **Never call `vad.pause()` on the native bridge** during STT — Silero cannot restart in Android WebView, which breaks barge-in during TTS. Use `vadSttInProgress` to ignore overlapping utterances instead. Calling `pause()`/`start()` on desktop VAD is OK (reinitialize resumes before TTS).
+5. **Desktop/browser**: Silero VAD remains. After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 
 ### VAD Evaluation
 
-Car environments are noisy. After Phase 2 delivery, test VAD accuracy. If it misses too often:
-- Adjust Silero thresholds (`positiveSpeechThreshold`, `minSpeechFrames`)
-- Or implement native Kotlin VAD plugin using ONNX Runtime Mobile
-
-Native VAD is **not in scope** for initial delivery.
+Car environments are noisy. If RMS misses too often:
+- Tune RMS thresholds / hangover in `NativeMicUtteranceVAD` / `VoiceScreen`
+- Or implement a native Kotlin VAD (ONNX Runtime Mobile) — still optional, not baseline
 
 ---
 
@@ -329,7 +317,7 @@ Product flavors configure `server_url` string resource:
 | `android/.../res/xml/network_security_config.xml` | Create — allow cleartext for emulator + tailscale |
 | `android/.../res/values/arrays.xml` | Create — `car_app_supported_types` |
 | `android/.../res/values/strings.xml` | Modify — `server_url` per flavor |
-| `static/chat.js` | Modify — `NativeMicVADBridge`, VAD callbacks, TTS echo fix |
+| `static/chat.js` | Modify — `NativeMicUtteranceVAD` (RMS), voice-mode TTS, native bridge |
 | `static/deps/vad/` | Create — Silero VAD WASM assets |
 | `.gitignore` | Modify — exclude Capacitor build artifacts |
 
@@ -340,7 +328,7 @@ Product flavors configure `server_url` string resource:
 | Phase | Deliverable | Status |
 |-------|-------------|--------|
 | 1 | Capacitor Android shell (server-pull) | ✅ Complete |
-| 2 | Native mic plugin + NativeMicVADBridge | ✅ Complete |
+| 2 | Native mic plugin + NativeMicUtteranceVAD (RMS) | ✅ Complete |
 | 3 | Android Auto voice module | ✅ Complete |
 | 4 | iOS build (same codebase) | Pending |
 

@@ -8,14 +8,14 @@ Not a single line of code in this repository was written manually. Human work in
 
 ## Features
 - Axum server with configurable CSRF-protected routes (enabled by default) for chat, authentication, set management, and TTS.
-- `chatbot-core` crate encapsulating chat logic, provider abstractions, persistence, and session management.
+- `chatbot-core` crate encapsulating chat logic, config, history (redb), persistence helpers, and session management.
 - Static assets rendered with Minijinja and served from `static/`.
-- Async provider implementations (OpenAI-compatible, XAI) with streaming support and configurable defaults.
+- Async provider implementations (OpenAI-compatible, XAI) in `chatbot-server` with streaming support and configurable defaults.
 - Comprehensive integration tests (`cargo test`) covering routes, session flows, and external service stubs.
 
 ## Repository Layout
-- `chatbot-core/` – core business logic, configuration, providers, persistence, and session manager.
-- `chatbot-server/` – Axum HTTP server, route handlers, middleware, and integration tests.
+- `chatbot-core/` – core business logic, configuration, history store, persistence helpers, and session manager.
+- `chatbot-server/` – Axum HTTP server, route handlers, LLM/TTS providers, middleware, and integration tests.
 - `chatbot-test-support/` – shared fixtures and helpers for integration tests.
 - `data/` – gitignored persistence for chats, sessions, and users.
 - `static/` – static assets and Minijinja templates.
