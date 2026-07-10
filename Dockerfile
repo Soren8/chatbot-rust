@@ -85,7 +85,7 @@ FROM debian:bookworm-slim AS prod
 ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=rust-build /build/target/${RUST_BUILD_PROFILE}/chatbot-server /usr/local/bin/chatbot-server

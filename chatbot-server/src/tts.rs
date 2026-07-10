@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, error};
 
+use crate::http_error::{api_error, HttpError};
+
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const SAMPLE_RATE_HZ: u32 = 25_200;
 const CHANNELS: u16 = 1;
@@ -87,9 +89,9 @@ struct KokoroTtsRequest {
     voice: String,
 }
 
-pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
+pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -107,14 +109,11 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
     let csrf_valid =
         session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token for /tts");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
@@ -136,26 +135,26 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         .unwrap_or(false);
 
     if !is_json {
-        return json_error(StatusCode::BAD_REQUEST, "JSON body required");
+        return Err(api_error(StatusCode::BAD_REQUEST, "JSON body required"));
     }
 
     let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
         error!(?err, "failed to read TTS request body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     if body_bytes.is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "No text provided");
+        return Err(api_error(StatusCode::BAD_REQUEST, "No text provided"));
     }
 
     let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
         error!(?err, "invalid JSON payload for /tts");
-        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
     })?;
 
     let raw_text = match payload.text {
         Some(text) if !text.is_empty() => text,
-        _ => return json_error(StatusCode::BAD_REQUEST, "No text provided"),
+        _ => return Err(api_error(StatusCode::BAD_REQUEST, "No text provided")),
     };
 
     debug!(raw_text_len = raw_text.len(), raw_text_preview = ?raw_text.get(..100.min(raw_text.len())), "handle_tts: received text");
@@ -163,7 +162,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
     let cleaned = sanitize_text(&raw_text);
     if cleaned.is_empty() {
         debug!("sanitized /tts payload resulted in empty text");
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed");
+        return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
     }
 
     // Generate a temporary token and store the cleaned text
@@ -180,7 +179,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
     let payload = json!({ "token": token });
     let body = serde_json::to_vec(&payload).map_err(|err| {
         error!(?err, "failed to serialize tts token response");
-        (StatusCode::INTERNAL_SERVER_ERROR, "serialization error".to_string())
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "serialization error")
     })?;
 
     Response::builder()
@@ -189,18 +188,18 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, (Statu
         .body(Body::from(body))
         .map_err(|err| {
             error!(?err, "failed to build tts token response");
-            (StatusCode::INTERNAL_SERVER_ERROR, "response build error".to_string())
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
 
 pub async fn handle_tts_stream(
     Path(token): Path<String>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let cleaned = {
         let mut map = PENDING_TTS.write().expect("tts lock");
         map.remove(&token).ok_or_else(|| {
             debug!(token = %token, "invalid or expired TTS token");
-            (StatusCode::NOT_FOUND, "Invalid or expired token".to_string())
+            api_error(StatusCode::NOT_FOUND, "Invalid or expired token")
         })?
     };
 
@@ -226,25 +225,22 @@ let config = config::app_config();
     // We use the non-streaming endpoint to get the full bytes so we can apply a fade
     let response = match post_backend("/api/tts", &backend_request).await {
         Ok(response) => response,
-        Err((status, message)) => {
-            error!(?status, ?message, "failed to reach TTS backend for /tts_stream");
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed");
+        Err(err) => {
+            error!(?err, "failed to reach TTS backend for /tts_stream");
+            return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
         }
     };
 
     let status = response.status();
     let mut bytes = response.bytes().await.map_err(|err| {
         error!(?err, "failed to read /tts_stream backend response body");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response read error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
     })?.to_vec();
 
     if !status.is_success() {
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "TTS backend returned error for /tts_stream");
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed");
+        return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
     }
 
     // Check for RIFF header and strip it if present to get raw PCM
@@ -291,12 +287,9 @@ fn apply_pcm_fade(pcm: &mut [u8], sample_rate: u32) {
 
 pub async fn handle_api_tts(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -305,17 +298,17 @@ pub async fn handle_api_tts(
 
     let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
         error!(?err, "failed to read /api/tts body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
         error!(?err, "invalid JSON payload for /api/tts");
-        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
     })?;
 
     let backend_request = match build_backend_request(payload) {
         Ok(request) => request,
-        Err(message) => return json_error(StatusCode::BAD_REQUEST, &message),
+        Err(message) => return Err(api_error(StatusCode::BAD_REQUEST, message)),
     };
 
     let config = config::app_config();
@@ -337,21 +330,15 @@ pub async fn handle_api_tts(
         let status = response.status();
         let body = response.bytes().await.map_err(|err| {
             error!(?err, "failed to read /api/tts backend error body");
-            (
-                StatusCode::BAD_GATEWAY,
-                "TTS backend response error".to_string(),
-            )
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend response error")
         })?;
         let message = extract_backend_error(status, &body);
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     let pcm_bytes = response.bytes().await.map_err(|err| {
         error!(?err, "failed to read /api/tts backend body");
-        (
-            StatusCode::BAD_GATEWAY,
-            "TTS backend response error".to_string(),
-        )
+        api_error(StatusCode::BAD_GATEWAY, "TTS backend response error")
     })?;
 
     let wav_bytes = pcm_to_wav(&pcm_bytes, SAMPLE_RATE_HZ);
@@ -361,28 +348,25 @@ pub async fn handle_api_tts(
 
 pub async fn handle_api_tts_stream(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (_, body) = request.into_parts();
     let body_bytes = body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|err| {
         error!(?err, "failed to read /api/tts/stream body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
         error!(?err, "invalid JSON payload for /api/tts/stream");
-        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
     })?;
 
     let backend_request = match build_backend_request(payload) {
         Ok(request) => request,
-        Err(message) => return json_error(StatusCode::BAD_REQUEST, &message),
+        Err(message) => return Err(api_error(StatusCode::BAD_REQUEST, message)),
     };
 
     let config = config::app_config();
@@ -402,13 +386,10 @@ pub async fn handle_api_tts_stream(
         let status = response.status();
         let body = response.bytes().await.map_err(|err| {
             error!(?err, "failed to read /api/tts/stream backend error body");
-            (
-                StatusCode::BAD_GATEWAY,
-                "TTS backend response error".to_string(),
-            )
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend response error")
         })?;
         let message = extract_backend_error(status, &body);
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     let stream = response.bytes_stream();
@@ -430,14 +411,11 @@ pub async fn handle_api_tts_stream(
         .body(Body::from_stream(combined_stream))
         .map_err(|err| {
             error!(?err, "failed to build streaming TTS response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
 
-async fn handle_fish_speech(text: String) -> Result<Response<Body>, (StatusCode, String)> {
+async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
     let request = FishSpeechRequest {
         text,
         reference_id: "default".to_string(),
@@ -458,10 +436,7 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, (StatusCode,
         .await
         .map_err(|err| {
             error!(?err, "failed to reach Fish Speech backend");
-            (
-                StatusCode::BAD_GATEWAY,
-                "TTS backend unreachable".to_string(),
-            )
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
         })?;
 
     let status = response.status();
@@ -469,21 +444,18 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, (StatusCode,
         let bytes = response.bytes().await.unwrap_or_default();
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "Fish Speech backend returned error");
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     let bytes = response.bytes().await.map_err(|err| {
         error!(?err, "failed to read Fish Speech response body");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response read error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
     })?;
 
     build_audio_response(bytes.to_vec())
 }
 
-async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (StatusCode, String)> {
+async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, HttpError> {
     let request = FishSpeechRequest {
         text,
         reference_id: "default".to_string(),
@@ -504,10 +476,7 @@ async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (Stat
         .await
         .map_err(|err| {
             error!(?err, "failed to reach Fish Speech backend");
-            (
-                StatusCode::BAD_GATEWAY,
-                "TTS backend unreachable".to_string(),
-            )
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
         })?;
 
     if !response.status().is_success() {
@@ -515,7 +484,7 @@ async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (Stat
         let bytes = response.bytes().await.unwrap_or_default();
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "Fish Speech backend returned error");
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     let stream = response.bytes_stream();
@@ -530,10 +499,7 @@ async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (Stat
         .body(Body::from_stream(stream))
         .map_err(|err| {
             error!(?err, "failed to build streaming TTS response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
 
@@ -541,7 +507,7 @@ async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, (Stat
 async fn handle_qwen_tts(
     text: String,
     config: &config::AppConfig,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let base = config.voice_service_base_url.trim_end_matches('/');
     let url = format!("{base}/v1/tts");
 
@@ -562,7 +528,7 @@ async fn handle_qwen_tts(
         .await
         .map_err(|err| {
             error!(?err, "failed to reach Qwen TTS voice service");
-            (StatusCode::BAD_GATEWAY, "TTS backend unreachable".to_string())
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
         })?;
 
     let sample_rate: u32 = response
@@ -578,14 +544,14 @@ async fn handle_qwen_tts(
         .await
         .map_err(|err| {
             error!(?err, "failed to read Qwen TTS response body");
-            (StatusCode::INTERNAL_SERVER_ERROR, "response read error".to_string())
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
         })?
         .to_vec();
 
     if !status.is_success() {
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "Qwen TTS voice service returned error");
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     apply_pcm_fade(&mut bytes, sample_rate);
@@ -596,7 +562,7 @@ async fn handle_qwen_tts(
 async fn handle_kokoro_tts(
     text: String,
     config: &config::AppConfig,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let base = config.voice_service_base_url.trim_end_matches('/');
     let url = format!("{base}/v1/tts/kokoro");
 
@@ -612,7 +578,7 @@ async fn handle_kokoro_tts(
         .await
         .map_err(|err| {
             error!(?err, "failed to reach Kokoro TTS voice service");
-            (StatusCode::BAD_GATEWAY, "TTS backend unreachable".to_string())
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
         })?;
 
     let sample_rate: u32 = response
@@ -628,14 +594,14 @@ async fn handle_kokoro_tts(
         .await
         .map_err(|err| {
             error!(?err, "failed to read Kokoro TTS response body");
-            (StatusCode::INTERNAL_SERVER_ERROR, "response read error".to_string())
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
         })?
         .to_vec();
 
     if !status.is_success() {
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "Kokoro TTS voice service returned error");
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     apply_pcm_fade(&mut bytes, sample_rate);
@@ -646,7 +612,7 @@ async fn handle_kokoro_tts(
 async fn handle_kokoro_tts_stream(
     text: String,
     config: &config::AppConfig,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let base = config.voice_service_base_url.trim_end_matches('/');
     let url = format!("{base}/v1/tts/kokoro/stream");
 
@@ -662,7 +628,7 @@ async fn handle_kokoro_tts_stream(
         .await
         .map_err(|err| {
             error!(?err, "failed to reach Kokoro TTS voice service (stream)");
-            (StatusCode::BAD_GATEWAY, "TTS backend unreachable".to_string())
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
         })?;
 
     if !response.status().is_success() {
@@ -670,7 +636,7 @@ async fn handle_kokoro_tts_stream(
         let bytes = response.bytes().await.unwrap_or_default();
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "Kokoro TTS stream returned error");
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     let sample_rate: u32 = response
@@ -694,7 +660,7 @@ async fn handle_kokoro_tts_stream(
         .body(Body::from_stream(combined_stream))
         .map_err(|err| {
             error!(?err, "failed to build Kokoro streaming TTS response");
-            (StatusCode::INTERNAL_SERVER_ERROR, "response build error".to_string())
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
 
@@ -883,7 +849,7 @@ mod tests {
 async fn post_backend(
     path: &str,
     payload: &BackendRequest,
-) -> Result<reqwest::Response, (StatusCode, String)> {
+) -> Result<reqwest::Response, HttpError> {
     let config = config::app_config();
     let base = config.tts_base_url.trim_end_matches('/');
     let url = format!("{base}{path}");
@@ -895,10 +861,7 @@ async fn post_backend(
         .await
         .map_err(|err| {
             error!(?err, "failed to reach TTS backend");
-            (
-                StatusCode::BAD_GATEWAY,
-                "TTS backend unreachable".to_string(),
-            )
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
         })
 }
 
@@ -931,7 +894,7 @@ fn pcm_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
     header
 }
 
-fn build_audio_response(bytes: Vec<u8>) -> Result<Response<Body>, (StatusCode, String)> {
+fn build_audio_response(bytes: Vec<u8>) -> Result<Response<Body>, HttpError> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "audio/wav")
@@ -939,33 +902,7 @@ fn build_audio_response(bytes: Vec<u8>) -> Result<Response<Body>, (StatusCode, S
         .body(Body::from(bytes))
         .map_err(|err| {
             error!(?err, "failed to build audio response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
-        })
-}
-
-fn json_error(status: StatusCode, message: &str) -> Result<Response<Body>, (StatusCode, String)> {
-    let payload = json!({ "error": message });
-    let body = serde_json::to_vec(&payload).map_err(|err| {
-        error!(?err, "failed to serialize error payload");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response serialization failed".to_string(),
-        )
-    })?;
-
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .map_err(|err| {
-            error!(?err, "failed to build error response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
 

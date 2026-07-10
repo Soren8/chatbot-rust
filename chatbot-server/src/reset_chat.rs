@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
+use crate::http_error::{api_error, HttpError};
+
 #[derive(Deserialize, Default)]
 struct ResetChatRequest {
     #[serde(default)]
@@ -23,9 +25,9 @@ struct ResetChatRequest {
 
 pub async fn handle_reset_chat(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != axum::http::Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -33,7 +35,7 @@ pub async fn handle_reset_chat(
 
     let body_bytes = body::to_bytes(body, 256 * 1024).await.map_err(|err| {
         error!(?err, "failed to read reset_chat body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload: ResetChatRequest = if body_bytes.is_empty() {
@@ -41,7 +43,7 @@ pub async fn handle_reset_chat(
     } else {
         serde_json::from_slice(&body_bytes).map_err(|err| {
             error!(?err, "invalid reset_chat payload");
-            (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
         })?
     };
 
@@ -56,29 +58,23 @@ pub async fn handle_reset_chat(
     let csrf_valid =
         session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token for reset_chat");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
     let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to resolve session context for reset_chat");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(|err| {
         error!(?err, "failed to normalise set name");
-        (StatusCode::BAD_REQUEST, "invalid set name".to_string())
+        api_error(StatusCode::BAD_REQUEST, "invalid set name")
     })?;
 
     if let Some(username) = session_context.username.as_deref() {
@@ -91,7 +87,7 @@ pub async fn handle_reset_chat(
         let history = HistoryService::global().map_err(history_error_to_http)?;
         let snap = if let Some(raw) = payload.set_id.as_deref() {
             let id = SetId::parse(raw)
-                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid set_id".to_string()))?;
+                .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?;
             history
                 .load(username, id, key)
                 .map_err(history_error_to_http)?
@@ -102,7 +98,7 @@ pub async fn handle_reset_chat(
                     .ensure_default_set(username, key)
                     .map_err(history_error_to_http)?,
                 Ok(None) => {
-                    return Err((StatusCode::BAD_REQUEST, "set not found".to_string()));
+                    return Err(api_error(StatusCode::BAD_REQUEST, "set not found"));
                 }
                 Err(err) => return Err(history_error_to_http(err)),
             }
@@ -158,26 +154,23 @@ pub async fn handle_reset_chat(
 fn build_json_response(
     status: StatusCode,
     payload: serde_json::Value,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(payload.to_string()))
         .map_err(|err| {
             error!(?err, "failed to build reset_chat response body");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
 
 fn build_service_response(
     response: session::ServiceResponse,
-) -> Result<Response<Body>, (StatusCode, String)> {
-    crate::build_response(response).map_err(|(status, message)| (status, message))
+) -> Result<Response<Body>, HttpError> {
+    crate::build_response(response)
 }
 
-fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
+fn history_error_to_http(err: HistoryError) -> HttpError {
     crate::chat_utils::history_error_to_http(err)
 }

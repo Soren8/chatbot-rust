@@ -8,8 +8,10 @@ use axum::{
 use chatbot_core::{config, session};
 use once_cell::sync::Lazy;
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tracing::{debug, error};
+
+use crate::http_error::{api_error, HttpError};
 
 const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 
@@ -20,9 +22,9 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .expect("stt http client")
 });
 
-pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
+pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -40,14 +42,11 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (Statu
     let csrf_valid =
         session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token for /stt");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
         })?;
 
     if !csrf_valid {
-        return json_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token");
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
     // Parse the incoming multipart form to extract the audio field
@@ -56,7 +55,7 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (Statu
         .await
         .map_err(|err| {
             error!(?err, "failed to parse multipart form for /stt");
-            (StatusCode::BAD_REQUEST, "invalid multipart form".to_string())
+            api_error(StatusCode::BAD_REQUEST, "invalid multipart form")
         })?;
 
     let mut audio_data: Option<Vec<u8>> = None;
@@ -74,10 +73,10 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (Statu
             }
             let data: bytes::Bytes = field.bytes().await.map_err(|err| {
                 error!(?err, "failed to read audio field bytes");
-                (StatusCode::BAD_REQUEST, "failed to read audio data".to_string())
+                api_error(StatusCode::BAD_REQUEST, "failed to read audio data")
             })?;
             if data.len() > MAX_AUDIO_BYTES {
-                return json_error(StatusCode::BAD_REQUEST, "audio file too large");
+                return Err(api_error(StatusCode::BAD_REQUEST, "audio file too large"));
             }
             audio_data = Some(data.to_vec());
             break;
@@ -85,10 +84,10 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (Statu
     }
 
     let audio_bytes = audio_data
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "no 'audio' field in form".to_string()))?;
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "no 'audio' field in form"))?;
 
     if audio_bytes.is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "No audio data provided");
+        return Err(api_error(StatusCode::BAD_REQUEST, "No audio data provided"));
     }
 
     debug!(bytes = audio_bytes.len(), content_type = %audio_content_type, "forwarding audio to voice service");
@@ -102,7 +101,7 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (Statu
         .mime_str(&audio_content_type)
         .map_err(|err| {
             error!(?err, "invalid audio content-type for STT multipart");
-            (StatusCode::BAD_REQUEST, "unsupported audio format".to_string())
+            api_error(StatusCode::BAD_REQUEST, "unsupported audio format")
         })?;
 
     let form = reqwest::multipart::Form::new().part("audio", audio_part);
@@ -114,30 +113,30 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (Statu
         .await
         .map_err(|err| {
             error!(?err, "failed to reach voice service for STT");
-            (StatusCode::BAD_GATEWAY, "voice service unreachable".to_string())
+            api_error(StatusCode::BAD_GATEWAY, "voice service unreachable")
         })?;
 
     let status = response.status();
     let body_bytes = response.bytes().await.map_err(|err| {
         error!(?err, "failed to read voice service STT response");
-        (StatusCode::BAD_GATEWAY, "voice service response error".to_string())
+        api_error(StatusCode::BAD_GATEWAY, "voice service response error")
     })?;
 
     if !status.is_success() {
         let message = extract_error(status, &body_bytes);
         error!(?status, message, "voice service STT returned error");
-        return json_error(StatusCode::BAD_GATEWAY, &message);
+        return Err(api_error(StatusCode::BAD_GATEWAY, message));
     }
 
     // The voice service returns {"text": "..."} — forward it directly
     let parsed: Value = serde_json::from_slice(&body_bytes).map_err(|err| {
         error!(?err, "failed to parse STT response JSON");
-        (StatusCode::BAD_GATEWAY, "invalid response from voice service".to_string())
+        api_error(StatusCode::BAD_GATEWAY, "invalid response from voice service")
     })?;
 
     let out = serde_json::to_vec(&parsed).map_err(|err| {
         error!(?err, "failed to serialize STT response");
-        (StatusCode::INTERNAL_SERVER_ERROR, "serialization error".to_string())
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "serialization error")
     })?;
 
     Response::builder()
@@ -146,30 +145,7 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, (Statu
         .body(Body::from(out))
         .map_err(|err| {
             error!(?err, "failed to build STT response");
-            (StatusCode::INTERNAL_SERVER_ERROR, "response build error".to_string())
-        })
-}
-
-fn json_error(status: StatusCode, message: &str) -> Result<Response<Body>, (StatusCode, String)> {
-    let payload = json!({ "error": message });
-    let body = serde_json::to_vec(&payload).map_err(|err| {
-        error!(?err, "failed to serialize error payload");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response serialization failed".to_string(),
-        )
-    })?;
-
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .map_err(|err| {
-            error!(?err, "failed to build error response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
 

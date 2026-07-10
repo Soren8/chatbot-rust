@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
+use crate::http_error::{api_error, HttpError};
+
 const MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
 
 #[derive(Deserialize, Default)]
@@ -62,14 +64,14 @@ struct DeleteMessageRequest {
 
 pub async fn handle_update_memory(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /update_memory body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload = if body_bytes.is_empty() {
@@ -77,7 +79,7 @@ pub async fn handle_update_memory(
     } else {
         serde_json::from_slice::<UpdateMemoryRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /update_memory");
-            (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
         })?
     };
 
@@ -100,10 +102,7 @@ pub async fn handle_update_memory(
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for update_memory");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
@@ -180,14 +179,14 @@ pub async fn handle_update_memory(
 
 pub async fn handle_update_system_prompt(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /update_system_prompt body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload = if body_bytes.is_empty() {
@@ -195,7 +194,7 @@ pub async fn handle_update_system_prompt(
     } else {
         serde_json::from_slice::<UpdateSystemPromptRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /update_system_prompt");
-            (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
         })?
     };
 
@@ -220,10 +219,7 @@ pub async fn handle_update_system_prompt(
             ?err,
             "failed to obtain session context for update_system_prompt"
         );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
@@ -305,14 +301,14 @@ pub async fn handle_update_system_prompt(
 
 pub async fn handle_delete_message(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE).await.map_err(|err| {
         error!(?err, "failed to read /delete_message body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload = if body_bytes.is_empty() {
@@ -320,7 +316,7 @@ pub async fn handle_delete_message(
     } else {
         serde_json::from_slice::<DeleteMessageRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /delete_message");
-            (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
         })?
     };
 
@@ -354,10 +350,7 @@ pub async fn handle_delete_message(
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for delete_message");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     if let Some(username) = session.username.as_deref() {
@@ -457,16 +450,13 @@ pub async fn handle_delete_message(
 
 fn build_service_response(
     response: session::ServiceResponse,
-) -> Result<Response<Body>, (StatusCode, String)> {
-    crate::build_response(response).map_err(|(status, message)| (status, message))
+) -> Result<Response<Body>, HttpError> {
+    crate::build_response(response)
 }
 
-fn ensure_post(request: &Request<Body>) -> Result<(), (StatusCode, String)> {
+fn ensure_post(request: &Request<Body>) -> Result<(), HttpError> {
     if request.method() != axum::http::Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
     Ok(())
 }
@@ -487,34 +477,31 @@ fn extract_csrf(headers: &axum::http::HeaderMap) -> Option<&str> {
 fn validate_csrf(
     cookie_header: Option<&str>,
     csrf_token: Option<&str>,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<(), HttpError> {
     let valid = session::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
         error!(?err, "failed to validate CSRF token for memory endpoint");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     if !valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
     Ok(())
 }
 
-fn history_error_to_tuple(err: HistoryError) -> (StatusCode, String) {
+fn history_error_to_tuple(err: HistoryError) -> HttpError {
     crate::chat_utils::history_error_to_http(err)
 }
 
-fn map_name_err(err: chatbot_core::persistence::PersistenceError) -> (StatusCode, String) {
+fn map_name_err(err: chatbot_core::persistence::PersistenceError) -> HttpError {
     match err {
         chatbot_core::persistence::PersistenceError::InvalidSetName => {
-            (StatusCode::BAD_REQUEST, "invalid set name".into())
+            api_error(StatusCode::BAD_REQUEST, "invalid set name")
         }
         other => {
             error!(?other, "set name normalisation failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "invalid request".into())
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid request")
         }
     }
 }
@@ -525,10 +512,10 @@ fn resolve_set(
     set_id: Option<&str>,
     set_name: Option<&str>,
     key: &chatbot_core::enc_key::EncryptionKey,
-) -> Result<chatbot_core::history::SetSnapshot, (StatusCode, String)> {
+) -> Result<chatbot_core::history::SetSnapshot, HttpError> {
     if let Some(raw) = set_id {
         let id = SetId::parse(raw).map_err(|_| {
-            (StatusCode::BAD_REQUEST, "invalid set_id".to_string())
+            api_error(StatusCode::BAD_REQUEST, "invalid set_id")
         })?;
         return history.load(username, id, key).map_err(history_error_to_tuple);
     }
@@ -538,7 +525,7 @@ fn resolve_set(
         Ok(None) if name == "default" => history
             .ensure_default_set(username, key)
             .map_err(history_error_to_tuple),
-        Ok(None) => Err((StatusCode::BAD_REQUEST, "set not found".to_string())),
+        Ok(None) => Err(api_error(StatusCode::BAD_REQUEST, "set not found")),
         Err(err) => Err(history_error_to_tuple(err)),
     }
 }
@@ -546,13 +533,10 @@ fn resolve_set(
 fn build_json_response(
     status: StatusCode,
     payload: serde_json::Value,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let body = serde_json::to_vec(&payload).map_err(|err| {
         error!(?err, "failed to serialize JSON response");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response serialization failed".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response serialization failed")
     })?;
 
     Response::builder()
@@ -561,9 +545,6 @@ fn build_json_response(
         .body(Body::from(body))
         .map_err(|err| {
             error!(?err, "failed to build HTTP response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }

@@ -10,6 +10,8 @@ use serde::Serialize;
 use std::sync::OnceLock;
 use tracing::{error, warn};
 
+use crate::http_error::{api_error, HttpError};
+
 pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net data:; style-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com 'unsafe-inline'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com blob: 'wasm-unsafe-eval'; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
 
@@ -20,7 +22,7 @@ struct FrontendModel {
     search: bool,
 }
 
-pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
+pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let cookie_header = request
         .headers()
         .get(header::COOKIE)
@@ -29,10 +31,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to prepare home context");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let logged_in = bootstrap.username.is_some();
@@ -64,10 +63,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, (Stat
     )
     .map_err(|err| {
         error!(?err, "failed to render home template");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "template error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "template error")
     })?;
 
     build_response(html, bootstrap)
@@ -208,7 +204,7 @@ fn template_env() -> &'static Environment<'static> {
 fn build_response(
     body: String,
     bootstrap: session::HomeBootstrap,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -230,10 +226,7 @@ fn build_response(
 
     builder.body(Body::from(body)).map_err(|err| {
         error!(?err, "failed to build home response body");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response build error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
     })
 }
 

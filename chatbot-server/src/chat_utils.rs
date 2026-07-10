@@ -10,6 +10,8 @@ use chatbot_core::{
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 
+use crate::http_error::{api_error, api_error_json, HttpError};
+
 pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
     headers
         .get("X-Enc-Key")
@@ -77,28 +79,26 @@ pub fn version_conflict_json(set_id: SetId, current_version: SetVersion) -> Valu
     })
 }
 
-pub fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
+pub fn history_error_to_http(err: HistoryError) -> HttpError {
     match err {
-        HistoryError::NotFound => (StatusCode::NOT_FOUND, "set not found".into()),
-        HistoryError::Conflict { current_version } => (
+        HistoryError::NotFound => api_error(StatusCode::NOT_FOUND, "set not found"),
+        HistoryError::Conflict { current_version } => api_error_json(
             StatusCode::CONFLICT,
             json!({
                 "error": "version_conflict",
                 "current_version": current_version.get(),
                 "message": "Set was modified; reload and retry."
-            })
-            .to_string(),
+            }),
         ),
-        HistoryError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
-        HistoryError::DecryptFailed | HistoryError::MissingKey => (
+        HistoryError::Forbidden => api_error(StatusCode::FORBIDDEN, "forbidden"),
+        HistoryError::DecryptFailed | HistoryError::MissingKey => api_error(
             StatusCode::UNAUTHORIZED,
-            "Encryption key required or invalid. Please unlock.".into(),
+            "Encryption key required or invalid. Please unlock.",
         ),
-        HistoryError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.into()),
-        HistoryError::Internal => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal history error".into(),
-        ),
+        HistoryError::InvalidInput(msg) => api_error(StatusCode::BAD_REQUEST, msg),
+        HistoryError::Internal => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal history error")
+        }
     }
 }
 
@@ -106,7 +106,7 @@ pub fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
 pub fn history_conflict_or_err(
     err: HistoryError,
     set_id: SetId,
-) -> Result<(StatusCode, Value), (StatusCode, String)> {
+) -> Result<(StatusCode, Value), HttpError> {
     match err {
         HistoryError::Conflict { current_version } => Ok((
             StatusCode::CONFLICT,

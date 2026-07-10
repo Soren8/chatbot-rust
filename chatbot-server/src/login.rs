@@ -16,12 +16,13 @@ use serde_urlencoded::from_bytes;
 use tracing::{error, warn};
 
 use crate::home::SECURITY_CSP;
+use crate::http_error::{api_error, HttpError};
 
 const INVALID_CREDENTIALS: &str = "Invalid credentials";
 
 pub async fn handle_get_salt(
     Path(username): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, HttpError> {
     let store = UserStore::new().map_err(map_store_error)?;
     let salt = store
         .get_client_salt(&username)
@@ -31,7 +32,7 @@ pub async fn handle_get_salt(
 
 pub async fn handle_login_get(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let cookie_header = request
         .headers()
         .get(header::COOKIE)
@@ -40,10 +41,7 @@ pub async fn handle_login_get(
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to bootstrap login context");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let config = config::app_config();
@@ -51,10 +49,7 @@ pub async fn handle_login_get(
 
     let html = render_login_template(&bootstrap.csrf_token, &sri).map_err(|err| {
         error!(?err, "failed to render login template");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "template error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "template error")
     })?;
 
     build_login_response(html, bootstrap.set_cookie)
@@ -62,7 +57,7 @@ pub async fn handle_login_get(
 
 pub async fn handle_login_post(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
@@ -73,12 +68,12 @@ pub async fn handle_login_post(
 
     let body_bytes = body::to_bytes(body, 64 * 1024).await.map_err(|err| {
         error!(?err, "failed to read login body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let form: HashMap<String, String> = from_bytes(&body_bytes).map_err(|err| {
         error!(?err, "failed to parse login form");
-        (StatusCode::BAD_REQUEST, "Invalid form payload".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid form payload")
     })?;
 
     let username_raw = form.get("username").map(|s| s.trim()).unwrap_or("");
@@ -93,10 +88,7 @@ pub async fn handle_login_post(
     let csrf_valid =
         session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
         })?;
 
     if !csrf_valid {
@@ -144,10 +136,7 @@ pub async fn handle_login_post(
 
     let finalize = session::finalize_login(cookie_header.as_deref(), &username).map_err(|err| {
             error!(?err, "failed to finalize login");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
         })?;
 
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
@@ -163,32 +152,23 @@ pub async fn handle_login_post(
         }
         Err(err) => {
             error!(?err, "invalid Set-Cookie header from session finalize");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            ));
+            return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error"));
         }
     }
 
     response.body(Body::empty()).map_err(|err| {
         error!(?err, "failed to build login redirect response");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response build error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
     })
 }
 
-fn invalid_credentials() -> Result<Response<Body>, (StatusCode, String)> {
-    Err((StatusCode::UNAUTHORIZED, INVALID_CREDENTIALS.to_string()))
+fn invalid_credentials() -> Result<Response<Body>, HttpError> {
+    Err(api_error(StatusCode::UNAUTHORIZED, INVALID_CREDENTIALS))
 }
 
-fn map_store_error(err: UserStoreError) -> (StatusCode, String) {
+fn map_store_error(err: UserStoreError) -> HttpError {
     error!(?err, "user store error");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Unable to log in".to_string(),
-    )
+    api_error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to log in")
 }
 
 fn render_login_template(
@@ -206,7 +186,7 @@ fn render_login_template(
 fn build_login_response(
     body: String,
     set_cookie: String,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -232,10 +212,7 @@ fn build_login_response(
 
     builder.body(Body::from(body)).map_err(|err| {
         error!(?err, "failed to build login response");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response build error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
     })
 }
 

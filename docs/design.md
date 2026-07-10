@@ -80,7 +80,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Enhance test concurrency across integration suites.
 
 - **Error Handling & Logging**
-  - [ ] Standardize on JSON error responses with proper HTTP status codes rather than plain text.
+  - [x] Standardize on JSON error responses with proper HTTP status codes rather than plain text (`http_error::HttpError` / `api_error` across `chatbot-server` routes; integration test `http_errors.rs`).
   - [ ] Narrow error scopes; only catch expected exceptions and add contextual logging before rethrowing.
   - [ ] Centralize logging configuration with structured output.
 
@@ -96,7 +96,7 @@ This document captures the current architecture of the project and the potential
 
 - **Docker & Deployment**
   - [x] Optimize the `Dockerfile` with a multi-stage build so that only artifacts ship in the final image.
-  - [ ] Health checks for orchestrators — **partial**: `GET /health` exists and returns JSON `{ "status": "healthy" }` (`chatbot-server`, integration test). Still open: Compose `healthcheck` on the **webserver** service (voice-service already has one); optional readiness probes (redb open, voice-service reachability). Do not mark complete until webserver is healthchecked in Compose at minimum.
+  - [x] Health checks for orchestrators — `GET /health` liveness JSON; Compose `healthcheck` on **webserver** (curl, honours `CHATBOT_BIND_ADDR` port); optional deep readiness via `GET /health?deep=true` (redb + voice-service probes, 503 when degraded).
   - [ ] Provide sample deployment configurations (e.g., Docker Compose overrides, Kubernetes/Helm charts) for self-hosted and cloud environments.
 
 - **LLM Provider Abstraction**

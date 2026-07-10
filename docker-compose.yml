@@ -55,6 +55,16 @@ services:
         read_only: true
         bind:
           create_host_path: false
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS \"http://127.0.0.1:$${CHATBOT_BIND_ADDR##*:}/health\" || curl -fsS http://127.0.0.1:80/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     environment:
       # Core app/env settings (values come from host env or .env consumed by Compose)
       SECRET_KEY: ${SECRET_KEY}

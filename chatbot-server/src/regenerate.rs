@@ -19,6 +19,7 @@ use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::chat_utils::ChatLockGuard;
+use crate::http_error::{api_error, HttpError};
 use crate::providers::message_utils::parse_message_content;
 use crate::providers::openai::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
@@ -49,9 +50,9 @@ struct RegenerateRequest {
 
 pub async fn handle_regenerate(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != axum::http::Method::POST {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed".into()));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -59,12 +60,12 @@ pub async fn handle_regenerate(
 
     let body_bytes = body::to_bytes(body, 5 * 1024 * 1024).await.map_err(|err| {
         error!(?err, "failed to read regenerate request body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload: RegenerateRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
         error!(?err, "invalid regenerate request payload");
-        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
     })?;
 
     let cookie_header = headers
@@ -78,14 +79,11 @@ pub async fn handle_regenerate(
     let csrf_valid =
         session::validate_csrf_token(cookie_header.as_deref(), csrf_token).map_err(|err| {
             error!(?err, "failed to validate CSRF token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
         })?;
 
     if !csrf_valid {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token".to_string()));
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
@@ -105,10 +103,7 @@ pub async fn handle_regenerate(
                 selected_model.as_str()
             };
             error!(model = %model, "requested model not found");
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "requested model not found".to_string(),
-            ));
+            return Err(api_error(StatusCode::BAD_REQUEST, "requested model not found"));
         }
     };
 
@@ -123,18 +118,12 @@ pub async fn handle_regenerate(
             provider_type = %provider_type,
             "unsupported provider type for regenerate"
         );
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "unsupported provider type".to_string(),
-        ));
+        return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type"));
     }
 
     let session_context = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to resolve session context");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let app_config = app_config();
@@ -164,10 +153,7 @@ pub async fn handle_regenerate(
     }
 
     let context = prepare.context.ok_or_else(|| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "missing chat context".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "missing chat context")
     })?;
 
     let insertion_index = prepare.insertion_index;
@@ -185,14 +171,14 @@ pub async fn handle_regenerate(
             .map_err(|err| {
                 error!(?err, "failed to construct OpenAI provider");
                 lock_guard.lock().unwrap().release_if_needed();
-                (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
+                api_error(StatusCode::BAD_GATEWAY, "provider setup failed")
             })?,
         "xai" => XaiProvider::new(&context.provider)
             .map(ProviderKind::Xai)
             .map_err(|err| {
                 error!(?err, "failed to construct XAI provider");
                 lock_guard.lock().unwrap().release_if_needed();
-                (StatusCode::BAD_GATEWAY, "provider setup failed".to_string())
+                api_error(StatusCode::BAD_GATEWAY, "provider setup failed")
             })?,
         _ => unreachable!("provider_type should be filtered earlier"),
     };
@@ -249,7 +235,7 @@ pub async fn handle_regenerate(
                 Err(err) => {
                     error!(?err, "provider stream setup failed");
                     lock_guard.lock().unwrap().release_if_needed();
-                    return Err((StatusCode::BAD_GATEWAY, "provider request failed".to_string()));
+                    return Err(api_error(StatusCode::BAD_GATEWAY, "provider request failed"));
                 }
             }
         },
@@ -284,7 +270,7 @@ pub async fn handle_regenerate(
                 Err(err) => {
                     error!(?err, "provider stream setup failed");
                     lock_guard.lock().unwrap().release_if_needed();
-                    return Err((StatusCode::BAD_GATEWAY, "provider request failed".to_string()));
+                    return Err(api_error(StatusCode::BAD_GATEWAY, "provider request failed"));
                 }
             }
         },
@@ -361,10 +347,7 @@ pub async fn handle_regenerate(
         .map_err(|err| {
             error!(?err, "failed to build regenerate response");
             lock_guard.lock().unwrap().release_if_needed();
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })?;
 
     debug!("/regenerate request handled via Rust path");

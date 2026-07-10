@@ -17,6 +17,7 @@ mod brave;
 mod chat;
 pub mod chat_utils;
 mod health;
+pub mod http_error;
 mod home;
 mod login;
 mod logout;
@@ -136,23 +137,16 @@ async fn favicon() -> StatusCode {
 
 pub(crate) fn build_response(
     service_response: ServiceResponse,
-) -> Result<Response, (StatusCode, String)> {
-    let status = StatusCode::from_u16(service_response.status).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid status".to_string(),
-        )
-    })?;
+) -> Result<Response, http_error::HttpError> {
+    let status = StatusCode::from_u16(service_response.status)
+        .map_err(|_| http_error::api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid status"))?;
 
     let mut response = Response::builder()
         .status(status)
         .body(Body::from(service_response.body))
         .map_err(|err| {
             error!(?err, "failed to build response body");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            http_error::api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })?;
 
     {

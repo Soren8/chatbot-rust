@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
+use crate::http_error::{api_error, HttpError};
+
 #[derive(Deserialize, Default)]
 struct SetRequest {
     #[serde(default)]
@@ -34,12 +36,9 @@ struct RenameSetRequest {
 
 pub async fn handle_get_sets(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::GET {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only GET allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only GET allowed"));
     }
 
     let cookie_header = extract_cookie(request.headers());
@@ -47,10 +46,7 @@ pub async fn handle_get_sets(
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for get_sets");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let username = match session.username.as_deref() {
@@ -99,12 +95,9 @@ pub async fn handle_get_sets(
 
 pub async fn handle_create_set(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -112,7 +105,7 @@ pub async fn handle_create_set(
 
     let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
         error!(?err, "failed to read /create_set body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload = if body_bytes.is_empty() {
@@ -120,7 +113,7 @@ pub async fn handle_create_set(
     } else {
         serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /create_set");
-            (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
         })?
     };
 
@@ -133,10 +126,7 @@ pub async fn handle_create_set(
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for create_set");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let username = match session.username.as_deref() {
@@ -193,12 +183,9 @@ pub async fn handle_create_set(
 
 pub async fn handle_delete_set(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -206,7 +193,7 @@ pub async fn handle_delete_set(
 
     let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
         error!(?err, "failed to read /delete_set body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload = if body_bytes.is_empty() {
@@ -214,7 +201,7 @@ pub async fn handle_delete_set(
     } else {
         serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /delete_set");
-            (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
         })?
     };
 
@@ -225,10 +212,7 @@ pub async fn handle_delete_set(
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for delete_set");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let username = match session.username.as_deref() {
@@ -297,12 +281,9 @@ pub async fn handle_delete_set(
 
 pub async fn handle_rename_set(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -310,12 +291,12 @@ pub async fn handle_rename_set(
 
     let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
         error!(?err, "failed to read /rename_set body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload: RenameSetRequest = serde_json::from_slice(&body_bytes).map_err(|err| {
         error!(?err, "invalid JSON payload for /rename_set");
-        (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
     })?;
 
     let cookie_header = extract_cookie(&headers);
@@ -325,10 +306,7 @@ pub async fn handle_rename_set(
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for rename_set");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let username = match session.username.as_deref() {
@@ -417,12 +395,9 @@ pub async fn handle_rename_set(
 
 pub async fn handle_load_set(
     request: Request<Body>,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     if request.method() != Method::POST {
-        return Err((
-            StatusCode::METHOD_NOT_ALLOWED,
-            "Only POST allowed".to_string(),
-        ));
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
     let (parts, body) = request.into_parts();
@@ -430,7 +405,7 @@ pub async fn handle_load_set(
 
     let body_bytes = body::to_bytes(body, 128 * 1024).await.map_err(|err| {
         error!(?err, "failed to read /load_set body");
-        (StatusCode::BAD_REQUEST, "Invalid request body".to_string())
+        api_error(StatusCode::BAD_REQUEST, "Invalid request body")
     })?;
 
     let payload = if body_bytes.is_empty() {
@@ -438,7 +413,7 @@ pub async fn handle_load_set(
     } else {
         serde_json::from_slice::<SetRequest>(&body_bytes).map_err(|err| {
             error!(?err, "invalid JSON payload for /load_set");
-            (StatusCode::BAD_REQUEST, "Invalid JSON payload".to_string())
+            api_error(StatusCode::BAD_REQUEST, "Invalid JSON payload")
         })?
     };
 
@@ -449,10 +424,7 @@ pub async fn handle_load_set(
 
     let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
         error!(?err, "failed to obtain session context for load_set");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     let username = match session.username.as_deref() {
@@ -561,45 +533,36 @@ fn extract_csrf(headers: &axum::http::HeaderMap) -> Option<&str> {
 fn validate_csrf(
     cookie_header: Option<&str>,
     csrf_token: Option<&str>,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<(), HttpError> {
     let valid = session::validate_csrf_token(cookie_header, csrf_token).map_err(|err| {
         error!(?err, "failed to validate CSRF token for sets endpoint");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session error".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "session error")
     })?;
 
     if !valid {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid or missing CSRF token".to_string(),
-        ));
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
     Ok(())
 }
 
-fn history_error_to_http(err: HistoryError) -> (StatusCode, String) {
+fn history_error_to_http(err: HistoryError) -> HttpError {
     crate::chat_utils::history_error_to_http(err)
 }
 
 fn build_service_response(
     response: session::ServiceResponse,
-) -> Result<Response<Body>, (StatusCode, String)> {
-    crate::build_response(response).map_err(|(status, message)| (status, message))
+) -> Result<Response<Body>, HttpError> {
+    crate::build_response(response)
 }
 
 fn build_json_response(
     status: StatusCode,
     payload: serde_json::Value,
-) -> Result<Response<Body>, (StatusCode, String)> {
+) -> Result<Response<Body>, HttpError> {
     let body = serde_json::to_vec(&payload).map_err(|err| {
         error!(?err, "failed to serialize JSON response");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "response serialization failed".to_string(),
-        )
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response serialization failed")
     })?;
 
     Response::builder()
@@ -608,9 +571,6 @@ fn build_json_response(
         .body(Body::from(body))
         .map_err(|err| {
             error!(?err, "failed to build HTTP response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response build error".to_string(),
-            )
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
         })
 }
