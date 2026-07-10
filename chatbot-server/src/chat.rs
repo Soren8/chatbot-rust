@@ -32,6 +32,8 @@ struct ChatRequest {
     #[serde(default)]
     set_name: Option<String>,
     #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
     model_name: Option<String>,
     #[serde(default)]
     web_search: Option<bool>,
@@ -155,6 +157,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, (Stat
         message: payload.message.as_str(),
         system_prompt: payload.system_prompt.as_deref(),
         set_name: payload.set_name.as_deref(),
+        set_id: payload.set_id.as_deref(),
         model_name: Some(selected_model.as_str()),
         encrypted: payload.encrypted.unwrap_or(false),
         send_thoughts,

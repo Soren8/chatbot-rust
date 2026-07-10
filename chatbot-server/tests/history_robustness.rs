@@ -222,11 +222,25 @@ async fn chat(
     message: &str,
     system_prompt: Option<&str>,
 ) {
+    chat_with_set_id(app, auth, set_name, None, message, system_prompt).await;
+}
+
+async fn chat_with_set_id(
+    app: &axum::Router,
+    auth: &AuthCtx,
+    set_name: &str,
+    set_id: Option<&str>,
+    message: &str,
+    system_prompt: Option<&str>,
+) {
     env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["chunk"]"#);
     let mut payload = json!({
         "message": message,
         "set_name": set_name,
     });
+    if let Some(id) = set_id {
+        payload["set_id"] = json!(id);
+    }
     if let Some(sp) = system_prompt {
         payload["system_prompt"] = json!(sp);
     }
@@ -867,6 +881,80 @@ async fn reset_chat_clears_only_named_set() {
     let keep = load_set_by_name(&app, &auth, "keep").await;
     assert_eq!(keep["history"].as_array().unwrap().len(), 1);
     assert_eq!(keep["history"][0][0], "preserve-me");
+}
+
+#[tokio::test]
+async fn chat_and_regenerate_prefer_set_id_over_name() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "setid_chat_user", "SetIdChat1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "setid_chat_user", "SetIdChat1!").await;
+
+    let created = create_set(&app, &auth, "by-id-set").await;
+    let set_id = created["set_id"].as_str().expect("set_id").to_string();
+
+    // Intentionally wrong set_name — set_id must win
+    chat_with_set_id(
+        &app,
+        &auth,
+        "default",
+        Some(&set_id),
+        "only-on-by-id",
+        None,
+    )
+    .await;
+
+    let by_id = load_set_by_name(&app, &auth, "by-id-set").await;
+    assert_eq!(by_id["history"].as_array().unwrap().len(), 1);
+    assert_eq!(by_id["history"][0][0], "only-on-by-id");
+
+    let default = load_set_by_name(&app, &auth, "default").await;
+    assert_eq!(
+        default["history"].as_array().map(|a| a.len()).unwrap_or(0),
+        0,
+        "default must stay empty when chat used set_id of another set"
+    );
+
+    env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["regen-by-id"]"#);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/regenerate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &auth.cookie)
+                .header("X-CSRF-Token", &auth.csrf)
+                .header("X-Enc-Key", &auth.enc_key)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "message": "only-on-by-id",
+                        "set_name": "default",
+                        "set_id": set_id,
+                        "pair_index": 0
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let _ = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
+
+    let after = load_set_by_name(&app, &auth, "by-id-set").await;
+    assert_eq!(after["history"].as_array().unwrap().len(), 1);
+    assert!(
+        after["history"][0][1]
+            .as_str()
+            .unwrap_or("")
+            .contains("regen-by-id"),
+        "regenerate by set_id should update the targeted set"
+    );
 }
 
 #[tokio::test]

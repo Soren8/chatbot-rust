@@ -100,6 +100,8 @@ pub struct ChatRequestData<'a> {
     pub message: &'a str,
     pub system_prompt: Option<&'a str>,
     pub set_name: Option<&'a str>,
+    /// Preferred durable address for authenticated users; name is fallback only.
+    pub set_id: Option<&'a str>,
     pub model_name: Option<&'a str>,
     pub encrypted: bool,
     pub send_thoughts: bool,
@@ -115,6 +117,8 @@ pub struct RegenerateRequestData<'a> {
     pub message: &'a str,
     pub system_prompt: Option<&'a str>,
     pub set_name: Option<&'a str>,
+    /// Preferred durable address for authenticated users; name is fallback only.
+    pub set_id: Option<&'a str>,
     pub model_name: Option<&'a str>,
     pub encrypted: bool,
     pub pair_index: Option<i32>,
@@ -753,6 +757,15 @@ pub fn chat_prepare(
             }
         }
     };
+    let resolved_set_id = match parse_optional_set_id(request.set_id) {
+        Ok(id) => id,
+        Err(response) => {
+            return ChatPrepareResult {
+                context: None,
+                error: Some(response),
+            }
+        }
+    };
 
     let entry = store.entry(&session.session_id);
     if !entry.try_lock() {
@@ -772,6 +785,7 @@ pub fn chat_prepare(
         request,
         provider,
         &set_name,
+        resolved_set_id,
         &entry,
         encryption_key,
     ) {
@@ -796,23 +810,26 @@ fn build_chat_context(
     request: &ChatRequestData<'_>,
     provider: &ProviderConfig,
     set_name: &str,
+    request_set_id: Option<SetId>,
     entry: &Arc<SessionEntry>,
     encryption_key: Option<&EncryptionKey>,
 ) -> Result<ChatContext, ServiceResponse> {
-    let default_prompt = resolve_default_prompt();
+    let _default_prompt = resolve_default_prompt();
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 
     let mut prepare_capture = None;
     let mut set_id = None;
     let mut set_version = None;
+    let mut display_set_name = set_name.to_owned();
 
     if data.requires_cipher {
         let key = require_encryption_key(session.username.as_deref(), encryption_key)?;
         let key = key.expect("validated encryption key");
         let username = session.username.as_deref().expect("cipher requires user");
 
-        let mut snapshot = load_history_snapshot(username, set_name, key)?;
+        let mut snapshot = load_history_snapshot(username, request_set_id, set_name, key)?;
+        display_set_name = snapshot.display_name.clone();
         if let Some(prompt) = request.system_prompt {
             if prompt != snapshot.system_prompt {
                 let new_v = HistoryService::global()
@@ -878,7 +895,7 @@ fn build_chat_context(
     Ok(ChatContext {
         session_id: session.session_id.clone(),
         username: session.username.clone(),
-        set_name: set_name.to_owned(),
+        set_name: display_set_name,
         set_id,
         set_version,
         memory_text,
@@ -941,7 +958,7 @@ pub fn chat_finalize_with_capture(
                                 )
                             })
                         } else {
-                            match load_history_snapshot(username, set_name, key) {
+                            match load_history_snapshot(username, None, set_name, key) {
                                 Ok(snap) => HistoryService::global().and_then(|hs| {
                                     hs.append_pair(
                                         username,
@@ -957,8 +974,9 @@ pub fn chat_finalize_with_capture(
                         };
                         match commit {
                             Ok(_) => {
+                                let reload_id = prepare_capture.as_ref().map(|c| c.set_id);
                                 if let Ok(snap) =
-                                    load_history_snapshot(username, set_name, key)
+                                    load_history_snapshot(username, reload_id, set_name, key)
                                 {
                                     data.history = snap.history;
                                     data.memory = snap.memory;
@@ -1008,12 +1026,25 @@ pub fn chat_finalize_with_capture(
     extras
 }
 
+fn parse_optional_set_id(raw: Option<&str>) -> Result<Option<SetId>, ServiceResponse> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(s) => SetId::parse(s)
+            .map(Some)
+            .map_err(|_| invalid_request("invalid set_id")),
+    }
+}
+
 fn load_history_snapshot(
     username: &str,
+    set_id: Option<SetId>,
     set_name: &str,
     key: &EncryptionKey,
 ) -> Result<SetSnapshot, ServiceResponse> {
     let hs = HistoryService::global().map_err(map_history_error)?;
+    if let Some(id) = set_id {
+        return hs.load(username, id, key).map_err(map_history_error);
+    }
     match hs.find_by_display_name(username, set_name, key) {
         Ok(Some(snap)) => Ok(snap),
         Ok(None) if set_name == "default" => hs
@@ -1073,6 +1104,16 @@ pub fn regenerate_prepare(
             }
         }
     };
+    let resolved_set_id = match parse_optional_set_id(request.set_id) {
+        Ok(id) => id,
+        Err(response) => {
+            return RegeneratePrepareResult {
+                context: None,
+                insertion_index: None,
+                error: Some(response),
+            }
+        }
+    };
 
     let entry = store.entry(&session.session_id);
     if !entry.try_lock() {
@@ -1093,6 +1134,7 @@ pub fn regenerate_prepare(
         request,
         provider,
         &set_name,
+        resolved_set_id,
         &entry,
         encryption_key,
     ) {
@@ -1117,6 +1159,7 @@ fn build_regenerate_context(
     request: &RegenerateRequestData<'_>,
     provider: &ProviderConfig,
     set_name: &str,
+    request_set_id: Option<SetId>,
     entry: &Arc<SessionEntry>,
     encryption_key: Option<&EncryptionKey>,
 ) -> Result<(ChatContext, Option<usize>), ServiceResponse> {
@@ -1129,12 +1172,14 @@ fn build_regenerate_context(
     let mut full_history: Vec<(String, String)>;
     let memory_text: String;
     let system_prompt: String;
+    let mut display_set_name = set_name.to_owned();
 
     if data.requires_cipher {
         let key = require_encryption_key(session.username.as_deref(), encryption_key)?;
         let key = key.expect("validated encryption key");
         let username = session.username.as_deref().expect("cipher requires user");
-        let mut snapshot = load_history_snapshot(username, set_name, key)?;
+        let mut snapshot = load_history_snapshot(username, request_set_id, set_name, key)?;
+        display_set_name = snapshot.display_name.clone();
         if let Some(prompt) = request.system_prompt {
             if prompt != snapshot.system_prompt {
                 let new_v = HistoryService::global()
@@ -1225,7 +1270,7 @@ fn build_regenerate_context(
     let context = ChatContext {
         session_id: session.session_id.clone(),
         username: session.username.clone(),
-        set_name: set_name.to_owned(),
+        set_name: display_set_name,
         set_id,
         set_version,
         memory_text,
@@ -1281,7 +1326,7 @@ pub fn regenerate_finalize_with_capture(
             if let Some(username) = session.username.as_deref() {
                 match require_encryption_key(Some(username), encryption_key) {
                     Ok(Some(key)) => {
-                        let commit = if let Some(mut capture) = prepare_capture {
+                        let commit = if let Some(mut capture) = prepare_capture.clone() {
                             if capture.insertion_index.is_none() {
                                 if let Some(idx) = insertion_index {
                                     capture = capture.with_regenerate(idx, user_message);
@@ -1291,7 +1336,7 @@ pub fn regenerate_finalize_with_capture(
                                 hs.commit_regenerate(username, &capture, assistant_response, key)
                             })
                         } else {
-                            match load_history_snapshot(username, set_name, key) {
+                            match load_history_snapshot(username, None, set_name, key) {
                                 Ok(snap) => {
                                     let mut cap = PrepareCapture::from_snapshot(&snap);
                                     if let Some(idx) = insertion_index {
@@ -1311,8 +1356,9 @@ pub fn regenerate_finalize_with_capture(
                         };
                         match commit {
                             Ok(_) => {
+                                let reload_id = prepare_capture.as_ref().map(|c| c.set_id);
                                 if let Ok(snap) =
-                                    load_history_snapshot(username, set_name, key)
+                                    load_history_snapshot(username, reload_id, set_name, key)
                                 {
                                     data.history = snap.history;
                                     data.memory = snap.memory;
@@ -1546,6 +1592,7 @@ mod tests {
         };
 
         let request = RegenerateRequestData {
+            set_id: None,
             message: "User2",
             system_prompt: None,
             set_name: Some("default"),
