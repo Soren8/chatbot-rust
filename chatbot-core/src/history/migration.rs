@@ -278,4 +278,96 @@ mod tests {
         assert!(created.is_default || created.display_name == "default");
         assert_eq!(svc.list_sets("fresh", &key).unwrap().len(), 1);
     }
+
+    #[test]
+    fn bak_without_flag_marks_migrated_without_reimport() {
+        let data = tempfile::tempdir().unwrap();
+        let redb_path = data.path().join("history").join("redb");
+        let key = key();
+        let user = "bakonly";
+
+        // Create bak as if rename already happened; no live sets.json
+        let user_dir = data.path().join("user_sets").join(user);
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::write(user_dir.join("sets.json.migrated.bak"), b"not-used").unwrap();
+
+        let svc =
+            HistoryService::open_with_data_dir(&redb_path, data.path(), "sys").unwrap();
+        // First list should mark migrated empty and not panic
+        let listed = svc.list_sets(user, &key).unwrap();
+        assert!(listed.is_empty());
+        // Creating still works
+        let created = svc.create_set(user, "default", &key).unwrap();
+        assert_eq!(created.display_name, "default");
+        assert_eq!(svc.list_sets(user, &key).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn wrong_key_on_legacy_sets_json_fails_without_marking_migrated() {
+        let data = tempfile::tempdir().unwrap();
+        let redb_path = data.path().join("history").join("redb");
+        let good = key();
+        let bad = key(); // different fernet key
+        let user = "wrongkey";
+
+        let persistence =
+            DataPersistence::with_data_dir(data.path(), "sys").unwrap();
+        let mode = EncryptionMode::Fernet(good.as_bytes());
+        persistence
+            .store_history(user, "default", &[("x".into(), "y".into())], mode)
+            .unwrap();
+
+        let svc =
+            HistoryService::open_with_data_dir(&redb_path, data.path(), "sys").unwrap();
+        let err = svc.list_sets(user, &bad).unwrap_err();
+        assert!(matches!(err, crate::history::HistoryError::DecryptFailed));
+
+        // sets.json still present (not renamed)
+        assert!(data
+            .path()
+            .join("user_sets")
+            .join(user)
+            .join("sets.json")
+            .exists());
+
+        // Correct key still migrates
+        let listed = svc.list_sets(user, &good).unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[test]
+    fn migrates_plaintext_split_files() {
+        let data = tempfile::tempdir().unwrap();
+        let redb_path = data.path().join("history").join("redb");
+        let key = key();
+        let user = "splituser";
+        let user_dir = data.path().join("user_sets").join(user);
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::write(
+            user_dir.join("sets.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "default": { "created": 1.0, "modified": 1.0, "encrypted": false }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(user_dir.join("default_memory.txt"), b"mem-from-file").unwrap();
+        std::fs::write(user_dir.join("default_prompt.txt"), b"prompt-from-file").unwrap();
+        std::fs::write(
+            user_dir.join("default_history.json"),
+            serde_json::to_vec(&serde_json::json!([["u", "a"]])).unwrap(),
+        )
+        .unwrap();
+
+        let svc =
+            HistoryService::open_with_data_dir(&redb_path, data.path(), "fallback").unwrap();
+        let snap = svc
+            .find_by_display_name(user, "default", &key)
+            .unwrap()
+            .expect("default migrated");
+        assert_eq!(snap.memory, "mem-from-file");
+        assert_eq!(snap.system_prompt, "prompt-from-file");
+        assert_eq!(snap.history.len(), 1);
+        assert_eq!(snap.history[0].0, "u");
+    }
 }

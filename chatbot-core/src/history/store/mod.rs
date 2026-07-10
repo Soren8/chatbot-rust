@@ -581,4 +581,76 @@ mod tests {
             "display name must not appear in redb file"
         );
     }
+
+    #[test]
+    fn concurrent_cas_only_one_writer_wins() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(RedbHistoryStore::open(dir.path().join("history.redb")).unwrap());
+        let key = Arc::new(key());
+        let set_id = SetId::new();
+        store
+            .create_set("race", set_id, "default", "sys", true, &key)
+            .unwrap();
+        let snap = store.load_snapshot("race", set_id, &key).unwrap();
+        assert_eq!(snap.version, SetVersion(1));
+
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = vec![];
+        for i in 0..2 {
+            let store = Arc::clone(&store);
+            let key = Arc::clone(&key);
+            let barrier = Arc::clone(&barrier);
+            let base = snap.clone();
+            handles.push(thread::spawn(move || {
+                let next = append_pair(&base, &format!("u{i}"), &format!("a{i}")).unwrap();
+                barrier.wait();
+                store.commit_snapshot("race", SetVersion(1), &next, &key)
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let wins = results.iter().filter(|r| r.is_ok()).count();
+        let conflicts = results
+            .iter()
+            .filter(|r| matches!(r, Err(StoreError::Conflict { .. })))
+            .count();
+        assert_eq!(wins, 1, "exactly one CAS commit should succeed");
+        assert_eq!(conflicts, 1, "the other writer must see Conflict");
+
+        let final_snap = store.load_snapshot("race", set_id, &key).unwrap();
+        assert_eq!(final_snap.version, SetVersion(2));
+        assert_eq!(final_snap.history.len(), 1);
+    }
+
+    #[test]
+    fn forbidden_cross_user_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("history.redb")).unwrap();
+        let key = key();
+        let set_id = SetId::new();
+        store
+            .create_set("owner", set_id, "s", "sys", false, &key)
+            .unwrap();
+        assert!(matches!(
+            store.load_snapshot("intruder", set_id, &key),
+            Err(StoreError::Forbidden)
+        ));
+    }
+
+    #[test]
+    fn cannot_delete_default_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("history.redb")).unwrap();
+        let key = key();
+        let set_id = SetId::new();
+        store
+            .create_set("alice", set_id, "default", "sys", true, &key)
+            .unwrap();
+        assert!(matches!(
+            store.delete_set("alice", set_id, SetVersion(1)),
+            Err(StoreError::InvalidInput)
+        ));
+    }
 }

@@ -254,4 +254,28 @@ mod tests {
         let s3 = rename(&s2, "  project  ").unwrap();
         assert_eq!(s3.display_name, "project");
     }
+
+    #[test]
+    fn apply_regenerate_without_index_appends() {
+        let s = sample();
+        let capture = PrepareCapture::from_snapshot(&s);
+        // no insertion_index — treat as append
+        let mut cap = capture;
+        cap.replace_user_message = Some("new-u".into());
+        let next = apply_regenerate(&cap, "new-a").unwrap();
+        assert_eq!(next.history.len(), 4);
+        assert_eq!(next.history[3], ("new-u".into(), "new-a".into()));
+    }
+
+    #[test]
+    fn context_history_for_model_is_prefix_only() {
+        let s = sample();
+        let cap = PrepareCapture::from_snapshot(&s).with_regenerate(2, "u3");
+        let ctx = cap.context_history_for_model();
+        assert_eq!(ctx.len(), 2);
+        assert_eq!(ctx[0].0, "u1");
+        assert_eq!(ctx[1].0, "u2");
+        // full capture history unchanged
+        assert_eq!(cap.history.len(), 3);
+    }
 }

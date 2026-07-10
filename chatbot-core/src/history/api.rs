@@ -557,4 +557,109 @@ mod tests {
         assert_eq!(set_b.history.len(), 1);
         assert_eq!(set_b.history[0].0, "only-b");
     }
+
+    #[test]
+    fn stale_capture_finalize_returns_conflict_without_clobbering() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("dave", "chat", &key).unwrap();
+        let snap = svc.load("dave", created.set_id, &key).unwrap();
+        let stale_capture = PrepareCapture::from_snapshot(&snap);
+
+        // Another writer advances version
+        svc.append_pair("dave", created.set_id, created.version, "first", "ok", &key)
+            .unwrap();
+        let after = svc.load("dave", created.set_id, &key).unwrap();
+        assert_eq!(after.version, SetVersion(2));
+        assert_eq!(after.history.len(), 1);
+
+        let err = svc
+            .commit_chat_append("dave", &stale_capture, "stale", "nope", &key)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            HistoryError::Conflict {
+                current_version: SetVersion(2)
+            }
+        ));
+
+        let final_snap = svc.load("dave", created.set_id, &key).unwrap();
+        assert_eq!(final_snap.history.len(), 1);
+        assert_eq!(final_snap.history[0].0, "first");
+    }
+
+    #[test]
+    fn regenerate_commit_replaces_pair_without_dropping_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("erin", "chat", &key).unwrap();
+        let mut v = created.version;
+        for (u, a) in [("u1", "a1"), ("u2", "a2"), ("u3", "a3")] {
+            v = svc.append_pair("erin", created.set_id, v, u, a, &key).unwrap();
+        }
+        let snap = svc.load("erin", created.set_id, &key).unwrap();
+        assert_eq!(snap.history.len(), 3);
+        let capture = PrepareCapture::from_snapshot(&snap).with_regenerate(1, "u2-edit");
+        // Non-destructive: capture still has 3 pairs
+        assert_eq!(capture.history.len(), 3);
+        assert_eq!(capture.context_history_for_model().len(), 1);
+
+        let new_v = svc
+            .commit_regenerate("erin", &capture, "new-a2", &key)
+            .unwrap();
+        assert_eq!(new_v, SetVersion(5));
+        let after = svc.load("erin", created.set_id, &key).unwrap();
+        assert_eq!(after.history.len(), 3);
+        assert_eq!(after.history[1], ("u2-edit".into(), "new-a2".into()));
+        assert_eq!(after.history[2].0, "u3");
+    }
+
+    #[test]
+    fn delete_pair_content_mismatch_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("frank", "chat", &key).unwrap();
+        let v = svc
+            .append_pair("frank", created.set_id, created.version, "hello", "hi", &key)
+            .unwrap();
+        let err = svc
+            .delete_pair("frank", created.set_id, v, 0, "wrong", &key)
+            .unwrap_err();
+        assert!(matches!(err, HistoryError::InvalidInput(_)));
+
+        let v2 = svc
+            .delete_pair("frank", created.set_id, v, 0, "hello", &key)
+            .unwrap();
+        let empty = svc.load("frank", created.set_id, &key).unwrap();
+        assert!(empty.history.is_empty());
+
+        let v3 = svc
+            .append_pair("frank", created.set_id, v2, "again", "ok", &key)
+            .unwrap();
+        let v4 = svc.reset_history("frank", created.set_id, v3, &key).unwrap();
+        let reset = svc.load("frank", created.set_id, &key).unwrap();
+        assert!(reset.history.is_empty());
+        assert_eq!(reset.version, v4);
+    }
+
+    #[test]
+    fn find_by_display_name_and_ensure_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let def = svc.ensure_default_set("gina", &key).unwrap();
+        assert!(def.is_default || def.display_name == "default");
+        let found = svc
+            .find_by_display_name("gina", "default", &key)
+            .unwrap()
+            .expect("default");
+        assert_eq!(found.set_id, def.set_id);
+        assert!(svc
+            .find_by_display_name("gina", "missing", &key)
+            .unwrap()
+            .is_none());
+    }
 }
