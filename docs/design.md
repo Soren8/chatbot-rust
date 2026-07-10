@@ -19,7 +19,7 @@ This document captures the current architecture of the project and the potential
 
 - **UI/UX Improvements**
   - [ ] Lower friction for new chats by assigning a temporary title (e.g., "New Chat") that is automatically replaced with a contextual name based on chat content.
-  - [x] Ability to delete chats from history (`/delete_message` requires `pair_index`, `user_message`, and `ai_message`; deletion fails with 409 if content at that index does not match).
+  - [x] Ability to delete chats from history (`/delete_message` requires `pair_index` + matching `user_message` at that index; content mismatch → 409. `ai_message` may be sent by the client but is not used for the server-side match).
   - [x] Ability to edit old chat entries.
 
 - **Authentication & Security**

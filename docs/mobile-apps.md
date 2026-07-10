@@ -329,7 +329,7 @@ Product flavors configure `server_url` string resource:
 |-------|-------------|--------|
 | 1 | Capacitor Android shell (server-pull) | ✅ Complete |
 | 2 | Native mic plugin + NativeMicUtteranceVAD (RMS) | ✅ Complete |
-| 3 | Android Auto voice module | ✅ Complete |
+| 3 | Android Auto voice module | ⚠️ Partial — code/DHU done; production HostValidator + Play-trusted real-AA install still open |
 | 4 | iOS build (same codebase) | Pending |
 
 **Total**: ~2-3 weeks for full Android delivery. iOS nearly free after.
