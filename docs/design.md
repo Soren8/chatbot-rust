@@ -58,7 +58,7 @@ This document captures the current architecture of the project and the potential
 
 - **Configuration & Secrets**
   - [ ] Require a non-default `SECRET_KEY` via environment; remove hardcoded fallbacks.
-  - [x] Store all API keys and sensitive settings in environment variables only; avoid checking secrets into Git.
+  - [ ] Store all API keys and sensitive settings in environment variables only — **partial**: Compose/`.config.yml` use `${VAR}` substitution and secrets are gitignored by convention; nothing enforces “no plaintext secrets in `.config.yml`” at boot. Hardcoded `SECRET_KEY` fallback still exists (separate item).
   - [ ] Validate `.config.yml` against a schema to catch missing or invalid fields.
   - [ ] Protect `.env` and `.config.yml` from AI agent access. These files contain live secrets and must never be read by cloud-connected tools. **Partial today:** Grok/agent devcontainer secret overlays and sandbox config mask host secrets for agents. Remaining options (in order of robustness):
     1. **Dedicated agent user + Linux ACLs**: Create an `aiagent` user, use `setfacl -m u:aiagent:--- .env .config.yml` to deny access to secret files only, run all AI agents (`claude`, `opencode`, etc.) as that user. Agent retains full read access to the rest of the codebase.
@@ -68,7 +68,7 @@ This document captures the current architecture of the project and the potential
         - [x] Derive a per-user data key from a user-supplied passphrase.
         - [x] Encrypt set names and metadata on disk to prevent leakage of conversation identifiers.
         - [x] Per-request key transport: clients send `X-Enc-Key` on every authenticated data call; server validates against HMAC verifier and keeps ciphertext-only in-memory cache.
-        - [x] Tiered client key wrapping: IndexedDB non-extractable key (web default), WebAuthn PRF opt-in, Android Keystore on Capacitor.
+        - [x] Tiered client key wrapping for **shipped platforms**: IndexedDB non-extractable key (web default), WebAuthn PRF opt-in, Android Keystore on Capacitor. (iOS still open below.)
         - [ ] iOS Keychain plugin mirroring `NativeSecureKey` when the iOS Capacitor target is added.
         - [ ] Allow optional registration of multiple hardware authenticators
      (Touch ID, YubiKey, WebAuthn) for seamless unlock on trusted devices with fallback to the passphrase on new or unregistered devices.
@@ -76,7 +76,7 @@ This document captures the current architecture of the project and the potential
 - **Rate Limiting & Concurrency**
   - [ ] Add a production-ready rate limiter with per-user + global caps (today only a per-session generate lock → HTTP 429; no request rate limiter).
   - [ ] Hook background cleanup jobs to purge expired sessions and chats proactively.
-  - [x] Durable chat history on **redb** (opaque AEAD blobs + CAS versions) via `HistoryService`; see [design-history-store.md](design-history-store.md). Remaining cutover work: multi-set session cache, remove legacy `DataPersistence` history APIs, client version/409 UX.
+  - [ ] Durable chat history on **redb** — **partial**: Phase 1 path is live (`HistoryService`, AEAD+AAD, CAS, PrepareCapture, migration, tests). Not complete until multi-set session cache, removal of legacy `DataPersistence` history APIs, and client `set_id`/`expected_version` + 409 UX land. See [design-history-store.md](design-history-store.md).
   - [ ] Enhance test concurrency across integration suites.
 
 - **Error Handling & Logging**
@@ -108,7 +108,7 @@ This document captures the current architecture of the project and the potential
 - **Mobile Frontends**
   - [x] Capacitor Android shell — wrap existing web UI in native Android app (server-pull WebView)
   - [x] Native microphone plugin — bypass browser audio restrictions on mobile
-  - [x] Android Auto integration — native `CarAppService` for voice-only AA interface
+  - [ ] Android Auto integration — **partial**: `CarAppService` / `VoiceScreen` implemented and usable on DHU/emulator; still open for production: replace `HostValidator.ALLOW_ALL_HOSTS_VALIDATOR`, Play-trusted install for real head units, production host allowlist. See [mobile-apps.md](mobile-apps.md).
   - [ ] iOS support via Capacitor (same codebase, low priority)
   - See [mobile-apps.md](mobile-apps.md) for full plan and AA distribution constraints.
 
@@ -119,7 +119,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml`. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.
   - [ ] Fish Speech S2 — natively supports low TTFA streaming; evaluate for production use (code path exists; not production default).
-  - [x] Qwen3-TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "qwen"` in `.config.yml`. Uses `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` model with voice cloning support via `tts_voice` (default "Ryan"). Note: the official `qwen-tts` pip package synthesizes the full waveform before returning (no streaming API); community forks exist with true streaming but require auditing. Consider Fish Speech S2 as an alternative with natively low TTFA.
+  - [ ] Qwen3-TTS — **partial**: vertically integrated into `chatbot-cuda` (`tts_provider: "qwen"`, CustomVoice model, `tts_voice` default "Ryan"). Not complete as a low-TTFA streaming peer to Kokoro: official package synthesizes the full waveform before return (no streaming API); community streaming forks need audit, or treat Fish Speech S2 as the streaming alternative.
   - [x] Parakeet STT — NVIDIA Parakeet TDT 0.6B v2 for speech-to-text, vertically integrated into `chatbot-cuda` voice-service.
 
 - **Documentation**

@@ -114,8 +114,11 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 ---
 
-### Phase 3: Android Auto Module ✅
+### Phase 3: Android Auto Module ⚠️ partial
 **Goal**: App appears on AA head unit as a voice-only interface.
+
+**Done:** native `CarAppService` / `VoiceSession` / `VoiceScreen`, RMS voice path, REST chat/TTS, DHU/emulator testing path.  
+**Not done for production:** `HostValidator` is still `ALLOW_ALL_HOSTS_VALIDATOR` (local/DHU only); real AA requires Play-trusted install + production host allowlist (see distribution section below).
 
 1. Implement `CarAppService` in Java:
    - `ChatbotCarAppService` with `onCreateSession()` returning `VoiceSession`
