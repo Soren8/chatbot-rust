@@ -25,6 +25,21 @@ pub fn user_sets_prefix(user_id: &str) -> Vec<u8> {
     key
 }
 
+/// Exclusive end bound for a redb range over `user_sets_prefix(user)` keys.
+///
+/// Returns `None` if the prefix is all `0xff` bytes (practically impossible for usernames).
+pub fn user_sets_prefix_end(user_id: &str) -> Option<Vec<u8>> {
+    let mut end = user_sets_prefix(user_id);
+    for i in (0..end.len()).rev() {
+        if end[i] != 0xff {
+            end[i] += 1;
+            return Some(end);
+        }
+        end[i] = 0;
+    }
+    None
+}
+
 pub fn parse_user_set_key(key: &[u8]) -> Option<(String, SetId)> {
     if key.len() < 2 + 16 {
         return None;

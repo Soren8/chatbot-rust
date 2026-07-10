@@ -16,7 +16,9 @@ use super::types::{
     BlobFormat, SetId, SetPayloadV1, SetSnapshot, SetSummary, SetVersion,
 };
 use crate::enc_key::EncryptionKey;
-use keys::{migrated_user_meta_key, set_id_key, user_set_key, user_sets_prefix};
+use keys::{
+    migrated_user_meta_key, set_id_key, user_set_key, user_sets_prefix, user_sets_prefix_end,
+};
 use tables::{
     SetMetaValue, META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, USER_SETS,
 };
@@ -185,15 +187,29 @@ impl RedbHistoryStore {
         let table = txn.open_table(USER_SETS)?;
         let prefix = user_sets_prefix(user_id);
         let mut out = Vec::new();
-        // Range from prefix to prefix with high suffix — redb range is inclusive start.
-        // We scan all and filter by prefix.
-        let iter = table.iter()?;
-        for entry in iter {
-            let (k, v) = entry?;
-            let key = k.value();
-            if key.starts_with(&prefix) && key.len() == prefix.len() + 16 {
-                if let Some((_, set_id)) = keys::parse_user_set_key(key) {
-                    out.push((set_id, v.value()));
+
+        // Prefer a bounded range so we do not scan other users' keys.
+        if let Some(end) = user_sets_prefix_end(user_id) {
+            let iter = table.range(prefix.as_slice()..end.as_slice())?;
+            for entry in iter {
+                let (k, v) = entry?;
+                let key = k.value();
+                if key.len() == prefix.len() + 16 {
+                    if let Some((_, set_id)) = keys::parse_user_set_key(key) {
+                        out.push((set_id, v.value()));
+                    }
+                }
+            }
+        } else {
+            // Pathological prefix (all 0xff): fall back to full scan + filter.
+            let iter = table.iter()?;
+            for entry in iter {
+                let (k, v) = entry?;
+                let key = k.value();
+                if key.starts_with(&prefix) && key.len() == prefix.len() + 16 {
+                    if let Some((_, set_id)) = keys::parse_user_set_key(key) {
+                        out.push((set_id, v.value()));
+                    }
                 }
             }
         }
@@ -580,6 +596,33 @@ mod tests {
                 .any(|w| w == secret_name.as_bytes()),
             "display name must not appear in redb file"
         );
+    }
+
+    #[test]
+    fn list_set_ids_is_scoped_to_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("history.redb")).unwrap();
+        let key = key();
+        let a1 = SetId::new();
+        let a2 = SetId::new();
+        let b1 = SetId::new();
+        store
+            .create_set("alice", a1, "one", "sys", false, &key)
+            .unwrap();
+        store
+            .create_set("alice", a2, "two", "sys", false, &key)
+            .unwrap();
+        store
+            .create_set("bob", b1, "bob-set", "sys", false, &key)
+            .unwrap();
+
+        let alice = store.list_set_ids("alice").unwrap();
+        assert_eq!(alice.len(), 2);
+        assert!(alice.iter().all(|(id, _)| *id == a1 || *id == a2));
+
+        let bob = store.list_set_ids("bob").unwrap();
+        assert_eq!(bob.len(), 1);
+        assert_eq!(bob[0].0, b1);
     }
 
     #[test]
