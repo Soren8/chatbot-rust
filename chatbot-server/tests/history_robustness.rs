@@ -868,3 +868,68 @@ async fn reset_chat_clears_only_named_set() {
     assert_eq!(keep["history"].as_array().unwrap().len(), 1);
     assert_eq!(keep["history"][0][0], "preserve-me");
 }
+
+#[tokio::test]
+async fn rename_set_rejects_duplicate_display_name() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "rename_dup_user", "RenameDup1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "rename_dup_user", "RenameDup1!").await;
+
+    let alpha = create_set(&app, &auth, "alpha").await;
+    let beta = create_set(&app, &auth, "beta").await;
+    assert_eq!(alpha["status"], "success");
+    assert_eq!(beta["status"], "success");
+    let beta_id = beta["set_id"].as_str().expect("set_id");
+    let beta_version = beta["version"].as_u64().unwrap_or(1);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/rename_set")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &auth.cookie)
+                .header("X-CSRF-Token", &auth.csrf)
+                .header("X-Enc-Key", &auth.enc_key)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "set_id": beta_id,
+                        "old_name": "beta",
+                        "new_name": "alpha",
+                        "expected_version": beta_version
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "error");
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("already")
+            || json["error"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("invalid"),
+        "unexpected error body: {json}"
+    );
+
+    // Both original names still load
+    let a = load_set_by_name(&app, &auth, "alpha").await;
+    let b = load_set_by_name(&app, &auth, "beta").await;
+    assert_eq!(a["name"], "alpha");
+    assert_eq!(b["name"], "beta");
+}

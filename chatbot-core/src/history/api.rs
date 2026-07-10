@@ -4,8 +4,9 @@
 //! redb handles, raw keys, and free-form blob writes are not exposed.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
+use dashmap::DashMap;
 use once_cell::sync::OnceCell;
 use thiserror::Error;
 use tracing::error;
@@ -16,6 +17,12 @@ use super::store::{RedbHistoryStore, StoreError};
 use super::types::{PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
 use crate::config::app_config;
 use crate::enc_key::EncryptionKey;
+
+/// Serializes create/rename uniqueness checks per user (names live only in ciphertext).
+fn name_mutation_locks() -> &'static DashMap<String, Mutex<()>> {
+    static LOCKS: OnceLock<DashMap<String, Mutex<()>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
 
 /// Errors returned by [`HistoryService`]. Map to HTTP in the server layer.
 #[derive(Debug, Error)]
@@ -213,12 +220,17 @@ impl HistoryService {
         if name.is_empty() {
             return Err(HistoryError::InvalidInput("empty set name"));
         }
-        // Uniqueness among decrypted names
-        for existing in self.list_sets(&user, key)? {
-            if existing.display_name == name {
-                return Err(HistoryError::InvalidInput("set already exists"));
-            }
-        }
+
+        let lock_entry = name_mutation_locks()
+            .entry(user.clone())
+            .or_insert_with(|| Mutex::new(()));
+        let _guard = lock_entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // Uniqueness among decrypted names (under per-user lock to close concurrent races).
+        self.ensure_display_name_available(&user, name, None, key)?;
+
         let set_id = SetId::new();
         let is_default = name == "default";
         Ok(self.store.create_set(
@@ -265,6 +277,14 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
+
+        let lock_entry = name_mutation_locks()
+            .entry(user.clone())
+            .or_insert_with(|| Mutex::new(()));
+        let _guard = lock_entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let snap = self.store.load_snapshot(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
@@ -275,7 +295,28 @@ impl HistoryService {
             return Err(HistoryError::InvalidInput("cannot rename default set"));
         }
         let next = ops::rename(&snap, new_name)?;
+        // Reject collision with any other set (same name on self is a no-op rename).
+        self.ensure_display_name_available(&user, &next.display_name, Some(set_id), key)?;
         Ok(self.store.commit_snapshot(&user, expected, &next, key)?)
+    }
+
+    /// Returns `Ok` if `name` is free, or already owned by `except_set_id`.
+    fn ensure_display_name_available(
+        &self,
+        user: &str,
+        name: &str,
+        except_set_id: Option<SetId>,
+        key: &EncryptionKey,
+    ) -> Result<(), HistoryError> {
+        for existing in self.list_sets(user, key)? {
+            if existing.display_name == name {
+                if except_set_id == Some(existing.set_id) {
+                    return Ok(());
+                }
+                return Err(HistoryError::InvalidInput("set already exists"));
+            }
+        }
+        Ok(())
     }
 
     pub fn delete_set(
@@ -661,5 +702,67 @@ mod tests {
             .find_by_display_name("gina", "missing", &key)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn rename_rejects_duplicate_display_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let a = svc.create_set("uniq", "alpha", &key).unwrap();
+        let b = svc.create_set("uniq", "beta", &key).unwrap();
+        let err = svc
+            .rename_set("uniq", b.set_id, b.version, "alpha", &key)
+            .unwrap_err();
+        assert!(matches!(err, HistoryError::InvalidInput("set already exists")));
+        // Original names unchanged
+        let listed = svc.list_sets("uniq", &key).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|s| s.set_id == a.set_id && s.display_name == "alpha"));
+        assert!(listed.iter().any(|s| s.set_id == b.set_id && s.display_name == "beta"));
+    }
+
+    #[test]
+    fn rename_same_name_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let a = svc.create_set("same", "project", &key).unwrap();
+        let v = svc
+            .rename_set("same", a.set_id, a.version, "project", &key)
+            .unwrap();
+        assert!(v.get() > a.version.get());
+        let snap = svc.load("same", a.set_id, &key).unwrap();
+        assert_eq!(snap.display_name, "project");
+    }
+
+    #[test]
+    fn concurrent_create_same_name_only_one_succeeds() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = Arc::new(HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap());
+        let key = Arc::new(key());
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = vec![];
+        for _ in 0..2 {
+            let svc = Arc::clone(&svc);
+            let key = Arc::clone(&key);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                svc.create_set("raceuser", "shared-name", &key)
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let wins = results.iter().filter(|r| r.is_ok()).count();
+        let dups = results
+            .iter()
+            .filter(|r| matches!(r, Err(HistoryError::InvalidInput("set already exists"))))
+            .count();
+        assert_eq!(wins, 1, "exactly one create should succeed");
+        assert_eq!(dups, 1, "the other create must see set already exists");
+        assert_eq!(svc.list_sets("raceuser", &key).unwrap().len(), 1);
     }
 }
