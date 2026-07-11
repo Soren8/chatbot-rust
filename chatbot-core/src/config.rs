@@ -7,10 +7,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ProviderConfig {
     #[serde(alias = "name")]
     pub provider_name: String,
@@ -167,7 +167,7 @@ pub fn reset() {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
     llms: Vec<ProviderConfig>,
@@ -201,6 +201,11 @@ struct RawConfig {
     voice_service_host: Option<String>,
     #[serde(default)]
     voice_service_port: Option<u16>,
+    /// Consumed by Compose / voice-service; accepted so schema validation stays
+    /// aligned with `.config.yml.example`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    voice_gpu_device: Option<u32>,
 }
 
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -306,12 +311,12 @@ fn load_app_config() -> AppConfig {
     let voice_service_port = raw_config.voice_service_port.unwrap_or(5100);
     let voice_service_base_url = format!("http://{voice_service_host}:{voice_service_port}");
 
-    // TTS provider: env var overrides YAML, which defaults to qwen
+    // TTS provider: env var overrides YAML, which defaults to kokoro
     let tts_provider: String = if let Ok(env_value) = env::var("TTS_PROVIDER") {
         env_value
             .split('#')
             .next()
-            .unwrap_or("qwen")
+            .unwrap_or("kokoro")
             .trim()
             .to_lowercase()
     } else if let Some(yaml_value) = raw_config.tts_provider {
@@ -319,6 +324,7 @@ fn load_app_config() -> AppConfig {
     } else {
         "kokoro".to_string()
     };
+    validate_tts_provider(&tts_provider);
 
     debug!(tts_provider = %tts_provider, "loaded TTS provider configuration");
 
@@ -346,18 +352,16 @@ fn load_app_config() -> AppConfig {
         providers_by_name.insert(name, provider);
     }
 
-    let default_provider_name = raw_config
-        .default_llm
-        .and_then(|name| {
-            if providers_by_name.contains_key(&name) {
-                Some(name)
-            } else {
-                warn!(provider = %name, "default_llm not found in provider list");
-                None
-            }
-        })
-        .or_else(|| provider_order.first().cloned())
-        .unwrap();
+    let default_provider_name = match raw_config.default_llm {
+        Some(name) if providers_by_name.contains_key(&name) => name,
+        Some(name) => {
+            panic!("default_llm '{name}' not found in provider list");
+        }
+        None => provider_order
+            .first()
+            .cloned()
+            .expect("at least one provider is always present"),
+    };
 
     let default_system_prompt = raw_config.default_system_prompt.unwrap_or_else(|| {
         "You are a helpful AI assistant. Provide clear and concise answers to user queries."
@@ -451,21 +455,78 @@ fn load_yaml_config() -> Option<RawConfig> {
                 let user_vars = extract_user_vars(&value);
                 let replaced = replace_vars(value, &user_vars);
                 match serde_yaml::from_value::<RawConfig>(replaced) {
-                    Ok(config) => Some(config),
+                    Ok(config) => {
+                        validate_raw_config(&config);
+                        Some(config)
+                    }
                     Err(err) => {
-                        error!(?err, "invalid configuration content; using defaults");
-                        None
+                        panic!("invalid .config.yml schema: {err}");
                     }
                 }
             }
             Err(err) => {
-                error!(?err, "failed to parse configuration YAML; using defaults");
-                None
+                panic!("failed to parse .config.yml YAML: {err}");
             }
         },
         Err(err) => {
-            error!(?err, "failed to read configuration file; using defaults");
-            None
+            panic!("failed to read .config.yml: {err}");
+        }
+    }
+}
+
+const ALLOWED_PROVIDER_TYPES: &[&str] = &["openai", "xai", "stub"];
+const ALLOWED_PROVIDER_TIERS: &[&str] = &["free", "premium"];
+const ALLOWED_TTS_PROVIDERS: &[&str] = &["kokoro", "qwen", "fish"];
+
+fn validate_tts_provider(value: &str) {
+    let normalized = value.trim().to_lowercase();
+    if !ALLOWED_TTS_PROVIDERS.contains(&normalized.as_str()) {
+        panic!(
+            "invalid tts_provider '{value}'; expected one of {}",
+            ALLOWED_TTS_PROVIDERS.join(", ")
+        );
+    }
+}
+
+fn validate_raw_config(config: &RawConfig) {
+    if let Some(timeout) = config.session_timeout {
+        if timeout == 0 {
+            panic!("session_timeout must be greater than 0");
+        }
+    }
+
+    if let Some(tts) = config.tts_provider.as_deref() {
+        validate_tts_provider(tts);
+    }
+
+    for (idx, provider) in config.llms.iter().enumerate() {
+        let provider_type = provider.provider_type.trim().to_lowercase();
+        if !ALLOWED_PROVIDER_TYPES.contains(&provider_type.as_str()) {
+            panic!(
+                "llms[{idx}].type '{}' is invalid; expected one of {}",
+                provider.provider_type,
+                ALLOWED_PROVIDER_TYPES.join(", ")
+            );
+        }
+        if provider.provider_name.trim().is_empty() {
+            panic!("llms[{idx}].provider_name must not be empty");
+        }
+        if provider.model_name.trim().is_empty() {
+            panic!("llms[{idx}].model_name must not be empty");
+        }
+        if let Some(tier) = provider.tier.as_deref() {
+            let normalized = tier.trim().to_lowercase();
+            if !ALLOWED_PROVIDER_TIERS.contains(&normalized.as_str()) {
+                panic!(
+                    "llms[{idx}].tier '{tier}' is invalid; expected one of {}",
+                    ALLOWED_PROVIDER_TIERS.join(", ")
+                );
+            }
+        }
+        if let Some(timeout) = provider.request_timeout {
+            if timeout <= 0.0 || !timeout.is_finite() {
+                panic!("llms[{idx}].request_timeout must be a positive finite number");
+            }
         }
     }
 }
@@ -925,6 +986,95 @@ mod tests {
             config.default_provider().api_key.as_deref(),
             Some("sk-from-env")
         );
+        reset();
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown field")]
+    fn refuses_unknown_top_level_field() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(file, "not_a_real_field: true\nllms: []").expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "type 'bogus' is invalid")]
+    fn refuses_invalid_provider_type() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "llms:\n  - provider_name: 'p'\n    type: 'bogus'\n    model_name: 'm'\n"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid tts_provider")]
+    fn refuses_invalid_tts_provider() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(file, "tts_provider: nope\nllms: []").expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "default_llm 'missing' not found")]
+    fn refuses_missing_default_llm() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "default_llm: missing\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    fn accepts_voice_gpu_device_and_valid_enums() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "tts_provider: kokoro\nvoice_gpu_device: 0\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    tier: free\n"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let config = app_config();
+        assert_eq!(config.tts_provider, "kokoro");
+        assert_eq!(config.default_provider().tier.as_deref(), Some("free"));
         reset();
     }
 }

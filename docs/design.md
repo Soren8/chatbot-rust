@@ -59,7 +59,7 @@ This document captures the current architecture of the project and the potential
 - **Configuration & Secrets**
   - [x] Require a non-default `SECRET_KEY` via environment; remove hardcoded fallbacks.
   - [x] Store all API keys and sensitive settings in environment variables only — Compose/`.config.yml` use `${VAR}` substitution; boot refuses plaintext provider `api_key` values and `vars:`-backed key refs.
-  - [ ] Validate `.config.yml` against a schema to catch missing or invalid fields.
+  - [x] Validate `.config.yml` against a schema to catch missing or invalid fields.
   - [ ] Protect `.env` and `.config.yml` from AI agent access. These files contain live secrets and must never be read by cloud-connected tools. **Partial today:** Grok/agent devcontainer secret overlays and sandbox config mask host secrets for agents. Remaining options (in order of robustness):
     1. **Dedicated agent user + Linux ACLs**: Create an `aiagent` user, use `setfacl -m u:aiagent:--- .env .config.yml` to deny access to secret files only, run all AI agents (`claude`, `opencode`, etc.) as that user. Agent retains full read access to the rest of the codebase.
     2. **Runtime secret injection**: Eliminate plaintext `.env` entirely. Use a secrets manager (1Password CLI `op run`, `sops`/`age`, `pass`, Doppler) to inject secrets at `docker compose up` time so nothing sensitive exists on disk.
