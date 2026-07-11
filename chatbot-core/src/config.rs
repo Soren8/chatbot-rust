@@ -130,13 +130,17 @@ static APP_CONFIG: Lazy<RwLock<ConfigState>> =
 
 pub fn app_config() -> Arc<AppConfig> {
     {
-        let guard = APP_CONFIG.read().expect("config read lock");
+        let guard = APP_CONFIG
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let ConfigState::Ready(config) = &*guard {
             return Arc::clone(config);
         }
     }
 
-    let mut guard = APP_CONFIG.write().expect("config write lock");
+    let mut guard = APP_CONFIG
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let ConfigState::Ready(config) = &*guard {
         return Arc::clone(config);
     }
@@ -156,7 +160,9 @@ pub fn get_provider_config(model_name: Option<&str>) -> Option<ProviderConfig> {
 }
 
 pub fn reset() {
-    let mut guard = APP_CONFIG.write().expect("config write lock");
+    let mut guard = APP_CONFIG
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = ConfigState::Uninitialized;
 }
 
@@ -249,12 +255,38 @@ where
     deserializer.deserialize_any(BoolVisitor)
 }
 
+/// Insecure placeholder previously used when `SECRET_KEY` was unset.
+const FORBIDDEN_SECRET_KEYS: &[&str] = &["default_secret_key"];
+
+/// Require a non-default `SECRET_KEY` from the environment. Fail closed at boot.
+fn require_secret_key() -> String {
+    match env::var("SECRET_KEY") {
+        Ok(key) => {
+            let trimmed = key.trim();
+            if trimmed.is_empty() {
+                panic!(
+                    "SECRET_KEY is set but empty; set a non-empty secret via the environment"
+                );
+            }
+            if FORBIDDEN_SECRET_KEYS.contains(&trimmed) {
+                panic!(
+                    "SECRET_KEY must not be the insecure default value; set a unique secret via the environment"
+                );
+            }
+            key
+        }
+        Err(_) => panic!(
+            "SECRET_KEY environment variable is required; refusing to start with a default"
+        ),
+    }
+}
+
 fn load_app_config() -> AppConfig {
     if dotenvy::dotenv().is_ok() {
         debug!("loaded environment variables from .env");
     }
 
-    let secret_key = env::var("SECRET_KEY").unwrap_or_else(|_| "default_secret_key".to_string());
+    let secret_key = require_secret_key();
     let host_data_dir =
         PathBuf::from(env::var("HOST_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
     let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "INFO".to_string());
@@ -609,6 +641,12 @@ mod tests {
 
     static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     struct CwdGuard {
         original: PathBuf,
     }
@@ -638,6 +676,12 @@ mod tests {
             env::set_var(key, value);
             Self { key, original }
         }
+
+        fn remove(key: &'static str) -> Self {
+            let original = env::var(key).ok();
+            env::remove_var(key);
+            Self { key, original }
+        }
     }
 
     impl Drop for EnvVarGuard {
@@ -652,7 +696,7 @@ mod tests {
 
     #[test]
     fn replaces_env_vars_in_yaml() {
-        let _lock = TEST_MUTEX.lock().expect("test mutex");
+        let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
         let mut file = fs::File::create(&path).expect("create config");
@@ -663,6 +707,7 @@ mod tests {
         .expect("write config");
 
         let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         let _model_guard = EnvVarGuard::set("MODEL", "injected-model");
 
         reset();
@@ -675,9 +720,10 @@ mod tests {
 
     #[test]
     fn loads_csrf_config() {
-        let _lock = TEST_MUTEX.lock().expect("test mutex");
+        let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
 
         // Test with boolean false
         {
@@ -712,9 +758,10 @@ mod tests {
 
     #[test]
     fn returns_fallback_when_missing_file() {
-        let _lock = TEST_MUTEX.lock().expect("test mutex");
+        let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         reset();
         let provider_type = app_config().default_provider().provider_type.clone();
         assert_eq!(provider_type, "openai");
@@ -723,18 +770,43 @@ mod tests {
 
     #[test]
     fn parses_thinking_config() {
-        let _lock = TEST_MUTEX.lock().expect("test mutex");
+        let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
         let mut file = fs::File::create(&path).expect("create config");
         writeln!(file, "save_thoughts: false\nsend_thoughts: true").expect("write config");
 
         let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         reset();
         let config = app_config();
 
         assert_eq!(config.save_thoughts, false);
         assert_eq!(config.send_thoughts, true);
         reset();
+    }
+
+    #[test]
+    #[should_panic(expected = "SECRET_KEY environment variable is required")]
+    fn refuses_missing_secret_key() {
+        let _lock = test_lock();
+        let _secret_guard = EnvVarGuard::remove("SECRET_KEY");
+        let _ = require_secret_key();
+    }
+
+    #[test]
+    #[should_panic(expected = "SECRET_KEY must not be the insecure default value")]
+    fn refuses_default_secret_key() {
+        let _lock = test_lock();
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "default_secret_key");
+        let _ = require_secret_key();
+    }
+
+    #[test]
+    #[should_panic(expected = "SECRET_KEY is set but empty")]
+    fn refuses_empty_secret_key() {
+        let _lock = test_lock();
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "   ");
+        let _ = require_secret_key();
     }
 }

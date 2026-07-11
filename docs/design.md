@@ -57,7 +57,7 @@ This document captures the current architecture of the project and the potential
 ### Lower Priority Improvements
 
 - **Configuration & Secrets**
-  - [ ] Require a non-default `SECRET_KEY` via environment; remove hardcoded fallbacks.
+  - [x] Require a non-default `SECRET_KEY` via environment; remove hardcoded fallbacks.
   - [ ] Store all API keys and sensitive settings in environment variables only — **partial**: Compose/`.config.yml` use `${VAR}` substitution and secrets are gitignored by convention; nothing enforces “no plaintext secrets in `.config.yml`” at boot. Hardcoded `SECRET_KEY` fallback still exists (separate item).
   - [ ] Validate `.config.yml` against a schema to catch missing or invalid fields.
   - [ ] Protect `.env` and `.config.yml` from AI agent access. These files contain live secrets and must never be read by cloud-connected tools. **Partial today:** Grok/agent devcontainer secret overlays and sandbox config mask host secrets for agents. Remaining options (in order of robustness):
