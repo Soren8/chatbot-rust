@@ -211,6 +211,17 @@ function noteSetVersionFromResponse(data) {
   if (data.version != null) window.APP_DATA.setVersion = data.version;
 }
 
+/** After chat/regenerate persist, CAS version advances by one. Update immediately
+ *  so delete/reset don't race the async loadSets() refresh. */
+function noteLocalVersionBumpAfterPersist() {
+  if (window.APP_DATA.setVersion == null || window.APP_DATA.setVersion === '') return;
+  var next = Number(window.APP_DATA.setVersion) + 1;
+  if (Number.isNaN(next)) return;
+  window.APP_DATA.setVersion = next;
+  var $opt = $('#set-selector option:selected');
+  if ($opt.length) $opt.attr('data-version', String(next));
+}
+
 function handleVersionConflict(response, data) {
   var msg = (data && data.message) || 'Chat was modified in another tab. Reloading…';
   if (typeof appendMessage === 'function') {
@@ -1042,6 +1053,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
+              noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
             }
@@ -1519,6 +1531,13 @@ $(document).ready(function() {
               console.debug('Last set not found, falling back to default');
           }
 
+          // Always sync setVersion from the selected option so stale values
+          // don't cause CAS conflicts on the next mutation.
+          const $selectedOpt = $selector.find('option:selected');
+          if ($selectedOpt.length) {
+            window.APP_DATA.setVersion = $selectedOpt.attr('data-version') || null;
+          }
+
           if (shouldTriggerChange) {
             $selector.trigger('change');
           }
@@ -1928,6 +1947,7 @@ $(document).ready(function() {
               } catch (e) {}
               setGeneratingState(false);
               currentAbortController = null;
+              noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
             }
@@ -1981,14 +2001,19 @@ $(document).ready(function() {
     const setName = typeof activeSetName === 'function' ? activeSetName() : 'default';
     if (confirm(`Are you sure you want to reset the chat history for set: ${setName}?`)) {
       fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(activeSetPayload({})) })
-        .then(r => { if (!r.ok) return r.json().then(err => { throw new Error(err.message || 'Failed to reset chat'); }); return r.json(); })
-        .then(response => {
-          if (response.status === 'success') {
-            $('#chat-content').empty();
-            appendMessage('<strong>System:</strong> Chat history has been reset for set ' + escapeHTML(response.set_name) + '.', 'system-message');
-          } else {
-            appendMessage(`<strong>Error:</strong> ${escapeHTML(response.message)}`, 'error-message');
+        .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
+        .then(result => {
+          if (result.status === 409 || (result.data && result.data.error === 'version_conflict')) {
+            return handleVersionConflict(null, result.data);
           }
+          if (result.ok && result.data && result.data.status === 'success') {
+            noteSetVersionFromResponse(result.data);
+            $('#chat-content').empty();
+            appendMessage('<strong>System:</strong> Chat history has been reset for set ' + escapeHTML(result.data.set_name) + '.', 'system-message');
+            return;
+          }
+          const errMsg = (result.data && (result.data.message || result.data.error)) || 'Failed to reset chat';
+          appendMessage(`<strong>Error:</strong> ${escapeHTML(errMsg)}`, 'error-message');
         })
         .catch(error => { appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message'); });
     }

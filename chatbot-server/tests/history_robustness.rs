@@ -264,6 +264,150 @@ async fn chat_with_set_id(
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 }
 
+async fn post_json(
+    app: &axum::Router,
+    auth: &AuthCtx,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &auth.cookie)
+                .header("X-CSRF-Token", &auth.csrf)
+                .header("X-Enc-Key", &auth.enc_key)
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({"_raw": String::from_utf8_lossy(&bytes)}))
+    };
+    (status, json)
+}
+
+async fn regenerate(
+    app: &axum::Router,
+    auth: &AuthCtx,
+    set_name: &str,
+    set_id: &str,
+    message: &str,
+    pair_index: usize,
+) {
+    env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["regen-chunk"]"#);
+    let (status, _) = post_json(
+        app,
+        auth,
+        "/regenerate",
+        json!({
+            "message": message,
+            "set_name": set_name,
+            "set_id": set_id,
+            "pair_index": pair_index
+        }),
+    )
+    .await;
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
+    assert_eq!(status, StatusCode::OK, "regenerate failed");
+}
+
+fn set_version(snap: &serde_json::Value) -> u64 {
+    snap["version"].as_u64().expect("set version")
+}
+
+fn set_id_str(snap: &serde_json::Value) -> String {
+    snap["set_id"].as_str().expect("set_id").to_string()
+}
+
+fn version_in_get_sets(sets: &serde_json::Value, set_id: &str) -> Option<u64> {
+    sets.as_array()?.iter().find_map(|s| {
+        if s.get("set_id").and_then(|v| v.as_str()) == Some(set_id) {
+            s.get("version").and_then(|v| v.as_u64())
+        } else {
+            None
+        }
+    })
+}
+
+/// Assert every CAS mutation rejects a stale expected_version with structured 409.
+async fn assert_stale_mutations_conflict(
+    app: &axum::Router,
+    auth: &AuthCtx,
+    set_name: &str,
+    set_id: &str,
+    stale_version: u64,
+    current_version: u64,
+    user_message: &str,
+) {
+    for (uri, body) in [
+        (
+            "/delete_message",
+            json!({
+                "pair_index": 0,
+                "user_message": user_message,
+                "set_name": set_name,
+                "set_id": set_id,
+                "expected_version": stale_version
+            }),
+        ),
+        (
+            "/reset_chat",
+            json!({
+                "set_name": set_name,
+                "set_id": set_id,
+                "expected_version": stale_version
+            }),
+        ),
+        (
+            "/update_memory",
+            json!({
+                "set_name": set_name,
+                "set_id": set_id,
+                "memory": "should-not-apply",
+                "logged_in": true,
+                "expected_version": stale_version
+            }),
+        ),
+        (
+            "/update_system_prompt",
+            json!({
+                "set_name": set_name,
+                "set_id": set_id,
+                "system_prompt": "should-not-apply",
+                "logged_in": true,
+                "expected_version": stale_version
+            }),
+        ),
+    ] {
+        let (status, json) = post_json(app, auth, uri, body).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "{uri} with stale expected_version should 409, got {json}"
+        );
+        assert_eq!(json["error"], "version_conflict", "{uri}: {json}");
+        assert_eq!(
+            json["current_version"].as_u64(),
+            Some(current_version),
+            "{uri} should report current_version={current_version}, got {json}"
+        );
+        assert_eq!(
+            json["message"].as_str(),
+            Some("Set was modified; reload and retry."),
+            "{uri}: {json}"
+        );
+    }
+}
+
 fn enc_key_obj(auth: &AuthCtx) -> EncryptionKey {
     EncryptionKey::from_header_value(&auth.enc_key).unwrap()
 }
@@ -536,6 +680,268 @@ async fn regenerate_replaces_pair_keeps_later_messages() {
     assert_eq!(hist[1][0], "u2");
     assert!(hist[1][1].as_str().unwrap().contains("regenerated-mid"));
     assert_eq!(hist[2][0], "u3");
+}
+
+/// After a successful /chat stream, CAS version advances. Follow-up mutations that
+/// still send the pre-chat expected_version (stale APP_DATA.setVersion) must 409.
+/// Fresh version from get_sets/load_set must succeed — mirrors the client fix that
+/// syncs setVersion after chat stream completion.
+#[tokio::test]
+async fn chat_advances_version_stale_followup_mutations_conflict() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "chat_ver_user", "ChatVer1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "chat_ver_user", "ChatVer1!").await;
+
+    let initial = load_set_by_name(&app, &auth, "default").await;
+    let stale_version = set_version(&initial);
+    let set_id = set_id_str(&initial);
+
+    chat(&app, &auth, "default", "after-chat-stale", None).await;
+
+    let after = load_set_by_name(&app, &auth, "default").await;
+    let fresh_version = set_version(&after);
+    assert!(
+        fresh_version > stale_version,
+        "chat should bump version ({stale_version} -> {fresh_version})"
+    );
+    let user_msg = after["history"][0][0].as_str().unwrap().to_string();
+
+    let listed = get_sets(&app, &auth).await;
+    assert_eq!(
+        version_in_get_sets(&listed, &set_id),
+        Some(fresh_version),
+        "get_sets must expose post-chat version for client loadSets sync"
+    );
+
+    assert_stale_mutations_conflict(
+        &app,
+        &auth,
+        "default",
+        &set_id,
+        stale_version,
+        fresh_version,
+        &user_msg,
+    )
+    .await;
+
+    // History unchanged by rejected stale mutations
+    let unchanged = load_set_by_name(&app, &auth, "default").await;
+    assert_eq!(set_version(&unchanged), fresh_version);
+    assert_eq!(unchanged["history"].as_array().unwrap().len(), 1);
+    assert_ne!(unchanged["memory"].as_str().unwrap_or(""), "should-not-apply");
+
+    let (ok_status, ok_body) = post_json(
+        &app,
+        &auth,
+        "/delete_message",
+        json!({
+            "pair_index": 0,
+            "user_message": user_msg,
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": fresh_version
+        }),
+    )
+    .await;
+    assert_eq!(ok_status, StatusCode::OK);
+    assert_eq!(ok_body["status"], "success");
+    let after_delete = ok_body["version"].as_u64().unwrap();
+    assert!(after_delete > fresh_version);
+
+    let (reset_status, reset_body) = post_json(
+        &app,
+        &auth,
+        "/reset_chat",
+        json!({
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": after_delete
+        }),
+    )
+    .await;
+    assert_eq!(reset_status, StatusCode::OK);
+    assert_eq!(reset_body["status"], "success");
+    assert!(reset_body["version"].as_u64().unwrap() > after_delete);
+}
+
+/// After regenerate, CAS version advances. Stale expected_version on delete/reset/
+/// memory/system_prompt must 409; refreshed version succeeds. Covers the reported
+/// "Set was modified; reload and retry" UX after regenerate.
+#[tokio::test]
+async fn regenerate_advances_version_stale_followup_mutations_conflict() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "regen_ver_user", "Reg3nVer!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "regen_ver_user", "Reg3nVer!").await;
+
+    chat(&app, &auth, "default", "hello", None).await;
+    let before = load_set_by_name(&app, &auth, "default").await;
+    let stale_version = set_version(&before);
+    let set_id = set_id_str(&before);
+    let user_msg = before["history"][0][0].as_str().unwrap().to_string();
+
+    regenerate(&app, &auth, "default", &set_id, &user_msg, 0).await;
+
+    let after = load_set_by_name(&app, &auth, "default").await;
+    let fresh_version = set_version(&after);
+    assert!(
+        fresh_version > stale_version,
+        "regenerate should bump version ({stale_version} -> {fresh_version})"
+    );
+    assert!(
+        after["history"][0][1]
+            .as_str()
+            .unwrap_or("")
+            .contains("regen-chunk"),
+        "assistant text should reflect regenerate"
+    );
+
+    let listed = get_sets(&app, &auth).await;
+    assert_eq!(
+        version_in_get_sets(&listed, &set_id),
+        Some(fresh_version),
+        "get_sets must expose post-regenerate version for client loadSets sync"
+    );
+
+    assert_stale_mutations_conflict(
+        &app,
+        &auth,
+        "default",
+        &set_id,
+        stale_version,
+        fresh_version,
+        &user_msg,
+    )
+    .await;
+
+    // Rejected stale mutations must not alter durable content
+    let unchanged = load_set_by_name(&app, &auth, "default").await;
+    assert_eq!(set_version(&unchanged), fresh_version);
+    assert_eq!(unchanged["history"].as_array().unwrap().len(), 1);
+    assert!(unchanged["history"][0][1]
+        .as_str()
+        .unwrap_or("")
+        .contains("regen-chunk"));
+
+    let (ok_status, ok_body) = post_json(
+        &app,
+        &auth,
+        "/delete_message",
+        json!({
+            "pair_index": 0,
+            "user_message": user_msg,
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": fresh_version
+        }),
+    )
+    .await;
+    assert_eq!(ok_status, StatusCode::OK);
+    assert_eq!(ok_body["status"], "success");
+    let after_delete = ok_body["version"].as_u64().unwrap();
+    assert!(after_delete > fresh_version);
+
+    let (reset_status, reset_body) = post_json(
+        &app,
+        &auth,
+        "/reset_chat",
+        json!({
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": after_delete
+        }),
+    )
+    .await;
+    assert_eq!(reset_status, StatusCode::OK);
+    assert_eq!(reset_body["status"], "success");
+    assert_eq!(
+        load_set_by_name(&app, &auth, "default").await["history"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+/// Client recovery path: after a streaming bump, re-list via get_sets (loadSets) and
+/// use that version for a full delete→reset chain without 409.
+#[tokio::test]
+async fn version_refresh_via_get_sets_allows_delete_and_reset_after_streams() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "ver_refresh_user", "VerRefr1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "ver_refresh_user", "VerRefr1!").await;
+
+    let initial = load_set_by_name(&app, &auth, "default").await;
+    let set_id = set_id_str(&initial);
+
+    chat(&app, &auth, "default", "first", None).await;
+    let v_after_chat = version_in_get_sets(&get_sets(&app, &auth).await, &set_id)
+        .expect("version after chat in get_sets");
+
+    let snap = load_set_by_name(&app, &auth, "default").await;
+    let user_msg = snap["history"][0][0].as_str().unwrap().to_string();
+    regenerate(&app, &auth, "default", &set_id, &user_msg, 0).await;
+
+    let v_after_regen = version_in_get_sets(&get_sets(&app, &auth).await, &set_id)
+        .expect("version after regenerate in get_sets");
+    assert!(
+        v_after_regen > v_after_chat,
+        "regenerate should advance beyond post-chat version"
+    );
+
+    chat(&app, &auth, "default", "second", None).await;
+    let v_ready = version_in_get_sets(&get_sets(&app, &auth).await, &set_id)
+        .expect("version after second chat");
+    let snap = load_set_by_name(&app, &auth, "default").await;
+    assert_eq!(snap["history"].as_array().unwrap().len(), 2);
+
+    // Delete first pair with version from get_sets (client reload path)
+    let (del_status, del_body) = post_json(
+        &app,
+        &auth,
+        "/delete_message",
+        json!({
+            "pair_index": 0,
+            "user_message": "first",
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": v_ready
+        }),
+    )
+    .await;
+    assert_eq!(del_status, StatusCode::OK, "{del_body}");
+    let v_after_del = del_body["version"].as_u64().unwrap();
+
+    let (reset_status, reset_body) = post_json(
+        &app,
+        &auth,
+        "/reset_chat",
+        json!({
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": v_after_del
+        }),
+    )
+    .await;
+    assert_eq!(reset_status, StatusCode::OK, "{reset_body}");
+    assert_eq!(
+        load_set_by_name(&app, &auth, "default").await["history"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 }
 
 #[tokio::test]
