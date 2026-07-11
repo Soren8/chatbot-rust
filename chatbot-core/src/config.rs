@@ -443,6 +443,9 @@ fn load_yaml_config() -> Option<RawConfig> {
     match fs::read_to_string(path) {
         Ok(contents) => match serde_yaml::from_str::<Value>(&contents) {
             Ok(value) => {
+                // Fail closed before substitution so plaintext secrets never load.
+                refuse_plaintext_provider_secrets(&value);
+
                 // Extract user-defined vars from the top-level `vars:` mapping.
                 // These are substituted like env vars but env vars take precedence.
                 let user_vars = extract_user_vars(&value);
@@ -463,6 +466,59 @@ fn load_yaml_config() -> Option<RawConfig> {
         Err(err) => {
             error!(?err, "failed to read configuration file; using defaults");
             None
+        }
+    }
+}
+
+/// If `value` is exactly `${VAR}`, return `VAR`. Otherwise `None`.
+fn env_var_ref_name(value: &str) -> Option<&str> {
+    static ENV_REF_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$").expect("env ref regex"));
+    ENV_REF_RE
+        .captures(value.trim())
+        .map(|caps| caps.get(1).expect("capture").as_str())
+}
+
+/// Reject plaintext provider `api_key` values in `.config.yml`.
+/// Keys must be omitted, empty, or a single `${ENV_VAR}` reference that is not
+/// supplied via the YAML `vars:` map (environment only).
+fn refuse_plaintext_provider_secrets(value: &Value) {
+    let Value::Mapping(root) = value else {
+        return;
+    };
+    let Some(Value::Sequence(llms)) = root.get(Value::String("llms".to_string())) else {
+        return;
+    };
+    let user_vars = extract_user_vars(value);
+
+    for (idx, entry) in llms.iter().enumerate() {
+        let Value::Mapping(provider) = entry else {
+            continue;
+        };
+        let Some(api_key_val) = provider.get(Value::String("api_key".to_string())) else {
+            continue;
+        };
+        match api_key_val {
+            Value::Null => continue,
+            Value::String(raw) if raw.trim().is_empty() => continue,
+            Value::String(raw) => match env_var_ref_name(raw) {
+                Some(var_name) if user_vars.contains_key(var_name) => {
+                    panic!(
+                        "llms[{idx}].api_key references vars:{var_name}; API keys must use environment variables only (e.g. api_key: \"${{OPENAI_API_KEY}}\")"
+                    );
+                }
+                Some(_) => {}
+                None => {
+                    panic!(
+                        "llms[{idx}].api_key must be an environment variable reference like \"${{OPENAI_API_KEY}}\", not a plaintext secret"
+                    );
+                }
+            },
+            other => {
+                panic!(
+                    "llms[{idx}].api_key must be a string environment variable reference, got {other:?}"
+                );
+            }
         }
     }
 }
@@ -808,5 +864,67 @@ mod tests {
         let _lock = test_lock();
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "   ");
         let _ = require_secret_key();
+    }
+
+    #[test]
+    #[should_panic(expected = "not a plaintext secret")]
+    fn refuses_plaintext_api_key_in_yaml() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    api_key: 'sk-plaintext'\n"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "API keys must use environment variables only")]
+    fn refuses_api_key_from_vars_map() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "vars:\n  PROVIDER_KEY: sk-from-vars\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    api_key: '${{PROVIDER_KEY}}'\n"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    fn accepts_env_var_api_key_reference() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    api_key: '${{OPENAI_API_KEY}}'\n"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        let _key_guard = EnvVarGuard::set("OPENAI_API_KEY", "sk-from-env");
+        reset();
+        let config = app_config();
+        assert_eq!(
+            config.default_provider().api_key.as_deref(),
+            Some("sk-from-env")
+        );
+        reset();
     }
 }

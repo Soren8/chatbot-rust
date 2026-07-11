@@ -47,6 +47,7 @@ pub struct TestWorkspace {
     temp_dir: TempDir,
     original_cwd: PathBuf,
     previous_host_data_dir: Option<String>,
+    previous_openai_api_key: Option<String>,
 }
 
 impl TestWorkspace {
@@ -57,7 +58,7 @@ llms:
     type: "openai"
     model_name: "gpt-test"
     base_url: "https://api.openai.com/v1"
-    api_key: "test-key"
+    api_key: "${OPENAI_API_KEY}"
     context_size: 4096
 "#;
 
@@ -75,6 +76,10 @@ llms:
         let previous_host_data_dir = env::var("HOST_DATA_DIR").ok();
         env::set_var("HOST_DATA_DIR", temp_dir.path());
 
+        // Provider API keys must come from the environment (not plaintext YAML).
+        let previous_openai_api_key = env::var("OPENAI_API_KEY").ok();
+        env::set_var("OPENAI_API_KEY", "test-key");
+
         config::reset();
 
         // Initialise core data directories so tests can assume they exist.
@@ -85,6 +90,7 @@ llms:
             temp_dir,
             original_cwd,
             previous_host_data_dir,
+            previous_openai_api_key,
         }
     }
 
@@ -100,6 +106,10 @@ impl Drop for TestWorkspace {
             env::set_var("HOST_DATA_DIR", previous);
         } else {
             env::remove_var("HOST_DATA_DIR");
+        }
+        match &self.previous_openai_api_key {
+            Some(previous) => env::set_var("OPENAI_API_KEY", previous),
+            None => env::remove_var("OPENAI_API_KEY"),
         }
     }
 }

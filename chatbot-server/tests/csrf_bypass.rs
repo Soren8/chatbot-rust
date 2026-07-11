@@ -29,7 +29,7 @@ llms:
     type: "openai"
     model_name: "gpt-test"
     base_url: "https://api.openai.com/v1"
-    api_key: "test-key"
+    api_key: "${OPENAI_API_KEY}"
     context_size: 4096
 "#;
     
@@ -92,7 +92,7 @@ llms:
     type: "openai"
     model_name: "gpt-test"
     base_url: "https://api.openai.com/v1"
-    api_key: "test-key"
+    api_key: "${OPENAI_API_KEY}"
     context_size: 4096
 "#;
     
@@ -138,7 +138,7 @@ llms:
     type: "openai"
     model_name: "gpt-test"
     base_url: "https://api.openai.com/v1"
-    api_key: "test-key"
+    api_key: "${OPENAI_API_KEY}"
     context_size: 4096
 "#;
     
@@ -182,7 +182,7 @@ llms:
     type: "openai"
     model_name: "gpt-test"
     base_url: "https://api.openai.com/v1"
-    api_key: "test-key"
+    api_key: "${OPENAI_API_KEY}"
     context_size: 4096
 "#;
     
@@ -222,7 +222,7 @@ llms:
     type: "openai"
     model_name: "gpt-test"
     base_url: "https://api.openai.com/v1"
-    api_key: "test-key"
+    api_key: "${OPENAI_API_KEY}"
     context_size: 4096
 "#;
     

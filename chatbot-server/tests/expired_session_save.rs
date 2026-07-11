@@ -15,8 +15,10 @@ async fn save_memory_checks_expected_auth() {
     // Disable CSRF to simulate the "fail silently" scenario where an invalid session
     // is automatically converted to a guest session without being blocked by CSRF checks.
     // This allows us to verify the `logged_in` check logic.
+    env::set_var("SECRET_KEY", "integration_test_secret");
     env::set_var("CSRF", "off");
-    
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
@@ -53,8 +55,10 @@ async fn save_memory_checks_expected_auth() {
 #[tokio::test]
 async fn save_system_prompt_checks_expected_auth() {
     common::init_tracing();
+    env::set_var("SECRET_KEY", "integration_test_secret");
     env::set_var("CSRF", "off");
-    
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
     let static_root = resolve_static_root();
     let app = build_router(static_root);
 
