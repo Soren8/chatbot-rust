@@ -18,15 +18,6 @@ command -v gh >/dev/null 2>&1 || {
 repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 echo "Dismissing open ${RULE_ID} alerts under tests/ on ${repo}..."
 
-# Match common Rust/integration test locations only.
-is_test_path() {
-  local p="$1"
-  [[ "$p" == */tests/* ]] \
-    || [[ "$p" == */test_*.rs ]] \
-    || [[ "$p" == *_test.rs ]] \
-    || [[ "$p" == */tests.rs ]]
-}
-
 mapfile -t numbers < <(
   gh api --paginate "repos/${repo}/code-scanning/alerts" \
     --jq --arg rule "$RULE_ID" '
