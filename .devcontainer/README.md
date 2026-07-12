@@ -72,7 +72,6 @@ See [rust-agent/README.md](rust-agent/README.md).
 
 ## Defense in depth
 
-1. Devcontainer overlays (this directory)
-2. `.grok/sandbox.toml` `deny` paths (Grok on host or in container)
+1. Devcontainer overlays (this directory) — primary isolation for agents
+2. `.grok/sandbox.toml` `deny` paths (when using Grok inside the agent environment)
 3. `.cursorignore` (Cursor indexing)
-4. Optional: dedicated `aiagent` Linux user + ACLs on the host
