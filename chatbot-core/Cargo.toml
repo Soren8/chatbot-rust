@@ -18,7 +18,7 @@ serde_yaml = "0.9.34"
 dotenvy = "0.15.7"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter", "json"] }
-thiserror = "1.0.69"
+thiserror = "2.0.17"
 fernet = { version = "0.2.2", default-features = false, features = ["openssl"] }
 bcrypt = "0.19.2"
 pbkdf2 = "0.12.2"
