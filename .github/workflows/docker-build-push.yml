@@ -8,6 +8,10 @@ on:
     types: [ published ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write # GHA cache for buildx (cache-from/to type=gha)
+
 env:
   IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/chatbot
 
