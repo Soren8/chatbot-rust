@@ -26,4 +26,4 @@ if [[ -f "${CHECK_SCRIPT}" ]]; then
   bash "${CHECK_SCRIPT}"
 fi
 
-echo "[devcontainer] Ready. Prefer: grok --sandbox \${GROK_SANDBOX:-chatbot-agent}"
+echo "[devcontainer] Ready. Isolation is this container + secret overlays; run any agent CLI inside."

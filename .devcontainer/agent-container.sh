@@ -70,7 +70,6 @@ run_post_create() {
     -w /workspace \
     -e CONTAINER_WORKSPACE=/workspace \
     -e INSTALL_GROK=1 \
-    -e GROK_SANDBOX=chatbot-agent \
     "${CONTAINER_NAME}" \
     bash .devcontainer/scripts/post-create.sh
 }
@@ -111,8 +110,8 @@ start_container() {
     -e CARGO_HOME=/home/agent/.cargo \
     -e CARGO_TARGET_DIR=/workspace/temp/.cargo/target \
     -e RUSTUP_HOME=/home/agent/.rustup \
-    -e GROK_SANDBOX=chatbot-agent \
     -e INSTALL_GROK=1 \
+    -e GROK_SANDBOX=off \
     -e "PATH=/home/agent/.grok/bin:/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "${IMAGE_NAME}" \
     sleep infinity
@@ -142,10 +141,12 @@ exec_agent() {
   if [[ -t 0 ]]; then
     tty_flags=(-it)
   fi
+  # GROK_SANDBOX=off: container + overlays are isolation for every agent; do not
+  # layer Grok Landlock/bwrap (and override any stale env on long-lived containers).
   docker exec "${tty_flags[@]}" \
     -u agent \
     -w /workspace \
-    -e GROK_SANDBOX=chatbot-agent \
+    -e GROK_SANDBOX=off \
     -e "PATH=/home/agent/.grok/bin:/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "${CONTAINER_NAME}" \
     "$@"

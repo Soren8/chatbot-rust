@@ -1,18 +1,22 @@
 # Agent-safe dev container
 
-Host secret files are masked by bind-mount overlays. Use **Docker only** via `agent-container.sh` (no npm devcontainers CLI).
+**The Docker container is the sandbox.** Isolation is system-level (container + secret
+bind-mount overlays) for **any** coding agent — not a Grok-only Landlock/bwrap profile.
 
-## Grok Build (recommended)
+Host secret files are masked by bind-mount overlays. Use **Docker only** via
+`agent-container.sh` (no npm devcontainers CLI).
+
+## Usage
 
 ```bash
-# From repo root — first time builds the image and runs post-create (Rust, Grok CLI)
+# From repo root — first time builds the image and runs post-create
 .devcontainer/agent-container.sh up
 
-# Grok TUI (authenticate on first launch)
-.devcontainer/agent-container.sh grok
-
-# Interactive shell
+# Interactive shell (run whatever agent you want)
 .devcontainer/agent-container.sh shell
+
+# Convenience: Grok TUI (optional; installed when INSTALL_GROK=1)
+.devcontainer/agent-container.sh grok
 
 # Tests
 .devcontainer/agent-container.sh exec docker compose run --rm tests cargo test
@@ -25,7 +29,7 @@ Optional alias in `~/.bashrc`:
 
 ```bash
 alias agent-dev='/home/malakar/github/chatbot-rust/.devcontainer/agent-container.sh'
-# then: agent-dev up && agent-dev grok
+# then: agent-dev up && agent-dev shell
 ```
 
 **Full stack with host `.env`:** on the host (not in the agent container):
@@ -70,8 +74,10 @@ Agents using **Read/grep** never see real secrets. **Compose** invoked from `/wo
 
 See [rust-agent/README.md](rust-agent/README.md).
 
-## Defense in depth
+## Isolation model
 
-1. Devcontainer overlays (this directory) — primary isolation for agents
-2. `.grok/sandbox.toml` `deny` paths (when using Grok inside the agent environment)
-3. `.cursorignore` (Cursor indexing)
+1. **Docker container** — process/filesystem boundary from the host (all agents)
+2. **Bind-mount secret overlays** — real `.env` / `.config.yml` / `data/` never visible inside
+3. `.cursorignore` (optional; Cursor indexing only)
+
+Do **not** rely on per-agent sandbox flags for safety inside this container.

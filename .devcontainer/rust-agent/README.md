@@ -31,26 +31,25 @@ Example mount entries (string form used by VS Code):
 ```
 
 4. Update `scripts/verify-secret-overlays.sh` with paths and heuristics for your repo.
-5. Add `.grok/sandbox.toml` `deny` entries matching the same paths (copy from chatbot-rust).
-6. Add `.cursorignore` entries for the same paths.
+5. Add `.cursorignore` entries for the same secret paths (editor indexing only).
 
-## Grok Build
+## Isolation model
 
-- `install-grok.sh` runs on post-create when `INSTALL_GROK=1` (default).
-- Set `GROK_SANDBOX=chatbot-agent` in `containerEnv` and commit `.grok/sandbox.toml`.
-- Run: `grok` or `grok --sandbox chatbot-agent`
+**The Docker container is the sandbox** for every agent. Secret isolation is bind-mount
+overlays, not per-agent Landlock/bwrap config. Do not set `GROK_SANDBOX` or custom
+`deny` profiles as a substitute for the container.
 
-## Other CLI agents
+## Agents
 
-Works with any agent that uses the devcontainer filesystem:
+Optional Grok install: `install-grok.sh` runs on post-create when `INSTALL_GROK=1`.
+
+Any agent that uses the container filesystem is covered by the same overlays:
 
 ```bash
-# Aider, Claude Code, opencode, etc.
+# Aider, Claude Code, Cursor, Grok, opencode, etc.
 cd /workspace
 # agent command here
 ```
-
-Mount overlays apply to **all** tools in the container, not only Grok.
 
 ## Docker Compose (host socket)
 

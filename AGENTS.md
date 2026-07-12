@@ -2,10 +2,11 @@
 
 ## Agent devcontainer (secret-safe)
 
-- For **Grok Build**, start the agent environment with `.devcontainer/agent-container.sh up` then `.devcontainer/agent-container.sh grok` (see `.devcontainer/README.md`). Host `.env` / `.config.yml` are masked for file reads inside the container.
+- **The Docker container is the sandbox** for any coding agent (Grok, Claude, Cursor, Aider, …). Isolation is container + secret bind-mount overlays — not per-agent Landlock/bwrap flags.
+- Start with `.devcontainer/agent-container.sh up`, then `.devcontainer/agent-container.sh shell` (or `grok`, or any other agent CLI). See `.devcontainer/README.md`.
+- Host `.env` / `.config.yml` / `data/` are masked for **every** process inside the container.
 - **Docker Compose** from the devcontainer is supported (host socket): `docker compose build`, `docker compose run --rm tests cargo test`. The `tests` service does not need workspace `.env`.
 - For **`docker compose up`** with live secrets from host `.env`, use a **host** terminal (workspace `.env` in the devcontainer is an empty stub).
-- Inside the container, prefer `grok --sandbox chatbot-agent` (profile in `.grok/sandbox.toml`; `GROK_SANDBOX` is set in `devcontainer.json`).
 
 ## Build & Run Commands
 
