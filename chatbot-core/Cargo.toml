@@ -29,7 +29,7 @@ dashmap = "5.5.3"
 zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 redb = "2.6.3"
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.0"
 hkdf = "0.13.0"
 
 [dev-dependencies]
