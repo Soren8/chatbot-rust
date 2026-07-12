@@ -1,0 +1,22 @@
+# CodeQL configuration (used by .github/workflows/codeql.yml).
+#
+# If GitHub "default setup" is still enabled, disable it under
+# Settings → Advanced Security → CodeQL to avoid duplicate scans.
+#
+# `rust/hard-coded-cryptographic-value` is excluded: the Rust extractor does
+# not usefully distinguish test fixtures / empty form defaults from real
+# secrets, so this query produces high volume false positives here (test
+# passwords, `unwrap_or("")` on form fields, etc.). Real secrets stay out of
+# the tree via env-only config, secret overlays, and the secret-scan workflow.
+name: chatbot-rust CodeQL config
+
+paths-ignore:
+  - "**/target/**"
+  - "temp/**"
+  - "node_modules/**"
+  - "android/**"
+  - "static/deps/**"
+
+query-filters:
+  - exclude:
+      id: rust/hard-coded-cryptographic-value
