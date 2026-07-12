@@ -344,6 +344,23 @@ pub fn session_context(cookie_header: Option<&str>) -> Result<SessionContext, Se
     })
 }
 
+/// Stable rate-limit identity without creating a session.
+/// Prefers `user:{username}`, then `guest:{session_id}` for known cookies,
+/// then `guest:{cookie}` for presented-but-unknown cookies. Callers should
+/// fall back to an IP key when this returns `None`.
+pub fn rate_limit_identity(cookie_header: Option<&str>) -> Option<String> {
+    let cookie_value = extract_session_cookie(cookie_header)?;
+    let store = HttpSessionStore::global();
+    let sessions = store.sessions.lock().unwrap();
+    if let Some(record) = sessions.get(&cookie_value) {
+        if let Some(username) = record.username.as_deref() {
+            return Some(format!("user:{username}"));
+        }
+        return Some(format!("guest:{}", session_identifier(record)));
+    }
+    Some(format!("guest:{cookie_value}"))
+}
+
 pub fn finalize_login(
     cookie_header: Option<&str>,
     username: &str,

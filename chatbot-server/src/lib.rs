@@ -24,6 +24,7 @@ mod logout;
 mod memory;
 mod preferences;
 mod providers;
+mod rate_limit_middleware;
 mod regenerate;
 mod reset_chat;
 mod search;
@@ -74,12 +75,7 @@ async fn set_cross_origin_isolation_headers(
 }
 
 pub fn build_router(static_root: PathBuf) -> Router {
-    Router::new()
-        .layer(middleware::from_fn(set_cross_origin_isolation_headers))
-        .nest_service("/static", ServeDir::new(static_root))
-        .route("/favicon.ico", get(favicon))
-        .route("/health", get(health::handle_health))
-        .route("/", get(home::handle_home))
+    let rate_limited = Router::new()
         .route(
             "/signup",
             get(signup::handle_signup_get).post(signup::handle_signup_post),
@@ -88,8 +84,6 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/login",
             get(login::handle_login_get).post(login::handle_login_post),
         )
-        .route("/auth/salt/:username", get(login::handle_get_salt))
-        .route("/logout", get(logout::handle_logout))
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))
         .route("/tts_stream/:token", get(tts::handle_tts_stream))
@@ -97,6 +91,16 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/api/tts", post(tts::handle_api_tts))
         .route("/api/tts/stream", post(tts::handle_api_tts_stream))
         .route("/regenerate", post(regenerate::handle_regenerate))
+        .layer(middleware::from_fn(rate_limit_middleware::middleware));
+
+    Router::new()
+        .layer(middleware::from_fn(set_cross_origin_isolation_headers))
+        .nest_service("/static", ServeDir::new(static_root))
+        .route("/favicon.ico", get(favicon))
+        .route("/health", get(health::handle_health))
+        .route("/", get(home::handle_home))
+        .route("/auth/salt/:username", get(login::handle_get_salt))
+        .route("/logout", get(logout::handle_logout))
         .route("/reset_chat", post(reset_chat::handle_reset_chat))
         .route("/get_sets", get(sets::handle_get_sets))
         .route("/create_set", post(sets::handle_create_set))
@@ -113,6 +117,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/update_preferences",
             post(preferences::handle_update_preferences),
         )
+        .merge(rate_limited)
 }
 
 pub fn resolve_static_root() -> PathBuf {

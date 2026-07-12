@@ -1,4 +1,4 @@
-use chatbot_core::{config, persistence::DataPersistence, user_store::UserStore};
+use chatbot_core::{config, persistence::DataPersistence, rate_limit, user_store::UserStore};
 use regex::Regex;
 use std::{
     env, fs,
@@ -81,6 +81,7 @@ llms:
         env::set_var("OPENAI_API_KEY", "test-key");
 
         config::reset();
+        rate_limit::reset();
 
         // Initialise core data directories so tests can assume they exist.
         UserStore::new().expect("initialise user store");

@@ -99,6 +99,10 @@ pub struct AppConfig {
     pub send_thoughts: bool,
     pub cdn_sri: HashMap<String, String>,
     pub brave_api_key: Option<String>,
+    /// Max requests per identity per rolling minute (`0` disables).
+    pub rate_limit_per_user_per_minute: u32,
+    /// Max requests across all identities per rolling minute (`0` disables).
+    pub rate_limit_global_per_minute: u32,
     provider_order: Vec<String>,
     providers_by_name: HashMap<String, ProviderConfig>,
     default_provider_name: String,
@@ -206,6 +210,10 @@ struct RawConfig {
     #[serde(default)]
     #[allow(dead_code)]
     voice_gpu_device: Option<u32>,
+    #[serde(default)]
+    rate_limit_per_user_per_minute: Option<u32>,
+    #[serde(default)]
+    rate_limit_global_per_minute: Option<u32>,
 }
 
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -382,6 +390,13 @@ fn load_app_config() -> AppConfig {
 
     let brave_api_key = env::var("BRAVE_API_KEY").ok().filter(|v| !v.is_empty());
 
+    let rate_limit_per_user_per_minute = parse_u32_env("RATE_LIMIT_PER_USER_PER_MINUTE")
+        .or(raw_config.rate_limit_per_user_per_minute)
+        .unwrap_or(60);
+    let rate_limit_global_per_minute = parse_u32_env("RATE_LIMIT_GLOBAL_PER_MINUTE")
+        .or(raw_config.rate_limit_global_per_minute)
+        .unwrap_or(600);
+
     info!(
         effective_save = save_thoughts,
         effective_send = send_thoughts,
@@ -400,6 +415,8 @@ fn load_app_config() -> AppConfig {
         providers = providers_by_name.len(),
         default_provider = %default_provider_name,
         csrf_enabled = csrf,
+        rate_limit_per_user_per_minute,
+        rate_limit_global_per_minute,
         "configuration loaded"
     );
 
@@ -419,10 +436,23 @@ fn load_app_config() -> AppConfig {
         send_thoughts,
         cdn_sri,
         brave_api_key,
+        rate_limit_per_user_per_minute,
+        rate_limit_global_per_minute,
         provider_order,
         providers_by_name,
         default_provider_name,
     }
+}
+
+fn parse_u32_env(name: &str) -> Option<u32> {
+    env::var(name).ok().and_then(|v| {
+        let trimmed = v.split('#').next().unwrap_or(&v).trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.parse().ok()
+        }
+    })
 }
 
 fn load_yaml_config() -> Option<RawConfig> {

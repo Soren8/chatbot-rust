@@ -107,6 +107,9 @@ services:
       RUST_LOG: info
       CARGO_HOME: /opt/cargo
       CARGO_TARGET_DIR: /app/.cargo/target
+      # Disable production rate limits for the suite; dedicated rate_limit tests enable them.
+      RATE_LIMIT_PER_USER_PER_MINUTE: "0"
+      RATE_LIMIT_GLOBAL_PER_MINUTE: "0"
     volumes:
       - ./:/app
       - ./temp/test-logs:/var/log/chatbot-tests
