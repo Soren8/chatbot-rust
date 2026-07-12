@@ -60,6 +60,7 @@ This document captures the current architecture of the project and the potential
   - [x] Store all API keys and sensitive settings in environment variables only — Compose/`.config.yml` use `${VAR}` substitution; boot refuses plaintext provider `api_key` values and `vars:`-backed key refs.
   - [x] Validate `.config.yml` against a schema to catch missing or invalid fields.
   - [x] Protect `.env` and `.config.yml` from AI agent access via the **agent devcontainer** (secret overlays + sandbox). Run cloud-connected agents only in that environment — see [`.devcontainer/README.md`](../.devcontainer/README.md). Do not run agents on the host against the live workspace.
+  - [x] Dependabot (`.github/dependabot.yml`): weekly PRs for Cargo, GitHub Actions, and Docker base images — **review/merge only**, no automerge. Direct crate deps pinned to current `Cargo.lock` versions.
   - [ ] Implement hybrid chat-history encryption:
         - [x] Derive a per-user data key from a user-supplied passphrase.
         - [x] Encrypt set names and metadata on disk to prevent leakage of conversation identifiers.
