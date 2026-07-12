@@ -710,6 +710,24 @@ fn build_cdn_sri_map() -> HashMap<String, String> {
             "sha384-Ay26V7L8bsJTsX9Sxclnvsn+hkdiwRnrjZJXqKmkIDobPgIIWBOVguEcQQLDuhfN".to_string()
         }),
     );
+    map.insert(
+        "marked".to_string(),
+        env::var("SRI_MARKED").unwrap_or_else(|_| {
+            "sha384-H+hy9ULve6xfxRkWIh/YOtvDdpXgV2fmAGQkIDTxIgZwNoaoBal14Di2YTMR6MzR".to_string()
+        }),
+    );
+    map.insert(
+        "highlightjs".to_string(),
+        env::var("SRI_HIGHLIGHTJS").unwrap_or_else(|_| {
+            "sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp".to_string()
+        }),
+    );
+    map.insert(
+        "highlightjs_css".to_string(),
+        env::var("SRI_HIGHLIGHTJS_CSS").unwrap_or_else(|_| {
+            "sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH".to_string()
+        }),
+    );
     map
 }
 
