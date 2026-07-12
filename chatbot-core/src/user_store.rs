@@ -9,10 +9,10 @@ use std::{
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bcrypt::verify;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use once_cell::sync::Lazy;
 use pbkdf2::pbkdf2_hmac;
-use rand::{rngs::OsRng, RngCore};
+use rand::RngCore;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -263,7 +263,7 @@ impl UserStore {
 
         if !users.contains_key(&normalised) {
             let mut salt = [0u8; SALT_LEN];
-            OsRng.fill_bytes(&mut salt);
+            rand::rng().fill_bytes(&mut salt);
             return Ok(STANDARD.encode(salt));
         }
 
@@ -278,7 +278,7 @@ impl UserStore {
             let mut file = File::open(&salt_path)?;
             file.read_exact(&mut salt)?;
         } else {
-            OsRng.fill_bytes(&mut salt);
+            rand::rng().fill_bytes(&mut salt);
             let mut file = File::create(&salt_path)?;
             file.write_all(&salt)?;
         }

@@ -9,7 +9,7 @@ use axum::{
 };
 use chatbot_core::{config, session};
 use once_cell::sync::Lazy;
-use rand::{rngs::OsRng, RngCore};
+use rand::RngCore;
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -164,7 +164,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
 
     // Generate a temporary token and store the cleaned text
     let mut token_bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut token_bytes);
+    rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
     
     {

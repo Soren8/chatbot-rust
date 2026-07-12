@@ -2,8 +2,8 @@
 //!
 //! AAD: `user_id || set_id || blob_kind || version` — prevents ciphertext swap across context.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, Payload};
+use aes_gcm::Aes256Gcm;
 use hkdf::Hkdf;
 use rand::RngCore;
 use sha2::Sha256;
@@ -43,6 +43,10 @@ pub fn build_aad(user_id: &str, set_id: SetId, format: BlobFormat, version: SetV
     aad
 }
 
+fn nonce_array(bytes: [u8; NONCE_LEN]) -> aes_gcm::Nonce<<Aes256Gcm as AeadCore>::NonceSize> {
+    bytes.into()
+}
+
 fn derive_aes_key(enc_key: &EncryptionKey) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(None, enc_key.as_bytes());
     let mut out = [0u8; 32];
@@ -65,13 +69,13 @@ pub fn seal_payload_v1(
     let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Encrypt)?;
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = nonce_array(nonce_bytes);
 
     let aad = build_aad(user_id, set_id, BlobFormat::AeadV1, version);
     let ct = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: &plaintext,
                 aad: &aad,
@@ -96,14 +100,17 @@ pub fn open_payload_v1(
         return Err(CryptoError::Framing);
     }
     let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
+    let nonce_fixed: [u8; NONCE_LEN] = nonce_bytes
+        .try_into()
+        .map_err(|_| CryptoError::Framing)?;
     let aes_key = derive_aes_key(key);
     let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Decrypt)?;
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = nonce_array(nonce_fixed);
     let aad = build_aad(user_id, set_id, BlobFormat::AeadV1, version);
 
     let plaintext = cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ct,
                 aad: &aad,

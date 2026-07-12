@@ -10,7 +10,7 @@ use std::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use rand::{rngs::OsRng, RngCore};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
@@ -225,7 +225,7 @@ impl HttpSessionStore {
 
 fn random_token(size: usize) -> String {
     let mut bytes = vec![0u8; size];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
