@@ -134,7 +134,7 @@ From [`docs/design-privacy.md`](design-privacy.md):
 ### Non-Goals (Phase 1)
 
 - Per-message rows, full-text search, or server-side history query language.
-- Multi-instance shared DB / Redis session store (still on broader roadmap).
+- Multi-instance shared DB / Redis session store (not planned; single-node Docker is enough given GPU/provider capacity as the real bottleneck).
 - Recoverable Mode / OAuth (privacy roadmap remains separate).
 - Changing client key derivation / IndexedDB / WebAuthn wrapping.
 - Real-time multi-tab sync beyond 409 + reload.

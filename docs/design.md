@@ -29,7 +29,6 @@ This document captures the current architecture of the project and the potential
 
 - **Security & Session Management**
   - [x] Avoid storing raw passwords in the session; use tokens or derive keys post-login.
-  - [ ] Introduce a persistent session store (Redis/Postgres) for multi-instance deployments.
   - [x] Ensure password hashing uses a strong KDF with per-user salts.
   - [x] Provider metadata hygiene: the UI now receives only a sanitized model list (`provider_name`, `tier`), preventing accidental leakage of `api_key` or `base_url` values.
   - [x] Session isolation: anonymous users are assigned stable random guest IDs instead of the remote IP, eliminating cross-user memory leaks behind shared NAT gateways.
