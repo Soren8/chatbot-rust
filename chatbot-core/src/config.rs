@@ -1077,4 +1077,263 @@ mod tests {
         assert_eq!(config.default_provider().tier.as_deref(), Some("free"));
         reset();
     }
+
+    fn write_config(dir: &Path, contents: &str) {
+        fs::write(dir.join(".config.yml"), contents).expect("write config");
+    }
+
+    #[test]
+    fn accepts_valid_secret_key() {
+        let _lock = test_lock();
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        assert_eq!(require_secret_key(), "unit_test_secret");
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown field")]
+    fn refuses_unknown_provider_field() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    not_a_provider_field: true\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "tier 'enterprise' is invalid")]
+    fn refuses_invalid_provider_tier() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    tier: enterprise\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "session_timeout must be greater than 0")]
+    fn refuses_zero_session_timeout() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(dir.path(), "session_timeout: 0\nllms: []\n");
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "request_timeout must be a positive finite number")]
+    fn refuses_non_positive_request_timeout() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    request_timeout: 0\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "request_timeout must be a positive finite number")]
+    fn refuses_negative_request_timeout() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    request_timeout: -1\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "provider_name must not be empty")]
+    fn refuses_empty_provider_name() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: '   '\n    type: 'openai'\n    model_name: 'm'\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "model_name must not be empty")]
+    fn refuses_empty_model_name() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: ''\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid tts_provider")]
+    fn refuses_invalid_tts_provider_env_override() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "tts_provider: kokoro\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        let _tts_guard = EnvVarGuard::set("TTS_PROVIDER", "not-a-provider");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "not a plaintext secret")]
+    fn refuses_partial_env_var_api_key() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    api_key: 'prefix-${OPENAI_API_KEY}'\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "must be a string environment variable reference")]
+    fn refuses_non_string_api_key() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    api_key: 12345\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to parse .config.yml YAML")]
+    fn refuses_invalid_yaml() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(dir.path(), "llms: [\n  - this is : : not: valid yaml\n");
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
+    fn uses_defaults_when_config_path_is_directory() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(dir.path().join(".config.yml")).expect("mkdir .config.yml");
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let config = app_config();
+        assert_eq!(config.default_provider().provider_type, "openai");
+        reset();
+    }
+
+    #[test]
+    fn accepts_omitted_empty_and_null_api_key() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'no-key'\n    type: 'openai'\n    model_name: 'm'\n  - provider_name: 'empty-key'\n    type: 'openai'\n    model_name: 'm'\n    api_key: ''\n  - provider_name: 'null-key'\n    type: 'openai'\n    model_name: 'm'\n    api_key: null\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let config = app_config();
+        assert!(config.provider("no-key").unwrap().api_key.is_none());
+        assert!(config.provider("empty-key").unwrap().api_key.is_none());
+        assert!(config.provider("null-key").unwrap().api_key.is_none());
+        reset();
+    }
+
+    #[test]
+    fn accepts_xai_premium_and_tts_env_override() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "tts_provider: kokoro\ndefault_llm: grok\nllms:\n  - provider_name: grok\n    type: xai\n    model_name: grok-3\n    tier: premium\n    api_key: '${XAI_API_KEY}'\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        let _xai_guard = EnvVarGuard::set("XAI_API_KEY", "xai-test-key");
+        let _tts_guard = EnvVarGuard::set("TTS_PROVIDER", "fish");
+        reset();
+        let config = app_config();
+        assert_eq!(config.tts_provider, "fish");
+        assert_eq!(config.default_provider().provider_type, "xai");
+        assert_eq!(config.default_provider().tier.as_deref(), Some("premium"));
+        assert_eq!(
+            config.default_provider().api_key.as_deref(),
+            Some("xai-test-key")
+        );
+        reset();
+    }
+
+    #[test]
+    fn accepts_provider_name_alias() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - name: aliased\n    type: openai\n    model_name: m\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let config = app_config();
+        assert_eq!(config.default_provider().provider_name, "aliased");
+        reset();
+    }
+
+    #[test]
+    fn accepts_positive_session_and_request_timeout() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "session_timeout: 120\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    request_timeout: 30.5\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let config = app_config();
+        assert_eq!(config.session_timeout, 120);
+        assert_eq!(config.default_provider().request_timeout, Some(30.5));
+        reset();
+    }
 }
