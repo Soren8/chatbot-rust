@@ -293,7 +293,7 @@ dependencies = [
  "dotenvy",
  "fernet",
  "hkdf",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "once_cell",
  "pbkdf2",
  "rand 0.8.5",
