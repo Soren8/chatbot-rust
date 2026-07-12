@@ -43,9 +43,10 @@ This document captures the current architecture of the project and the potential
   - [x] Provide a top-level `README.md` with quickstart instructions and project overview.
 
 - **Dependency Management & CI**
-  - [ ] Switch to pinned dependencies.
-  - [ ] Enable automated dependency updates for security updates.
+  - [x] Switch to pinned dependencies (direct crate versions aligned to `Cargo.lock`; Dependabot keeps them current).
+  - [x] Enable automated dependency updates for security updates (Dependabot weekly PRs — review/merge only).
   - [x] Add a CI workflow to run tests and secret scans on each pull request.
+  - [ ] Full CI/CD: on push to `main`, automatically deploy production (today: human runs an Ansible playbook in a sister repo; wire that into GitHub Actions or equivalent after CI is green).
 
 - **Testing**
   - [x] Convert ad-hoc scripts into proper tests or retire them.
@@ -96,6 +97,7 @@ This document captures the current architecture of the project and the potential
   - [x] Optimize the `Dockerfile` with a multi-stage build so that only artifacts ship in the final image.
   - [x] Health checks for orchestrators — `GET /health` liveness JSON; Compose `healthcheck` on **webserver** (curl, honours `CHATBOT_BIND_ADDR` port); optional deep readiness via `GET /health?deep=true` (redb + voice-service probes, 503 when degraded).
   - [x] Provide sample deployment configurations (e.g., Docker Compose overrides, Kubernetes/Helm charts) for self-hosted and cloud environments (`deploy/compose/`, `deploy/helm/chatbot/`).
+  - [ ] Automate production deploys on every push to `main` (Ansible playbook currently lives in a sister repo and is triggered manually).
 
 - **LLM Provider Abstraction**
   - [x] Async provider interface with streaming (OpenAI-compatible + XAI adapters in `chatbot-server/src/providers/`).
