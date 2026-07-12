@@ -444,32 +444,41 @@ fn load_yaml_config() -> Option<RawConfig> {
         return None;
     }
 
-    match fs::read_to_string(path) {
-        Ok(contents) => match serde_yaml::from_str::<Value>(&contents) {
-            Ok(value) => {
-                // Fail closed before substitution so plaintext secrets never load.
-                refuse_plaintext_provider_secrets(&value);
+    load_yaml_config_from_read(fs::read_to_string(path))
+}
 
-                // Extract user-defined vars from the top-level `vars:` mapping.
-                // These are substituted like env vars but env vars take precedence.
-                let user_vars = extract_user_vars(&value);
-                let replaced = replace_vars(value, &user_vars);
-                match serde_yaml::from_value::<RawConfig>(replaced) {
-                    Ok(config) => {
-                        validate_raw_config(&config);
-                        Some(config)
-                    }
-                    Err(err) => {
-                        panic!("invalid .config.yml schema: {err}");
-                    }
-                }
-            }
-            Err(err) => {
-                panic!("failed to parse .config.yml YAML: {err}");
-            }
-        },
+/// Shared read→parse entry used by boot and tests (so I/O failures can be mocked).
+fn load_yaml_config_from_read(result: Result<String, std::io::Error>) -> Option<RawConfig> {
+    match result {
+        Ok(contents) => Some(parse_yaml_config_contents(&contents)),
         Err(err) => {
             panic!("failed to read .config.yml: {err}");
+        }
+    }
+}
+
+fn parse_yaml_config_contents(contents: &str) -> RawConfig {
+    match serde_yaml::from_str::<Value>(contents) {
+        Ok(value) => {
+            // Fail closed before substitution so plaintext secrets never load.
+            refuse_plaintext_provider_secrets(&value);
+
+            // Extract user-defined vars from the top-level `vars:` mapping.
+            // These are substituted like env vars but env vars take precedence.
+            let user_vars = extract_user_vars(&value);
+            let replaced = replace_vars(value, &user_vars);
+            match serde_yaml::from_value::<RawConfig>(replaced) {
+                Ok(config) => {
+                    validate_raw_config(&config);
+                    config
+                }
+                Err(err) => {
+                    panic!("invalid .config.yml schema: {err}");
+                }
+            }
+        }
+        Err(err) => {
+            panic!("failed to parse .config.yml YAML: {err}");
         }
     }
 }
@@ -1080,6 +1089,56 @@ mod tests {
 
     fn write_config(dir: &Path, contents: &str) {
         fs::write(dir.join(".config.yml"), contents).expect("write config");
+    }
+
+    fn config_yml_example_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.config.yml.example")
+    }
+
+    fn config_yml_example_contents() -> String {
+        fs::read_to_string(config_yml_example_path())
+            .expect("read shipped .config.yml.example fixture")
+    }
+
+    #[test]
+    fn accepts_shipped_config_yml_example() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(dir.path(), &config_yml_example_contents());
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        let _openai_guard = EnvVarGuard::set("OPENAI_API_KEY", "test-openai");
+        let _xai_guard = EnvVarGuard::set("XAI_API_KEY", "test-xai");
+        reset();
+        let config = app_config();
+        assert_eq!(config.tts_provider, "kokoro");
+        assert_eq!(config.session_timeout, 3600);
+        assert!(!config.csrf);
+        assert_eq!(
+            config.default_provider().provider_name,
+            "Local LLM (Free Tier)"
+        );
+        assert_eq!(config.provider_names().len(), 3);
+        reset();
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to read .config.yml")]
+    fn refuses_unreadable_config_file() {
+        let _lock = test_lock();
+        // Use the shipped example as the canonical mock payload: it must be a
+        // valid config when readable, but a read I/O error still fails closed.
+        let example = config_yml_example_contents();
+        assert!(
+            parse_yaml_config_contents(&example)
+                .llms
+                .iter()
+                .any(|p| p.provider_name == "Local LLM (Free Tier)")
+        );
+        let _ = load_yaml_config_from_read(Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied (mocked read of .config.yml.example)",
+        )));
     }
 
     #[test]
