@@ -28,7 +28,7 @@ Host secret files are masked by bind-mount overlays. Use **Docker only** via
 Optional alias in `~/.bashrc`:
 
 ```bash
-alias agent-dev='/home/malakar/github/chatbot-rust/.devcontainer/agent-container.sh'
+alias agent-dev='$PWD/.devcontainer/agent-container.sh'  # run from repo root
 # then: agent-dev up && agent-dev shell
 ```
 
