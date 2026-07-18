@@ -1766,20 +1766,16 @@ $(document).ready(function() {
     const systemPrompt = $systemPromptElement.val() || window.DEFAULT_SYSTEM_PROMPT;
     const activeSet = (typeof activeSetName === 'function' ? activeSetName() : ($('#set-selector option:selected').attr('data-name') || 'default'));
 
-    // Build message content with optional image
+    // Same wire format as durable history: plain text + optional [IMAGE:data:...] tag.
+    // appendMessage parses that tag into a preview <img> (same path as load_set).
+    // Do not pre-build HTML with <img> here — textContent extraction would strip it and
+    // leave no [IMAGE:...] tag to reconstruct, so the image only appeared after reload.
     let fullMessage = message;
-    let hasImage = false;
     if (pendingImageData) {
       fullMessage = message + '\n[IMAGE:' + pendingImageData + ']';
-      hasImage = true;
     }
 
-    // Build user message HTML with image if present
-    let userMessageHtml = '<strong>You:</strong> ' + escapeHTML(message);
-    if (hasImage) {
-      userMessageHtml += '<br><img src="' + escapeHTML(pendingImageData) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
-    }
-    appendMessage(userMessageHtml, 'user-message');
+    appendMessage(fullMessage, 'user-message');
     const $pendingUserMessage = $('#chat-content .message.user-message').last();
 
     const requestData = activeSetPayload({
