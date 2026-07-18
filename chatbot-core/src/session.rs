@@ -1024,6 +1024,12 @@ pub fn chat_finalize_with_capture(
                                         .to_string(),
                                 );
                             }
+                            Err(HistoryError::InvalidInput(msg)) => {
+                                error!(%msg, "failed to commit chat history");
+                                extras.push(format!(
+                                    "\n[Error] Failed to save chat history: {msg}"
+                                ));
+                            }
                             Err(err) => {
                                 error!(?err, "failed to commit chat history");
                                 extras.push("\n[Error] Failed to save chat history".to_string());
@@ -1388,6 +1394,12 @@ pub fn regenerate_finalize_with_capture(
                                     "\n[Error] Chat history conflict — reload the set and retry."
                                         .to_string(),
                                 );
+                            }
+                            Err(HistoryError::InvalidInput(msg)) => {
+                                error!(%msg, "failed to commit regenerate history");
+                                extras.push(format!(
+                                    "\n[Error] Failed to save chat history: {msg}"
+                                ));
                             }
                             Err(err) => {
                                 error!(?err, "failed to commit regenerate history");

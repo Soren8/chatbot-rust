@@ -686,6 +686,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 - Whole-set rewrite: O(size of history JSON). Typical chat: tens–hundreds of KB; acceptable for single-user self-host.
 - redb overhead: small fixed pages; one DB for all users vs N JSON files.
 - Commit: single local txn; target p99 ≪ model TTFT (no user-visible regression vs provider latency).
+- Per-message cap (`history::ops::MAX_MESSAGE_CHARS`) matches the `/chat` HTTP body cap (5 MiB) so base64 `[IMAGE:data:...]` attachments that the request accepts are not rejected at finalize.
 
 ---
 

@@ -619,6 +619,32 @@ mod tests {
     }
 
     #[test]
+    fn commit_chat_append_preserves_image_data_url_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("img-user", "vision", &key).unwrap();
+        let snap = svc.load("img-user", created.set_id, &key).unwrap();
+        let capture = PrepareCapture::from_snapshot(&snap);
+
+        // Larger than the old 1M-char ops limit; still under the 5 MiB chat body.
+        let image_msg = format!(
+            "describe\n[IMAGE:data:image/png;base64,{}]",
+            "B".repeat(1_200_000)
+        );
+        let new_v = svc
+            .commit_chat_append("img-user", &capture, &image_msg, "a cat", &key)
+            .unwrap();
+        assert_eq!(new_v, SetVersion(2));
+
+        let reloaded = svc.load("img-user", created.set_id, &key).unwrap();
+        assert_eq!(reloaded.history.len(), 1);
+        assert_eq!(reloaded.history[0].0, image_msg);
+        assert_eq!(reloaded.history[0].1, "a cat");
+        assert!(reloaded.history[0].0.contains("[IMAGE:data:image/png;base64,"));
+    }
+
+    #[test]
     fn prepare_capture_finalize_survives_wrong_live_state() {
         let dir = tempfile::tempdir().unwrap();
         let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();

@@ -6,8 +6,12 @@ use super::types::{HistoryPair, PrepareCapture, SetSnapshot, SetVersion};
 
 /// Maximum number of (user, assistant) pairs stored in one set.
 pub const MAX_HISTORY_PAIRS: usize = 2_000;
-/// Maximum characters per user or assistant message (chat request body allows ~5MB).
-pub const MAX_MESSAGE_CHARS: usize = 1_000_000;
+/// Maximum characters per user or assistant message.
+///
+/// Must cover base64 `[IMAGE:data:...]` attachments that fit the `/chat` HTTP body
+/// cap (`5 * 1024 * 1024` bytes). A 1M-char limit rejected typical photo data URLs
+/// at history finalize even when the request body was accepted.
+pub const MAX_MESSAGE_CHARS: usize = 5 * 1024 * 1024;
 /// Maximum characters for set memory field (aligned under `/update_memory` 1MB body cap).
 pub const MAX_MEMORY_CHARS: usize = 900_000;
 /// Maximum characters for system prompt (same body cap as memory).
@@ -332,6 +336,28 @@ mod tests {
             Err(OpsError::DisplayNameTooLarge)
         ));
         assert!(matches!(rename(&s, "  "), Err(OpsError::EmptySetName)));
+    }
+
+    #[test]
+    fn accepts_image_sized_user_messages_under_chat_body_cap() {
+        let s = sample();
+        // ~1.5 MiB JPEG-like data URL: accepted by the 5 MiB `/chat` body limit but
+        // previously rejected by a 1M-char history max at finalize.
+        let image_msg = format!(
+            "what is this?\n[IMAGE:data:image/jpeg;base64,{}]",
+            "A".repeat(1_500_000)
+        );
+        assert!(image_msg.chars().count() < MAX_MESSAGE_CHARS);
+        assert!(image_msg.chars().count() > 1_000_000);
+
+        let next = append_pair(&s, &image_msg, "I see a photo.").unwrap();
+        assert_eq!(next.history.len(), 4);
+        assert!(next.history[3].0.contains("[IMAGE:data:image/jpeg;base64,"));
+        assert_eq!(next.history[3].1, "I see a photo.");
+
+        let capture = PrepareCapture::from_snapshot(&s);
+        let from_capture = apply_chat_append(&capture, &image_msg, "ok").unwrap();
+        assert_eq!(from_capture.history.last().unwrap().0, image_msg);
     }
 
     #[test]
