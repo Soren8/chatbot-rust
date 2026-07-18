@@ -351,39 +351,46 @@ pub async fn handle_delete_message(
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history_svc = HistoryService::global().map_err(history_error_to_tuple)?;
-        let snap = resolve_set(
-            &history_svc,
-            username,
-            payload.set_id.as_deref(),
-            Some(&set_name),
-            key,
-        )?;
-        if pair_index >= snap.history.len() {
-            return build_json_response(
-                StatusCode::NOT_FOUND,
-                json!({"status": "error", "error": "pair_index out of range"}),
-            );
-        }
-        let expected = payload
-            .expected_version
-            .map(SetVersion)
-            .unwrap_or(snap.version);
+        // Prefer set_id + expected_version from the client so we do not decrypt the full
+        // multi-MB set twice (once to resolve, once inside delete_pair).
+        let set_id = if let Some(raw) = payload.set_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            SetId::parse(raw).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?
+        } else {
+            resolve_set(
+                &history_svc,
+                username,
+                None,
+                Some(&set_name),
+                key,
+            )?
+            .set_id
+        };
+        let expected = match payload.expected_version {
+            Some(v) => SetVersion(v),
+            None => {
+                // Fallback for older clients: one load to learn the current version.
+                history_svc
+                    .load(username, set_id, key)
+                    .map_err(history_error_to_tuple)?
+                    .version
+            }
+        };
         match history_svc.delete_pair(
             username,
-            snap.set_id,
+            set_id,
             expected,
             pair_index,
             trimmed,
             key,
         ) {
             Ok(version) => {
-                let mut remaining = snap.history;
-                remaining.remove(pair_index);
+                // Authed history SoT is redb; session seal no longer stores history.
+                // Keep active set_id aligned without cloning multi-MB remaining pairs.
                 if let Err(response) = session::set_session_history_for_request(
                     &session.session_id,
                     Some(username),
-                    Some(snap.set_id),
-                    remaining,
+                    Some(set_id),
+                    Vec::new(),
                     encryption_key.as_ref(),
                 ) {
                     return build_service_response(response);
@@ -393,14 +400,14 @@ pub async fn handle_delete_message(
                     json!({
                         "status": "success",
                         "version": version.get(),
-                        "set_id": snap.set_id.to_string(),
+                        "set_id": set_id.to_string(),
                     }),
                 );
             }
             Err(HistoryError::Conflict { current_version }) => {
                 return build_json_response(
                     StatusCode::CONFLICT,
-                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
+                    crate::chat_utils::version_conflict_json(set_id, current_version),
                 );
             }
             Err(HistoryError::InvalidInput("content mismatch at pair_index")) => {

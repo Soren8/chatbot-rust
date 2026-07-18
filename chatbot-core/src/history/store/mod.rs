@@ -148,6 +148,27 @@ impl RedbHistoryStore {
         Ok(())
     }
 
+    /// Load non-sensitive meta only (no blob decrypt). Used for cache validation.
+    pub fn load_meta(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+    ) -> Result<SetMetaValue, StoreError> {
+        let txn = self.db.begin_read()?;
+        let meta_table = txn.open_table(SETS_META)?;
+        let id_key = set_id_key(set_id);
+        let meta_bytes = meta_table
+            .get(id_key.as_slice())?
+            .ok_or(StoreError::NotFound)?;
+        let meta = SetMetaValue::decode(meta_bytes.value()).ok_or(StoreError::Database(
+            "corrupt set meta".into(),
+        ))?;
+        if meta.user_id != user_id {
+            return Err(StoreError::Forbidden);
+        }
+        Ok(meta)
+    }
+
     pub fn load_snapshot(
         &self,
         user_id: &str,
@@ -382,19 +403,6 @@ impl RedbHistoryStore {
         Ok(())
     }
 
-    /// Load meta only (for list without full decrypt of names — caller decrypts).
-    #[allow(dead_code)]
-    pub fn load_meta(&self, set_id: SetId) -> Result<SetMetaValue, StoreError> {
-        let txn = self.db.begin_read()?;
-        let meta_table = txn.open_table(SETS_META)?;
-        let id_key = set_id_key(set_id);
-        let existing = meta_table
-            .get(id_key.as_slice())?
-            .ok_or(StoreError::NotFound)?;
-        SetMetaValue::decode(existing.value())
-            .ok_or_else(|| StoreError::Database("corrupt set meta".into()))
-    }
-
     pub fn is_user_migrated(&self, user_id: &str) -> Result<bool, StoreError> {
         let txn = self.db.begin_read()?;
         let meta = txn.open_table(META)?;
@@ -565,7 +573,7 @@ mod tests {
             .unwrap();
 
         let loaded = store.load_snapshot("alice", set_id, &key).unwrap();
-        let deleted = delete_pair(&loaded, 0, "u1").unwrap();
+        let deleted = delete_pair(loaded, 0, "u1").unwrap();
         store
             .commit_snapshot("alice", SetVersion(3), &deleted, &key)
             .unwrap();

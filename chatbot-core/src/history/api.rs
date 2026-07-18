@@ -135,21 +135,39 @@ impl HistoryService {
         })
     }
 
-    fn remember(&self, user: &str, snap: &SetSnapshot, key: &EncryptionKey) {
-        if let Err(err) = self.cache.put_snapshot(user, snap, key) {
-            tracing::debug!(?err, "set_cache_put_failed");
-        }
+    fn remember(&self, user: &str, snap: &SetSnapshot) {
+        self.cache.put_snapshot(user, snap);
     }
 
-    fn remember_after_commit(
+    /// Cache the post-commit snapshot without re-loading/decrypting from redb.
+    fn remember_committed(&self, user: &str, mut snap: SetSnapshot, version: SetVersion) {
+        snap.version = version;
+        self.remember(user, &snap);
+    }
+
+    /// Load snapshot, preferring the process cache when durable meta version matches.
+    fn load_snapshot_cached(
         &self,
         user: &str,
         set_id: SetId,
         key: &EncryptionKey,
-    ) -> Result<(), HistoryError> {
+    ) -> Result<SetSnapshot, HistoryError> {
+        match self.store.load_meta(user, set_id) {
+            Ok(meta) => {
+                if let Some(cached) =
+                    self.cache
+                        .get_snapshot_if_version(user, set_id, meta.version)
+                {
+                    return Ok(cached);
+                }
+            }
+            Err(StoreError::NotFound) => return Err(HistoryError::NotFound),
+            Err(StoreError::Forbidden) => return Err(HistoryError::Forbidden),
+            Err(err) => return Err(err.into()),
+        }
         let snap = self.store.load_snapshot(user, set_id, key)?;
-        self.remember(user, &snap, key);
-        Ok(())
+        self.remember(user, &snap);
+        Ok(snap)
     }
 
     /// Test/helper: open a fresh service at a path without touching the process global.
@@ -190,14 +208,30 @@ impl HistoryService {
         let ids = self.store.list_set_ids(&user)?;
         let mut out = Vec::with_capacity(ids.len());
         for (set_id, updated_at) in ids {
+            // Cheap meta read + summary cache avoids full AEAD+JSON on every /get_sets.
+            let meta = match self.store.load_meta(&user, set_id) {
+                Ok(m) => m,
+                Err(StoreError::Forbidden) => continue,
+                Err(err) => return Err(err.into()),
+            };
+            if let Some(summary) =
+                self.cache
+                    .get_summary_if_version(&user, set_id, meta.version, updated_at)
+            {
+                out.push(summary);
+                continue;
+            }
             match self.store.load_snapshot(&user, set_id, key) {
-                Ok(snap) => out.push(SetSummary {
-                    set_id: snap.set_id,
-                    version: snap.version,
-                    display_name: snap.display_name,
-                    updated_at,
-                    is_default: snap.is_default,
-                }),
+                Ok(snap) => {
+                    self.remember(&user, &snap);
+                    out.push(SetSummary {
+                        set_id: snap.set_id,
+                        version: snap.version,
+                        display_name: snap.display_name,
+                        updated_at,
+                        is_default: snap.is_default,
+                    });
+                }
                 Err(StoreError::DecryptFailed) => return Err(HistoryError::DecryptFailed),
                 Err(StoreError::Forbidden) => continue,
                 Err(err) => return Err(err.into()),
@@ -214,11 +248,9 @@ impl HistoryService {
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        // Cache is optional acceleration; redb remains SoT. Prefer store load so
-        // `is_default` and CAS version always match durable meta.
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
-        self.remember(&user, &snap, key);
-        Ok(snap)
+        // Cache is optional acceleration; redb remains SoT. Version is checked
+        // against durable meta before serving a cache hit.
+        self.load_snapshot_cached(&user, set_id, key)
     }
 
     /// Resolve display name → set_id for transition shims (decrypts all sets).
@@ -272,9 +304,18 @@ impl HistoryService {
             is_default,
             key,
         )?;
-        if let Ok(snap) = self.store.load_snapshot(&user, summary.set_id, key) {
-            self.remember(&user, &snap, key);
-        }
+        // Cache an empty snapshot without a second redb decrypt round-trip.
+        let snap = SetSnapshot {
+            set_id: summary.set_id,
+            version: summary.version,
+            display_name: summary.display_name.clone(),
+            memory: String::new(),
+            system_prompt: self.default_system_prompt.clone(),
+            history: Vec::new(),
+            is_default: summary.is_default,
+        };
+        self.remember(&user, &snap);
+        self.cache.put_summary(&user, &summary);
         Ok(summary)
     }
 
@@ -320,7 +361,7 @@ impl HistoryService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        let snap = self.load_snapshot_cached(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
                 current_version: snap.version,
@@ -333,7 +374,7 @@ impl HistoryService {
         // Reject collision with any other set (same name on self is a no-op rename).
         self.ensure_display_name_available(&user, &next.display_name, Some(set_id), key)?;
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        let _ = self.remember_after_commit(&user, set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -366,7 +407,7 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         // Verify ownership + decrypt access (key valid) before delete
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        let snap = self.load_snapshot_cached(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
                 current_version: snap.version,
@@ -392,7 +433,7 @@ impl HistoryService {
         let v = self
             .store
             .commit_snapshot(&user, expected, snapshot, key)?;
-        let _ = self.remember_after_commit(&user, snapshot.set_id, key);
+        self.remember_committed(&user, snapshot.clone(), v);
         Ok(v)
     }
 
@@ -410,7 +451,7 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        let snap = self.load_snapshot_cached(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
                 current_version: snap.version,
@@ -418,7 +459,7 @@ impl HistoryService {
         }
         let next = ops::append_pair(&snap, user_msg, assistant_msg)?;
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        let _ = self.remember_after_commit(&user, set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -437,7 +478,7 @@ impl HistoryService {
         let v = self
             .store
             .commit_snapshot(&user, capture.version, &next, key)?;
-        let _ = self.remember_after_commit(&user, capture.set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -455,7 +496,7 @@ impl HistoryService {
         let v = self
             .store
             .commit_snapshot(&user, capture.version, &next, key)?;
-        let _ = self.remember_after_commit(&user, capture.set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -470,15 +511,15 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        let snap = self.load_snapshot_cached(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
                 current_version: snap.version,
             });
         }
-        let next = ops::delete_pair(&snap, pair_index, expected_user_msg)?;
+        let next = ops::delete_pair(snap, pair_index, expected_user_msg)?;
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        let _ = self.remember_after_commit(&user, set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -491,15 +532,15 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        let snap = self.load_snapshot_cached(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
                 current_version: snap.version,
             });
         }
-        let next = ops::reset_history(&snap);
+        let next = ops::reset_history(snap);
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        let _ = self.remember_after_commit(&user, set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -513,7 +554,7 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        let snap = self.load_snapshot_cached(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
                 current_version: snap.version,
@@ -521,7 +562,7 @@ impl HistoryService {
         }
         let next = ops::update_memory(&snap, memory)?;
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        let _ = self.remember_after_commit(&user, set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -535,7 +576,7 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        let snap = self.store.load_snapshot(&user, set_id, key)?;
+        let snap = self.load_snapshot_cached(&user, set_id, key)?;
         if snap.version != expected {
             return Err(HistoryError::Conflict {
                 current_version: snap.version,
@@ -543,7 +584,7 @@ impl HistoryService {
         }
         let next = ops::update_system_prompt(&snap, prompt)?;
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        let _ = self.remember_after_commit(&user, set_id, key);
+        self.remember_committed(&user, next, v);
         Ok(v)
     }
 
@@ -784,6 +825,64 @@ mod tests {
             .find_by_display_name("gina", "missing", &key)
             .unwrap()
             .is_none());
+    }
+
+    /// Large image-bearing histories must stay fast on warm list/delete (no multi-second
+    /// re-encrypt of the whole blob for cache bookkeeping).
+    #[test]
+    fn warm_list_and_delete_stay_fast_with_large_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("perf", "big", &key).unwrap();
+        // ~1.2 MiB synthetic attachment (base64-like payload).
+        let big_user = format!(
+            "see this\n[IMAGE:data:image/jpeg;base64,{}]",
+            "A".repeat(1_200_000)
+        );
+        let v = svc
+            .append_pair(
+                "perf",
+                created.set_id,
+                created.version,
+                &big_user,
+                "looks like a photo",
+                &key,
+            )
+            .unwrap();
+        // Warm caches via load.
+        let _ = svc.load("perf", created.set_id, &key).unwrap();
+
+        let t0 = std::time::Instant::now();
+        for _ in 0..20 {
+            let listed = svc.list_sets("perf", &key).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].display_name, "big");
+        }
+        let list_elapsed = t0.elapsed();
+        assert!(
+            list_elapsed.as_millis() < 500,
+            "warm list_sets too slow: {list_elapsed:?}"
+        );
+
+        let t1 = std::time::Instant::now();
+        let v2 = svc
+            .delete_pair("perf", created.set_id, v, 0, &big_user, &key)
+            .unwrap();
+        let delete_elapsed = t1.elapsed();
+        assert!(
+            delete_elapsed.as_secs() < 2,
+            "delete_pair with large history too slow: {delete_elapsed:?}"
+        );
+        let after = svc.load("perf", created.set_id, &key).unwrap();
+        assert!(after.history.is_empty());
+        assert_eq!(after.version, v2);
+
+        // Second list after delete should still be warm/fast.
+        let t2 = std::time::Instant::now();
+        let listed = svc.list_sets("perf", &key).unwrap();
+        assert_eq!(listed[0].version, v2);
+        assert!(t2.elapsed().as_millis() < 100);
     }
 
     #[test]

@@ -66,14 +66,16 @@ pub async fn handle_get_sets(
     let key = encryption_key.as_ref().expect("validated encryption key");
 
     let history = HistoryService::global().map_err(history_error_to_http)?;
-    // Ensure at least default exists for new accounts
-    if history.list_sets(username, key).map_err(history_error_to_http)?.is_empty() {
+    // Single list_sets call (was twice: empty-check + list). Cold list still decrypts
+    // each set once; warm hits use the process summary cache.
+    let mut sets = history.list_sets(username, key).map_err(history_error_to_http)?;
+    if sets.is_empty() {
         history
             .ensure_default_set(username, key)
             .map_err(history_error_to_http)?;
+        sets = history.list_sets(username, key).map_err(history_error_to_http)?;
     }
 
-    let sets = history.list_sets(username, key).map_err(history_error_to_http)?;
     let payload = json!(sets
         .into_iter()
         .map(|s| {
@@ -437,14 +439,15 @@ pub async fn handle_load_set(
         }
     };
 
-    // Keep session cache in sync for the loaded set only (keyed by set_id).
+    // Keep session set_id / memory / prompt in sync. Do not copy multi-MB history
+    // into the session cipher (durable store is SoT for authed history).
     if let Err(response) = session::replace_session_set(
         &session.session_id,
         Some(username),
         Some(loaded.set_id),
         &loaded.memory,
         &loaded.system_prompt,
-        &loaded.history,
+        &[],
         true,
         encryption_key.as_ref(),
     ) {

@@ -575,10 +575,14 @@ fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), ServiceRe
     if !data.requires_cipher {
         return Ok(());
     }
+    // Authenticated chat history is stored durably in HistoryService (redb AEAD).
+    // Re-Fernet-sealing multi-MB image histories into the session on every load/delete
+    // pegged a core for seconds. Session only needs active set_id + small fields;
+    // prepare/load always re-reads history from the durable store with X-Enc-Key.
     let payload = CachedSetPayload {
         memory: data.memory.clone(),
         system_prompt: data.system_prompt.clone(),
-        history: data.history.clone(),
+        history: Vec::new(),
         set_id: data.active_set_id.map(|id| id.to_string()),
     };
     let json = serde_json::to_string(&payload)
@@ -865,10 +869,11 @@ fn build_chat_context(
             }
         }
 
-        // Refresh session cache from durable snapshot (display only; not SoT for finalize).
+        // Session mirror keeps small fields only; full history is not Fernet-sealed
+        // (durable HistoryService is SoT). Avoid cloning multi-MB history into RAM here.
         data.memory = snapshot.memory.clone();
         data.system_prompt = snapshot.system_prompt.clone();
-        data.history = snapshot.history.clone();
+        data.history.clear();
         data.active_set_id = Some(snapshot.set_id);
         data.encrypted = true;
         data.initialised = true;
@@ -993,23 +998,14 @@ pub fn chat_finalize_with_capture(
                         };
                         match commit {
                             Ok(_) => {
-                                let reload_id = prepare_capture.as_ref().map(|c| c.set_id);
-                                if let Ok(snap) =
-                                    load_history_snapshot(username, reload_id, set_name, key)
-                                {
-                                    data.history = snap.history;
-                                    data.memory = snap.memory;
-                                    data.system_prompt = snap.system_prompt;
-                                    data.active_set_id = Some(snap.set_id);
-                                } else {
-                                    data.history.push((
-                                        user_message.to_owned(),
-                                        assistant_response.to_owned(),
-                                    ));
-                                    if let Some(id) = reload_id {
-                                        data.active_set_id = Some(id);
-                                    }
+                                // Cache already updated by HistoryService; do not re-load
+                                // multi-MB history into the session just to seal empty.
+                                if let Some(cap) = prepare_capture.as_ref() {
+                                    data.active_set_id = Some(cap.set_id);
+                                    data.memory = cap.memory.clone();
+                                    data.system_prompt = cap.system_prompt.clone();
                                 }
+                                data.history.clear();
                                 if let Err(response) = seal_session_data(&mut data, key.as_bytes())
                                 {
                                     error!(
@@ -1227,17 +1223,19 @@ fn build_regenerate_context(
         }
         data.memory = snapshot.memory.clone();
         data.system_prompt = snapshot.system_prompt.clone();
-        data.history = snapshot.history.clone();
+        data.history.clear();
         data.active_set_id = Some(snapshot.set_id);
         data.initialised = true;
         let _ = seal_session_data(&mut data, key.as_bytes());
 
-        full_history = snapshot.history.clone();
         memory_text = snapshot.memory.clone();
         system_prompt = snapshot.system_prompt.clone();
         set_id = Some(snapshot.set_id);
         set_version = Some(snapshot.version);
-        prepare_capture = Some(PrepareCapture::from_snapshot(&snapshot));
+        let capture = PrepareCapture::from_snapshot(&snapshot);
+        // One ownership move of history for index checks / model prefix.
+        full_history = snapshot.history;
+        prepare_capture = Some(capture);
     } else {
         if !data.initialised {
             initialise_session_data(&mut data, session, set_name, None)?;
@@ -1378,15 +1376,12 @@ pub fn regenerate_finalize_with_capture(
                         };
                         match commit {
                             Ok(_) => {
-                                let reload_id = prepare_capture.as_ref().map(|c| c.set_id);
-                                if let Ok(snap) =
-                                    load_history_snapshot(username, reload_id, set_name, key)
-                                {
-                                    data.history = snap.history;
-                                    data.memory = snap.memory;
-                                    data.system_prompt = snap.system_prompt;
-                                    data.active_set_id = Some(snap.set_id);
+                                if let Some(cap) = prepare_capture.as_ref() {
+                                    data.active_set_id = Some(cap.set_id);
+                                    data.memory = cap.memory.clone();
+                                    data.system_prompt = cap.system_prompt.clone();
                                 }
+                                data.history.clear();
                                 let _ = seal_session_data(&mut data, key.as_bytes());
                             }
                             Err(HistoryError::Conflict { .. }) => {

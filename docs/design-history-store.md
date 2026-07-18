@@ -27,9 +27,9 @@ Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message row
 | Layer | Location | Behavior |
 | :--- | :--- | :--- |
 | Durable store | `chatbot-core/src/history/` (`HistoryService` + sealed redb) | `{HOST_DATA_DIR}/history/redb`: per-`set_id` AEAD ciphertext + meta (version, ownership, `is_default`); CAS on version |
-| Multi-set cache | `history/cache.rs` (`SetCache`) | Ciphertext entries keyed `(user_id, set_id)`; optional; never SoT |
+| Multi-set cache | `history/cache.rs` (`SetCache`) | Process-local decrypted snapshots + list summaries keyed `(user_id, set_id)`, version-checked against redb meta; optional; never SoT. Avoids re-AEAD/JSON of multi-MB histories on warm `list_sets` / load / delete. |
 | Migration format | `chatbot-core/src/legacy_sets_json/` (**permanent**) | Read/seed pre-redb `sets.json` (+ split-file legacy); orchestrated by `history/migration.rs` into redb; bak = `sets.json.migrated.bak` |
-| Session | `session.rs` | Guest RAM history; authed working mirror only (`active_set_id`); durability via HistoryService |
+| Session | `session.rs` | Guest RAM history; authed session cipher stores `set_id` + memory/prompt only (not full history — redb is SoT). |
 | Chat / regenerate | prepare/finalize + capture | Immutable `PrepareCapture`; CAS commit |
 | Mutations | sets / memory / reset / delete | `set_id` preferred; `expected_version` for CAS; 409 `version_conflict` JSON |
 | Client | `static/chat.js` | `activeSetPayload()` sends `set_id` + `expected_version`; 409 → toast + reload set, preserve draft |

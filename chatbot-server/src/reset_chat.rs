@@ -87,34 +87,35 @@ pub async fn handle_reset_chat(
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = HistoryService::global().map_err(history_error_to_http)?;
-        let snap = if let Some(raw) = payload.set_id.as_deref() {
-            let id = SetId::parse(raw)
-                .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?;
-            history
-                .load(username, id, key)
-                .map_err(history_error_to_http)?
+        let set_id = if let Some(raw) = payload.set_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            SetId::parse(raw)
+                .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?
         } else {
             match history.find_by_display_name(username, &set_name, key) {
-                Ok(Some(s)) => s,
+                Ok(Some(s)) => s.set_id,
                 Ok(None) if set_name == "default" => history
                     .ensure_default_set(username, key)
-                    .map_err(history_error_to_http)?,
+                    .map_err(history_error_to_http)?
+                    .set_id,
                 Ok(None) => {
                     return Err(api_error(StatusCode::BAD_REQUEST, "set not found"));
                 }
                 Err(err) => return Err(history_error_to_http(err)),
             }
         };
-        let expected = payload
-            .expected_version
-            .map(SetVersion)
-            .unwrap_or(snap.version);
-        let version = match history.reset_history(username, snap.set_id, expected, key) {
+        let expected = match payload.expected_version {
+            Some(v) => SetVersion(v),
+            None => history
+                .load(username, set_id, key)
+                .map_err(history_error_to_http)?
+                .version,
+        };
+        let version = match history.reset_history(username, set_id, expected, key) {
             Ok(v) => v,
             Err(HistoryError::Conflict { current_version }) => {
                 return build_json_response(
                     StatusCode::CONFLICT,
-                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
+                    crate::chat_utils::version_conflict_json(set_id, current_version),
                 );
             }
             Err(err) => return Err(history_error_to_http(err)),
@@ -123,7 +124,7 @@ pub async fn handle_reset_chat(
         if let Err(response) = session::set_session_history_for_request(
             &session_context.session_id,
             Some(username),
-            Some(snap.set_id),
+            Some(set_id),
             Vec::new(),
             encryption_key.as_ref(),
         ) {
@@ -136,7 +137,7 @@ pub async fn handle_reset_chat(
                 "status": "success",
                 "message": "Chat history has been reset.",
                 "set_name": set_name,
-                "set_id": snap.set_id.to_string(),
+                "set_id": set_id.to_string(),
                 "version": version.get(),
             }),
         );

@@ -43,8 +43,9 @@ pub enum OpsError {
 }
 
 fn check_message_sizes(user_msg: &str, assistant_msg: &str) -> Result<(), OpsError> {
-    if user_msg.chars().count() > MAX_MESSAGE_CHARS || assistant_msg.chars().count() > MAX_MESSAGE_CHARS
-    {
+    // Byte length is the right size proxy (base64 image tags are ASCII). Avoid
+    // chars().count() which walks multi-megabyte messages on every append.
+    if user_msg.len() > MAX_MESSAGE_CHARS || assistant_msg.len() > MAX_MESSAGE_CHARS {
         return Err(OpsError::MessageTooLarge);
     }
     Ok(())
@@ -75,8 +76,10 @@ pub fn append_pair(
 }
 
 /// Remove a history pair after verifying the user text matches.
+///
+/// Takes ownership so multi-MB histories are not cloned just to drop one pair.
 pub fn delete_pair(
-    snapshot: &SetSnapshot,
+    mut snapshot: SetSnapshot,
     pair_index: usize,
     expected_user_msg: &str,
 ) -> Result<SetSnapshot, OpsError> {
@@ -87,20 +90,18 @@ pub fn delete_pair(
     if stored_user.trim() != expected_user_msg.trim() {
         return Err(OpsError::ContentMismatch);
     }
-    let mut next = snapshot.clone();
-    next.history.remove(pair_index);
-    Ok(next)
+    snapshot.history.remove(pair_index);
+    Ok(snapshot)
 }
 
 /// Clear chat history; keep memory, prompt, name, flags.
-pub fn reset_history(snapshot: &SetSnapshot) -> SetSnapshot {
-    let mut next = snapshot.clone();
-    next.history.clear();
-    next
+pub fn reset_history(mut snapshot: SetSnapshot) -> SetSnapshot {
+    snapshot.history.clear();
+    snapshot
 }
 
 pub fn update_memory(snapshot: &SetSnapshot, memory: &str) -> Result<SetSnapshot, OpsError> {
-    if memory.chars().count() > MAX_MEMORY_CHARS {
+    if memory.len() > MAX_MEMORY_CHARS {
         return Err(OpsError::MemoryTooLarge);
     }
     let mut next = snapshot.clone();
@@ -109,7 +110,7 @@ pub fn update_memory(snapshot: &SetSnapshot, memory: &str) -> Result<SetSnapshot
 }
 
 pub fn update_system_prompt(snapshot: &SetSnapshot, prompt: &str) -> Result<SetSnapshot, OpsError> {
-    if prompt.chars().count() > MAX_PROMPT_CHARS {
+    if prompt.len() > MAX_PROMPT_CHARS {
         return Err(OpsError::PromptTooLarge);
     }
     let mut next = snapshot.clone();
@@ -247,16 +248,16 @@ mod tests {
     #[test]
     fn delete_pair_checks_content() {
         let s = sample();
-        let next = delete_pair(&s, 1, "u2").unwrap();
+        let next = delete_pair(s.clone(), 1, "u2").unwrap();
         assert_eq!(next.history.len(), 2);
         assert_eq!(next.history[1].0, "u3");
 
         assert!(matches!(
-            delete_pair(&s, 1, "wrong"),
+            delete_pair(s.clone(), 1, "wrong"),
             Err(OpsError::ContentMismatch)
         ));
         assert!(matches!(
-            delete_pair(&s, 9, "u1"),
+            delete_pair(s, 9, "u1"),
             Err(OpsError::PairIndexOutOfRange)
         ));
     }
@@ -265,10 +266,11 @@ mod tests {
     fn reset_clears_history_only() {
         let mut s = sample();
         s.memory = "mem".into();
-        let next = reset_history(&s);
+        let prompt = s.system_prompt.clone();
+        let next = reset_history(s);
         assert!(next.history.is_empty());
         assert_eq!(next.memory, "mem");
-        assert_eq!(next.system_prompt, s.system_prompt);
+        assert_eq!(next.system_prompt, prompt);
     }
 
     #[test]
