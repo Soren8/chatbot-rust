@@ -97,3 +97,37 @@ async fn blocks_static_directory_traversal() {
         );
     }
 }
+
+/// Regression: editing a user message that has an image must not dump the
+/// base64 payload into the textarea (browser freezes on ~1MB of text), and
+/// the edit box must be tall enough for multiline text.
+#[test]
+fn message_edit_ui_shows_image_preview_not_base64_in_textarea() {
+    let chat_js = include_str!("../../static/chat.js");
+    let style_css = include_str!("../../static/style.css");
+
+    assert!(
+        chat_js.contains("function parseUserMessageContent"),
+        "expected parseUserMessageContent helper to strip [IMAGE:...] from edit text"
+    );
+    assert!(
+        chat_js.contains("function composeUserMessageContent"),
+        "expected composeUserMessageContent to reattach image on save"
+    );
+    assert!(
+        chat_js.contains("edit-image-preview") && chat_js.contains("edit-image-thumb"),
+        "edit mode should render an image preview alongside the text box"
+    );
+    assert!(
+        chat_js.contains(".val(parsed.text)"),
+        "edit textarea must be seeded with text only (not the full original with base64)"
+    );
+    assert!(
+        !chat_js.contains(".val(originalText)"),
+        "must not put full data-original (incl. base64 image) into the edit textarea"
+    );
+    assert!(
+        chat_js.contains("sizeEditTextarea") && style_css.contains("min-height: 140px"),
+        "edit textarea should grow beyond the default ~3-line height"
+    );
+}

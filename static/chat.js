@@ -598,6 +598,26 @@ function updateSearchToggleVisibility() {
     }
 }
 
+// Wire format: plain text + optional [IMAGE:data:image/...;base64,...] tag.
+// Keep image payload out of the edit textarea (1MB+ base64 freezes the browser).
+var USER_IMAGE_TAG_RE = /\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/;
+
+function parseUserMessageContent(originalText) {
+  var raw = originalText == null ? '' : String(originalText);
+  var imageMatch = raw.match(USER_IMAGE_TAG_RE);
+  var imageSrc = imageMatch ? imageMatch[1] : null;
+  var text = raw.replace(/\[IMAGE:[^\]]+\]/g, '').trim();
+  return { text: text, imageSrc: imageSrc };
+}
+
+function composeUserMessageContent(text, imageSrc) {
+  var body = (text == null ? '' : String(text)).trim();
+  if (imageSrc) {
+    return body + (body ? '\n' : '') + '[IMAGE:' + imageSrc + ']';
+  }
+  return body;
+}
+
 // Thumbnail HTML for chat image attachments (click opens full-size lightbox).
 function chatImageHtml(src) {
   return (
@@ -605,6 +625,16 @@ function chatImageHtml(src) {
     escapeHTML(src) +
     '" alt="Attached image" title="Click to expand" loading="lazy">'
   );
+}
+
+function sizeEditTextarea(textarea) {
+  if (!textarea) return;
+  // Grow with content (capped) so long multiline messages are usable while editing.
+  textarea.style.height = 'auto';
+  var minPx = 140;
+  var maxPx = 420;
+  var next = Math.max(minPx, Math.min(maxPx, textarea.scrollHeight));
+  textarea.style.height = next + 'px';
 }
 
 function ensureImageLightbox() {
@@ -656,15 +686,11 @@ function appendMessage(message, className, pairIndex) {
     }
 
     // Handle image attachments [IMAGE:data:image/png;base64,...]
-    let imageHtml = '';
-    const imageMatch = originalText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
-    if (imageMatch) {
-      imageHtml = chatImageHtml(imageMatch[1]);
-      originalText = originalText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
-    }
+    const parsed = parseUserMessageContent(originalText);
+    const imageHtml = parsed.imageSrc ? chatImageHtml(parsed.imageSrc) : '';
 
-    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${renderMarkdown(originalText)}${imageHtml}</span>`);
-    $messageElement.attr('data-original', originalText + (imageMatch ? '\n[IMAGE:' + imageMatch[1] + ']' : ''));
+    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${renderMarkdown(parsed.text)}${imageHtml}</span>`);
+    $messageElement.attr('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
   } else {
     $messageElement.html(message);
   }
@@ -1402,23 +1428,55 @@ $(document).ready(function() {
     const playBtn = target.closest && target.closest('.play-button');
     if (playBtn) { window.playTTS(playBtn); return; }
 
+    const removeEditImageBtn = target.closest && target.closest('.remove-edit-image');
+    if (removeEditImageBtn) {
+      const $messageElement = $(removeEditImageBtn).closest('.message.user-message');
+      $messageElement.data('editImageSrc', null);
+      $(removeEditImageBtn).closest('.edit-image-preview').remove();
+      return;
+    }
+
     const editBtn = target.closest && target.closest('.edit-button');
     if (editBtn) {
       const $messageElement = $(editBtn).closest('.message.user-message');
       const $textSpan = $messageElement.find('.user-message-text');
       const originalText = $messageElement.attr('data-original') || $textSpan.text().replace(/^You:\s*/, '').trim();
 
-      if ($messageElement.find('.edit-textarea').length > 0) return;
+      if ($messageElement.find('.edit-message-container').length > 0) return;
 
-      const $textarea = $('<textarea>').addClass('edit-textarea form-control').val(originalText);
+      // Text only in the textarea; keep base64 image out of the input for performance.
+      const parsed = parseUserMessageContent(originalText);
+      $messageElement.data('editImageSrc', parsed.imageSrc);
+
+      const $editContainer = $('<div>').addClass('edit-message-container');
+      if (parsed.imageSrc) {
+        const $imgPreview = $('<div>').addClass('edit-image-preview');
+        const $img = $('<img>')
+          .addClass('edit-image-thumb')
+          .attr('src', parsed.imageSrc)
+          .attr('alt', 'Attached image')
+          .attr('title', 'Attached image (kept when you save)');
+        const $removeImg = $('<button type="button" class="btn btn-sm btn-danger remove-edit-image" title="Remove image">&times;</button>');
+        $imgPreview.append($img).append($removeImg);
+        $editContainer.append($imgPreview);
+      }
+
+      const $textarea = $('<textarea>')
+        .addClass('edit-textarea form-control')
+        .attr('rows', 8)
+        .attr('placeholder', 'Edit message…')
+        .val(parsed.text);
       const $actions = $('<div>').addClass('edit-actions mt-2');
-      const $saveBtn = $('<button>').addClass('btn btn-sm btn-primary save-edit').text('Save');
-      const $cancelBtn = $('<button>').addClass('btn btn-sm btn-secondary cancel-edit ms-2').text('Cancel');
+      const $saveBtn = $('<button type="button">').addClass('btn btn-sm btn-primary save-edit').text('Save');
+      const $cancelBtn = $('<button type="button">').addClass('btn btn-sm btn-secondary cancel-edit ms-2').text('Cancel');
 
       $actions.append($saveBtn).append($cancelBtn);
+      $editContainer.append($textarea).append($actions);
       $textSpan.hide();
       $messageElement.find('.regenerate-container').hide();
-      $messageElement.prepend($textarea).append($actions);
+      $messageElement.prepend($editContainer);
+      sizeEditTextarea($textarea[0]);
+      $textarea.on('input', function() { sizeEditTextarea(this); });
       $textarea.focus();
       return;
     }
@@ -1426,24 +1484,22 @@ $(document).ready(function() {
     const saveEditBtn = target.closest && target.closest('.save-edit');
     if (saveEditBtn) {
       const $messageElement = $(saveEditBtn).closest('.message.user-message');
-      const newText = $messageElement.find('.edit-textarea').val().trim();
+      const textOnly = $messageElement.find('.edit-textarea').val();
+      // jQuery .data() returns undefined if never set; null means user removed the image.
+      const imageSrc = $messageElement.data('editImageSrc') || null;
+      const newText = composeUserMessageContent(textOnly, imageSrc);
       if (!newText) return;
 
       const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
       const pairIndex = userMsgNodes.indexOf($messageElement[0]);
 
-      // Handle image if present
-      let imageHtml = '';
-      const imageMatch = newText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
-      if (imageMatch) {
-        imageHtml = chatImageHtml(imageMatch[1]);
-      }
-      const textWithoutImage = newText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
+      const saved = parseUserMessageContent(newText);
+      const imageHtml = saved.imageSrc ? chatImageHtml(saved.imageSrc) : '';
 
       $messageElement.attr('data-original', newText);
-      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${renderMarkdown(textWithoutImage)}${imageHtml}`).show();
-      $messageElement.find('.edit-textarea').remove();
-      $messageElement.find('.edit-actions').remove();
+      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${renderMarkdown(saved.text)}${imageHtml}`).show();
+      $messageElement.find('.edit-message-container').remove();
+      $messageElement.removeData('editImageSrc');
       $messageElement.find('.regenerate-container').show();
 
       const $aiMessageElement = $messageElement.next('.message.ai-message');
@@ -1456,8 +1512,8 @@ $(document).ready(function() {
     const cancelEditBtn = target.closest && target.closest('.cancel-edit');
     if (cancelEditBtn) {
       const $messageElement = $(cancelEditBtn).closest('.message.user-message');
-      $messageElement.find('.edit-textarea').remove();
-      $messageElement.find('.edit-actions').remove();
+      $messageElement.find('.edit-message-container').remove();
+      $messageElement.removeData('editImageSrc');
       $messageElement.find('.user-message-text').show();
       $messageElement.find('.regenerate-container').show();
       return;
