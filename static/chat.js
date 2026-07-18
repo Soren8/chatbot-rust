@@ -1148,7 +1148,6 @@ function handleDeleteMessage(buttonElement) {
   }
 
   const userText = (userMessageElement.attr('data-original') || userMessageElement.find('.user-message-text').text() || userMessageElement.text() || '').replace(/^\s*You:\s*/, '').trim();
-  const aiText = (aiMessageElement.attr('data-original') || (aiMessageElement.find('.ai-message-text').text() || '')).trim();
   if (!userText) {
     console.error('Cannot delete: missing message text');
     return;
@@ -1165,15 +1164,16 @@ function handleDeleteMessage(buttonElement) {
     return;
   }
 
-  console.debug('Deleting message pair:', { userText, aiText, pairIndex });
+  console.debug('Deleting message pair:', { pairIndex, userTextLen: userText.length });
 
+  // Server matches pair_index + user_message only (ai_message is ignored). Do not
+  // send aiText — image-bearing user_message alone can approach the body limit.
   fetch('/delete_message', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(activeSetPayload({
       pair_index: pairIndex,
-      user_message: userText,
-      ai_message: aiText
+      user_message: userText
     }))
   })
   .then(r => {

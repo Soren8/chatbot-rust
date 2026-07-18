@@ -13,7 +13,11 @@ use crate::http_error::{
     map_serialization_err, map_session_err, HttpError,
 };
 
+/// Memory / system-prompt updates (no image payloads).
 const MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
+/// Delete must echo `user_message` for content match, including base64 `[IMAGE:...]`
+/// attachments up to the chat body / history message cap (~5 MiB).
+const MAX_DELETE_BODY_SIZE: usize = 5 * 1024 * 1024 + 64 * 1024;
 
 #[derive(Deserialize, Default)]
 struct UpdateMemoryRequest {
@@ -53,7 +57,9 @@ struct DeleteMessageRequest {
     pair_index: Option<i32>,
     #[serde(default)]
     user_message: Option<String>,
+    /// Older clients may still send this; verification uses `user_message` only.
     #[serde(default)]
+    #[allow(dead_code)]
     ai_message: Option<String>,
     #[serde(default)]
     set_name: Option<String>,
@@ -295,7 +301,7 @@ pub async fn handle_delete_message(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
+    let body_bytes = body::to_bytes(body, MAX_DELETE_BODY_SIZE)
         .await
         .map_err(|err| map_body_read_err(err, "memory::delete_message"))?;
 

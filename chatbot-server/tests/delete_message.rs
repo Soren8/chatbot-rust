@@ -205,3 +205,66 @@ async fn delete_message_requires_index_and_matching_content() {
 
     assert_eq!(client_only_pair.status(), StatusCode::NOT_FOUND);
 }
+
+/// Image-bearing user messages include multi‑MB base64 data URLs. Delete must
+/// accept a body large enough to echo that content for the pair match check.
+#[tokio::test]
+async fn delete_message_accepts_image_sized_user_message_body() {
+    common::init_tracing();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let (session_cookie, csrf_token) = guest_session(&app).await;
+
+    let session_context =
+        session::session_context(Some(&session_cookie)).expect("session context for seeding");
+
+    // ~1.5 MiB payload — above the old 1 MiB memory body cap, under the chat/delete cap.
+    let image_user = format!(
+        "what is this?\n[IMAGE:data:image/jpeg;base64,{}]",
+        "A".repeat(1_500_000)
+    );
+    assert!(image_user.len() > 1024 * 1024);
+
+    let seeded_history = vec![
+        (image_user.clone(), "a photo".to_string()),
+        ("plain".to_string(), "ok".to_string()),
+    ];
+    session::update_session_history(&session_context.session_id, &seeded_history);
+
+    let delete_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/delete_message")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "pair_index": 0,
+                        "user_message": image_user,
+                        "set_name": "default",
+                    }))
+                    .expect("image delete payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /delete_message image-sized body");
+
+    assert_eq!(
+        delete_resp.status(),
+        StatusCode::OK,
+        "delete with image-sized user_message must not hit body LengthLimitError"
+    );
+
+    let remaining = session::session_history(&session_context.session_id);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].0, "plain");
+}
