@@ -767,3 +767,79 @@ body {
 #attach-button {
     flex-shrink: 0;
 }
+
+/* Chat attachment thumbnails — click to expand */
+.chat-image {
+    max-width: 300px;
+    max-height: 200px;
+    border-radius: 8px;
+    margin-top: 8px;
+    cursor: zoom-in;
+    display: inline-block;
+    vertical-align: middle;
+    border: 1px solid #444;
+    transition: opacity 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat-image:hover {
+    opacity: 0.92;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
+}
+
+body.image-lightbox-open {
+    overflow: hidden;
+}
+
+.image-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(0, 0, 0, 0.88);
+    cursor: zoom-out;
+}
+
+.image-lightbox[hidden] {
+    display: none !important;
+}
+
+.image-lightbox.is-open {
+    display: flex;
+}
+
+.image-lightbox-img {
+    max-width: min(96vw, 100%);
+    max-height: 92vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: 6px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    cursor: default;
+    user-select: none;
+}
+
+.image-lightbox-close {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(40, 40, 40, 0.9);
+    color: #eee;
+    font-size: 1.75rem;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 2001;
+}
+
+.image-lightbox-close:hover {
+    background: rgba(70, 70, 70, 0.95);
+    color: #fff;
+}

@@ -598,6 +598,50 @@ function updateSearchToggleVisibility() {
     }
 }
 
+// Thumbnail HTML for chat image attachments (click opens full-size lightbox).
+function chatImageHtml(src) {
+  return (
+    '<br><img class="chat-image" src="' +
+    escapeHTML(src) +
+    '" alt="Attached image" title="Click to expand" loading="lazy">'
+  );
+}
+
+function ensureImageLightbox() {
+  let $overlay = $('#image-lightbox');
+  if ($overlay.length) return $overlay;
+  $overlay = $(
+    '<div id="image-lightbox" class="image-lightbox" hidden role="dialog" aria-modal="true" aria-label="Expanded image">' +
+      '<button type="button" class="image-lightbox-close" aria-label="Close">&times;</button>' +
+      '<img class="image-lightbox-img" alt="Expanded attachment">' +
+    '</div>'
+  );
+  $('body').append($overlay);
+  $overlay.on('click', function(e) {
+    // Close when clicking backdrop or the close control; ignore clicks on the image itself.
+    if (e.target === this || $(e.target).closest('.image-lightbox-close').length) {
+      closeImageLightbox();
+    }
+  });
+  return $overlay;
+}
+
+function openImageLightbox(src) {
+  if (!src) return;
+  const $overlay = ensureImageLightbox();
+  $overlay.find('.image-lightbox-img').attr('src', src);
+  $overlay.removeAttr('hidden').addClass('is-open');
+  document.body.classList.add('image-lightbox-open');
+}
+
+function closeImageLightbox() {
+  const $overlay = $('#image-lightbox');
+  if (!$overlay.length) return;
+  $overlay.removeClass('is-open').attr('hidden', true);
+  $overlay.find('.image-lightbox-img').removeAttr('src');
+  document.body.classList.remove('image-lightbox-open');
+}
+
 // Append a message to the chat content
 function appendMessage(message, className, pairIndex) {
   const $chatContent = $('#chat-content');
@@ -615,7 +659,7 @@ function appendMessage(message, className, pairIndex) {
     let imageHtml = '';
     const imageMatch = originalText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
     if (imageMatch) {
-      imageHtml = '<br><img src="' + escapeHTML(imageMatch[1]) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
+      imageHtml = chatImageHtml(imageMatch[1]);
       originalText = originalText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
     }
 
@@ -1340,6 +1384,18 @@ $(document).ready(function() {
     scrollToBottom();
   });
 
+  // Expand chat image attachments to full size
+  $(document).on('click', 'img.chat-image', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    openImageLightbox(this.getAttribute('src'));
+  });
+  $(document).on('keydown', function(e) {
+    if (e.key === 'Escape' && $('#image-lightbox').hasClass('is-open')) {
+      closeImageLightbox();
+    }
+  });
+
   // Delegation for play, delete, and edit
   $(document).on('click', function(event) {
     const target = event.target;
@@ -1380,7 +1436,7 @@ $(document).ready(function() {
       let imageHtml = '';
       const imageMatch = newText.match(/\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/);
       if (imageMatch) {
-        imageHtml = '<br><img src="' + escapeHTML(imageMatch[1]) + '" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 8px;">';
+        imageHtml = chatImageHtml(imageMatch[1]);
       }
       const textWithoutImage = newText.replace(/\[IMAGE:[^\]]+\]/, '').trim();
 
