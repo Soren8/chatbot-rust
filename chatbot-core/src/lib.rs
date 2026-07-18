@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod chat_images;
 pub mod config;
 pub mod logging;
 pub mod enc_key;

@@ -687,6 +687,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 - redb overhead: small fixed pages; one DB for all users vs N JSON files.
 - Commit: single local txn; target p99 ≪ model TTFT (no user-visible regression vs provider latency).
 - Per-message cap (`history::ops::MAX_MESSAGE_CHARS`) matches the `/chat` HTTP body cap (5 MiB) so base64 `[IMAGE:data:...]` attachments that the request accepts are not rejected at finalize.
+- Model context packing (`chat` / `chat_images`): durable history still stores full attachments; outbound prompts keep the most recent image full-resolution and downscale older ones to small JPEG thumbnails so vision context is not dominated by prior base64 blobs.
 
 ---
 
