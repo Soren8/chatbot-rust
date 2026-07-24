@@ -181,4 +181,13 @@ fn ai_message_supports_speak_from_text_position() {
             && style_css.contains(".tts-hover-play-icon"),
         "CSS for highlight and play/stop badge"
     );
+    assert!(
+        chat_js.contains("Consume the whole run")
+            && chat_js.contains("text.charAt(end) === '.'"),
+        "ellipsis \"...\" must be one terminator, not three \".\" sentences"
+    );
+    assert!(
+        chat_js.contains("function sentenceEndsWithTerminator"),
+        "shared complete-sentence check for streaming discover"
+    );
 }

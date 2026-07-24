@@ -897,10 +897,23 @@ function getDomPlainText(element) {
 }
 
 /**
+ * Whether a sentence string already ends with a terminator (incl. ellipsis).
+ * Used when streaming: do not enqueue an unfinished trailing fragment.
+ */
+function sentenceEndsWithTerminator(sentenceText) {
+  const s = String(sentenceText || '');
+  // Terminator is . ! ? … or a run of periods (...), then optional closers.
+  return /(?:\.{1,}|[!?…])["'”’)\]]*$/.test(s);
+}
+
+/**
  * Split plain text into sentences. Single algorithm used for:
  * - hover highlight bounds
  * - click-to-play sentence selection
+ * - voice-mode discover
  * Do NOT sanitize before splitting (sanitize changes boundaries / can drop the first sentence).
+ *
+ * Ellipsis "..." / ".." / "…." is ONE terminator — never three empty "." sentences.
  *
  * @returns {{start:number, end:number, text:string}[]}
  */
@@ -917,9 +930,17 @@ function splitSentences(text) {
     let end = i;
     while (end < n) {
       const c = text.charAt(end);
-      if (c === '.' || c === '!' || c === '?') {
-        end++;
-        // Include trailing closers: ."  )'
+      if (c === '.' || c === '!' || c === '?' || c === '\u2026' /* … */) {
+        if (c === '.') {
+          // Consume the whole run: "..." is one terminator, not three sentences.
+          while (end < n && text.charAt(end) === '.') end++;
+        } else if (c === '\u2026') {
+          end++;
+        } else {
+          // ! or ? — keep "?!?!" as a single trailing burst on this sentence.
+          while (end < n && (text.charAt(end) === '!' || text.charAt(end) === '?')) end++;
+        }
+        // Include trailing closers: ..."  )'
         while (end < n && /["'”’)\]]/.test(text.charAt(end))) end++;
         break;
       }
@@ -1234,9 +1255,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
       const s = sentences[i];
       if (s.end <= consumedLen) continue;
       if (s.start < consumedLen) continue;
-      const lastChar = s.text.charAt(s.text.length - 1);
-      const isComplete = /[.!?]/.test(lastChar);
-      if (!isComplete && isStillGenerating()) break;
+      if (!sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
       queue.push(s.text);
       consumedLen = s.end;
     }
@@ -3328,9 +3347,22 @@ $(document).ready(function() {
       if (isStopped) return;
       const pending = getPendingText();
       if (!pending) return;
-      const matches = pending.match(/[^.!?]+[.!?]+/g);
-      if (matches) {
-        matches.forEach(s => { sentenceQueue.push(s); processedText += s; });
+      // Same splitter as desktop TTS (ellipsis "..." is one terminator).
+      const parts = splitSentences(pending);
+      if (!parts.length) return;
+      const currentRawText = $messageElement.find('.ai-message-text').text().trim();
+      const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
+      let advancedTo = 0;
+      for (let pi = 0; pi < parts.length; pi++) {
+        const p = parts[pi];
+        // While streaming, leave an unfinished trailing fragment for later.
+        if (!sentenceEndsWithTerminator(p.text) && stillGenerating) break;
+        sentenceQueue.push(p.text);
+        advancedTo = p.end;
+      }
+      if (advancedTo > 0) {
+        // Include whitespace between the previous cursor and this end.
+        processedText += pending.substring(0, advancedTo);
       }
     }
 
