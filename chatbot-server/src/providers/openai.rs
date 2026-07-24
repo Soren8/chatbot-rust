@@ -169,14 +169,32 @@ impl OpenAiProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
         if let Some(ref chunks) = self.test_chunks {
             let chunks = chunks.clone();
-            // Special token for tests: emit a stream error instead of a text chunk.
-            let stream = tokio_stream::iter(chunks.into_iter().map(|chunk| {
-                if chunk == "__STREAM_ERROR__" {
-                    Err(anyhow::anyhow!("injected test stream error"))
-                } else {
-                    Ok(chunk)
+            // Optional per-chunk delay so tests can abort mid-stream (client Stop).
+            let delay_ms: u64 = std::env::var("CHATBOT_TEST_OPENAI_CHUNK_DELAY_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if delay_ms == 0 {
+                // Special token for tests: emit a stream error instead of a text chunk.
+                let stream = tokio_stream::iter(chunks.into_iter().map(|chunk| {
+                    if chunk == "__STREAM_ERROR__" {
+                        Err(anyhow::anyhow!("injected test stream error"))
+                    } else {
+                        Ok(chunk)
+                    }
+                }));
+                return Ok(Box::pin(stream));
+            }
+            let stream = async_stream::stream! {
+                for chunk in chunks {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    if chunk == "__STREAM_ERROR__" {
+                        yield Err(anyhow::anyhow!("injected test stream error"));
+                    } else {
+                        yield Ok(chunk);
+                    }
                 }
-            }));
+            };
             return Ok(Box::pin(stream));
         }
 

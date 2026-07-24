@@ -10,7 +10,7 @@ use axum::{
 };
 use bytes::Bytes;
 use chatbot_core::{
-    chat::{self, strip_think_tags, ChatMessageRole},
+    chat::{self, ChatMessageRole},
     config::{app_config, get_provider_config},
     session::{self, RegenerateRequestData, SessionContext},
 };
@@ -18,7 +18,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use tracing::{debug, error, warn};
 
-use crate::chat_utils::ChatLockGuard;
+use crate::chat_utils::{ChatLockGuard, StreamCompletionGuard};
 use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
     HttpError,
@@ -272,60 +272,55 @@ pub async fn handle_regenerate(
     };
 
     let stream_lock = lock_guard.clone();
+    let session_for_guard = session_context_for_finalize.clone();
+    let set_name_for_guard = set_name.clone();
+    let user_message_for_guard = user_message.clone();
+    let enc_for_guard = encryption_key_for_finalize.clone();
+    let capture_for_guard = prepare_capture.clone();
 
     let stream = stream! {
-        let mut response_text = String::new();
-        let mut encountered_error = false;
+        let mut guard = StreamCompletionGuard::new(
+            stream_lock,
+            save_thoughts,
+            move |final_response| {
+                regenerate_finalize(
+                    &session_for_guard,
+                    &set_name_for_guard,
+                    &user_message_for_guard,
+                    final_response,
+                    insertion_index,
+                    enc_for_guard.as_ref(),
+                    capture_for_guard.clone(),
+                )
+                .map_err(|err| {
+                    error!(?err, "regenerate_finalize failed");
+                })
+            },
+        );
 
+        let mut provider_failed = false;
         while let Some(item) = provider_stream.next().await {
             match item {
                 Ok(chunk) => {
-                    response_text.push_str(&chunk);
+                    guard.push_chunk(&chunk);
                     yield Bytes::from(chunk.into_bytes());
                 }
                 Err(err) => {
-                    encountered_error = true;
                     error!(?err, "error while reading provider stream (regenerate)");
+                    guard.mark_provider_error();
                     let msg = format!("\n[Error] {err}\n");
-                    response_text.push_str(&msg);
                     yield Bytes::from(msg.into_bytes());
+                    guard.complete_without_persist();
+                    provider_failed = true;
                     break;
                 }
             }
         }
 
-        if encountered_error {
-            // Do not persist partial/error-tainted assistant text.
-            stream_lock.lock().unwrap().release_if_needed();
-        } else {
-            let clean_response = strip_think_tags(&response_text);
-            let final_response = if save_thoughts {
-                &response_text
-            } else {
-                &clean_response
-            };
-
-            match regenerate_finalize(
-                &session_context_for_finalize,
-                &set_name,
-                &user_message,
-                final_response,
-                insertion_index,
-                encryption_key_for_finalize.as_ref(),
-                prepare_capture.clone(),
-            ) {
-                Ok(extra_chunks) => {
-                    stream_lock.lock().unwrap().mark_released();
-                    for chunk in extra_chunks {
-                        yield Bytes::from(chunk.into_bytes());
-                    }
-                }
-                Err(err) => {
-                    error!(?err, "regenerate_finalize failed");
-                    stream_lock.lock().unwrap().release_if_needed();
-                    let msg = "\n[Error] Failed to persist regenerated chat history".to_string();
-                    yield Bytes::from(msg.into_bytes());
-                }
+        if !provider_failed {
+            let extras = guard.complete_success();
+            for chunk in extras {
+                yield Bytes::from(chunk.into_bytes());
             }
         }
     };
