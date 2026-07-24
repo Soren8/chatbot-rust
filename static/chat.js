@@ -548,12 +548,114 @@ function scrollToBottom() {
 
 let CURRENT_AUDIO = null;
 let CURRENT_AUDIO_BUTTON = null;
+/**
+ * Desktop TTS controller (play-button + click-a-sentence).
+ * session bumps on every stop so in-flight async work cannot affect the next play.
+ * Uses one HTMLAudioElement — fully reset on stop so 2nd/3rd plays work after reload-only bugs.
+ */
+let desktopTtsSession = 0;
+let desktopTtsAudio = null;
+let desktopTtsAbort = null;
 /** True while voice-mode TTS session is active (queued sentences). */
 let voiceModeTtsSessionActive = false;
 /** True while TTS audio is actively playing. */
 let voiceModeTtsPlaying = false;
 /** Do not start utterances until this timestamp (ms) — lets AEC settle after TTS. */
 let voiceModeListenCooldownUntil = 0;
+
+function resetPlayButtonUi(button) {
+  if (!button) return;
+  $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
+}
+
+function getDesktopTtsAudio() {
+  if (!desktopTtsAudio) {
+    desktopTtsAudio = new Audio();
+  }
+  return desktopTtsAudio;
+}
+
+/**
+ * Reset the shared <audio> between utterances/sessions.
+ * Important: do NOT call audio.load() after every stop — that re-arms autoplay
+ * blocking so the 1st play works and the 2nd (after async /tts) silently fails.
+ */
+function resetDesktopTtsAudioElement() {
+  const audio = desktopTtsAudio;
+  if (!audio) return;
+  audio.onended = null;
+  audio.onerror = null;
+  audio.onloadeddata = null;
+  try { audio.pause(); } catch (e) { /* ignore */ }
+  try {
+    // Clear the resource without load() so the element keeps its user-activation media slot.
+    audio.removeAttribute('src');
+    audio.src = '';
+  } catch (e) { /* ignore */ }
+}
+
+/**
+ * Must run synchronously inside a click/tap handler before any await/fetch.
+ * Primes the shared Audio element so later play() after /tts is allowed.
+ * Only clears the element if it still holds the silent unlock clip — never
+ * pauses a real /tts_stream that may already have been assigned.
+ */
+function primeDesktopTtsAudioFromGesture() {
+  const audio = getDesktopTtsAudio();
+  if (audio.dataset && audio.dataset.ttsPrimed === '1') return;
+  // Minimal valid silent WAV (very short).
+  var silent =
+    'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==';
+  try {
+    audio.muted = true;
+    audio.src = silent;
+    var p = audio.play();
+    if (p && typeof p.then === 'function') {
+      p.then(function () {
+        // If real TTS already replaced src, leave it alone.
+        var src = audio.currentSrc || audio.src || '';
+        if (src.indexOf('data:audio/wav') !== 0) {
+          audio.muted = false;
+          if (audio.dataset) audio.dataset.ttsPrimed = '1';
+          return;
+        }
+        try { audio.pause(); } catch (e1) { /* ignore */ }
+        audio.muted = false;
+        try { audio.removeAttribute('src'); audio.src = ''; } catch (e2) { /* ignore */ }
+        if (audio.dataset) audio.dataset.ttsPrimed = '1';
+      }).catch(function () {
+        audio.muted = false;
+      });
+    } else {
+      audio.muted = false;
+      if (audio.dataset) audio.dataset.ttsPrimed = '1';
+    }
+  } catch (e) {
+    try { audio.muted = false; } catch (e3) { /* ignore */ }
+  }
+}
+
+/**
+ * Stop desktop TTS completely. Safe to call when idle.
+ * Always bumps desktopTtsSession so any prior async chain becomes a no-op.
+ */
+function stopCurrentDesktopTts() {
+  desktopTtsSession += 1;
+  if (desktopTtsAbort) {
+    try { desktopTtsAbort.abort(); } catch (e) { /* ignore */ }
+    desktopTtsAbort = null;
+  }
+  resetDesktopTtsAudioElement();
+  const prevBtn = CURRENT_AUDIO_BUTTON;
+  CURRENT_AUDIO = null;
+  CURRENT_AUDIO_BUTTON = null;
+  resetPlayButtonUi(prevBtn);
+  clearMessageTtsPlayingUi();
+}
+
+function desktopTtsIsLive(sessionId) {
+  return sessionId === desktopTtsSession && CURRENT_AUDIO && CURRENT_AUDIO.sessionId === sessionId;
+}
 
 function disablePremiumModels() {
   const $selector = $('#modelSelect');
@@ -743,225 +845,491 @@ function handleStopClick() {
   }
 }
 
-window.playTTS = function playTTS(button) {
-  if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
-    if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
-    if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-    CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null; return;
+// Sanitize raw markdown text for TTS: strip URLs, citations, and formatting
+function sanitizeForTTS(text) {
+  return String(text || '')
+    // Strip URLs (must come before citation removal)
+    .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
+    // Strip markdown citation links: [[1]](url) or [[1]]() -> empty
+    .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
+    // Strip remaining markdown links: [text](url) -> text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    // Strip bold/italic: ***text***, **text**, *text*
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
+    // Strip underline bold/italic: ___text___, __text__, _text_
+    .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')
+    // Strip strikethrough: ~~text~~
+    .replace(/~~([^~]+)~~/g, '$1')
+    // Strip inline code: `text`
+    .replace(/`([^`]*)`/g, '$1')
+    // Strip heading markers: ### heading
+    .replace(/^#{1,6}\s+/gm, '')
+    // Collapse multiple spaces into one
+    .replace(/  +/g, ' ')
+    .trim();
+}
+
+/** Full TTS source text for an AI message (data-original preferred, then visible DOM). */
+function getMessageTtsText($messageElement) {
+  let fullText = $messageElement.attr('data-original') || '';
+  if (fullText) {
+    fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
   }
-  if (CURRENT_AUDIO) {
-    if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
-    if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-    CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+  if (!fullText) {
+    const $textClone = $messageElement.find('.ai-message-text').clone();
+    $textClone.find('.thinking-container').remove();
+    $textClone.find('.regenerate-container').remove();
+    fullText = $textClone.text().trim();
   }
+  fullText = sanitizeForTTS(fullText);
+  if (fullText === 'Thinking...') return '';
+  if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
+  return fullText;
+}
 
-  const $messageElement = $(button).closest('.message');
+/**
+ * Plain text for an element matching TreeWalker / Range offset math.
+ * Must use textContent (NOT innerText): innerText inserts layout newlines
+ * that do not exist in text nodes, which desyncs highlight ranges and TTS.
+ */
+function getDomPlainText(element) {
+  return element ? (element.textContent || '') : '';
+}
 
-  let isStopped = false;
-  let sentenceQueue = [];
-  let activeSourcesPlaying = 0;
-  let isFetching = false;
-  let nextStartTime = 0;
-  let totalQueuedTextLen = 0;
-
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume().catch(e => console.debug('AudioContext resume failed:', e));
-  }
-
-  CURRENT_AUDIO = {
-    stop: () => {
-      isStopped = true;
-      if (audioCtx.state !== 'closed') audioCtx.close().catch(() => {});
+/**
+ * Split plain text into sentences. Single algorithm used for:
+ * - hover highlight bounds
+ * - click-to-play sentence selection
+ * Do NOT sanitize before splitting (sanitize changes boundaries / can drop the first sentence).
+ *
+ * @returns {{start:number, end:number, text:string}[]}
+ */
+function splitSentences(text) {
+  const out = [];
+  if (!text) return out;
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    // Skip whitespace between sentences (not part of either sentence).
+    while (i < n && /\s/.test(text.charAt(i))) i++;
+    if (i >= n) break;
+    const start = i;
+    let end = i;
+    while (end < n) {
+      const c = text.charAt(end);
+      if (c === '.' || c === '!' || c === '?') {
+        end++;
+        // Include trailing closers: ."  )'
+        while (end < n && /["'”’)\]]/.test(text.charAt(end))) end++;
+        break;
+      }
+      end++;
     }
-  };
-  CURRENT_AUDIO_BUTTON = button;
-
-  $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
-
-  // Sanitize raw markdown text for TTS: strip URLs, citations, and formatting
-  function sanitizeForTTS(text) {
-    return text
-      // Strip URLs (must come before citation removal)
-      .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
-      // Strip markdown citation links: [[1]](url) or [[1]]() -> empty
-      .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
-      // Strip remaining markdown links: [text](url) -> text
-      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      // Strip bold/italic: ***text***, **text**, *text*
-      .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
-      // Strip underline bold/italic: ___text___, __text__, _text_
-      .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')
-      // Strip strikethrough: ~~text~~
-      .replace(/~~([^~]+)~~/g, '$1')
-      // Strip inline code: `text`
-      .replace(/`([^`]*)`/g, '$1')
-      // Strip heading markers: ### heading
-      .replace(/^#{1,6}\s+/gm, '')
-      // Collapse multiple spaces into one
-      .replace(/  +/g, ' ')
-      .trim();
+    if (end > start) {
+      out.push({ start: start, end: end, text: text.slice(start, end) });
+    }
+    i = end;
   }
+  return out;
+}
 
-  function getPendingText() {
-    let fullText = $messageElement.attr('data-original') || '';
-    if (fullText) {
-      fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-    }
-    if (!fullText) {
-      const $textClone = $messageElement.find('.ai-message-text').clone();
-      $textClone.find('.thinking-container').remove();
-      $textClone.find('.regenerate-container').remove();
-      fullText = $textClone.text().trim();
-    }
-    fullText = sanitizeForTTS(fullText);
-    if (fullText === 'Thinking...') return '';
-    if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
-    if (fullText.length > totalQueuedTextLen) {
-      return fullText.substring(totalQueuedTextLen);
-    }
-    return '';
+/** Index of the sentence containing caret offset, or -1. */
+function sentenceIndexAtOffset(sentences, offset) {
+  if (!sentences || !sentences.length) return -1;
+  const o = Math.max(0, offset);
+  for (let i = 0; i < sentences.length; i++) {
+    const s = sentences[i];
+    // Whitespace before the first sentence → first sentence.
+    if (o < s.start) return i;
+    // Inside [start, end) or on the final character of the sentence.
+    if (o < s.end) return i;
+    // Exactly at end boundary: if there is a next sentence, caret sits between them → next.
+    if (o === s.end && i + 1 < sentences.length) continue;
+    if (o === s.end) return i;
   }
+  return sentences.length - 1;
+}
 
-  function discoverSentences() {
-    if (isStopped) return;
-    const pending = getPendingText();
-    if (!pending) return;
-    const matches = pending.match(/[^.!?]+[.!?]+/g);
-    if (matches) {
-      let matchLen = 0;
-      matches.forEach(s => { sentenceQueue.push(s); matchLen += s.length; });
-      totalQueuedTextLen += matchLen;
+/**
+ * Character offset within element's textContent at a client point.
+ * Uses the same text-node walk as createRangeFromTextOffsets.
+ */
+function getCaretOffsetInElement(element, clientX, clientY) {
+  if (!element) return null;
+  let caretNode = null;
+  let caretOffset = 0;
+
+  if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(clientX, clientY);
+    if (range && element.contains(range.startContainer)) {
+      caretNode = range.startContainer;
+      caretOffset = range.startOffset;
+    }
+  } else if (document.caretPositionFromPoint) {
+    const pos = document.caretPositionFromPoint(clientX, clientY);
+    if (pos && pos.offsetNode && element.contains(pos.offsetNode)) {
+      caretNode = pos.offsetNode;
+      caretOffset = pos.offset;
     }
   }
+  if (!caretNode) return null;
+
+  // If caret is on an element node, map to a nearby text node.
+  if (caretNode.nodeType !== Node.TEXT_NODE) {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+    let best = null;
+    let bestDist = Infinity;
+    let t;
+    while ((t = walker.nextNode())) {
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      const rects = r.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        const rect = rects[i];
+        const cx = Math.max(rect.left, Math.min(clientX, rect.right));
+        const cy = Math.max(rect.top, Math.min(clientY, rect.bottom));
+        const dist = (cx - clientX) * (cx - clientX) + (cy - clientY) * (cy - clientY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = t;
+        }
+      }
+    }
+    if (!best) return null;
+    caretNode = best;
+    // Binary search offset within that text node by geometry.
+    const len = best.nodeValue ? best.nodeValue.length : 0;
+    let lo = 0;
+    let hi = len;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const pr = document.createRange();
+      pr.setStart(best, 0);
+      pr.setEnd(best, mid);
+      const br = pr.getBoundingClientRect();
+      if (br.right < clientX) lo = mid + 1;
+      else hi = mid;
+    }
+    caretOffset = lo;
+  }
+
+  // Sum lengths of all text nodes before caretNode, plus caretOffset.
+  // This matches textContent / TreeWalker offsets exactly.
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+  let total = 0;
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node === caretNode) {
+      return total + Math.min(Math.max(0, caretOffset), (node.nodeValue || '').length);
+    }
+    total += node.nodeValue ? node.nodeValue.length : 0;
+  }
+  return null;
+}
+
+/** Build a DOM Range covering [start, end) textContent offsets inside element. */
+function createRangeFromTextOffsets(element, start, end) {
+  if (!element || start == null || end == null || end <= start) return null;
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+  let pos = 0;
+  let startNode = null;
+  let startOff = 0;
+  let endNode = null;
+  let endOff = 0;
+  let lastNode = null;
+  let node;
+  while ((node = walker.nextNode())) {
+    const len = node.nodeValue ? node.nodeValue.length : 0;
+    lastNode = node;
+    if (len === 0) continue;
+    if (startNode === null && pos + len >= start) {
+      startNode = node;
+      startOff = start - pos;
+    }
+    if (startNode !== null && pos + len >= end) {
+      endNode = node;
+      endOff = end - pos;
+      break;
+    }
+    pos += len;
+  }
+  if (!startNode) return null;
+  if (!endNode) {
+    if (!lastNode) return null;
+    endNode = lastNode;
+    endOff = (lastNode.nodeValue || '').length;
+  }
+  const range = document.createRange();
+  try {
+    range.setStart(startNode, Math.min(Math.max(0, startOff), (startNode.nodeValue || '').length));
+    range.setEnd(endNode, Math.min(Math.max(0, endOff), (endNode.nodeValue || '').length));
+  } catch (e) {
+    return null;
+  }
+  return range;
+}
+
+function clearTtsHoverHighlight() {
+  document.querySelectorAll('.tts-sentence-highlight, .tts-hover-play-icon').forEach(function (el) {
+    el.remove();
+  });
+}
+
+function clearMessageTtsPlayingUi() {
+  document.querySelectorAll('.ai-message-text.tts-is-playing').forEach(function (el) {
+    el.classList.remove('tts-is-playing');
+  });
+  document.querySelectorAll('.message.tts-is-playing').forEach(function (el) {
+    el.classList.remove('tts-is-playing');
+  });
+}
+
+/** Highlight the sentence under the caret. Returns the sentence record or null. */
+function highlightSentenceInElement(element, text, caretOffset, isPlaying) {
+  clearTtsHoverHighlight();
+  if (!element || !text) return null;
+  const sentences = splitSentences(text);
+  const idx = sentenceIndexAtOffset(sentences, caretOffset);
+  if (idx < 0) return null;
+  const sentence = sentences[idx];
+  if (!sentence || sentence.end <= sentence.start) return null;
+
+  const range = createRangeFromTextOffsets(element, sentence.start, sentence.end);
+  if (!range) return null;
+
+  const rects = range.getClientRects();
+  let firstRect = null;
+  for (let i = 0; i < rects.length; i++) {
+    const rect = rects[i];
+    if (rect.width < 1 || rect.height < 1) continue;
+    if (!firstRect) firstRect = rect;
+    const div = document.createElement('div');
+    div.className = 'tts-sentence-highlight' + (isPlaying ? ' tts-sentence-highlight-playing' : '');
+    div.setAttribute('aria-hidden', 'true');
+    div.style.left = rect.left + 'px';
+    div.style.top = rect.top + 'px';
+    div.style.width = rect.width + 'px';
+    div.style.height = rect.height + 'px';
+    document.body.appendChild(div);
+  }
+  if (firstRect) {
+    const badge = document.createElement('div');
+    badge.className = 'tts-hover-play-icon' + (isPlaying ? ' is-stop' : '');
+    badge.setAttribute('aria-hidden', 'true');
+    badge.innerHTML = isPlaying
+      ? '<i class="bi bi-stop-fill"></i>'
+      : '<i class="bi bi-play-fill"></i>';
+    const badgeSize = 22;
+    badge.style.left = Math.max(0, firstRect.left - badgeSize - 4) + 'px';
+    badge.style.top = (firstRect.top + (firstRect.height - badgeSize) / 2) + 'px';
+    document.body.appendChild(badge);
+  }
+  return sentence;
+}
+
+/**
+ * Fetch one TTS token and play it on the shared HTMLAudioElement.
+ * Resolves true when that clip finished while the session is still live.
+ */
+function playOneTtsUtterance(sessionId, text) {
+  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(false);
+  const cleaned = (sanitizeForTTS(text) || String(text || '')).trim();
+  if (!cleaned) return Promise.resolve(true);
+
+  const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
+  return fetch('/tts', {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ text: cleaned }),
+    signal: signal
+  })
+  .then(function (r) {
+    if (!desktopTtsIsLive(sessionId)) return null;
+    if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+    if (!r.ok) throw new Error('TTS request failed');
+    return r.json();
+  })
+  .then(function (data) {
+    if (!desktopTtsIsLive(sessionId) || !data || !data.token) return false;
+    const audio = getDesktopTtsAudio();
+    return new Promise(function (resolve) {
+      if (!desktopTtsIsLive(sessionId)) {
+        resolve(false);
+        return;
+      }
+      let settled = false;
+      const finish = function (ok) {
+        if (settled) return;
+        settled = true;
+        audio.onended = null;
+        audio.onerror = null;
+        resolve(!!ok && desktopTtsIsLive(sessionId));
+      };
+      audio.onended = function () { finish(true); };
+      audio.onerror = function () { finish(false); };
+      // Always assign a fresh absolute URL; prior load() cleared the element.
+      audio.src = '/tts_stream/' + encodeURIComponent(data.token);
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise.catch(function (err) {
+          console.error('TTS audio.play() failed:', err);
+          finish(false);
+        });
+      }
+    });
+  })
+  .catch(function (err) {
+    if (err && (err.name === 'AbortError' || (err.message && err.message.indexOf('aborted') !== -1))) {
+      return false;
+    }
+    console.error('TTS error:', err);
+    return false;
+  });
+}
+
+/**
+ * Play a fixed list of sentences (click-a-sentence path).
+ * Sentences are already split from DOM text; we only sanitize per item for the API.
+ */
+function playFixedSentenceList(sessionId, button, sentences) {
+  let chain = Promise.resolve(true);
+  sentences.forEach(function (sentenceText) {
+    chain = chain.then(function (still) {
+      if (!still || !desktopTtsIsLive(sessionId)) return false;
+      return playOneTtsUtterance(sessionId, sentenceText);
+    });
+  });
+  chain.then(function () {
+    if (!desktopTtsIsLive(sessionId)) return;
+    // Natural end: clear UI without bumping session early mid-flight.
+    CURRENT_AUDIO = null;
+    CURRENT_AUDIO_BUTTON = null;
+    resetPlayButtonUi(button);
+    clearMessageTtsPlayingUi();
+    resetDesktopTtsAudioElement();
+  });
+}
+
+/**
+ * Play from message body (play button). Supports streaming generation.
+ */
+function playMessageBodyTts(sessionId, button, $messageElement) {
+  // Absolute character offset into getMessageTtsText(); only sentences with end > consumed
+  // and start >= consumed are enqueued.
+  let consumedLen = 0;
+  let queue = [];
+  let running = false;
 
   function isStillGenerating() {
     const currentRawText = $messageElement.find('.ai-message-text').text().trim();
     return currentRawText === 'Thinking...' || (currentAbortController !== null);
   }
 
-  function finishPlayback() {
-    if (CURRENT_AUDIO_BUTTON === button) {
-      $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-      CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+  function discoverAbsolute() {
+    if (!desktopTtsIsLive(sessionId)) return;
+    const full = getMessageTtsText($messageElement);
+    if (!full || full.length <= consumedLen) return;
+    const sentences = splitSentences(full);
+    for (let i = 0; i < sentences.length; i++) {
+      const s = sentences[i];
+      if (s.end <= consumedLen) continue;
+      if (s.start < consumedLen) continue;
+      const lastChar = s.text.charAt(s.text.length - 1);
+      const isComplete = /[.!?]/.test(lastChar);
+      if (!isComplete && isStillGenerating()) break;
+      queue.push(s.text);
+      consumedLen = s.end;
     }
   }
 
-  function pumpQueue() {
-    if (isStopped) return;
-    if (isFetching) return;
-
-    if (sentenceQueue.length === 0) {
-      discoverSentences();
+  function finishIfIdle() {
+    if (!desktopTtsIsLive(sessionId)) return;
+    if (running || queue.length) return;
+    if (isStillGenerating()) {
+      setTimeout(function () {
+        if (!desktopTtsIsLive(sessionId)) return;
+        discoverAbsolute();
+        pump();
+      }, 120);
+      return;
     }
+    discoverAbsolute();
+    if (queue.length) {
+      pump();
+      return;
+    }
+    CURRENT_AUDIO = null;
+    CURRENT_AUDIO_BUTTON = null;
+    resetPlayButtonUi(button);
+    clearMessageTtsPlayingUi();
+    resetDesktopTtsAudioElement();
+  }
 
-    if (sentenceQueue.length === 0) {
-      // Nothing matched a complete sentence. Decide based on stream state.
-      if (isStillGenerating()) {
-        // More text may arrive; poll again shortly.
-        setTimeout(pumpQueue, 100);
+  function pump() {
+    if (!desktopTtsIsLive(sessionId) || running) return;
+    discoverAbsolute();
+    if (!queue.length) {
+      finishIfIdle();
+      return;
+    }
+    running = true;
+    const next = queue.shift();
+    playOneTtsUtterance(sessionId, next).then(function (ok) {
+      running = false;
+      if (!desktopTtsIsLive(sessionId)) return;
+      if (!ok) {
+        stopCurrentDesktopTts();
         return;
       }
-      // Generation finished. Flush any trailing text without a sentence terminator.
-      const remaining = getPendingText();
-      if (remaining.trim()) {
-        sentenceQueue.push(remaining);
-        totalQueuedTextLen += remaining.length;
-      } else {
-        // Nothing left to fetch. Wait for any active audio to drain, then finish.
-        if (activeSourcesPlaying === 0) {
-          finishPlayback();
-        }
-        // If sources are still playing, finishPlayback() is invoked from
-        // source.onended when the last one ends.
-        return;
-      }
-    }
-
-    const text = sentenceQueue.shift().trim();
-    if (!text) { setTimeout(pumpQueue, 10); return; }
-
-    isFetching = true;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-    fetch('/tts', {
-      method: 'POST',
-      headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ text: text }),
-      signal: controller.signal
-    })
-    .then(r => {
-      clearTimeout(timeoutId);
-      if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-      if (!r.ok) throw new Error('Network response was not ok');
-      return r.json();
-    })
-    .then(data => {
-      if (isStopped) return;
-      return fetch(`/tts_stream/${data.token}`).then(r => {
-        if (!r.ok) throw new Error('Stream fetch failed');
-        return r.arrayBuffer();
-      });
-    })
-    .then(arrayBuffer => {
-      if (isStopped) { isFetching = false; return; }
-      if (!arrayBuffer || arrayBuffer.byteLength === 0) { throw new Error('Empty audio buffer'); }
-      return audioCtx.decodeAudioData(arrayBuffer);
-    })
-    .then(audioBuffer => {
-      if (isStopped) { isFetching = false; return; }
-      if (!audioBuffer) { throw new Error('Failed to decode audio'); }
-
-      const source = audioCtx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioCtx.destination);
-
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume().catch(() => {});
-      }
-
-      const now = audioCtx.currentTime;
-      if (nextStartTime < now) nextStartTime = now;
-      const startAt = nextStartTime;
-      source.start(startAt);
-      nextStartTime += audioBuffer.duration;
-      activeSourcesPlaying += 1;
-
-      source.onended = function() {
-        activeSourcesPlaying = Math.max(0, activeSourcesPlaying - 1);
-        if (isStopped) return;
-        // When the last scheduled audio ends, try to drain any pending text.
-        if (activeSourcesPlaying === 0 && !isFetching && sentenceQueue.length === 0) {
-          // Re-check pending in case new text arrived after we last queued.
-          discoverSentences();
-          if (sentenceQueue.length === 0 && !isStillGenerating()) {
-            const remaining = getPendingText();
-            if (remaining.trim()) {
-              sentenceQueue.push(remaining);
-              totalQueuedTextLen += remaining.length;
-              pumpQueue();
-            } else {
-              finishPlayback();
-            }
-            return;
-          }
-          pumpQueue();
-        }
-      };
-
-      isFetching = false;
-      // Eagerly try to fetch the next sentence so audio pipelines without gaps.
-      pumpQueue();
-    })
-    .catch(err => {
-      console.error('TTS error:', err);
-      isFetching = false;
-      if (!isStopped) setTimeout(pumpQueue, 500);
+      pump();
     });
   }
 
-  pumpQueue();
+  pump();
+}
+
+/**
+ * Play TTS for an AI message.
+ * options.sentences — string[] already split from the clicked DOM sentence onward.
+ *   When provided, those exact strings are spoken in order (highlight === audio).
+ * Without options: speak full message from data-original / DOM (play button).
+ */
+window.playTTS = function playTTS(button, options) {
+  options = options || {};
+
+  // Toggle stop when this control is already the active speaker.
+  if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
+    stopCurrentDesktopTts();
+    return;
+  }
+
+  // Always fully reset before starting so 2nd/3rd play cannot inherit dead state.
+  stopCurrentDesktopTts();
+
+  // Prime HTMLAudio inside this call stack (user click) before any fetch.
+  // Without this, only the first play after reload tends to work.
+  primeDesktopTtsAudioFromGesture();
+
+  const $messageElement = $(button).closest('.message');
+  // stopCurrentDesktopTts bumped the session; this play owns the new value.
+  const sessionId = desktopTtsSession;
+  desktopTtsAbort = new AbortController();
+
+  CURRENT_AUDIO = {
+    sessionId: sessionId,
+    stop: function () { stopCurrentDesktopTts(); }
+  };
+  CURRENT_AUDIO_BUTTON = button;
+
+  $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
+  $messageElement.addClass('tts-is-playing');
+  $messageElement.find('.ai-message-text').addClass('tts-is-playing');
+
+  if (options.sentences && options.sentences.length) {
+    playFixedSentenceList(sessionId, button, options.sentences);
+    return;
+  }
+  playMessageBodyTts(sessionId, button, $messageElement);
 }
 window.regenerateMessage = function regenerateMessage(button) {
   const $aiMessageElement = $(button).closest('.message');
@@ -1422,11 +1790,142 @@ $(document).ready(function() {
     }
   });
 
+  // Speak-from-sentence:
+  // - hover: highlight sentence under pointer (same splitSentences as play)
+  // - click: recompute sentence from click coords ONLY (never stale hover text)
+  // - while playing this message: click stops
+  let ttsTextMouseDown = null;
+  let ttsHoverRaf = null;
+
+  function refreshTtsHoverAtPoint(el, clientX, clientY) {
+    if (!el || !el.classList.contains('ai-message-text')) {
+      clearTtsHoverHighlight();
+      return;
+    }
+    if (ttsTextMouseDown && ttsTextMouseDown.el === el) {
+      const dx = Math.abs(clientX - ttsTextMouseDown.x);
+      const dy = Math.abs(clientY - ttsTextMouseDown.y);
+      if (dx > 4 || dy > 4) {
+        clearTtsHoverHighlight();
+        el.classList.remove('tts-can-play');
+        return;
+      }
+    }
+    const offset = getCaretOffsetInElement(el, clientX, clientY);
+    if (offset == null) {
+      clearTtsHoverHighlight();
+      el.classList.remove('tts-can-play');
+      return;
+    }
+    const domText = getDomPlainText(el);
+    if (!domText.trim() || domText.trim() === 'Thinking...') {
+      clearTtsHoverHighlight();
+      el.classList.remove('tts-can-play');
+      return;
+    }
+    const isPlaying = !!(CURRENT_AUDIO && $(el).closest('.message').find('.play-button')[0] === CURRENT_AUDIO_BUTTON);
+    el.classList.add('tts-can-play');
+    el.setAttribute(
+      'title',
+      isPlaying ? 'Click to stop speech' : 'Click to speak from this sentence'
+    );
+    highlightSentenceInElement(el, domText, offset, isPlaying);
+  }
+
+  $(document).on('mousedown', '.ai-message-text', function (e) {
+    if (e.button !== 0) return;
+    ttsTextMouseDown = { x: e.clientX, y: e.clientY, el: this };
+  });
+  $(document).on('mouseup', function () {
+    setTimeout(function () { ttsTextMouseDown = null; }, 0);
+  });
+
+  $(document).on('mousemove', '.ai-message-text', function (e) {
+    const el = this;
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+    if (ttsHoverRaf) cancelAnimationFrame(ttsHoverRaf);
+    ttsHoverRaf = requestAnimationFrame(function () {
+      ttsHoverRaf = null;
+      refreshTtsHoverAtPoint(el, clientX, clientY);
+    });
+  });
+
+  $(document).on('mouseleave', '.ai-message-text', function () {
+    if (ttsHoverRaf) {
+      cancelAnimationFrame(ttsHoverRaf);
+      ttsHoverRaf = null;
+    }
+    this.classList.remove('tts-can-play');
+    if (CURRENT_AUDIO && $(this).closest('.message').find('.play-button')[0] === CURRENT_AUDIO_BUTTON) {
+      this.setAttribute('title', 'Click to stop speech');
+    } else {
+      this.removeAttribute('title');
+    }
+    clearTtsHoverHighlight();
+  });
+
+  $('#chat-content').on('scroll', function () {
+    clearTtsHoverHighlight();
+  });
+
+  $(document).on('click', '.ai-message-text', function (e) {
+    // Ignore 2nd/3rd events of a double/triple click (word/paragraph select).
+    if (e.detail !== 1) return;
+    if (e.target.closest && e.target.closest('a, button, .copy-code-button, input, textarea, pre code')) {
+      return;
+    }
+    // Ignore drag-selects (moved pointer between mousedown and click).
+    if (ttsTextMouseDown) {
+      const dx = Math.abs(e.clientX - ttsTextMouseDown.x);
+      const dy = Math.abs(e.clientY - ttsTextMouseDown.y);
+      if (dx > 5 || dy > 5) return;
+    }
+
+    const textEl = this;
+    const $message = $(textEl).closest('.message.ai-message');
+    if (!$message.length) return;
+    const playBtn = $message.find('.play-button')[0];
+    if (!playBtn) return;
+
+    // While this message is speaking: click always stops (do not start another).
+    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === playBtn) {
+      clearTtsHoverHighlight();
+      stopCurrentDesktopTts();
+      return;
+    }
+
+    // Resolve the sentence from the click coordinates only — never from hover cache.
+    const offset = getCaretOffsetInElement(textEl, e.clientX, e.clientY);
+    if (offset == null) return;
+    const domText = getDomPlainText(textEl);
+    if (!domText.trim() || domText.trim() === 'Thinking...') return;
+
+    const sentences = splitSentences(domText);
+    const idx = sentenceIndexAtOffset(sentences, offset);
+    if (idx < 0) return;
+
+    // Exact DOM sentence strings from the click point through the end.
+    // Sanitize happens later per utterance inside playOneTtsUtterance.
+    const toPlay = [];
+    for (let i = idx; i < sentences.length; i++) {
+      const t = sentences[i].text;
+      if (t && t.trim()) toPlay.push(t);
+    }
+    if (!toPlay.length) return;
+
+    clearTtsHoverHighlight();
+    window.playTTS(playBtn, { sentences: toPlay });
+  });
+
   // Delegation for play, delete, and edit
   $(document).on('click', function(event) {
     const target = event.target;
     const playBtn = target.closest && target.closest('.play-button');
-    if (playBtn) { window.playTTS(playBtn); return; }
+    if (playBtn) {
+      window.playTTS(playBtn);
+      return;
+    }
 
     const removeEditImageBtn = target.closest && target.closest('.remove-edit-image');
     if (removeEditImageBtn) {
@@ -2816,32 +3315,9 @@ $(document).ready(function() {
     nativeTtsFetchChain = Promise.resolve();
     voiceModeTtsSessionActive = true;
 
-    function sanitizeForTTS(text) {
-      return text
-        .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
-        .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
-        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-        .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
-        .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')
-        .replace(/~~([^~]+)~~/g, '$1')
-        .replace(/`([^`]*)`/g, '$1')
-        .replace(/^#{1,6}\s+/gm, '')
-        .replace(/  +/g, ' ')
-        .trim();
-    }
-
     function getPendingText() {
-      let fullText = $messageElement.attr('data-original') || '';
-      if (fullText) fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-      if (!fullText) {
-        const $textClone = $messageElement.find('.ai-message-text').clone();
-        $textClone.find('.thinking-container').remove();
-        $textClone.find('.regenerate-container').remove();
-        fullText = $textClone.text().trim();
-      }
-      fullText = sanitizeForTTS(fullText);
-      if (fullText === 'Thinking...') return '';
-      if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
+      const fullText = getMessageTtsText($messageElement);
+      if (!fullText) return '';
       if (fullText.startsWith(processedText)) return fullText.substring(processedText.length);
       const idx = fullText.indexOf(processedText);
       if (idx !== -1) return fullText.substring(idx + processedText.length);

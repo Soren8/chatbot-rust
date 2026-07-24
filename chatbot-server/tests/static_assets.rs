@@ -131,3 +131,54 @@ fn message_edit_ui_shows_image_preview_not_base64_in_textarea() {
         "edit textarea should grow beyond the default ~3-line height"
     );
 }
+
+/// Regression: AI message body supports speak-from-sentence (hover highlight +
+/// click speaks that exact DOM sentence list; restartable HTMLAudio playback).
+#[test]
+fn ai_message_supports_speak_from_text_position() {
+    let chat_js = include_str!("../../static/chat.js");
+    let style_css = include_str!("../../static/style.css");
+
+    assert!(
+        chat_js.contains("function getDomPlainText"),
+        "highlight and caret offsets must use textContent (not innerText)"
+    );
+    assert!(
+        chat_js.contains("function splitSentences")
+            && chat_js.contains("function sentenceIndexAtOffset"),
+        "highlight and click must share one sentence splitter"
+    );
+    assert!(
+        chat_js.contains("function highlightSentenceInElement"),
+        "expected hover sentence highlight under the cursor"
+    );
+    assert!(
+        chat_js.contains("options.sentences")
+            && chat_js.contains("stopCurrentDesktopTts")
+            && chat_js.contains("playFixedSentenceList"),
+        "click path must pass exact sentence strings into a fixed playlist"
+    );
+    assert!(
+        chat_js.contains("getCaretOffsetInElement(textEl, e.clientX, e.clientY)")
+            && chat_js.contains("splitSentences(domText)"),
+        "click must resolve the sentence from click coordinates, not a hover cache"
+    );
+    assert!(
+        chat_js.contains("resetDesktopTtsAudioElement")
+            && chat_js.contains("getDesktopTtsAudio"),
+        "HTMLAudioElement must be fully reset between plays (2nd play after stop)"
+    );
+    assert!(
+        chat_js.contains("e.detail !== 1") || chat_js.contains("e.detail != 1"),
+        "only single-clicks should start speech"
+    );
+    assert!(
+        chat_js.contains("tts-is-playing") && style_css.contains("tts-can-play"),
+        "play/stop affordances on AI text"
+    );
+    assert!(
+        style_css.contains(".tts-sentence-highlight")
+            && style_css.contains(".tts-hover-play-icon"),
+        "CSS for highlight and play/stop badge"
+    );
+}
