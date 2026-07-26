@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redb::{Database, ReadableDatabase, ReadableTable};
+use redb::{Database, DatabaseError, ReadableDatabase, ReadableTable};
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use super::crypto::{self, CryptoError};
 use super::types::{
@@ -109,6 +109,64 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Open (or create) a redb 4 database, upgrading legacy v2 files in place when needed.
+///
+/// redb 4 only supports file format v3. Databases created with redb 2.x default to v2 and
+/// return [`DatabaseError::UpgradeRequired`]. redb 2.6 can still open those files and rewrite
+/// them to v3 via [`redb2::Database::upgrade`]; redb 4 then opens the upgraded file.
+fn open_database(path: &Path) -> Result<Database, StoreError> {
+    match Database::create(path) {
+        Ok(db) => Ok(db),
+        Err(DatabaseError::UpgradeRequired(from_version)) => {
+            info!(
+                path = %path.display(),
+                from_version,
+                "history redb requires file-format upgrade; migrating to v3"
+            );
+            upgrade_legacy_redb_file(path, from_version)?;
+            match Database::create(path) {
+                Ok(db) => Ok(db),
+                Err(err) => Err(StoreError::Database(format!(
+                    "failed to open history redb after v{from_version}→v3 upgrade: {err}"
+                ))),
+            }
+        }
+        Err(err) => Err(StoreError::from(err)),
+    }
+}
+
+fn upgrade_legacy_redb_file(path: &Path, from_version: u8) -> Result<(), StoreError> {
+    // Hold exclusive access via redb2 until upgrade completes and the handle is dropped.
+    let mut db = redb2::Database::open(path).map_err(|err| {
+        StoreError::Database(format!(
+            "failed to open legacy redb (format v{from_version}) for upgrade at {}: {err}",
+            path.display()
+        ))
+    })?;
+    let upgraded = db.upgrade().map_err(|err| {
+        StoreError::Database(format!(
+            "failed to upgrade redb file format v{from_version}→v3 at {}: {err}",
+            path.display()
+        ))
+    })?;
+    // Release the file lock before redb 4 reopens.
+    drop(db);
+    if upgraded {
+        info!(
+            path = %path.display(),
+            from_version,
+            "history redb upgraded to file format v3"
+        );
+    } else {
+        warn!(
+            path = %path.display(),
+            from_version,
+            "redb reported UpgradeRequired but upgrade() made no changes"
+        );
+    }
+    Ok(())
+}
+
 pub struct RedbHistoryStore {
     db: Arc<Database>,
     path: PathBuf,
@@ -120,7 +178,7 @@ impl RedbHistoryStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let db = Database::create(&path).map_err(StoreError::from)?;
+        let db = open_database(&path)?;
         let store = Self {
             db: Arc::new(db),
             path,
@@ -724,5 +782,125 @@ mod tests {
         let reloaded = store.load_snapshot("alice", set_id, &key).unwrap();
         assert!(!reloaded.is_default, "content commit must not flip is_default");
         assert_eq!(reloaded.history.len(), 1);
+    }
+
+    /// Seed a redb 2.x (file format v2) database with real history rows, then open via
+    /// `RedbHistoryStore` which must upgrade in place and still decrypt the payload.
+    #[test]
+    fn upgrades_v2_file_format_preserving_encrypted_sets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.redb");
+        let key = key();
+        let set_id = SetId::new();
+        let user = "alice";
+        let display_name = "legacy-v2-chat";
+        let now = 1_700_000_000_000u64;
+
+        let payload = SetPayloadV1 {
+            display_name: display_name.to_owned(),
+            memory: "remember the migration".into(),
+            system_prompt: "sys".into(),
+            history: vec![("hello from v2".into(), "hi back".into())],
+        };
+        let version = SetVersion(1);
+        let blob = crypto::seal_blob(
+            user,
+            set_id,
+            version,
+            BlobFormat::AeadV1,
+            &payload,
+            &key,
+        )
+        .unwrap();
+        let meta = SetMetaValue {
+            user_id: user.to_owned(),
+            version,
+            created_at: now,
+            updated_at: now,
+            is_default: true,
+            blob_format: BlobFormat::AeadV1,
+        };
+        let meta_bytes = meta.encode();
+        let id_key = set_id_key(set_id);
+        let user_key = user_set_key(user, set_id);
+
+        // redb 2.6 defaults to file format v2.
+        {
+            const SETS_META_V2: redb2::TableDefinition<'_, &[u8], &[u8]> =
+                redb2::TableDefinition::new("sets_meta");
+            const SETS_BLOB_V2: redb2::TableDefinition<'_, &[u8], &[u8]> =
+                redb2::TableDefinition::new("sets_blob");
+            const USER_SETS_V2: redb2::TableDefinition<'_, &[u8], u64> =
+                redb2::TableDefinition::new("user_sets");
+            const META_V2: redb2::TableDefinition<'_, &str, &[u8]> =
+                redb2::TableDefinition::new("meta");
+
+            let db = redb2::Database::create(&path).expect("create v2 redb");
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta_tbl = txn.open_table(META_V2).unwrap();
+                meta_tbl
+                    .insert(SCHEMA_KEY, [SCHEMA_VERSION].as_slice())
+                    .unwrap();
+                let mut sets_meta = txn.open_table(SETS_META_V2).unwrap();
+                sets_meta
+                    .insert(id_key.as_slice(), meta_bytes.as_slice())
+                    .unwrap();
+                let mut sets_blob = txn.open_table(SETS_BLOB_V2).unwrap();
+                sets_blob.insert(id_key.as_slice(), blob.as_slice()).unwrap();
+                let mut user_sets = txn.open_table(USER_SETS_V2).unwrap();
+                user_sets.insert(user_key.as_slice(), now).unwrap();
+            }
+            txn.commit().unwrap();
+            drop(db);
+        }
+
+        assert!(
+            matches!(
+                Database::open(&path),
+                Err(DatabaseError::UpgradeRequired(_))
+            ),
+            "seed file must still be pre-v3 so upgrade path is exercised"
+        );
+
+        let store = RedbHistoryStore::open(&path).expect("open should upgrade v2→v3");
+        let listed = store.list_set_ids(user).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, set_id);
+
+        let snap = store.load_snapshot(user, set_id, &key).unwrap();
+        assert_eq!(snap.display_name, display_name);
+        assert_eq!(snap.memory, "remember the migration");
+        assert_eq!(snap.history.len(), 1);
+        assert_eq!(snap.history[0].0, "hello from v2");
+        assert_eq!(snap.history[0].1, "hi back");
+        assert!(snap.is_default);
+        assert_eq!(snap.version, SetVersion(1));
+
+        // Post-upgrade writes must work on the same file.
+        let next = append_pair(&snap, "after upgrade", "ok").unwrap();
+        let v2 = store
+            .commit_snapshot(user, SetVersion(1), &next, &key)
+            .unwrap();
+        assert_eq!(v2, SetVersion(2));
+        let reloaded = store.load_snapshot(user, set_id, &key).unwrap();
+        assert_eq!(reloaded.history.len(), 2);
+    }
+
+    #[test]
+    fn open_fresh_path_does_not_require_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.redb");
+        let store = RedbHistoryStore::open(&path).unwrap();
+        let key = key();
+        let set_id = SetId::new();
+        store
+            .create_set("bob", set_id, "fresh", "sys", true, &key)
+            .unwrap();
+        // Re-open existing v3 file (no UpgradeRequired).
+        drop(store);
+        let store = RedbHistoryStore::open(&path).unwrap();
+        let snap = store.load_snapshot("bob", set_id, &key).unwrap();
+        assert_eq!(snap.display_name, "fresh");
     }
 }

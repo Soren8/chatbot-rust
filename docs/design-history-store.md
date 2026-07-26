@@ -221,6 +221,8 @@ Default set: fixed well-known `set_id` is **not** derived from the string `"defa
 
 Single DB file: `{HOST_DATA_DIR}/history/redb` (or `data/history.redb`). One process, one writer (Axum single binary — matches current deploy).
 
+**File-format compatibility:** redb 4 only opens format v3. On `HistoryService` / `RedbHistoryStore::open`, if the file is still v2 (redb 2.x default), startup runs an in-place upgrade via the pinned `redb` 2.6 crate (`Database::upgrade`) before reopening with redb 4. No operator step is required; data (including AEAD blobs) is preserved.
+
 ```text
 // Pseudocode table layout
 

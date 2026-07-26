@@ -28,6 +28,8 @@ hmac = "0.13.0"
 dashmap = "5.5.3"
 zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 redb = "4.1.0"
+# redb 4 cannot open v2 files; keep 2.6 solely to rewrite legacy DBs to v3 on startup.
+redb2 = { package = "redb", version = "2.6.3" }
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 aes-gcm = "0.11.0"
 hkdf = "0.13.0"
