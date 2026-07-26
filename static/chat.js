@@ -541,66 +541,42 @@ function appendPlainTextWithBreaks(parent, text) {
   }
 }
 
-// Allow only same-origin-relative or fixed http(s) paths for status-message links.
-// Rejects javascript:/data:/etc. (never assign caller href strings unchecked).
-function sanitizeStatusLinkHref(href) {
-  const s = String(href == null ? '' : href).trim();
-  if (!s) return null;
-  // Relative app paths only (e.g. /logout). No scheme, no //proto-relative.
-  if (s.charAt(0) === '/' && s.charAt(1) !== '/') {
-    // Strip anything that could break out of the attribute or inject markup.
-    if (/[<>"'`]/.test(s) || /[\s]/.test(s)) return null;
-    return s;
-  }
-  return null;
-}
-
-// System/error chrome: fixed label + plain text only (CodeQL js/xss-through-dom).
-// Optional structured extras (not Nodes/jQuery — never append caller-controlled nodes):
-//   { text, link?: { href, text }, after?: string }
-function buildStatusMessageContent(className, message) {
+// System/error chrome: fixed label + plain text only (createTextNode).
+// Accepts only a scalar string — never options objects (CodeQL js/xss-through-exception
+// is field-insensitive and would join error text with sibling fields like href).
+function buildStatusMessageContent(className, text) {
   const frag = document.createDocumentFragment();
   const isError = className && className.indexOf('error-message') !== -1;
   const label = document.createElement('strong');
   label.textContent = isError ? 'Error:' : 'System:';
   frag.appendChild(label);
   frag.appendChild(document.createTextNode(' '));
-
-  let text = '';
-  let linkHref = null;
-  let linkText = null;
-  let after = null;
-
-  if (message && typeof message === 'object' && !message.nodeType && !message.jquery) {
-    text = message.text == null ? '' : String(message.text);
-    after = message.after == null ? null : String(message.after);
-    if (message.link && typeof message.link === 'object') {
-      linkHref = sanitizeStatusLinkHref(message.link.href);
-      linkText = message.link.text == null ? null : String(message.link.text);
-    }
-  } else if (message != null && typeof message !== 'object') {
-    // Strings / numbers / booleans only — never Nodes (nodeType) or jQuery.
-    text = String(message);
-  } else {
-    text = '';
-  }
-
-  appendPlainTextWithBreaks(frag, text);
-  if (linkHref && linkText != null) {
-    const a = document.createElement('a');
-    a.setAttribute('href', linkHref);
-    a.textContent = linkText;
-    frag.appendChild(a);
-  }
-  if (after != null && after !== '') {
-    appendPlainTextWithBreaks(frag, after);
-  }
+  appendPlainTextWithBreaks(frag, text == null ? '' : String(text));
   return frag;
 }
 
-// AI chrome builders are split on purpose (CodeQL js/xss-through-exception):
-// exception strings must never share a function or options object with an
-// innerHTML sink — field-insensitive analysis would join errorText with bodyHtml.
+// Dedicated sets-load failure UI. Exception text is textContent only; the logout
+// href is a string literal so it cannot be joined with error.message by analysis.
+function buildSetsLoadErrorContent(errorText) {
+  const frag = document.createDocumentFragment();
+  const label = document.createElement('strong');
+  label.textContent = 'Error:';
+  frag.appendChild(label);
+  frag.appendChild(document.createTextNode(' '));
+  appendPlainTextWithBreaks(
+    frag,
+    'Could not load saved sets: ' + String(errorText == null ? '' : errorText) + ' '
+  );
+  const a = document.createElement('a');
+  a.setAttribute('href', '/logout');
+  a.textContent = 'Sign out';
+  frag.appendChild(a);
+  frag.appendChild(document.createTextNode(' and log in again if this persists.'));
+  return frag;
+}
+
+// AI chrome builders — kept as separate functions so exception strings never
+// share a parameter/object with an innerHTML sink (CodeQL js/xss-through-exception).
 
 function buildAiLabelFragment() {
   const frag = document.createDocumentFragment();
@@ -610,15 +586,15 @@ function buildAiLabelFragment() {
   return frag;
 }
 
-// History load: pre-rendered markdown HTML from formatAiMessage → renderMarkdown
-// (escapeHTML first). No exception/error strings enter this function.
-function buildAiHistoryChildren(bodyHtml) {
+// History load only. `safeHtml` must already be produced by formatAiMessage /
+// renderMarkdown (escapeHTML). Do not pass err.message here.
+function buildAiHistoryChildren(safeHtml) {
   const frag = buildAiLabelFragment();
   frag.appendChild(document.createTextNode('\u00A0'));
   const textSpan = document.createElement('span');
   textSpan.className = 'ai-message-text';
-  if (typeof bodyHtml === 'string' && bodyHtml) {
-    textSpan.innerHTML = bodyHtml;
+  if (typeof safeHtml === 'string' && safeHtml) {
+    textSpan.innerHTML = safeHtml;
   }
   frag.appendChild(textSpan);
   frag.appendChild(buildAiRegenerateContainer(true));
@@ -666,6 +642,33 @@ function buildAiStreamChildren() {
   frag.appendChild(textSpan);
   frag.appendChild(buildAiRegenerateContainer(false));
   return frag;
+}
+
+// Mount a pre-built message node into #chat-content (shared chrome, no content).
+function mountChatMessage(hostEl) {
+  const $chatContent = $('#chat-content');
+  if ($chatContent[0] && hostEl) $chatContent[0].appendChild(hostEl);
+  if (typeof __autoScroll !== 'undefined' ? __autoScroll : isAtBottom()) {
+    scrollToBottom();
+  }
+}
+
+// History AI bubble — separate entry point from appendMessage so exception text
+// that flows into appendMessage(message, 'error-message') cannot reach innerHTML
+// via field-insensitive joining of the shared `message` parameter.
+function appendAiHistoryMessage(safeHtml) {
+  const $messageElement = $('<div>').addClass('message ai-message');
+  replaceChildrenNative($messageElement[0], buildAiHistoryChildren(safeHtml));
+  mountChatMessage($messageElement[0]);
+  return $messageElement;
+}
+
+// Sets-load failure with logout affordance — not routed through appendMessage.
+function appendSetsLoadError(errorText) {
+  const $messageElement = $('<div>').addClass('message error-message');
+  replaceChildrenNative($messageElement[0], buildSetsLoadErrorContent(errorText));
+  mountChatMessage($messageElement[0]);
+  return $messageElement;
 }
 
 function buildAiRegenerateContainer(enabled) {
@@ -1023,12 +1026,11 @@ function replaceChildrenNative(parent, node) {
 
 // Append a message to the chat content.
 //
-// Content rules (CodeQL js/xss-through-dom — never feed DOM .val()/.text() into HTML sinks):
+// Content rules (CodeQL — never feed DOM/exception text into HTML sinks):
 // - user-message: plain wire text (optional [IMAGE:data:...] tag)
-// - system-message / error-message: plain text OR { text, link?, after? } (never Nodes/HTML)
-// - ai-message: { mode:'history', bodyHtml } | { mode:'stream' } (errors use buildAiErrorChildren)
+// - system-message / error-message: plain text scalar only (textContent)
+// - ai-message: streaming shell only — history HTML uses appendAiHistoryMessage
 function appendMessage(message, className, pairIndex) {
-  const $chatContent = $('#chat-content');
   const $messageElement = $('<div>').addClass('message ' + className);
   const host = $messageElement[0];
   const isUser = className && className.indexOf('user-message') !== -1;
@@ -1052,19 +1054,11 @@ function appendMessage(message, className, pairIndex) {
     // Wire-format plain text only (not HTML); setAttribute does not parse markup.
     host.setAttribute('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
   } else if (isAi) {
-    // Dispatch to separate builders so exception text cannot reach innerHTML
-    // (CodeQL js/xss-through-exception field-insensitive object tracking).
-    const aiOpts =
-      message && typeof message === 'object' && !message.nodeType && !message.jquery
-        ? message
-        : { mode: 'stream' };
-    if (aiOpts.mode === 'history') {
-      replaceChildrenNative(host, buildAiHistoryChildren(aiOpts.bodyHtml));
-    } else {
-      replaceChildrenNative(host, buildAiStreamChildren());
-    }
+    // Stream shell only — never accept bodyHtml here (exception text also enters
+    // appendMessage via error-message calls; keep that param off the HTML path).
+    replaceChildrenNative(host, buildAiStreamChildren());
   } else {
-    // system-message / error-message: textContent path only
+    // system-message / error-message: textContent path only (scalar string)
     replaceChildrenNative(host, buildStatusMessageContent(className, message));
   }
 
@@ -1102,11 +1096,7 @@ function appendMessage(message, className, pairIndex) {
     } catch (e) { console.debug('Failed to add buttons:', e); }
   }
 
-  // Append the element node we created — not a caller string.
-  if ($chatContent[0]) $chatContent[0].appendChild(host);
-  if (typeof __autoScroll !== 'undefined' ? __autoScroll : isAtBottom()) {
-    scrollToBottom();
-  }
+  mountChatMessage(host);
   return $messageElement;
 }
 
@@ -2464,11 +2454,7 @@ $(document).ready(function() {
         })
         .catch(function(error) {
           console.error('Failed to load sets:', error);
-          appendMessage({
-            text: 'Could not load saved sets: ' + (error.message || String(error)) + ' ',
-            link: { href: '/logout', text: 'Sign out' },
-            after: ' and log in again if this persists.'
-          }, 'error-message');
+          appendSetsLoadError(error && error.message ? error.message : String(error));
           throw error;
         });
     }
@@ -2517,7 +2503,9 @@ $(document).ready(function() {
             data.history.forEach(([userMsg, aiMsg], pairIndex) => {
               appendMessage(userMsg, 'user-message', pairIndex);
               const formattedAi = formatAiMessage(aiMsg);
-              const $aiMsg = appendMessage({ mode: 'history', bodyHtml: formattedAi }, 'ai-message');
+              // Dedicated entry point — do not pass HTML through appendMessage
+              // (that parameter also carries exception text for error-message).
+              const $aiMsg = appendAiHistoryMessage(formattedAi);
               $aiMsg.attr('data-original', aiMsg);
             });
             setTimeout(function() { scrollToBottom(); }, 0);
@@ -2732,7 +2720,7 @@ $(document).ready(function() {
       .then(response => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
-        appendMessage({ mode: 'stream' }, 'ai-message');
+        appendMessage(null, 'ai-message');
 
         const $targetElement = $('.ai-message:last-child');
 
