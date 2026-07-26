@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use chatbot_core::config::ProviderConfig;
 use crate::providers::openai::messages::{ChatMessageContent, ChatMessagePayload, ContentPart};
@@ -31,6 +31,11 @@ pub struct ResponseRequest {
     pub messages: Vec<Value>,
     pub tools: Vec<Tool>,
     pub stream: bool,
+    /// When `Some(false)`, disable Responses API server-side retention of this
+    /// request/response (see xAI `store` on `/v1/responses`). Omitted when ZDR
+    /// is not requested so the API default applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
 }
 
 pub struct XaiProvider {
@@ -38,6 +43,8 @@ pub struct XaiProvider {
     base_url: String,
     api_key: Option<String>,
     model: String,
+    /// When true, send `store: false` and expect team ZDR (`x-zero-data-retention`).
+    xai_zdr: bool,
 }
 
 impl XaiProvider {
@@ -53,6 +60,7 @@ impl XaiProvider {
             base_url: config.base_url.clone(),
             api_key: config.api_key.clone(),
             model: config.model_name.clone(),
+            xai_zdr: config.xai_zdr,
         })
     }
 
@@ -111,15 +119,20 @@ impl XaiProvider {
             vec![]
         };
 
+        // xAI Responses API: `store: false` opts out of server-side conversation
+        // retention. Team-level ZDR (no audit logs) is configured in the Console.
+        let store = if self.xai_zdr { Some(false) } else { None };
+
         let payload = ResponseRequest {
             model: self.model.clone(),
             messages: mapped_messages,
             tools,
             stream: true,
+            store,
         };
 
         let body_json = serde_json::to_string(&payload).unwrap_or_default();
-        debug!(body = %body_json, "sending xAI request");
+        debug!(body = %body_json, xai_zdr = self.xai_zdr, "sending xAI request");
 
         // Ensure base_url is correct. If it's missing or empty, default to https://api.x.ai/v1
         let base = if self.base_url.is_empty() {
@@ -130,6 +143,7 @@ impl XaiProvider {
         
         let url = format!("{}/responses", base);
         let client = self.client.clone();
+        let expect_zdr = self.xai_zdr;
 
         let stream = try_stream! {
             let response = client
@@ -139,6 +153,10 @@ impl XaiProvider {
                 .send()
                 .await
                 .context("failed to send xAI request")?;
+
+            if expect_zdr {
+                log_zdr_response_header(response.headers());
+            }
 
             if response.status().is_success() {
                 let mut buffer = String::new();
@@ -169,6 +187,33 @@ impl XaiProvider {
         };
 
         Ok(Box::pin(stream))
+    }
+}
+
+/// When `xai_zdr` is enabled, check the xAI `x-zero-data-retention` response header.
+/// Team ZDR is console-only; `store: false` alone is not full ZDR.
+fn log_zdr_response_header(headers: &reqwest::header::HeaderMap) {
+    match headers
+        .get("x-zero-data-retention")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some("true") => {
+            debug!(header = "true", "xAI Zero Data Retention confirmed on response");
+        }
+        Some(other) => {
+            warn!(
+                header = %other,
+                "xai_zdr is enabled but xAI response header x-zero-data-retention is not true; \
+                 enable team ZDR in the xAI Console (Team Settings). store=false still applies \
+                 for this request"
+            );
+        }
+        None => {
+            warn!(
+                "xai_zdr is enabled but xAI response omitted x-zero-data-retention header; \
+                 cannot confirm team-level Zero Data Retention"
+            );
+        }
     }
 }
 
@@ -264,4 +309,55 @@ fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
     }
 
     Ok(ExtractionOutcome { chunks, done })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn response_request_omits_store_when_zdr_off() {
+        let payload = ResponseRequest {
+            model: "grok-3".to_string(),
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+            store: None,
+        };
+        let json = serde_json::to_value(&payload).expect("serialize");
+        assert!(json.get("store").is_none());
+        assert_eq!(json.get("stream"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn response_request_sets_store_false_when_zdr_on() {
+        let payload = ResponseRequest {
+            model: "grok-3".to_string(),
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+            store: Some(false),
+        };
+        let json = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(json.get("store"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn log_zdr_header_accepts_true() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-zero-data-retention", HeaderValue::from_static("true"));
+        // Should not panic; only logs.
+        log_zdr_response_header(&headers);
+    }
+
+    #[test]
+    fn log_zdr_header_handles_missing_and_false() {
+        let empty = HeaderMap::new();
+        log_zdr_response_header(&empty);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-zero-data-retention", HeaderValue::from_static("false"));
+        log_zdr_response_header(&headers);
+    }
 }

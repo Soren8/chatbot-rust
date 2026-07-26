@@ -38,6 +38,12 @@ pub struct ProviderConfig {
     /// Ignored for non-XAI providers.
     #[serde(default = "default_true")]
     pub xai_search: bool,
+    /// When true, XAI Responses API calls set `store: false` so the request/response
+    /// are not retained for conversation chaining. Full team-level Zero Data Retention
+    /// (no 30-day audit logs) is enabled in the xAI Console and is confirmed via the
+    /// `x-zero-data-retention` response header. Ignored for non-XAI providers.
+    #[serde(default)]
+    pub xai_zdr: bool,
 }
 
 fn default_true() -> bool {
@@ -745,6 +751,7 @@ fn fallback_provider() -> ProviderConfig {
         test_chunks: None,
         search: false,
         xai_search: true,
+        xai_zdr: false,
     }
 }
 
@@ -1132,6 +1139,39 @@ mod tests {
         let config = app_config();
         assert_eq!(config.tts_provider, "kokoro");
         assert_eq!(config.default_provider().tier.as_deref(), Some("free"));
+        reset();
+    }
+
+    #[test]
+    fn loads_xai_zdr_config() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".config.yml");
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "llms:\n  - provider_name: 'grok'\n    type: 'xai'\n    model_name: 'grok-3'\n    xai_zdr: true\n"
+        )
+        .expect("write config");
+
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let config = app_config();
+        let provider = config.default_provider();
+        assert!(provider.xai_zdr);
+        // Default remains false when omitted
+        reset();
+
+        let mut file = fs::File::create(&path).expect("create config");
+        writeln!(
+            file,
+            "llms:\n  - provider_name: 'grok'\n    type: 'xai'\n    model_name: 'grok-3'\n"
+        )
+        .expect("write config");
+        reset();
+        let config = app_config();
+        assert!(!config.default_provider().xai_zdr);
         reset();
     }
 

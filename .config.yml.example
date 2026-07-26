@@ -48,6 +48,8 @@ llms:
     search: true
     # xai_search: true   # Default: use XAI's web search tool (no BRAVE_API_KEY needed)
     # xai_search: false  # Use Brave Search instead (requires BRAVE_API_KEY)
+    # xai_zdr: true      # Send store:false on Responses API; enable team ZDR in xAI Console
+                         # for full Zero Data Retention (no 30-day audit logs). See docs.x.ai.
 
 # Request rate limits (sliding 60s window). Set either to 0 to disable that dimension.
 # Env overrides: RATE_LIMIT_PER_USER_PER_MINUTE, RATE_LIMIT_GLOBAL_PER_MINUTE

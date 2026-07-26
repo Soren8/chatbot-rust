@@ -1650,6 +1650,7 @@ mod tests {
             test_chunks: None,
             search: false,
             xai_search: true,
+            xai_zdr: false,
         };
 
         let request = RegenerateRequestData {

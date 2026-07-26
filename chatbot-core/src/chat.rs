@@ -329,6 +329,7 @@ mod tests {
                 test_chunks: None,
                 search: false,
                 xai_search: true,
+                xai_zdr: false,
             },
             test_chunks: None,
             send_thoughts: false,
