@@ -781,10 +781,14 @@ function appendMessage(message, className, pairIndex) {
 
   if (className && className.indexOf('user-message') !== -1) {
     let originalText = message;
-    if (typeof message === 'string' && message.indexOf('<strong>You:') !== -1) {
-      const tmp = document.createElement('div');
-      tmp.innerHTML = message;
-      originalText = (tmp.textContent || tmp.innerText || '').replace(/^\s*You:\s*/, '').trim();
+    // Wire format is plain text; some legacy callers may still pass display HTML
+    // with a leading <strong>You:</strong> label. Strip only that known prefix
+    // with string ops — never assign the message to innerHTML (CodeQL js/xss-through-dom).
+    if (typeof message === 'string' && /^\s*<strong>\s*You:\s*<\/strong>/i.test(message)) {
+      originalText = message
+        .replace(/^\s*<strong>\s*You:\s*<\/strong>\s*/i, '')
+        .replace(/^\s*You:\s*/, '')
+        .trim();
     }
 
     // Handle image attachments [IMAGE:data:image/png;base64,...]
