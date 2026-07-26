@@ -598,61 +598,73 @@ function buildStatusMessageContent(className, message) {
   return frag;
 }
 
-// AI message chrome built entirely with DOM APIs. Optional pre-rendered markdown
-// (from renderMarkdown / formatAiMessage only) is assigned to .ai-message-text alone.
-function buildAiMessageChildren(opts) {
-  opts = opts || {};
-  const frag = document.createDocumentFragment();
+// AI chrome builders are split on purpose (CodeQL js/xss-through-exception):
+// exception strings must never share a function or options object with an
+// innerHTML sink — field-insensitive analysis would join errorText with bodyHtml.
 
+function buildAiLabelFragment() {
+  const frag = document.createDocumentFragment();
   const strong = document.createElement('strong');
   strong.textContent = 'AI:';
   frag.appendChild(strong);
+  return frag;
+}
 
-  if (opts.mode === 'history') {
-    frag.appendChild(document.createTextNode('\u00A0'));
-    const textSpan = document.createElement('span');
-    textSpan.className = 'ai-message-text';
-    // bodyHtml is produced by formatAiMessage → renderMarkdown/escapeHTML, not raw DOM text.
-    if (opts.bodyHtml) {
-      textSpan.innerHTML = opts.bodyHtml;
-    }
-    frag.appendChild(textSpan);
-    frag.appendChild(buildAiRegenerateContainer(true));
-  } else if (opts.mode === 'error') {
-    frag.appendChild(document.createTextNode(' '));
-    const errSpan = document.createElement('span');
-    errSpan.className = 'error-message';
-    errSpan.textContent = 'Error: ' + String(opts.errorText == null ? '' : opts.errorText);
-    frag.appendChild(errSpan);
-  } else {
-    // Streaming / regenerate placeholder shell
-    const thinking = document.createElement('div');
-    thinking.className = 'thinking-container';
-    thinking.style.display = 'none';
-
-    const toggle = document.createElement('button');
-    toggle.className = 'toggle-thinking';
-    toggle.style.display = 'none';
-    toggle.type = 'button';
-    const caret = document.createElement('i');
-    caret.className = 'bi bi-caret-right-fill';
-    toggle.appendChild(caret);
-    toggle.appendChild(document.createTextNode(' Show Thinking'));
-    thinking.appendChild(toggle);
-
-    const thinkingContent = document.createElement('div');
-    thinkingContent.className = 'thinking-content';
-    thinkingContent.style.display = 'none';
-    thinking.appendChild(thinkingContent);
-    frag.appendChild(thinking);
-
-    const textSpan = document.createElement('span');
-    textSpan.className = 'ai-message-text';
-    textSpan.textContent = 'Thinking...';
-    frag.appendChild(textSpan);
-    frag.appendChild(buildAiRegenerateContainer(false));
+// History load: pre-rendered markdown HTML from formatAiMessage → renderMarkdown
+// (escapeHTML first). No exception/error strings enter this function.
+function buildAiHistoryChildren(bodyHtml) {
+  const frag = buildAiLabelFragment();
+  frag.appendChild(document.createTextNode('\u00A0'));
+  const textSpan = document.createElement('span');
+  textSpan.className = 'ai-message-text';
+  if (typeof bodyHtml === 'string' && bodyHtml) {
+    textSpan.innerHTML = bodyHtml;
   }
+  frag.appendChild(textSpan);
+  frag.appendChild(buildAiRegenerateContainer(true));
+  return frag;
+}
 
+// Failed regenerate/chat: exception text via textContent only (never innerHTML).
+function buildAiErrorChildren(errorText) {
+  const frag = buildAiLabelFragment();
+  frag.appendChild(document.createTextNode(' '));
+  const errSpan = document.createElement('span');
+  errSpan.className = 'error-message';
+  errSpan.textContent = 'Error: ' + String(errorText == null ? '' : errorText);
+  frag.appendChild(errSpan);
+  return frag;
+}
+
+// Streaming / regenerate placeholder shell (static chrome only).
+function buildAiStreamChildren() {
+  const frag = buildAiLabelFragment();
+
+  const thinking = document.createElement('div');
+  thinking.className = 'thinking-container';
+  thinking.style.display = 'none';
+
+  const toggle = document.createElement('button');
+  toggle.className = 'toggle-thinking';
+  toggle.style.display = 'none';
+  toggle.type = 'button';
+  const caret = document.createElement('i');
+  caret.className = 'bi bi-caret-right-fill';
+  toggle.appendChild(caret);
+  toggle.appendChild(document.createTextNode(' Show Thinking'));
+  thinking.appendChild(toggle);
+
+  const thinkingContent = document.createElement('div');
+  thinkingContent.className = 'thinking-content';
+  thinkingContent.style.display = 'none';
+  thinking.appendChild(thinkingContent);
+  frag.appendChild(thinking);
+
+  const textSpan = document.createElement('span');
+  textSpan.className = 'ai-message-text';
+  textSpan.textContent = 'Thinking...';
+  frag.appendChild(textSpan);
+  frag.appendChild(buildAiRegenerateContainer(false));
   return frag;
 }
 
@@ -1014,7 +1026,7 @@ function replaceChildrenNative(parent, node) {
 // Content rules (CodeQL js/xss-through-dom — never feed DOM .val()/.text() into HTML sinks):
 // - user-message: plain wire text (optional [IMAGE:data:...] tag)
 // - system-message / error-message: plain text OR { text, link?, after? } (never Nodes/HTML)
-// - ai-message: options object for buildAiMessageChildren only (never raw nodes/strings)
+// - ai-message: { mode:'history', bodyHtml } | { mode:'stream' } (errors use buildAiErrorChildren)
 function appendMessage(message, className, pairIndex) {
   const $chatContent = $('#chat-content');
   const $messageElement = $('<div>').addClass('message ' + className);
@@ -1040,12 +1052,17 @@ function appendMessage(message, className, pairIndex) {
     // Wire-format plain text only (not HTML); setAttribute does not parse markup.
     host.setAttribute('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
   } else if (isAi) {
-    // Only structured options — never append(message) (jQuery would parse strings as HTML).
+    // Dispatch to separate builders so exception text cannot reach innerHTML
+    // (CodeQL js/xss-through-exception field-insensitive object tracking).
     const aiOpts =
       message && typeof message === 'object' && !message.nodeType && !message.jquery
         ? message
         : { mode: 'stream' };
-    replaceChildrenNative(host, buildAiMessageChildren(aiOpts));
+    if (aiOpts.mode === 'history') {
+      replaceChildrenNative(host, buildAiHistoryChildren(aiOpts.bodyHtml));
+    } else {
+      replaceChildrenNative(host, buildAiStreamChildren());
+    }
   } else {
     // system-message / error-message: textContent path only
     replaceChildrenNative(host, buildStatusMessageContent(className, message));
@@ -1634,7 +1651,7 @@ window.regenerateMessage = function regenerateMessage(button) {
 window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex) {
   const $target = $(aiMessageElement);
   $target.removeAttr('data-original');
-  $target.empty().append(buildAiMessageChildren({ mode: 'stream' }));
+  replaceChildrenNative($target[0], buildAiStreamChildren());
 
 if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     const playBtn = $target.find('.play-button')[0];
@@ -1804,7 +1821,8 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         if (err.name === 'AbortError') {
           $target.find('.ai-message-text').append(' [Stopped]');
         } else {
-          $target.empty().append(buildAiMessageChildren({ mode: 'error', errorText: err.message }));
+          // Dedicated builder: exception text → textContent only (js/xss-through-exception).
+          replaceChildrenNative($target[0], buildAiErrorChildren(err.message));
         }
         try {
           $target.find('.regenerate-button').prop('disabled', false);
