@@ -476,9 +476,29 @@ function decodeHTMLEntities(str) {
     .replace(/&amp;/g, '&');
 }
 
+// Accept only data:image/*;base64,... URLs for <img src>.
+// Reconstructs from character-class-filtered parts so DOM-sourced strings never
+// flow into HTML attribute sinks (CodeQL js/xss-through-dom).
+// Returns null when the value is missing or not a safe data-image URL.
+function sanitizeDataImageSrc(src) {
+  if (src == null) return null;
+  const raw = String(src);
+  const m = /^data:image\/([A-Za-z0-9+.-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(raw);
+  if (!m) return null;
+  // .replace with inverted classes strips any HTML/JS meta-characters CodeQL
+  // would otherwise track from DOM text into the src attribute.
+  const subtype = m[1].replace(/[^A-Za-z0-9+.-]/g, '');
+  const b64 = m[2].replace(/[^A-Za-z0-9+/=]/g, '');
+  if (!subtype || !b64 || subtype !== m[1] || b64 !== m[2].replace(/[\s]/g, '')) {
+    return null;
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
+  return 'data:image/' + subtype + ';base64,' + b64;
+}
+
 // Build the user-message display node without interpreting message text as HTML
-// (CodeQL js/xss-through-dom). Text goes through createTextNode only; images
-// use setAttribute after a data:image allowlist check.
+// (CodeQL js/xss-through-dom). Text goes through createTextNode only; images use
+// a reconstructed data:image URL from sanitizeDataImageSrc.
 function buildUserMessageSpan(text, imageSrc) {
   const span = document.createElement('span');
   span.className = 'user-message-text';
@@ -497,11 +517,12 @@ function buildUserMessageSpan(text, imageSrc) {
   }
   span.appendChild(body);
 
-  if (imageSrc && /^data:image\/[a-zA-Z0-9+.-]+;base64,/.test(imageSrc)) {
+  const safeSrc = sanitizeDataImageSrc(imageSrc);
+  if (safeSrc) {
     span.appendChild(document.createElement('br'));
     const img = document.createElement('img');
     img.className = 'chat-image';
-    img.setAttribute('src', imageSrc);
+    img.setAttribute('src', safeSrc);
     img.setAttribute('alt', 'Attached image');
     img.setAttribute('title', 'Click to expand');
     img.setAttribute('loading', 'lazy');
@@ -880,15 +901,17 @@ var USER_IMAGE_TAG_RE = /\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/;
 function parseUserMessageContent(originalText) {
   var raw = originalText == null ? '' : String(originalText);
   var imageMatch = raw.match(USER_IMAGE_TAG_RE);
-  var imageSrc = imageMatch ? imageMatch[1] : null;
+  // Sanitize at parse time so callers never hold a raw DOM-derived data URL.
+  var imageSrc = imageMatch ? sanitizeDataImageSrc(imageMatch[1]) : null;
   var text = raw.replace(/\[IMAGE:[^\]]+\]/g, '').trim();
   return { text: text, imageSrc: imageSrc };
 }
 
 function composeUserMessageContent(text, imageSrc) {
   var body = (text == null ? '' : String(text)).trim();
-  if (imageSrc) {
-    return body + (body ? '\n' : '') + '[IMAGE:' + imageSrc + ']';
+  var safeSrc = sanitizeDataImageSrc(imageSrc);
+  if (safeSrc) {
+    return body + (body ? '\n' : '') + '[IMAGE:' + safeSrc + ']';
   }
   return body;
 }
@@ -923,9 +946,12 @@ function ensureImageLightbox() {
 }
 
 function openImageLightbox(src) {
-  if (!src) return;
+  // src may come from img.getAttribute('src') (DOM text). Only assign a
+  // reconstructed data:image URL (CodeQL js/xss-through-dom).
+  const safeSrc = sanitizeDataImageSrc(src);
+  if (!safeSrc) return;
   const $overlay = ensureImageLightbox();
-  $overlay.find('.image-lightbox-img').attr('src', src);
+  $overlay.find('.image-lightbox-img').attr('src', safeSrc);
   $overlay.removeAttr('hidden').addClass('is-open');
   document.body.classList.add('image-lightbox-open');
 }
@@ -1881,7 +1907,12 @@ $(document).ready(function() {
 
     const reader = new FileReader();
     reader.onload = function(event) {
-      const imgData = event.target.result;
+      const imgData = sanitizeDataImageSrc(event.target.result);
+      if (!imgData) {
+        appendMessage('Could not read image file.', 'error-message');
+        $('#image-input').val('');
+        return;
+      }
       pendingImageData = imgData;
 
       // Show preview in the UI
@@ -2154,14 +2185,15 @@ $(document).ready(function() {
 
       // Text only in the textarea; keep base64 image out of the input for performance.
       const parsed = parseUserMessageContent(originalText);
-      $messageElement.data('editImageSrc', parsed.imageSrc);
+      const editSafeSrc = sanitizeDataImageSrc(parsed.imageSrc);
+      $messageElement.data('editImageSrc', editSafeSrc);
 
       const $editContainer = $('<div>').addClass('edit-message-container');
-      if (parsed.imageSrc) {
+      if (editSafeSrc) {
         const $imgPreview = $('<div>').addClass('edit-image-preview');
         const $img = $('<img>')
           .addClass('edit-image-thumb')
-          .attr('src', parsed.imageSrc)
+          .attr('src', editSafeSrc)
           .attr('alt', 'Attached image')
           .attr('title', 'Attached image (kept when you save)');
         const $removeImg = $('<button type="button" class="btn btn-sm btn-danger remove-edit-image" title="Remove image">&times;</button>');
@@ -2194,7 +2226,7 @@ $(document).ready(function() {
       const $messageElement = $(saveEditBtn).closest('.message.user-message');
       const textOnly = $messageElement.find('.edit-textarea').val();
       // jQuery .data() returns undefined if never set; null means user removed the image.
-      const imageSrc = $messageElement.data('editImageSrc') || null;
+      const imageSrc = sanitizeDataImageSrc($messageElement.data('editImageSrc')) || null;
       const newText = composeUserMessageContent(textOnly, imageSrc);
       if (!newText) return;
 
