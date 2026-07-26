@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0.99"
-axum = { version = "0.7.9", features = ["multipart"] }
+axum = { version = "0.8.9", features = ["multipart"] }
 chatbot-core = { path = "../chatbot-core" }
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "time"] }
 tracing = "0.1.41"
