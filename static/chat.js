@@ -225,7 +225,7 @@ function noteLocalVersionBumpAfterPersist() {
 function handleVersionConflict(response, data) {
   var msg = (data && data.message) || 'Chat was modified in another tab. Reloading…';
   if (typeof appendMessage === 'function') {
-    appendMessage('<strong>System:</strong> ' + escapeHTML(msg), 'system-message');
+    appendMessage(msg, 'system-message');
   }
   var draft = '';
   try { draft = $('#user-input').val() || ''; } catch (e) {}
@@ -509,6 +509,117 @@ function buildUserMessageSpan(text, imageSrc) {
   }
 
   return span;
+}
+
+// Append plain text (with optional newlines → <br>) without HTML interpretation.
+function appendPlainTextWithBreaks(parent, text) {
+  const lines = String(text == null ? '' : text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) parent.appendChild(document.createElement('br'));
+    parent.appendChild(document.createTextNode(lines[i]));
+  }
+}
+
+// System/error chrome: fixed label via textContent + body as text or Node.
+// Never assigns caller strings to innerHTML (CodeQL js/xss-through-dom).
+function buildStatusMessageContent(className, message) {
+  const frag = document.createDocumentFragment();
+  const isError = className && className.indexOf('error-message') !== -1;
+  const label = document.createElement('strong');
+  label.textContent = isError ? 'Error:' : 'System:';
+  frag.appendChild(label);
+  frag.appendChild(document.createTextNode(' '));
+
+  if (message && (message.nodeType || (typeof message === 'object' && message.jquery))) {
+    // Trusted extra nodes (e.g. a logout <a>) built by the caller with DOM APIs.
+    const node = message.jquery ? message[0] : message;
+    if (node) frag.appendChild(node);
+  } else {
+    appendPlainTextWithBreaks(frag, message);
+  }
+  return frag;
+}
+
+// AI message chrome built entirely with DOM APIs. Optional pre-rendered markdown
+// (from renderMarkdown / formatAiMessage only) is assigned to .ai-message-text alone.
+function buildAiMessageChildren(opts) {
+  opts = opts || {};
+  const frag = document.createDocumentFragment();
+
+  const strong = document.createElement('strong');
+  strong.textContent = 'AI:';
+  frag.appendChild(strong);
+
+  if (opts.mode === 'history') {
+    frag.appendChild(document.createTextNode('\u00A0'));
+    const textSpan = document.createElement('span');
+    textSpan.className = 'ai-message-text';
+    // bodyHtml is produced by formatAiMessage → renderMarkdown/escapeHTML, not raw DOM text.
+    if (opts.bodyHtml) {
+      textSpan.innerHTML = opts.bodyHtml;
+    }
+    frag.appendChild(textSpan);
+    frag.appendChild(buildAiRegenerateContainer(true));
+  } else if (opts.mode === 'error') {
+    frag.appendChild(document.createTextNode(' '));
+    const errSpan = document.createElement('span');
+    errSpan.className = 'error-message';
+    errSpan.textContent = 'Error: ' + String(opts.errorText == null ? '' : opts.errorText);
+    frag.appendChild(errSpan);
+  } else {
+    // Streaming / regenerate placeholder shell
+    const thinking = document.createElement('div');
+    thinking.className = 'thinking-container';
+    thinking.style.display = 'none';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'toggle-thinking';
+    toggle.style.display = 'none';
+    toggle.type = 'button';
+    const caret = document.createElement('i');
+    caret.className = 'bi bi-caret-right-fill';
+    toggle.appendChild(caret);
+    toggle.appendChild(document.createTextNode(' Show Thinking'));
+    thinking.appendChild(toggle);
+
+    const thinkingContent = document.createElement('div');
+    thinkingContent.className = 'thinking-content';
+    thinkingContent.style.display = 'none';
+    thinking.appendChild(thinkingContent);
+    frag.appendChild(thinking);
+
+    const textSpan = document.createElement('span');
+    textSpan.className = 'ai-message-text';
+    textSpan.textContent = 'Thinking...';
+    frag.appendChild(textSpan);
+    frag.appendChild(buildAiRegenerateContainer(false));
+  }
+
+  return frag;
+}
+
+function buildAiRegenerateContainer(enabled) {
+  const container = document.createElement('div');
+  container.className = 'regenerate-container';
+
+  const regen = document.createElement('button');
+  regen.className = 'regenerate-button';
+  regen.type = 'button';
+  if (!enabled) regen.disabled = true;
+  const regenIcon = document.createElement('i');
+  regenIcon.className = 'bi bi-arrow-repeat';
+  regen.appendChild(regenIcon);
+  container.appendChild(regen);
+
+  const play = document.createElement('button');
+  play.className = 'play-button';
+  play.type = 'button';
+  const playIcon = document.createElement('i');
+  playIcon.className = 'bi bi-play-fill';
+  play.appendChild(playIcon);
+  container.appendChild(play);
+
+  return container;
 }
 
 // Configure marked with highlight.js
@@ -827,12 +938,19 @@ function closeImageLightbox() {
   document.body.classList.remove('image-lightbox-open');
 }
 
-// Append a message to the chat content
+// Append a message to the chat content.
+//
+// Content rules (CodeQL js/xss-through-dom — never feed DOM .val()/.text() into .html()):
+// - user-message: plain wire text (optional [IMAGE:data:...] tag)
+// - system-message / error-message: plain text OR a Node/jQuery fragment (no HTML strings)
+// - ai-message: options object for buildAiMessageChildren, or a prebuilt Node/jQuery
 function appendMessage(message, className, pairIndex) {
   const $chatContent = $('#chat-content');
   const $messageElement = $('<div>').addClass('message ' + className);
+  const isUser = className && className.indexOf('user-message') !== -1;
+  const isAi = className && className.indexOf('ai-message') !== -1;
 
-  if (className && className.indexOf('user-message') !== -1) {
+  if (isUser) {
     let originalText = message;
     // Wire format is plain text; some legacy callers may still pass display HTML
     // with a leading <strong>You:</strong> label. Strip only that known prefix
@@ -848,29 +966,44 @@ function appendMessage(message, className, pairIndex) {
     const parsed = parseUserMessageContent(originalText);
     $messageElement.empty().append(buildUserMessageSpan(parsed.text, parsed.imageSrc));
     $messageElement.attr('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
+  } else if (isAi) {
+    if (message && (message.nodeType || (typeof message === 'object' && message.jquery))) {
+      $messageElement.empty().append(message);
+    } else if (message && typeof message === 'object') {
+      $messageElement.empty().append(buildAiMessageChildren(message));
+    } else {
+      // Default streaming shell; string HTML is intentionally not accepted.
+      $messageElement.empty().append(buildAiMessageChildren({ mode: 'stream' }));
+    }
   } else {
-    // Trusted UI chrome (system/error/AI shells). Dynamic fragments must already
-    // be passed through escapeHTML by the caller — never pass raw DOM .val()/.text() here.
-    $messageElement.html(message);
+    // system-message / error-message: textContent path only
+    $messageElement.empty().append(buildStatusMessageContent(className, message));
   }
 
   if (typeof pairIndex !== 'undefined' && pairIndex !== null) {
     $messageElement.attr('data-pair-index', pairIndex);
   }
 
-  if (className && className.indexOf('user-message') !== -1) {
+  if (isUser) {
     try {
       const $deleteContainer = $('<div>').addClass('regenerate-container');
       const $editBtn = $('<button>')
         .attr('type', 'button')
         .addClass('edit-button')
-        .attr('title', 'Edit message')
-        .html('<i class="bi bi-pencil-fill"></i>');
+        .attr('title', 'Edit message');
+      const editIcon = document.createElement('i');
+      editIcon.className = 'bi bi-pencil-fill';
+      $editBtn[0].appendChild(editIcon);
       const $deleteBtn = $('<button>')
         .attr('type', 'button')
         .addClass('delete-button')
-        .attr('title', 'Delete message')
-        .html('<span class="delete-icon"><i class="bi bi-trash-fill"></i></span>');
+        .attr('title', 'Delete message');
+      const delWrap = document.createElement('span');
+      delWrap.className = 'delete-icon';
+      const delIcon = document.createElement('i');
+      delIcon.className = 'bi bi-trash-fill';
+      delWrap.appendChild(delIcon);
+      $deleteBtn[0].appendChild(delWrap);
       $deleteContainer.append($editBtn).append($deleteBtn);
       $messageElement.append($deleteContainer);
     } catch (e) { console.debug('Failed to add buttons:', e); }
@@ -1424,8 +1557,8 @@ window.regenerateMessage = function regenerateMessage(button) {
 window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex) {
   const $target = $(aiMessageElement);
   $target.removeAttr('data-original');
-  $target.html(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button"><i class="bi bi-play-fill"></i></button></div>`);
-  
+  $target.empty().append(buildAiMessageChildren({ mode: 'stream' }));
+
 if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     const playBtn = $target.find('.play-button')[0];
     if (playBtn) setTimeout(() => (window.voiceModeActive ? window.playTTSVoiceMode(playBtn) : window.playTTS(playBtn)), 50);
@@ -1594,7 +1727,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         if (err.name === 'AbortError') {
           $target.find('.ai-message-text').append(' [Stopped]');
         } else {
-          $target.html(`<strong>AI:</strong> <span class="error-message">Error: ${err.message}</span>`);
+          $target.empty().append(buildAiMessageChildren({ mode: 'error', errorText: err.message }));
         }
         try {
           $target.find('.regenerate-button').prop('disabled', false);
@@ -1671,11 +1804,11 @@ function handleDeleteMessage(buttonElement) {
       return;
     }
     console.error('Server failed to delete message:', errMsg);
-    appendMessage('<strong>Error:</strong> Failed to delete message: ' + escapeHTML(errMsg), 'error-message');
+    appendMessage('Failed to delete message: ' + errMsg, 'error-message');
   })
   .catch(err => {
     console.error('Error deleting message:', err);
-    appendMessage('<strong>Error:</strong> Failed to delete message: ' + escapeHTML(err.message), 'error-message');
+    appendMessage('Failed to delete message: ' + (err && err.message ? err.message : String(err)), 'error-message');
   });
 }
 
@@ -1742,7 +1875,7 @@ $(document).ready(function() {
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
-      appendMessage('<strong>Error:</strong> Please select an image file.', 'error-message');
+      appendMessage('Please select an image file.', 'error-message');
       return;
     }
 
@@ -2230,11 +2363,16 @@ $(document).ready(function() {
         })
         .catch(function(error) {
           console.error('Failed to load sets:', error);
-          appendMessage(
-            '<strong>Error:</strong> Could not load saved sets: ' + escapeHTML(error.message || String(error)) +
-            ' <a href="/logout">Sign out</a> and log in again if this persists.',
-            'error-message'
-          );
+          const frag = document.createDocumentFragment();
+          frag.appendChild(document.createTextNode(
+            'Could not load saved sets: ' + (error.message || String(error)) + ' '
+          ));
+          const a = document.createElement('a');
+          a.setAttribute('href', '/logout');
+          a.textContent = 'Sign out';
+          frag.appendChild(a);
+          frag.appendChild(document.createTextNode(' and log in again if this persists.'));
+          appendMessage(frag, 'error-message');
           throw error;
         });
     }
@@ -2283,14 +2421,14 @@ $(document).ready(function() {
             data.history.forEach(([userMsg, aiMsg], pairIndex) => {
               appendMessage(userMsg, 'user-message', pairIndex);
               const formattedAi = formatAiMessage(aiMsg);
-              const $aiMsg = appendMessage(`<strong>AI:</strong>&nbsp;<span class=\"ai-message-text\">${formattedAi}</span><div class=\"regenerate-container\"><button class=\"regenerate-button\"><i class=\"bi bi-arrow-repeat\"></i></button><button class=\"play-button\"><i class=\"bi bi-play-fill\"></i></button></div>`, 'ai-message');
+              const $aiMsg = appendMessage({ mode: 'history', bodyHtml: formattedAi }, 'ai-message');
               $aiMsg.attr('data-original', aiMsg);
             });
             setTimeout(function() { scrollToBottom(); }, 0);
           }
-          appendMessage('<strong>System:</strong> Loaded set: ' + escapeHTML(setName), 'system-message');
+          appendMessage('Loaded set: ' + setName, 'system-message');
         })
-        .catch(error => { appendMessage('<strong>Error:</strong> Failed to load set: ' + escapeHTML(error.message), 'error-message'); });
+        .catch(error => { appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
       });
 
     beginEncKeyUnlockFlow();
@@ -2312,9 +2450,9 @@ $(document).ready(function() {
                 if (newId) $('#set-selector').val(newId);
                 $('#set-selector').trigger('change');
               });
-              appendMessage('<strong>System:</strong> Created new set: ' + escapeHTML(setName), 'system-message');
+              appendMessage('Created new set: ' + setName, 'system-message');
             } else {
-              appendMessage('<strong>Error:</strong> ' + data.error, 'error-message');
+              appendMessage(data.error || 'Failed to create set', 'error-message');
             }
           });
       }
@@ -2325,7 +2463,7 @@ $(document).ready(function() {
       const setId = $('#set-selector').val();
       const oldName = $opt.attr('data-name') || setId;
       if (oldName === 'default' || $opt.attr('data-name') === 'default') {
-        appendMessage('<strong>Error:</strong> Cannot rename default set', 'error-message');
+        appendMessage('Cannot rename default set', 'error-message');
         return;
       }
       const newName = prompt('Enter new name for set:', oldName);
@@ -2348,14 +2486,14 @@ $(document).ready(function() {
             if (data.version != null) window.APP_DATA.setVersion = data.version;
             loadSets(false).then(() => {
               $('#set-selector').val(window.APP_DATA.lastSetId);
-              appendMessage('<strong>System:</strong> Renamed set to: ' + escapeHTML(newName), 'system-message');
+              appendMessage('Renamed set to: ' + newName, 'system-message');
             });
           } else {
-            appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to rename set'), 'error-message');
+            appendMessage(data.error || 'Failed to rename set', 'error-message');
           }
         })
         .catch(err => {
-          appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+          appendMessage(err && err.message ? err.message : String(err), 'error-message');
         });
       }
     });
@@ -2364,7 +2502,7 @@ $(document).ready(function() {
       const $opt = $('#set-selector option:selected');
       const setId = $('#set-selector').val();
       const setName = $opt.attr('data-name') || setId;
-      if (setName === 'default') { appendMessage('<strong>Error:</strong> Cannot delete default set', 'error-message'); return; }
+      if (setName === 'default') { appendMessage('Cannot delete default set', 'error-message'); return; }
       if (confirm('Are you sure you want to delete set: ' + setName + '?')) {
         fetch('/delete_set', {
           method: 'POST',
@@ -2377,8 +2515,8 @@ $(document).ready(function() {
         })
           .then(r => r.json())
           .then(data => {
-            if (data.status === 'success') { loadSets(); appendMessage('<strong>System:</strong> Deleted set: ' + escapeHTML(setName), 'system-message'); }
-            else { appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to delete set'), 'error-message'); }
+            if (data.status === 'success') { loadSets(); appendMessage('Deleted set: ' + setName, 'system-message'); }
+            else { appendMessage(data.error || 'Failed to delete set', 'error-message'); }
           });
       }
     });
@@ -2405,14 +2543,14 @@ $(document).ready(function() {
       .then(data => {
         if (data.status === 'success') {
           noteSetVersionFromResponse(data);
-          appendMessage('<strong>System:</strong> System prompt saved successfully.', 'system-message');
+          appendMessage('System prompt saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
           return handleVersionConflict(null, data);
         }
-        else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save system prompt.'), 'error-message');
+        else appendMessage(data.error || 'Failed to save system prompt.', 'error-message');
       })
-      .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
+      .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
   });
 
   $('#save-memory').on('click', function() {
@@ -2430,21 +2568,21 @@ $(document).ready(function() {
       .then(data => {
         if (data.status === 'success') {
           noteSetVersionFromResponse(data);
-          appendMessage('<strong>System:</strong> Memory saved successfully.', 'system-message');
+          appendMessage('Memory saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
           return handleVersionConflict(null, data);
         }
-        else appendMessage('<strong>Error:</strong> ' + (data.error || 'Failed to save memory.'), 'error-message');
+        else appendMessage(data.error || 'Failed to save memory.', 'error-message');
       })
-      .catch(error => { appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message'); });
+      .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
   });
 
   function sendMessage() {
     const $systemPromptElement = $('#user-system-prompt');
     const $userInputElement = $('#user-input');
     if ($systemPromptElement.length === 0 || $userInputElement.length === 0) {
-      appendMessage('<strong>Error:</strong> Chat system not properly initialized. Please refresh the page.', 'error-message');
+      appendMessage('Chat system not properly initialized. Please refresh the page.', 'error-message');
       return;
     }
     const message = $userInputElement.val().trim();
@@ -2498,8 +2636,8 @@ $(document).ready(function() {
       .then(response => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
-        appendMessage(`<strong>AI:</strong><div class="thinking-container" style="display:none;"><button class="toggle-thinking" style="display:none;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;"></div></div><span class="ai-message-text">Thinking...</span><div class="regenerate-container"><button class="regenerate-button" disabled><i class="bi bi-arrow-repeat"></i></button><button class="play-button"><i class="bi bi-play-fill"></i></button></div>`, 'ai-message');
-        
+        appendMessage({ mode: 'stream' }, 'ai-message');
+
         const $targetElement = $('.ai-message:last-child');
 
         if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
@@ -2663,7 +2801,7 @@ $(document).ready(function() {
           } catch (e) {}
         } else {
           if ($pendingUserMessage.length) $pendingUserMessage.remove();
-          appendMessage('<strong>Error:</strong> ' + escapeHTML(error.message), 'error-message');
+          appendMessage(error && error.message ? error.message : String(error), 'error-message');
         }
         setGeneratingState(false);
         currentAbortController = null;
@@ -2691,13 +2829,13 @@ $(document).ready(function() {
           if (result.ok && result.data && result.data.status === 'success') {
             noteSetVersionFromResponse(result.data);
             $('#chat-content').empty();
-            appendMessage('<strong>System:</strong> Chat history has been reset for set ' + escapeHTML(result.data.set_name) + '.', 'system-message');
+            appendMessage('Chat history has been reset for set ' + (result.data.set_name || '') + '.', 'system-message');
             return;
           }
           const errMsg = (result.data && (result.data.message || result.data.error)) || 'Failed to reset chat';
-          appendMessage(`<strong>Error:</strong> ${escapeHTML(errMsg)}`, 'error-message');
+          appendMessage(errMsg, 'error-message');
         })
-        .catch(error => { appendMessage(`<strong>Error:</strong> ${escapeHTML(error.message)}`, 'error-message'); });
+        .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
     }
   });
 
@@ -2765,10 +2903,10 @@ $(document).ready(function() {
               $('#user-input').val(current + separator + (data.text || '')).focus();
             })
             .catch(function (err) {
-              appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+              appendMessage(err && err.message ? err.message : String(err), 'error-message');
             });
         }).catch(function (err) {
-          appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+          appendMessage(err && err.message ? err.message : String(err), 'error-message');
         });
         return;
       }
@@ -2787,7 +2925,7 @@ $(document).ready(function() {
       }).then(function () {
         $micBtn.addClass('recording').html('&#x23F9;').attr('title', 'Stop Recording');
       }).catch(function (err) {
-        appendMessage('<strong>Error:</strong> Microphone access denied: ' + escapeHTML(err.message), 'error-message');
+        appendMessage('Microphone access denied: ' + (err && err.message ? err.message : String(err)), 'error-message');
       });
     });
   }
@@ -2832,14 +2970,14 @@ $(document).ready(function() {
               $('#user-input').val(current + separator + (data.text || '')).focus();
             })
             .catch(function (err) {
-              appendMessage('<strong>Error:</strong> ' + escapeHTML(err.message), 'error-message');
+              appendMessage(err && err.message ? err.message : String(err), 'error-message');
             });
         };
 
         _mediaRecorder.start();
         $micBtn.addClass('recording').html('&#x23F9;').attr('title', 'Stop Recording');
       }).catch(function (err) {
-        appendMessage('<strong>Error:</strong> Microphone access denied: ' + escapeHTML(err.message), 'error-message');
+        appendMessage('Microphone access denied: ' + (err && err.message ? err.message : String(err)), 'error-message');
       });
     });
   }
@@ -3171,7 +3309,7 @@ $(document).ready(function() {
 
       if (useNativeMicVAD) {
         nativeMicBridge = new NativeMicUtteranceVAD(function (err) {
-          appendMessage('<strong>Error:</strong> ' + err, 'error-message');
+          appendMessage(err == null ? 'Native mic error' : String(err), 'error-message');
         });
         await nativeMicBridge.start();
       } else {
@@ -3193,7 +3331,7 @@ $(document).ready(function() {
       $voiceModeBtn.addClass('active');
       $micBtn.prop('disabled', true);
     } catch (err) {
-      appendMessage('<strong>Error:</strong> Voice mode failed to start: ' + escapeHTML(err.message), 'error-message');
+      appendMessage('Voice mode failed to start: ' + (err && err.message ? err.message : String(err)), 'error-message');
     }
   }
 
@@ -3243,7 +3381,7 @@ $(document).ready(function() {
       voiceModeVAD.start();
     } catch (e) {
       console.error('VAD reinitialize failed:', e);
-      appendMessage('<strong>Error:</strong> Voice detection failed to recover. Please toggle voice mode off and on.', 'error-message');
+      appendMessage('Voice detection failed to recover. Please toggle voice mode off and on.', 'error-message');
       stopVoiceMode();
     }
   }
@@ -3340,7 +3478,7 @@ $(document).ready(function() {
         sendMessage();
       }
     } catch (err) {
-      appendMessage('<strong>Error:</strong> Voice STT failed: ' + escapeHTML(err.message), 'error-message');
+      appendMessage('Voice STT failed: ' + (err && err.message ? err.message : String(err)), 'error-message');
     } finally {
       vadSttInProgress = false;
       if (window.voiceModeActive) {
