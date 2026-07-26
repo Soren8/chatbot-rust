@@ -964,15 +964,24 @@ function closeImageLightbox() {
   document.body.classList.remove('image-lightbox-open');
 }
 
+// Native-only attach: never jQuery .append(value) with a caller-controlled value.
+// jQuery treats strings as HTML (CodeQL js/xss-through-dom); appendChild does not.
+function replaceChildrenNative(parent, node) {
+  if (!parent) return;
+  while (parent.firstChild) parent.removeChild(parent.firstChild);
+  if (node) parent.appendChild(node);
+}
+
 // Append a message to the chat content.
 //
-// Content rules (CodeQL js/xss-through-dom — never feed DOM .val()/.text() into .html()):
+// Content rules (CodeQL js/xss-through-dom — never feed DOM .val()/.text() into HTML sinks):
 // - user-message: plain wire text (optional [IMAGE:data:...] tag)
-// - system-message / error-message: plain text OR a Node/jQuery fragment (no HTML strings)
-// - ai-message: options object for buildAiMessageChildren, or a prebuilt Node/jQuery
+// - system-message / error-message: plain text OR a Node/DocumentFragment (no HTML strings)
+// - ai-message: options object for buildAiMessageChildren only (never raw nodes/strings)
 function appendMessage(message, className, pairIndex) {
   const $chatContent = $('#chat-content');
   const $messageElement = $('<div>').addClass('message ' + className);
+  const host = $messageElement[0];
   const isUser = className && className.indexOf('user-message') !== -1;
   const isAi = className && className.indexOf('ai-message') !== -1;
 
@@ -990,52 +999,57 @@ function appendMessage(message, className, pairIndex) {
 
     // Handle image attachments [IMAGE:data:image/png;base64,...]
     const parsed = parseUserMessageContent(originalText);
-    $messageElement.empty().append(buildUserMessageSpan(parsed.text, parsed.imageSrc));
-    $messageElement.attr('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
+    replaceChildrenNative(host, buildUserMessageSpan(parsed.text, parsed.imageSrc));
+    // Wire-format plain text only (not HTML); setAttribute does not parse markup.
+    host.setAttribute('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
   } else if (isAi) {
-    if (message && (message.nodeType || (typeof message === 'object' && message.jquery))) {
-      $messageElement.empty().append(message);
-    } else if (message && typeof message === 'object') {
-      $messageElement.empty().append(buildAiMessageChildren(message));
-    } else {
-      // Default streaming shell; string HTML is intentionally not accepted.
-      $messageElement.empty().append(buildAiMessageChildren({ mode: 'stream' }));
-    }
+    // Only structured options — never append(message) (jQuery would parse strings as HTML).
+    const aiOpts =
+      message && typeof message === 'object' && !message.nodeType && !message.jquery
+        ? message
+        : { mode: 'stream' };
+    replaceChildrenNative(host, buildAiMessageChildren(aiOpts));
   } else {
     // system-message / error-message: textContent path only
-    $messageElement.empty().append(buildStatusMessageContent(className, message));
+    replaceChildrenNative(host, buildStatusMessageContent(className, message));
   }
 
   if (typeof pairIndex !== 'undefined' && pairIndex !== null) {
-    $messageElement.attr('data-pair-index', pairIndex);
+    host.setAttribute('data-pair-index', String(pairIndex));
   }
 
   if (isUser) {
     try {
-      const $deleteContainer = $('<div>').addClass('regenerate-container');
-      const $editBtn = $('<button>')
-        .attr('type', 'button')
-        .addClass('edit-button')
-        .attr('title', 'Edit message');
+      const deleteContainer = document.createElement('div');
+      deleteContainer.className = 'regenerate-container';
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'edit-button';
+      editBtn.title = 'Edit message';
       const editIcon = document.createElement('i');
       editIcon.className = 'bi bi-pencil-fill';
-      $editBtn[0].appendChild(editIcon);
-      const $deleteBtn = $('<button>')
-        .attr('type', 'button')
-        .addClass('delete-button')
-        .attr('title', 'Delete message');
+      editBtn.appendChild(editIcon);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'delete-button';
+      deleteBtn.title = 'Delete message';
       const delWrap = document.createElement('span');
       delWrap.className = 'delete-icon';
       const delIcon = document.createElement('i');
       delIcon.className = 'bi bi-trash-fill';
       delWrap.appendChild(delIcon);
-      $deleteBtn[0].appendChild(delWrap);
-      $deleteContainer.append($editBtn).append($deleteBtn);
-      $messageElement.append($deleteContainer);
+      deleteBtn.appendChild(delWrap);
+
+      deleteContainer.appendChild(editBtn);
+      deleteContainer.appendChild(deleteBtn);
+      host.appendChild(deleteContainer);
     } catch (e) { console.debug('Failed to add buttons:', e); }
   }
 
-  $chatContent.append($messageElement);
+  // Append the element node we created — not a caller string.
+  if ($chatContent[0]) $chatContent[0].appendChild(host);
   if (typeof __autoScroll !== 'undefined' ? __autoScroll : isAtBottom()) {
     scrollToBottom();
   }
