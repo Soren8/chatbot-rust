@@ -455,8 +455,19 @@ $(function() {
 // Global helpers and state
 function escapeHTML(str) {
   var div = document.createElement('div');
-  div.appendChild(document.createTextNode(str));
+  div.appendChild(document.createTextNode(str == null ? '' : String(str)));
   return div.innerHTML;
+}
+
+// Inverse of the common entities produced by escapeHTML / createTextNode.
+// Used only to undo pre-escaping before highlight.js (which escapes again).
+function decodeHTMLEntities(str) {
+  return String(str == null ? '' : str)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&amp;/g, '&');
 }
 
 // Configure marked with highlight.js
@@ -476,31 +487,35 @@ if (typeof marked !== 'undefined') {
       lang = arguments[1];
     }
 
-    const language = lang || 'plaintext';
+    // Fence language may appear in HTML attributes/text; keep it conservative.
+    const language = String(lang || 'plaintext').replace(/[^a-zA-Z0-9_+#.-]/g, '') || 'plaintext';
+    // renderMarkdown pre-escapes the whole document; undo that for the fence body
+    // so hljs receives raw source and applies its own single escape pass.
+    const rawCode = decodeHTMLEntities(text);
     let highlighted;
     
-    console.debug('Rendering code block:', { language, textLength: text.length });
+    console.debug('Rendering code block:', { language, textLength: rawCode.length });
 
     if (typeof hljs !== 'undefined') {
       try {
         const langObj = hljs.getLanguage(language);
         if (langObj) {
-          highlighted = hljs.highlight(text, { language }).value;
+          highlighted = hljs.highlight(rawCode, { language }).value;
           console.debug('Highlight.js success for:', language);
         } else {
-          highlighted = hljs.highlightAuto(text).value;
+          highlighted = hljs.highlightAuto(rawCode).value;
           console.debug('Highlight.js auto-highlighting used');
         }
       } catch (e) {
         console.error('Highlight.js error:', e);
-        highlighted = escapeHTML(text);
+        highlighted = escapeHTML(rawCode);
       }
     } else {
       console.warn('Highlight.js (hljs) is not defined');
-      highlighted = escapeHTML(text);
+      highlighted = escapeHTML(rawCode);
     }
 
-    return `<div class="code-block-container"><div class="code-block-header"><span>${language}</span><button class="copy-code-button" type="button" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button></div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`;
+    return `<div class="code-block-container"><div class="code-block-header"><span>${escapeHTML(language)}</span><button class="copy-code-button" type="button" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button></div><pre><code class="hljs language-${escapeHTML(language)}">${highlighted}</code></pre></div>`;
   };
 
   marked.use({ 
@@ -514,18 +529,24 @@ if (typeof marked !== 'undefined') {
 }
 
 function renderMarkdown(text) {
+  if (text == null) text = '';
+  else text = String(text);
+  // Escape HTML meta-characters before markdown so values read from the DOM
+  // (e.g. #user-input) cannot be reinterpreted as markup when assigned via .html()
+  // (CodeQL js/xss-through-dom). Markdown syntax is unaffected; raw tags show as text.
+  const safe = escapeHTML(text);
   if (window.APP_DATA && window.APP_DATA.renderMarkdown === false) {
-    return escapeHTML(text).replace(/\n/g, '<br>');
+    return safe.replace(/\n/g, '<br>');
   }
   if (typeof marked !== 'undefined') {
     try {
-      return marked.parse(text);
+      return marked.parse(safe);
     } catch (e) {
       console.error('Markdown parsing error:', e);
-      return escapeHTML(text).replace(/\n/g, '<br>');
+      return safe.replace(/\n/g, '<br>');
     }
   }
-  return escapeHTML(text).replace(/\n/g, '<br>');
+  return safe.replace(/\n/g, '<br>');
 }
 
 // Scroll helpers for the chat content container
