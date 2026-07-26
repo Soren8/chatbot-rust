@@ -453,13 +453,19 @@ $(function() {
 });
 
 // Global helpers and state
+// Pure string replace — do NOT use createTextNode + div.innerHTML here.
+// That pattern is a CodeQL js/xss-through-dom source (DOM text) that later
+// flows into .html() sinks across appendMessage / system errors.
 function escapeHTML(str) {
-  var div = document.createElement('div');
-  div.appendChild(document.createTextNode(str == null ? '' : String(str)));
-  return div.innerHTML;
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-// Inverse of the common entities produced by escapeHTML / createTextNode.
+// Inverse of the common entities produced by escapeHTML.
 // Used only to undo pre-escaping before highlight.js (which escapes again).
 function decodeHTMLEntities(str) {
   return String(str == null ? '' : str)
@@ -468,6 +474,41 @@ function decodeHTMLEntities(str) {
     .replace(/&quot;/g, '"')
     .replace(/&#0*39;/g, "'")
     .replace(/&amp;/g, '&');
+}
+
+// Build the user-message display node without interpreting message text as HTML
+// (CodeQL js/xss-through-dom). Text goes through createTextNode only; images
+// use setAttribute after a data:image allowlist check.
+function buildUserMessageSpan(text, imageSrc) {
+  const span = document.createElement('span');
+  span.className = 'user-message-text';
+
+  const label = document.createElement('strong');
+  label.textContent = 'You:';
+  span.appendChild(label);
+  span.appendChild(document.createTextNode(' '));
+
+  const body = document.createElement('span');
+  body.className = 'user-message-body';
+  const lines = String(text == null ? '' : text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) body.appendChild(document.createElement('br'));
+    body.appendChild(document.createTextNode(lines[i]));
+  }
+  span.appendChild(body);
+
+  if (imageSrc && /^data:image\/[a-zA-Z0-9+.-]+;base64,/.test(imageSrc)) {
+    span.appendChild(document.createElement('br'));
+    const img = document.createElement('img');
+    img.className = 'chat-image';
+    img.setAttribute('src', imageSrc);
+    img.setAttribute('alt', 'Attached image');
+    img.setAttribute('title', 'Click to expand');
+    img.setAttribute('loading', 'lazy');
+    span.appendChild(img);
+  }
+
+  return span;
 }
 
 // Configure marked with highlight.js
@@ -741,15 +782,6 @@ function composeUserMessageContent(text, imageSrc) {
   return body;
 }
 
-// Thumbnail HTML for chat image attachments (click opens full-size lightbox).
-function chatImageHtml(src) {
-  return (
-    '<br><img class="chat-image" src="' +
-    escapeHTML(src) +
-    '" alt="Attached image" title="Click to expand" loading="lazy">'
-  );
-}
-
 function sizeEditTextarea(textarea) {
   if (!textarea) return;
   // Grow with content (capped) so long multiline messages are usable while editing.
@@ -814,11 +846,11 @@ function appendMessage(message, className, pairIndex) {
 
     // Handle image attachments [IMAGE:data:image/png;base64,...]
     const parsed = parseUserMessageContent(originalText);
-    const imageHtml = parsed.imageSrc ? chatImageHtml(parsed.imageSrc) : '';
-
-    $messageElement.html(`<span class="user-message-text"><strong>You:</strong> ${renderMarkdown(parsed.text)}${imageHtml}</span>`);
+    $messageElement.empty().append(buildUserMessageSpan(parsed.text, parsed.imageSrc));
     $messageElement.attr('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
   } else {
+    // Trusted UI chrome (system/error/AI shells). Dynamic fragments must already
+    // be passed through escapeHTML by the caller — never pass raw DOM .val()/.text() here.
     $messageElement.html(message);
   }
 
@@ -2037,10 +2069,9 @@ $(document).ready(function() {
       const pairIndex = userMsgNodes.indexOf($messageElement[0]);
 
       const saved = parseUserMessageContent(newText);
-      const imageHtml = saved.imageSrc ? chatImageHtml(saved.imageSrc) : '';
 
       $messageElement.attr('data-original', newText);
-      $messageElement.find('.user-message-text').html(`<strong>You:</strong> ${renderMarkdown(saved.text)}${imageHtml}`).show();
+      $messageElement.find('.user-message-text').replaceWith(buildUserMessageSpan(saved.text, saved.imageSrc));
       $messageElement.find('.edit-message-container').remove();
       $messageElement.removeData('editImageSrc');
       $messageElement.find('.regenerate-container').show();
