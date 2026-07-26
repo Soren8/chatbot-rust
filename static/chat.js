@@ -541,8 +541,23 @@ function appendPlainTextWithBreaks(parent, text) {
   }
 }
 
-// System/error chrome: fixed label via textContent + body as text or Node.
-// Never assigns caller strings to innerHTML (CodeQL js/xss-through-dom).
+// Allow only same-origin-relative or fixed http(s) paths for status-message links.
+// Rejects javascript:/data:/etc. (never assign caller href strings unchecked).
+function sanitizeStatusLinkHref(href) {
+  const s = String(href == null ? '' : href).trim();
+  if (!s) return null;
+  // Relative app paths only (e.g. /logout). No scheme, no //proto-relative.
+  if (s.charAt(0) === '/' && s.charAt(1) !== '/') {
+    // Strip anything that could break out of the attribute or inject markup.
+    if (/[<>"'`]/.test(s) || /[\s]/.test(s)) return null;
+    return s;
+  }
+  return null;
+}
+
+// System/error chrome: fixed label + plain text only (CodeQL js/xss-through-dom).
+// Optional structured extras (not Nodes/jQuery — never append caller-controlled nodes):
+//   { text, link?: { href, text }, after?: string }
 function buildStatusMessageContent(className, message) {
   const frag = document.createDocumentFragment();
   const isError = className && className.indexOf('error-message') !== -1;
@@ -551,12 +566,34 @@ function buildStatusMessageContent(className, message) {
   frag.appendChild(label);
   frag.appendChild(document.createTextNode(' '));
 
-  if (message && (message.nodeType || (typeof message === 'object' && message.jquery))) {
-    // Trusted extra nodes (e.g. a logout <a>) built by the caller with DOM APIs.
-    const node = message.jquery ? message[0] : message;
-    if (node) frag.appendChild(node);
+  let text = '';
+  let linkHref = null;
+  let linkText = null;
+  let after = null;
+
+  if (message && typeof message === 'object' && !message.nodeType && !message.jquery) {
+    text = message.text == null ? '' : String(message.text);
+    after = message.after == null ? null : String(message.after);
+    if (message.link && typeof message.link === 'object') {
+      linkHref = sanitizeStatusLinkHref(message.link.href);
+      linkText = message.link.text == null ? null : String(message.link.text);
+    }
+  } else if (message != null && typeof message !== 'object') {
+    // Strings / numbers / booleans only — never Nodes (nodeType) or jQuery.
+    text = String(message);
   } else {
-    appendPlainTextWithBreaks(frag, message);
+    text = '';
+  }
+
+  appendPlainTextWithBreaks(frag, text);
+  if (linkHref && linkText != null) {
+    const a = document.createElement('a');
+    a.setAttribute('href', linkHref);
+    a.textContent = linkText;
+    frag.appendChild(a);
+  }
+  if (after != null && after !== '') {
+    appendPlainTextWithBreaks(frag, after);
   }
   return frag;
 }
@@ -976,7 +1013,7 @@ function replaceChildrenNative(parent, node) {
 //
 // Content rules (CodeQL js/xss-through-dom — never feed DOM .val()/.text() into HTML sinks):
 // - user-message: plain wire text (optional [IMAGE:data:...] tag)
-// - system-message / error-message: plain text OR a Node/DocumentFragment (no HTML strings)
+// - system-message / error-message: plain text OR { text, link?, after? } (never Nodes/HTML)
 // - ai-message: options object for buildAiMessageChildren only (never raw nodes/strings)
 function appendMessage(message, className, pairIndex) {
   const $chatContent = $('#chat-content');
@@ -2409,16 +2446,11 @@ $(document).ready(function() {
         })
         .catch(function(error) {
           console.error('Failed to load sets:', error);
-          const frag = document.createDocumentFragment();
-          frag.appendChild(document.createTextNode(
-            'Could not load saved sets: ' + (error.message || String(error)) + ' '
-          ));
-          const a = document.createElement('a');
-          a.setAttribute('href', '/logout');
-          a.textContent = 'Sign out';
-          frag.appendChild(a);
-          frag.appendChild(document.createTextNode(' and log in again if this persists.'));
-          appendMessage(frag, 'error-message');
+          appendMessage({
+            text: 'Could not load saved sets: ' + (error.message || String(error)) + ' ',
+            link: { href: '/logout', text: 'Sign out' },
+            after: ' and log in again if this persists.'
+          }, 'error-message');
           throw error;
         });
     }
