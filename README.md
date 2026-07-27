@@ -30,10 +30,11 @@ Not a single line of code in this repository was written manually. Human work in
 ## Development Workflow
 1. Copy `.config.yml.example` to `.config.yml` and adjust provider settings.
 1. Add API keys to environment variables or copy `.env.example` to `.env` and adjust.
-1. Run the integration and unit tests:
+1. Run the integration and unit tests (host or agent/devcontainer):
    ```bash
-   docker compose run --rm tests cargo test
+   ./scripts/run-tests.sh
    ```
+   This wraps the compose `tests` service and sets `HOST_PROJECT_DIR` when needed so bind mounts work under docker-outside-of-docker (agent sandbox). On a normal host checkout you can also use `docker compose run --rm tests`. See `AGENTS.md` and `.devcontainer/README.md`.
 1. Build the runtime image and start services:
    ```bash
    docker compose up --build

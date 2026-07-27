@@ -5,16 +5,57 @@
 - **The Docker container is the sandbox** for any coding agent (Grok, Claude, Cursor, Aider, …). Isolation is container + secret bind-mount overlays — not per-agent Landlock/bwrap flags.
 - Start with `.devcontainer/agent-container.sh up`, then `.devcontainer/agent-container.sh shell` (or `grok`, or any other agent CLI). See `.devcontainer/README.md`.
 - Host `.env` / `.config.yml` / `data/` are masked for **every** process inside the container.
-- **Docker Compose** from the devcontainer is supported (host socket). Prefer `./scripts/run-tests.sh` for the integration suite (sets `HOST_PROJECT_DIR` for docker-outside-of-docker). The `tests` service does not need workspace `.env`.
+- **Docker Compose** from the devcontainer is supported (host socket). Prefer `./scripts/run-tests.sh` for the integration suite. The `tests` service does not need workspace `.env`.
 - For **`docker compose up`** with live secrets from host `.env`, use a **host** terminal (workspace `.env` in the devcontainer is an empty stub).
-- **Live stack restarts from the agent sandbox:** do **not** run `docker compose up` / rebuild / recreate of the live `webserver` or `voice-service` from the agent sandbox; the host operator owns those restarts. Integration tests **must** still run via the `tests` service (`./scripts/run-tests.sh`) when Docker is available.
-- **`HOST_PROJECT_DIR`:** compose bind mounts are resolved by the host Docker daemon. On a normal host checkout, leave unset (defaults to `.`). Inside an agent sandbox, `./scripts/run-tests.sh` auto-detects the host path for this repo; override with `export HOST_PROJECT_DIR=...` if needed. Never hardcode machine-specific absolute paths in the repo.
+- **Live stack restarts from the agent sandbox:** do **not** run `docker compose up` / rebuild / recreate of the live `webserver` or `voice-service` from the agent sandbox; the host operator owns those restarts. Integration tests **must** still run via the `tests` service when Docker is available (see **Running tests** below).
+
+## Running tests
+
+**Always use Docker** for the full suite. Do not run `cargo test` on the host/agent toolchain as the primary gate — use the compose `tests` service.
+
+### Preferred (host or agent sandbox)
+
+From the repo root:
+
+```bash
+./scripts/run-tests.sh
+```
+
+Optional args replace the default command (same as `docker compose run --rm tests …`):
+
+```bash
+./scripts/run-tests.sh cargo test -p chatbot-core
+./scripts/run-tests.sh cargo test --test login -- --nocapture
+```
+
+### Why `run-tests.sh` (devcontainer / agent sandbox)
+
+The agent environment uses **docker-outside-of-docker** (CLI in the container, daemon on the host). Compose **bind mounts** are resolved by the host daemon. A bare `./` volume from inside the sandbox points at a path that often does **not** match this checkout on the host, so the tests container may miss `Cargo.toml` and sources.
+
+`./scripts/run-tests.sh` fixes that by setting **`HOST_PROJECT_DIR`** to the host path of this repo (via `scripts/resolve-host-path.sh`) before invoking compose. Never hardcode machine-specific absolute paths in the repo or in docs.
+
+| Variable | Meaning |
+|----------|---------|
+| `HOST_PROJECT_DIR` | Host-absolute path of the `chatbot-rust` repo root for bind mounts. Default in compose: `.` (fine on a normal host checkout). In the agent sandbox, set automatically by `run-tests.sh`. Override only if auto-detect fails: `export HOST_PROJECT_DIR=…` |
+
+### Manual equivalent
+
+```bash
+HOST_PROJECT_DIR="$(./scripts/resolve-host-path.sh .)" docker compose run --rm tests
+```
+
+On a **host** checkout (not inside the agent container), plain compose also works because `.` is already the host path:
+
+```bash
+docker compose run --rm tests
+```
+
+Logs: `temp/test-logs/`. Cargo/build caches for the suite: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Build & Run Commands
 
-- Run Rust integration tests (host or agent sandbox): `./scripts/run-tests.sh`
-- Equivalent manual form: `HOST_PROJECT_DIR="$(./scripts/resolve-host-path.sh .)" docker compose run --rm tests`
-- Run in Docker (host terminal): `docker compose --progress plain up --build -d`
+- Integration tests: `./scripts/run-tests.sh` (see **Running tests**)
+- Run the live stack (host terminal): `docker compose --progress plain up --build -d`
 - Do not attempt to build, run, or test outside of the docker environment.
 
 `static/` and templates are **copied into the image at build time** (hermetic Docker). After changing web UI assets only, rebuild and restart the webserver service **on the host**:

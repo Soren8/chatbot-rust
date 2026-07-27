@@ -18,8 +18,10 @@ Host secret files are masked by bind-mount overlays. Use **Docker only** via
 # Convenience: Grok TUI (optional; installed when INSTALL_GROK=1)
 .devcontainer/agent-container.sh grok
 
-# Tests
-.devcontainer/agent-container.sh exec docker compose run --rm tests cargo test
+# Integration tests (preferred — works host and agent sandbox)
+.devcontainer/agent-container.sh exec ./scripts/run-tests.sh
+# or, already inside the container shell:
+./scripts/run-tests.sh
 
 # Stop
 .devcontainer/agent-container.sh down

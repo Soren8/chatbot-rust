@@ -737,7 +737,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 
 ## PR Plan
 
-Incremental, independently reviewable PRs. Each PR should add tests first where fixing bugs (per AGENTS.md bug protocol) and run `docker compose run --rm tests cargo test` after `docker compose --progress plain up --build -d`.
+Incremental, independently reviewable PRs. Each PR should add tests first where fixing bugs (per AGENTS.md bug protocol) and run `./scripts/run-tests.sh` after `docker compose --progress plain up --build -d` (host terminal for the live stack).
 
 ### PR 1: History domain types + pure ops (no redb yet)
 
