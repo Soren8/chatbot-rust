@@ -62,6 +62,32 @@ Agents using **Read/grep** never see real secrets. **Compose** invoked from `/wo
 - **`tests` service** — does not depend on workspace `.env` (keys are set in `docker-compose.yml`).
 - **GPU / voice-service** — still runs on the host daemon; no extra GPU wiring in the devcontainer.
 
+### Running the integration suite inside the agent container
+
+Compose bind mounts are resolved by the **host** Docker daemon. A relative `./` volume from inside this container often does **not** map to the real checkout on the host (classic docker-outside-of-docker path mismatch). The repo therefore parameterizes the `tests` service with **`HOST_PROJECT_DIR`** (defaults to `.` on a normal host checkout).
+
+**Always prefer:**
+
+```bash
+./scripts/run-tests.sh
+```
+
+That script:
+
+1. Resolves this repo’s host path via `scripts/resolve-host-path.sh` (docker inspect / mountinfo — no machine-specific paths in git).
+2. Exports `HOST_PROJECT_DIR` when unset.
+3. Runs `docker compose run --rm tests` (full workspace suite by default).
+
+Manual form if you need to call compose yourself:
+
+```bash
+HOST_PROJECT_DIR="$(./scripts/resolve-host-path.sh .)" docker compose run --rm tests
+```
+
+Do **not** hardcode host home directories (e.g. `/home/<user>/…`) in scripts or docs — other clones must work. Override only when auto-detect fails: `export HOST_PROJECT_DIR=/path/on/host`.
+
+Logs land under `temp/test-logs/`. See also root `AGENTS.md` → **Running tests**.
+
 ## Layout
 
 | Path | Purpose |
