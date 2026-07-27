@@ -45,5 +45,5 @@
     }
   },
   "runArgs": ["--init"],
-  "postStartCommand": "echo 'Tests: ./scripts/run-tests.sh (sets HOST_PROJECT_DIR for docker-outside-of-docker). Full stack with host secrets: compose up on the HOST.'"
+  "postStartCommand": "echo 'Tests: ./scripts/run-tests.sh. Live webserver/voice: host operator only (not from this sandbox).'"
 }

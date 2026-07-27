@@ -34,11 +34,7 @@ alias agent-dev='$PWD/.devcontainer/agent-container.sh'  # run from repo root
 # then: agent-dev up && agent-dev shell
 ```
 
-**Full stack with host `.env`:** on the host (not in the agent container):
-
-```bash
-docker compose --progress plain up --build -d
-```
+**Full stack (webserver / voice-service):** only on the **host**, with real `.env` — not from the agent container. Agents must not run live compose up/build; ask the user to redeploy when needed. See root `AGENTS.md`.
 
 ## Cursor / VS Code (optional)
 

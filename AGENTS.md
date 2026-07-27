@@ -5,9 +5,8 @@
 - **The Docker container is the sandbox** for any coding agent (Grok, Claude, Cursor, Aider, …). Isolation is container + secret bind-mount overlays — not per-agent Landlock/bwrap flags.
 - Start with `.devcontainer/agent-container.sh up`, then `.devcontainer/agent-container.sh shell` (or `grok`, or any other agent CLI). See `.devcontainer/README.md`.
 - Host `.env` / `.config.yml` / `data/` are masked for **every** process inside the container.
-- **Docker Compose** from the devcontainer is supported (host socket). Prefer `./scripts/run-tests.sh` for the integration suite. The `tests` service does not need workspace `.env`.
-- For **`docker compose up`** with live secrets from host `.env`, use a **host** terminal (workspace `.env` in the devcontainer is an empty stub).
-- **Live stack restarts from the agent sandbox:** do **not** run `docker compose up` / rebuild / recreate of the live `webserver` or `voice-service` from the agent sandbox; the host operator owns those restarts. Integration tests **must** still run via the `tests` service when Docker is available (see **Running tests** below).
+- **Docker from the devcontainer:** the host Docker socket is available for the **`tests` service only** (see **Running tests**). The `tests` service does not need workspace `.env`.
+- **Live stack (`webserver`, `voice-service`):** agents must **not** run `docker compose up`, `build`, or recreate for these services. Sandbox `.env` / `.config.yml` are stubs/overlays, so compose from here would inject empty secrets and wrong mounts. After code or `static/` changes that need a running server, **tell the user** to rebuild/restart on the **host** (they have real `.env` and bind paths). Do not paste or invent host deploy commands as something the agent will run.
 
 ## Running tests
 
