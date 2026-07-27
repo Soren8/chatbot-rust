@@ -53,17 +53,11 @@ Logs: `temp/test-logs/`. Cargo/build caches for the suite: `temp/.cargo/`, `temp
 
 ## Build & Run Commands
 
-- Integration tests: `./scripts/run-tests.sh` (see **Running tests**)
-- Run the live stack (host terminal): `docker compose --progress plain up --build -d`
-- Do not attempt to build, run, or test outside of the docker environment.
+- Integration tests (agent or host): `./scripts/run-tests.sh` (see **Running tests**)
+- Do not run `cargo test` / app binaries outside Docker as the verification gate.
+- Do **not** build, up, or restart the live `webserver` / `voice-service` stack from the agent sandbox. Ask the **user** to do that on the host when a live deploy is needed.
 
-`static/` and templates are **copied into the image at build time** (hermetic Docker). After changing web UI assets only, rebuild and restart the webserver service **on the host**:
-
-```bash
-docker compose --progress plain up --build -d webserver
-```
-
-The Capacitor app loads JS/CSS from the running server; until `webserver` is rebuilt, the phone will keep serving the previous image’s static files.
+`static/` and templates are **copied into the image at build time** (hermetic Docker). UI/asset changes do not show on a running phone or browser until the user rebuilds/restarts **webserver on the host**. Agents should note that in the handoff, not run compose themselves.
 
 ## Code Style Guidelines
 - **Imports**: Standard library first, then third-party, then local modules
@@ -104,7 +98,7 @@ The Capacitor app loads JS/CSS from the running server; until `webserver` is reb
 ## Important Notes
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Git commit at the completion of each full task (local commit only; see **Git** above).
-- When Docker is available, run integration tests via `./scripts/run-tests.sh` (handles `HOST_PROJECT_DIR` for agent sandboxes). Do not rebuild/restart the live stack from the agent sandbox; the host operator reality-checks the running environment.
+- When Docker is available, run integration tests via `./scripts/run-tests.sh` (handles `HOST_PROJECT_DIR` for agent sandboxes). Never rebuild/restart the live stack from the sandbox; the user does host deploys.
 - Do not moralize about the user's language or tone.
 - Preserve the `temp/.cargo/` cache directory; do not delete it because it stores Rust build artifacts used by other agents. If it is missing, recreate it inside `temp/` (never at repo root).
 - Keep Docker build caches under `temp/.docker/`; create that directory inside `temp/` when needed so the repository root stays free of sandbox artefacts.
