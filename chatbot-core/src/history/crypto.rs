@@ -5,7 +5,7 @@
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, Payload};
 use aes_gcm::Aes256Gcm;
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::Rng;
 use sha2::Sha256;
 use thiserror::Error;
 

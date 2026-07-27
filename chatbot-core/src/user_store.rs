@@ -12,7 +12,7 @@ use bcrypt::verify;
 use hmac::{Hmac, KeyInit, Mac};
 use once_cell::sync::Lazy;
 use pbkdf2::pbkdf2_hmac;
-use rand::RngCore;
+use rand::Rng;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -10,7 +10,7 @@ use std::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;

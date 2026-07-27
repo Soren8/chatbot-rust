@@ -9,7 +9,7 @@ use axum::{
 };
 use chatbot_core::{config, session};
 use once_cell::sync::Lazy;
-use rand::RngCore;
+use rand::Rng;
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
