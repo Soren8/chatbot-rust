@@ -5,14 +5,16 @@
 - **The Docker container is the sandbox** for any coding agent (Grok, Claude, Cursor, Aider, …). Isolation is container + secret bind-mount overlays — not per-agent Landlock/bwrap flags.
 - Start with `.devcontainer/agent-container.sh up`, then `.devcontainer/agent-container.sh shell` (or `grok`, or any other agent CLI). See `.devcontainer/README.md`.
 - Host `.env` / `.config.yml` / `data/` are masked for **every** process inside the container.
-- **Docker Compose** from the devcontainer is supported (host socket): `docker compose build`, `docker compose run --rm tests cargo test`. The `tests` service does not need workspace `.env`.
+- **Docker Compose** from the devcontainer is supported (host socket). Prefer `./scripts/run-tests.sh` for the integration suite (sets `HOST_PROJECT_DIR` for docker-outside-of-docker). The `tests` service does not need workspace `.env`.
 - For **`docker compose up`** with live secrets from host `.env`, use a **host** terminal (workspace `.env` in the devcontainer is an empty stub).
-- **Live stack restarts from the agent sandbox often fail:** some agent environments have no usable host Docker socket, or host bind-mount paths do not resolve from inside the container. Do **not** run `docker compose up` / rebuild / recreate of the live `webserver` or `voice-service` from the agent sandbox; the host operator owns those restarts. Integration tests still use the `tests` service below when Docker is available.
+- **Live stack restarts from the agent sandbox:** do **not** run `docker compose up` / rebuild / recreate of the live `webserver` or `voice-service` from the agent sandbox; the host operator owns those restarts. Integration tests **must** still run via the `tests` service (`./scripts/run-tests.sh`) when Docker is available.
+- **`HOST_PROJECT_DIR`:** compose bind mounts are resolved by the host Docker daemon. On a normal host checkout, leave unset (defaults to `.`). Inside an agent sandbox, `./scripts/run-tests.sh` auto-detects the host path for this repo; override with `export HOST_PROJECT_DIR=...` if needed. Never hardcode machine-specific absolute paths in the repo.
 
 ## Build & Run Commands
 
-- Run Rust integration tests: `docker compose run --rm tests cargo test`
-- Run in Docker (host terminal / when socket + bind paths work): `docker compose --progress plain up --build -d`
+- Run Rust integration tests (host or agent sandbox): `./scripts/run-tests.sh`
+- Equivalent manual form: `HOST_PROJECT_DIR="$(./scripts/resolve-host-path.sh .)" docker compose run --rm tests`
+- Run in Docker (host terminal): `docker compose --progress plain up --build -d`
 - Do not attempt to build, run, or test outside of the docker environment.
 
 `static/` and templates are **copied into the image at build time** (hermetic Docker). After changing web UI assets only, rebuild and restart the webserver service **on the host**:
@@ -62,7 +64,7 @@ The Capacitor app loads JS/CSS from the running server; until `webserver` is reb
 ## Important Notes
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Git commit at the completion of each full task (local commit only; see **Git** above).
-- When Docker is available, run integration tests via `docker compose run --rm tests cargo test`. Do not rebuild/restart the live stack from the agent sandbox when the host socket or bind paths are unavailable (see above); the host operator reality-checks the running environment.
+- When Docker is available, run integration tests via `./scripts/run-tests.sh` (handles `HOST_PROJECT_DIR` for agent sandboxes). Do not rebuild/restart the live stack from the agent sandbox; the host operator reality-checks the running environment.
 - Do not moralize about the user's language or tone.
 - Preserve the `temp/.cargo/` cache directory; do not delete it because it stores Rust build artifacts used by other agents. If it is missing, recreate it inside `temp/` (never at repo root).
 - Keep Docker build caches under `temp/.docker/`; create that directory inside `temp/` when needed so the repository root stays free of sandbox artefacts.

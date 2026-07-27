@@ -87,9 +87,12 @@ services:
       context: .
       target: test
       cache_from:
-        - type=local,src=./temp/.docker/tests
+        # HOST_PROJECT_DIR: host abs path when using docker-outside-of-docker
+        # (agent sandbox). Defaults to "." on a normal host checkout.
+        # Prefer: ./scripts/run-tests.sh (sets HOST_PROJECT_DIR automatically).
+        - type=local,src=${HOST_PROJECT_DIR:-.}/temp/.docker/tests
       cache_to:
-        - type=local,dest=./temp/.docker/tests,mode=max
+        - type=local,dest=${HOST_PROJECT_DIR:-.}/temp/.docker/tests,mode=max
     working_dir: /app
     command: >-
       bash -c '
@@ -111,8 +114,11 @@ services:
       RATE_LIMIT_PER_USER_PER_MINUTE: "0"
       RATE_LIMIT_GLOBAL_PER_MINUTE: "0"
     volumes:
-      - ./:/app
-      - ./temp/test-logs:/var/log/chatbot-tests
-      - ./temp/.cargo/registry:/opt/cargo/registry
-      - ./temp/.cargo/git:/opt/cargo/git
-      - ./temp/.cargo/target:/app/.cargo/target
+      # Bind mounts are resolved by the *host* Docker daemon. Relative "." works
+      # on the host; from an agent container set HOST_PROJECT_DIR to this repo's
+      # host path (see scripts/run-tests.sh / scripts/resolve-host-path.sh).
+      - ${HOST_PROJECT_DIR:-.}:/app
+      - ${HOST_PROJECT_DIR:-.}/temp/test-logs:/var/log/chatbot-tests
+      - ${HOST_PROJECT_DIR:-.}/temp/.cargo/registry:/opt/cargo/registry
+      - ${HOST_PROJECT_DIR:-.}/temp/.cargo/git:/opt/cargo/git
+      - ${HOST_PROJECT_DIR:-.}/temp/.cargo/target:/app/.cargo/target
