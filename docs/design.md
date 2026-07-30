@@ -121,6 +121,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Fish Speech S2 — natively supports low TTFA streaming; evaluate for production use (code path exists; not production default).
   - [ ] Qwen3-TTS — **partial**: vertically integrated into `chatbot-cuda` (`tts_provider: "qwen"`, CustomVoice model, `tts_voice` default "Ryan"). Not complete as a low-TTFA streaming peer to Kokoro: official package synthesizes the full waveform before return (no streaming API); community streaming forks need audit, or treat Fish Speech S2 as the streaming alternative.
   - [x] Parakeet STT — NVIDIA Parakeet TDT 0.6B v2 for speech-to-text, vertically integrated into `chatbot-cuda` voice-service.
+  - **Webserver TTS surface (not a public API product):** browsers and native clients use only `POST /tts` (CSRF + deploy-time access policy) then `GET /tts_stream/{token}` for playback. There is no unauthenticated `/api/tts*` on the webserver; the GPU voice-service HTTP API is for the webserver to call as a backend client only. Gate who may use TTS with `tts_access` in `.config.yml` (or `TTS_ACCESS`): `anyone` (default, guests OK — good for LAN/local models), `authenticated` (logged-in only), or `premium` (premium tier only).
 
 - **Documentation**
   - [ ] Host a `/docs` page or integrate with tooling like Redoc to expose interactive docs.

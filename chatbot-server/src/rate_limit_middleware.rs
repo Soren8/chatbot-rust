@@ -18,8 +18,6 @@ const LIMITED_PATHS: &[&str] = &[
     "/tts",
     "/tts_stream",
     "/stt",
-    "/api/tts",
-    "/api/tts/stream",
     "/signup",
     "/login",
 ];

@@ -88,6 +88,30 @@ impl ProviderConfig {
     }
 }
 
+/// Who may call the webserver `POST /tts` endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtsAccess {
+    /// Guests and logged-in users (default; good for LAN / local models).
+    Anyone,
+    /// Session must have a logged-in username.
+    Authenticated,
+    /// Logged-in user with `premium` tier in the user store.
+    Premium,
+}
+
+impl TtsAccess {
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "anyone" | "guest" | "all" => Self::Anyone,
+            "authenticated" | "auth" | "logged_in" | "login" => Self::Authenticated,
+            "premium" => Self::Premium,
+            other => panic!(
+                "invalid tts_access '{other}'; expected one of: anyone, authenticated, premium"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub secret_key: String,
@@ -98,6 +122,8 @@ pub struct AppConfig {
     pub tts_voice: Option<String>,
     pub voice_service_base_url: String,
     pub stt_enabled: bool,
+    /// Policy for who may use TTS on the webserver.
+    pub tts_access: TtsAccess,
     pub default_system_prompt: String,
     pub session_timeout: u64,
     pub csrf: bool,
@@ -207,6 +233,8 @@ struct RawConfig {
     tts_voice: Option<String>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     stt_enabled: Option<bool>,
+    #[serde(default)]
+    tts_access: Option<String>,
     #[serde(default)]
     voice_service_host: Option<String>,
     #[serde(default)]
@@ -393,6 +421,13 @@ fn load_app_config() -> AppConfig {
     let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
     let tts_voice = raw_config.tts_voice;
     let stt_enabled = raw_config.stt_enabled.unwrap_or(true);
+    let tts_access = if let Ok(env_value) = env::var("TTS_ACCESS") {
+        TtsAccess::parse(&env_value)
+    } else if let Some(ref value) = raw_config.tts_access {
+        TtsAccess::parse(value)
+    } else {
+        TtsAccess::Anyone
+    };
 
     let brave_api_key = env::var("BRAVE_API_KEY").ok().filter(|v| !v.is_empty());
 
@@ -421,6 +456,7 @@ fn load_app_config() -> AppConfig {
         providers = providers_by_name.len(),
         default_provider = %default_provider_name,
         csrf_enabled = csrf,
+        tts_access = ?tts_access,
         rate_limit_per_user_per_minute,
         rate_limit_global_per_minute,
         "configuration loaded"
@@ -435,6 +471,7 @@ fn load_app_config() -> AppConfig {
         tts_voice,
         voice_service_base_url,
         stt_enabled,
+        tts_access,
         default_system_prompt,
         session_timeout,
         csrf,
@@ -542,6 +579,10 @@ fn validate_raw_config(config: &RawConfig) {
 
     if let Some(tts) = config.tts_provider.as_deref() {
         validate_tts_provider(tts);
+    }
+
+    if let Some(access) = config.tts_access.as_deref() {
+        let _ = TtsAccess::parse(access);
     }
 
     for (idx, provider) in config.llms.iter().enumerate() {
@@ -1201,7 +1242,8 @@ mod tests {
         let config = app_config();
         assert_eq!(config.tts_provider, "kokoro");
         assert_eq!(config.session_timeout, 3600);
-        assert!(!config.csrf);
+        assert!(config.csrf);
+        assert_eq!(config.tts_access, TtsAccess::Anyone);
         assert_eq!(
             config.default_provider().provider_name,
             "Local LLM (Free Tier)"

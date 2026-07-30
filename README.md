@@ -8,6 +8,7 @@ Not a single line of code in this repository was written manually. Human work in
 
 ## Features
 - Axum server with configurable CSRF-protected routes (enabled by default) for chat, authentication, set management, and TTS.
+- Browser TTS via `POST /tts` → `GET /tts_stream/{token}` only; access gated by deploy config `tts_access` (`anyone` | `authenticated` | `premium`).
 - `chatbot-core` crate encapsulating chat logic, config, history (redb), persistence helpers, and session management.
 - Static assets rendered with Minijinja and served from `static/`.
 - Async provider implementations (OpenAI-compatible, XAI) in `chatbot-server` with streaming support and configurable defaults.

@@ -7,7 +7,11 @@ use axum::{
     extract::Path,
     http::{header, Method, Request, Response, StatusCode},
 };
-use chatbot_core::{config, session};
+use chatbot_core::{
+    config::{self, TtsAccess},
+    session,
+    user_store::UserStore,
+};
 use once_cell::sync::Lazy;
 use rand::Rng;
 use regex::Regex;
@@ -18,7 +22,7 @@ use tracing::{debug, error};
 
 use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
-    map_serialization_err, map_session_err, HttpError,
+    map_serialization_err, map_session_err, map_user_store_err, HttpError,
 };
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
@@ -56,8 +60,6 @@ static PENDING_TTS: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock:
 struct ApiTtsRequest {
     #[serde(default)]
     text: Option<String>,
-    #[serde(default)]
-    voice_file: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,11 +118,8 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
+    let username = ensure_tts_access(cookie_header.as_deref())?;
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
-    let username = session::session_context(cookie_header.as_deref())
-        .ok()
-        .and_then(|ctx| ctx.username)
-        .unwrap_or_else(|| "guest".to_string());
 
     tracing::info!(username = %username, ip = %ip, "TTS token request");
 
@@ -277,125 +276,48 @@ fn apply_pcm_fade(pcm: &mut [u8], sample_rate: u32) {
     }
 }
 
-pub async fn handle_api_tts(
-    request: Request<Body>,
-) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
+/// Enforce deploy-time `tts_access` policy. Returns a log label (username or "guest").
+fn ensure_tts_access(cookie_header: Option<&str>) -> Result<String, HttpError> {
+    let username = session::session_context(cookie_header)
+        .ok()
+        .and_then(|ctx| ctx.username);
+    let label = username
+        .clone()
+        .unwrap_or_else(|| "guest".to_string());
+
+    match config::app_config().tts_access {
+        TtsAccess::Anyone => Ok(label),
+        TtsAccess::Authenticated => {
+            if username.is_none() {
+                return Err(api_error(
+                    StatusCode::FORBIDDEN,
+                    "TTS requires login",
+                ));
+            }
+            Ok(label)
+        }
+        TtsAccess::Premium => {
+            let Some(name) = username.as_deref() else {
+                return Err(api_error(
+                    StatusCode::FORBIDDEN,
+                    "TTS requires a Premium account",
+                ));
+            };
+            let store = UserStore::new().map_err(|err| {
+                map_user_store_err(err, "tts::access::open_store", "Unable to check TTS access")
+            })?;
+            let tier = store.user_tier(name).map_err(|err| {
+                map_user_store_err(err, "tts::access::user_tier", "Unable to check TTS access")
+            })?;
+            if !tier.eq_ignore_ascii_case("premium") {
+                return Err(api_error(
+                    StatusCode::FORBIDDEN,
+                    "TTS requires a Premium account",
+                ));
+            }
+            Ok(label)
+        }
     }
-
-    let (parts, body) = request.into_parts();
-    let ip = crate::chat_utils::get_ip(&parts.headers, &parts.extensions);
-    tracing::info!(ip = %ip, "API TTS request");
-
-    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES)
-        .await
-        .map_err(|err| map_body_read_err(err, "tts::api_tts"))?;
-
-    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|err| map_json_parse_err(err, "tts::api_tts"))?;
-
-    let backend_request = match build_backend_request(payload) {
-        Ok(request) => request,
-        Err(message) => return Err(api_error(StatusCode::BAD_REQUEST, message)),
-    };
-
-    let config = config::app_config();
-    debug!(provider = %config.tts_provider, "handling /api/tts request");
-    if config.tts_provider == "qwen" {
-        return handle_qwen_tts(backend_request.text, &config).await;
-    }
-    if config.tts_provider == "kokoro" {
-        return handle_kokoro_tts(backend_request.text, &config).await;
-    }
-    // DEPRECATED: legacy external TTS provider
-    if config.tts_provider == "fish" {
-        return handle_fish_speech(backend_request.text).await;
-    }
-
-    debug!("using legacy external backend for /api/tts");
-    let response = post_backend("/api/tts/stream", &backend_request).await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.bytes().await.map_err(|err| {
-            error!(?err, "failed to read /api/tts backend error body");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend response error")
-        })?;
-        let message = extract_backend_error(status, &body);
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
-    }
-
-    let pcm_bytes = response.bytes().await.map_err(|err| {
-        error!(?err, "failed to read /api/tts backend body");
-        api_error(StatusCode::BAD_GATEWAY, "TTS backend response error")
-    })?;
-
-    let wav_bytes = pcm_to_wav(&pcm_bytes, SAMPLE_RATE_HZ);
-
-    build_audio_response(wav_bytes)
-}
-
-pub async fn handle_api_tts_stream(
-    request: Request<Body>,
-) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
-    let (_, body) = request.into_parts();
-    let body_bytes = body::to_bytes(body, MAX_BODY_BYTES)
-        .await
-        .map_err(|err| map_body_read_err(err, "tts::api_tts_stream"))?;
-
-    let payload: ApiTtsRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|err| map_json_parse_err(err, "tts::api_tts_stream"))?;
-
-    let backend_request = match build_backend_request(payload) {
-        Ok(request) => request,
-        Err(message) => return Err(api_error(StatusCode::BAD_REQUEST, message)),
-    };
-
-    let config = config::app_config();
-    if config.tts_provider == "qwen" {
-        return handle_qwen_tts(backend_request.text, &config).await;
-    }
-    if config.tts_provider == "kokoro" {
-        return handle_kokoro_tts_stream(backend_request.text, &config).await;
-    }
-    // DEPRECATED: legacy external TTS provider
-    if config.tts_provider == "fish" {
-        return handle_fish_speech_stream(backend_request.text).await;
-    }
-
-    let response = post_backend("/api/tts/stream", &backend_request).await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.bytes().await.map_err(|err| {
-            error!(?err, "failed to read /api/tts/stream backend error body");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend response error")
-        })?;
-        let message = extract_backend_error(status, &body);
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
-    }
-
-    let stream = response.bytes_stream();
-
-    // For Kokoro, we need to prepend a WAV header because it returns raw PCM.
-    let header_bytes = pcm_to_wav_header(0x7FFF_FFFF, SAMPLE_RATE_HZ);
-    let header_stream = futures_util::stream::once(async move {
-        Ok::<_, reqwest::Error>(axum::body::Bytes::from(header_bytes))
-    });
-    let combined_stream = futures_util::stream::StreamExt::chain(header_stream, stream);
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "audio/wav")
-        .header(
-            header::CONTENT_DISPOSITION,
-            "inline; filename=tts-stream.wav",
-        )
-        .body(Body::from_stream(combined_stream))
-        .map_err(|err| map_response_build_err(err, "tts::api_tts_stream::response"))
 }
 
 async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
@@ -437,52 +359,6 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
 
     build_audio_response(bytes.to_vec())
 }
-
-async fn handle_fish_speech_stream(text: String) -> Result<Response<Body>, HttpError> {
-    let request = FishSpeechRequest {
-        text,
-        reference_id: "default".to_string(),
-        streaming: true,
-        format: "wav".to_string(),
-    };
-
-    let config = config::app_config();
-    let base = config.tts_base_url.trim_end_matches('/');
-    let url = format!("{base}/v1/tts");
-
-    debug!(url = %url, "sending request to fish speech backend");
-
-    let response = HTTP_CLIENT
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach Fish Speech backend");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let bytes = response.bytes().await.unwrap_or_default();
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "Fish Speech backend returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
-    }
-
-    let stream = response.bytes_stream();
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "audio/wav")
-        .header(
-            header::CONTENT_DISPOSITION,
-            "inline; filename=tts-stream.wav",
-        )
-        .body(Body::from_stream(stream))
-        .map_err(|err| map_response_build_err(err, "tts::fish_speech_stream::response"))
-}
-
 
 async fn handle_qwen_tts(
     text: String,
@@ -587,89 +463,6 @@ async fn handle_kokoro_tts(
     apply_pcm_fade(&mut bytes, sample_rate);
     let wav_bytes = pcm_to_wav(&bytes, sample_rate);
     build_audio_response(wav_bytes)
-}
-
-async fn handle_kokoro_tts_stream(
-    text: String,
-    config: &config::AppConfig,
-) -> Result<Response<Body>, HttpError> {
-    let base = config.voice_service_base_url.trim_end_matches('/');
-    let url = format!("{base}/v1/tts/kokoro/stream");
-
-    let voice = config.tts_voice.clone().unwrap_or_else(|| "af_heart".to_string());
-    let request = KokoroTtsRequest { text, voice };
-
-    debug!(url = %url, "sending streaming request to Kokoro TTS voice service");
-
-    let response = HTTP_CLIENT
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach Kokoro TTS voice service (stream)");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let bytes = response.bytes().await.unwrap_or_default();
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "Kokoro TTS stream returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
-    }
-
-    let sample_rate: u32 = response
-        .headers()
-        .get("X-Sample-Rate")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(24_000);
-
-    let stream = response.bytes_stream();
-    let header_bytes = pcm_to_wav_header(0x7FFF_FFFF, sample_rate);
-    let header_stream = futures_util::stream::once(async move {
-        Ok::<_, reqwest::Error>(axum::body::Bytes::from(header_bytes))
-    });
-    let combined_stream = futures_util::stream::StreamExt::chain(header_stream, stream);
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "audio/wav")
-        .header(header::CONTENT_DISPOSITION, "inline; filename=tts-stream.wav")
-        .body(Body::from_stream(combined_stream))
-        .map_err(|err| map_response_build_err(err, "tts::kokoro_stream::response"))
-}
-
-fn build_backend_request(payload: ApiTtsRequest) -> Result<BackendRequest, String> {
-    let raw_text = payload.text.unwrap_or_default().trim().to_owned();
-
-    let cleaned = sanitize_text(&raw_text);
-
-    if cleaned.is_empty() {
-        return Err("No text provided".to_string());
-    }
-
-    let config = config::app_config();
-    
-    // For kokoro: use tts_voice from config, or None by default (let backend choose)
-    // For fish speech: voice_file is not used anyway (uses reference_id instead)
-    let voice_file = payload
-        .voice_file
-        .and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_owned())
-            }
-        })
-        .or(config.tts_voice.clone());
-
-    Ok(BackendRequest {
-        text: cleaned,
-        voice_file,
-    })
 }
 
 fn sanitize_text(input: &str) -> String {

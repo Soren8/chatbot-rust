@@ -9,6 +9,10 @@ tts_provider: "kokoro"  # Options: kokoro, qwen, fish
 tts_voice: "bf_emma"   # Voice for Kokoro. Other options: af_heart, af_bella, am_adam, bm_george
 # tts_voice: "Ryan"     # Voice preset for Qwen3-TTS (qwen provider)
 stt_enabled: true
+# Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
+# Default is anyone — suitable for LAN / local-models deploys. Use authenticated or
+# premium on internet-facing hosts that pay for GPU voice.
+tts_access: anyone
 
 # Voice service connection (the vertically integrated chatbot-cuda container)
 voice_service_host: localhost
@@ -20,7 +24,9 @@ voice_gpu_device: 0
 default_llm: "Local LLM (Free Tier)"
 default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
 session_timeout: 3600
-csrf: off # Set to 'off' only for development (localhost over HTTP); this also disables the 'Secure' flag on session cookies.
+# CSRF is on by default when omitted. Keep on in real deploys (also sets Secure cookies).
+# Set to 'off' only if you must run over plain HTTP and Secure cookies break your setup.
+csrf: on
 save_thoughts: true
 send_thoughts: false
 

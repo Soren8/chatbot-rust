@@ -88,8 +88,6 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/tts", post(tts::handle_tts))
         .route("/tts_stream/{token}", get(tts::handle_tts_stream))
         .route("/stt", post(stt::handle_stt))
-        .route("/api/tts", post(tts::handle_api_tts))
-        .route("/api/tts/stream", post(tts::handle_api_tts_stream))
         .route("/regenerate", post(regenerate::handle_regenerate))
         .layer(middleware::from_fn(rate_limit_middleware::middleware));
 
