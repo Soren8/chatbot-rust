@@ -25,7 +25,7 @@ pbkdf2 = "0.13.0"
 rand = "0.10.2"
 sha2 = "0.11.0"
 hmac = "0.13.0"
-dashmap = "5.5.3"
+dashmap = "6.2.1"
 zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 redb = "4.1.0"
 # redb 4 cannot open v2 files; keep 2.6 solely to rewrite legacy DBs to v3 on startup.
