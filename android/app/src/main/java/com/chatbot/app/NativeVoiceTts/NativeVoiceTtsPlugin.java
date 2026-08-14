@@ -1,10 +1,7 @@
 package com.chatbot.app;
 
-import android.content.Context;
 import android.media.AudioAttributes;
-import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
-import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.os.Build;
 import android.util.Log;
@@ -33,6 +30,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs, USAGE_VOICE_COMMUNICATION.
  * Each URL is downloaded fully and parsed before PCM is written (matches desktop decodeAudioData).
+ * Does not request audio focus or change {@code AudioManager} mode — call-speaker routing is
+ * owned by {@code NativeMic.enterVoiceRoute} for the whole voice-mode session.
  */
 @CapacitorPlugin(name = "NativeVoiceTts")
 public class NativeVoiceTtsPlugin extends Plugin {
@@ -52,16 +51,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private volatile AudioTrack audioTrack;
     private volatile int trackSampleRate = DEFAULT_SAMPLE_RATE;
 
-    private AudioManager audioManager;
-    private AudioFocusRequest audioFocusRequest;
-    private boolean hasAudioFocus;
-
-    @Override
-    public void load() {
-        super.load();
-        audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-    }
-
     @PluginMethod
     public void beginSession(PluginCall call) {
         stopPlaybackInternal(false);
@@ -71,7 +60,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
         playbackStartedNotified.set(false);
         bytesWritten.set(0);
         sessionActive.set(true);
-        requestAudioFocus();
         startWorker();
         call.resolve();
     }
@@ -112,7 +100,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
         playbackStartedNotified.set(false);
         bytesWritten.set(0);
         sessionActive.set(true);
-        requestAudioFocus();
         urlQueue.offer(url.trim());
         endOfQueueMarked.set(true);
         startWorker();
@@ -123,28 +110,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
     public void stop(PluginCall call) {
         stopPlaybackInternal(true);
         call.resolve();
-    }
-
-    private void requestAudioFocus() {
-        if (audioManager == null || hasAudioFocus) {
-            return;
-        }
-        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                .setOnAudioFocusChangeListener(change -> Log.d(TAG, "audio focus change: " + change))
-                .build();
-        int result = audioManager.requestAudioFocus(audioFocusRequest);
-        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
-    }
-
-    private void abandonAudioFocus() {
-        if (audioManager != null && audioFocusRequest != null && hasAudioFocus) {
-            audioManager.abandonAudioFocusRequest(audioFocusRequest);
-            hasAudioFocus = false;
-        }
     }
 
     private void startWorker() {
@@ -398,7 +363,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
             workerThread = null;
         }
 
-        abandonAudioFocus();
         playbackStartedNotified.set(false);
         bytesWritten.set(0);
         stopRequested.set(false);

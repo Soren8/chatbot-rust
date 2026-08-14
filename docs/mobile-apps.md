@@ -95,7 +95,8 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    - Uses `AudioRecord` for 16kHz mono PCM capture (`VOICE_COMMUNICATION` for hardware AEC/NS/AGC)
    - Sends fixed 20 ms frames to JS via Capacitor events (`nativeMicData`)
    - Handles audio focus and wake locks
-   - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` to web layer
+   - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` / `enterVoiceRoute()` / `exitVoiceRoute()` to web layer
+   - Call-speaker routing (`MODE_IN_COMMUNICATION`) is applied **once** when the voice-mode button is pressed (`enterVoiceRoute`) and restored only when voice mode ends. Mic start/stop and TTS sessions must not re-enter call mode.
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — **RMS-only**, not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
@@ -177,9 +178,11 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
    - No Silero / WebView `AudioContext` on the native path
    - **600 ms PCM pre-roll**; skip utterance start during TTS; RMS barge-in; **400 ms** post-TTS cooldown
 
-4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so hardware AEC cancels TTS (HTML `<audio>` uses the media route and breaks AEC).
+4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so hardware AEC cancels TTS (HTML `<audio>` uses the media route and breaks AEC). Does **not** request audio focus or change `AudioManager` mode; that would flip call-speaker vs media-speaker mid-TTS.
 
-5. **Desktop/browser**: Silero VAD remains. After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
+5. **Call-speaker route** — `NativeMic.enterVoiceRoute()` / `exitVoiceRoute()` wrap idempotent `VoiceAudioRoute`. JS calls enter only from `startVoiceMode()` and exit only from `stopVoiceMode()` (or a failed start). Push-to-talk recording does not change audio mode.
+
+6. **Desktop/browser**: Silero VAD remains. After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 
 ### VAD Evaluation
 
@@ -311,7 +314,8 @@ Product flavors configure `server_url` string resource:
 | `android/` | Create — Capacitor Android project |
 | `android/.../MainActivity.java` | Modify — server-pull WebView, disable cache, register plugins |
 | `android/.../AndroidManifest.xml` | Modify — audio permissions, CarAppService |
-| `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture with `VOICE_COMMUNICATION` source |
+| `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture with `VOICE_COMMUNICATION` source; `enterVoiceRoute` / `exitVoiceRoute` for one-shot call-speaker mode |
+| `android/.../audio/VoiceAudioRoute.java` | Create — idempotent call-speaker session (enter once per voice-mode press) |
 | `android/.../car/ChatbotCarAppService.java` | Create — Android Auto entry |
 | `android/.../car/VoiceSession.java` | Create — Android Auto session |
 | `android/.../car/VoiceScreen.java` | Create — Android Auto UI, reads server URL from flavor string |
