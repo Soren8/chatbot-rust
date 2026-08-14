@@ -75,7 +75,7 @@ This document captures the current architecture of the project and the potential
 - **Rate Limiting & Concurrency**
   - [x] Add a production-ready rate limiter with per-user + global caps (in-process sliding 60s window; generate-lock unchanged). Config: `rate_limit_*_per_minute` / `RATE_LIMIT_*` (`0` disables).
   - [x] Hook background cleanup jobs to purge expired sessions and chats proactively (`session::purge_expired_sessions` + `SESSION_PURGE_INTERVAL_SECS` background task).
-  - [x] Durable chat history on **redb** via `HistoryService` (AEAD+AAD, CAS, PrepareCapture, multi-set `SetCache`, permanent `legacy_sets_json` migration, client `set_id`/`expected_version` + 409 reload UX). See [design-history-store.md](design-history-store.md). Operator: delete `sets.json.migrated.bak` only after a stable redb release.
+  - [x] Durable chat history on **redb** via `HistoryService` (AEAD+AAD, CAS, PrepareCapture, multi-set `SetCache`, permanent `legacy_sets_json` migration, client `set_id`/`expected_version` + 409 sync-and-retry). See [design-history-store.md](design-history-store.md). Operator: delete `sets.json.migrated.bak` only after a stable redb release.
   - [ ] Enhance test concurrency across integration suites.
 
 - **Error Handling & Logging**

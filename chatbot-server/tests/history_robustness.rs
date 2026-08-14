@@ -402,7 +402,7 @@ async fn assert_stale_mutations_conflict(
         );
         assert_eq!(
             json["message"].as_str(),
-            Some("Set was modified; reload and retry."),
+            Some("Set was modified; syncing latest version."),
             "{uri}: {json}"
         );
     }
@@ -769,8 +769,8 @@ async fn chat_advances_version_stale_followup_mutations_conflict() {
 }
 
 /// After regenerate, CAS version advances. Stale expected_version on delete/reset/
-/// memory/system_prompt must 409; refreshed version succeeds. Covers the reported
-/// "Set was modified; reload and retry" UX after regenerate.
+/// memory/system_prompt must 409; refreshed version succeeds. Covers the
+/// version_conflict body the client uses to sync and retry without a page reload.
 #[tokio::test]
 async fn regenerate_advances_version_stale_followup_mutations_conflict() {
     common::init_tracing();
@@ -1253,6 +1253,145 @@ async fn delete_message_content_mismatch_and_out_of_range() {
     assert_eq!(ok.status(), StatusCode::OK);
     let loaded = load_set_by_name(&app, &auth, "default").await;
     assert_eq!(loaded["history"].as_array().unwrap().len(), 0);
+}
+
+/// Client protocol after a loaded conversation: delete pair 0, then delete the new
+/// pair 0 using the version from the previous response. Must never 409 or require a reload.
+#[tokio::test]
+async fn sequential_deletes_from_front_use_returned_version() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "seq_del_user", "SeqDel1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "seq_del_user", "SeqDel1!").await;
+
+    chat(&app, &auth, "default", "first", None).await;
+    chat(&app, &auth, "default", "second", None).await;
+    chat(&app, &auth, "default", "third", None).await;
+
+    let initial = load_set_by_name(&app, &auth, "default").await;
+    let set_id = set_id_str(&initial);
+    let mut version = set_version(&initial);
+    assert_eq!(initial["history"].as_array().unwrap().len(), 3);
+
+    for (user_message, remaining) in [("first", 2), ("second", 1), ("third", 0)] {
+        let (status, body) = post_json(
+            &app,
+            &auth,
+            "/delete_message",
+            json!({
+                "pair_index": 0,
+                "user_message": user_message,
+                "set_name": "default",
+                "set_id": set_id,
+                "expected_version": version
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "delete {user_message} should succeed without reload, got {body}"
+        );
+        assert_eq!(body["status"], "success", "{body}");
+        assert_eq!(body["error"], serde_json::Value::Null);
+        let next = body["version"].as_u64().expect("version after delete");
+        assert!(next > version, "delete must advance version ({version} -> {next})");
+        version = next;
+
+        let snap = load_set_by_name(&app, &auth, "default").await;
+        assert_eq!(set_version(&snap), version);
+        assert_eq!(
+            snap["history"].as_array().unwrap().len(),
+            remaining,
+            "history after deleting {user_message}"
+        );
+    }
+}
+
+/// Stale data-pair-index after the first DOM delete is a content mismatch, not a
+/// version conflict. Clients must not treat that 409 as "reload".
+#[tokio::test]
+async fn stale_pair_index_after_delete_is_content_mismatch_not_version_conflict() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "stale_idx_user", "StaleIdx1!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "stale_idx_user", "StaleIdx1!").await;
+
+    chat(&app, &auth, "default", "first", None).await;
+    chat(&app, &auth, "default", "second", None).await;
+    chat(&app, &auth, "default", "third", None).await;
+
+    let initial = load_set_by_name(&app, &auth, "default").await;
+    let set_id = set_id_str(&initial);
+    let v0 = set_version(&initial);
+
+    let (del_status, del_body) = post_json(
+        &app,
+        &auth,
+        "/delete_message",
+        json!({
+            "pair_index": 0,
+            "user_message": "first",
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": v0
+        }),
+    )
+    .await;
+    assert_eq!(del_status, StatusCode::OK, "{del_body}");
+    let v1 = del_body["version"].as_u64().unwrap();
+
+    // Simulate a client that kept data-pair-index=1 on the remaining "second" pair
+    // (now at server index 0) and sent that stale index with the new version.
+    let (stale_status, stale_body) = post_json(
+        &app,
+        &auth,
+        "/delete_message",
+        json!({
+            "pair_index": 1,
+            "user_message": "second",
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": v1
+        }),
+    )
+    .await;
+    assert_eq!(stale_status, StatusCode::CONFLICT, "{stale_body}");
+    assert_ne!(
+        stale_body["error"].as_str(),
+        Some("version_conflict"),
+        "stale pair_index must not be reported as version_conflict/reload: {stale_body}"
+    );
+    assert_eq!(
+        stale_body["error"].as_str(),
+        Some("content mismatch at pair_index"),
+        "{stale_body}"
+    );
+
+    let (ok_status, ok_body) = post_json(
+        &app,
+        &auth,
+        "/delete_message",
+        json!({
+            "pair_index": 0,
+            "user_message": "second",
+            "set_name": "default",
+            "set_id": set_id,
+            "expected_version": v1
+        }),
+    )
+    .await;
+    assert_eq!(ok_status, StatusCode::OK, "{ok_body}");
+    assert_eq!(ok_body["status"], "success");
+    let snap = load_set_by_name(&app, &auth, "default").await;
+    assert_eq!(snap["history"].as_array().unwrap().len(), 1);
+    assert_eq!(snap["history"][0][0], "third");
 }
 
 #[tokio::test]

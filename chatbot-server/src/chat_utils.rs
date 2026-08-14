@@ -182,7 +182,7 @@ pub fn version_conflict_json(set_id: SetId, current_version: SetVersion) -> Valu
         "error": "version_conflict",
         "set_id": set_id.to_string(),
         "current_version": current_version.get(),
-        "message": "Set was modified; reload and retry."
+        "message": "Set was modified; syncing latest version."
     })
 }
 

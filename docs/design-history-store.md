@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` reload UX. Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). |
+| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` sync-and-retry (no page reload). Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 
@@ -32,7 +32,7 @@ Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message row
 | Session | `session.rs` | Guest RAM history; authed session cipher stores `set_id` + memory/prompt only (not full history — redb is SoT). |
 | Chat / regenerate | prepare/finalize + capture | Immutable `PrepareCapture`; CAS commit |
 | Mutations | sets / memory / reset / delete | `set_id` preferred; `expected_version` for CAS; 409 `version_conflict` JSON |
-| Client | `static/chat.js` | `activeSetPayload()` sends `set_id` + `expected_version`; 409 → toast + reload set, preserve draft |
+| Client | `static/chat.js` | `activeSetPayload()` sends `set_id` + `expected_version`; 409 → apply `current_version` and retry (no page reload); delete reindexes live pair indices |
 
 **Operator cleanup:** After one stable redb release, optional delete of `data/user_sets/*/sets.json.migrated.bak`. Keep bak if you may roll back to an image without redb.
 
@@ -476,11 +476,11 @@ Deprecate / remove over time:
   "error": "version_conflict",
   "set_id": "...",
   "current_version": 42,
-  "message": "Set was modified; reload and retry."
+  "message": "Set was modified; syncing latest version."
 }
 ```
 
-Client (`static/chat.js`): on 409, reload set from server and re-render; do not silently retry mutations with stale version.
+Client (`static/chat.js`): on 409 `version_conflict`, apply `current_version` from the body and retry the mutation. Do not ask the user to reload (Capacitor / embedded clients may not support a page refresh). After a successful `/delete_message`, reindex remaining `data-pair-index` values from live DOM order so the next delete does not send a stale index (that 409 is `content mismatch`, not `version_conflict`). Never rewind `APP_DATA.setVersion` for the same `set_id` (in-flight `get_sets` after a mutation).
 
 ### Concurrency & locking
 
@@ -681,7 +681,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 | Large histories rewrite whole blob | Medium (Phase 1 accepted) | Phase 2 per-message; size soft-warn in logs |
 | redb corruption | Low | fsync defaults; volume backups; single writer |
 | Client forgets version | Medium | Treat missing version as load-first required; or force load on each mutation |
-| Dual-tab 409 UX friction | Low | Clear UI message + auto reload set |
+| Dual-tab 409 UX friction | Low | Apply `current_version` and retry; no page reload |
 
 ### Latency / storage estimates (order of magnitude)
 
@@ -811,10 +811,10 @@ Incremental, independently reviewable PRs. Each PR should add tests first where 
 
 ### PR 11 (optional follow-up): Client 409 UX polish + version plumbing
 
-- **Title:** `ui: handle version_conflict with auto-reload of set`
+- **Title:** `ui: handle version_conflict by syncing current_version and retrying`
 - **Files/components:** `static/chat.js`, possibly templates
 - **Dependencies:** PR 5–8
-- **Description:** On 409, reload set by `set_id`, toast message, preserve draft input if any. Track `expected_version` in frontend state from list/load responses.
+- **Description:** On 409, apply `current_version`, retry the mutation; do not require a page reload. Track `expected_version` in frontend state from list/load/mutation responses. Reindex pair indices after delete.
 
 ### Suggested merge order
 

@@ -80,7 +80,7 @@ pub fn map_history_err(err: HistoryError, context: &'static str) -> HttpError {
             json!({
                 "error": "version_conflict",
                 "current_version": current_version.get(),
-                "message": "Set was modified; reload and retry."
+                "message": "Set was modified; syncing latest version."
             }),
         ),
         HistoryError::Forbidden => api_error(StatusCode::FORBIDDEN, "forbidden"),

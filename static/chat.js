@@ -193,6 +193,40 @@ async function withCsrfAsync(headers) {
 }
 
 
+function syncSelectedOptionVersion(version) {
+  var $opt = $('#set-selector option:selected');
+  if ($opt.length) $opt.attr('data-version', String(version));
+}
+
+/** Apply a set version from a response or 409 body.
+ *  List refreshes (`get_sets`) must not rewind: an in-flight list after delete
+ *  can be stale. Mutation / 409 bodies are authoritative (`allowRewind`). */
+function applySetVersion(version, setId, options) {
+  if (!window.APP_DATA) window.APP_DATA = {};
+  var allowRewind = !!(options && options.allowRewind);
+  if (setId) {
+    if (window.APP_DATA.lastSetId && setId !== window.APP_DATA.lastSetId) {
+      window.APP_DATA.lastSetId = setId;
+      if (version != null && version !== '') {
+        var switched = Number(version);
+        if (!Number.isNaN(switched)) {
+          window.APP_DATA.setVersion = switched;
+          syncSelectedOptionVersion(switched);
+        }
+      }
+      return;
+    }
+    window.APP_DATA.lastSetId = setId;
+  }
+  if (version == null || version === '') return;
+  var next = Number(version);
+  if (Number.isNaN(next)) return;
+  var current = Number(window.APP_DATA.setVersion);
+  if (!allowRewind && !Number.isNaN(current) && next < current) return;
+  window.APP_DATA.setVersion = next;
+  syncSelectedOptionVersion(next);
+}
+
 function activeSetPayload(extra) {
   var $o = $('#set-selector option:selected');
   var payload = Object.assign({}, extra || {});
@@ -207,8 +241,8 @@ function activeSetPayload(extra) {
 
 function noteSetVersionFromResponse(data) {
   if (!data) return;
-  if (data.set_id) window.APP_DATA.lastSetId = data.set_id;
-  if (data.version != null) window.APP_DATA.setVersion = data.version;
+  var version = data.version != null ? data.version : data.current_version;
+  applySetVersion(version, data.set_id, { allowRewind: true });
 }
 
 /** After chat/regenerate persist, CAS version advances by one. Update immediately
@@ -217,15 +251,35 @@ function noteLocalVersionBumpAfterPersist() {
   if (window.APP_DATA.setVersion == null || window.APP_DATA.setVersion === '') return;
   var next = Number(window.APP_DATA.setVersion) + 1;
   if (Number.isNaN(next)) return;
-  window.APP_DATA.setVersion = next;
-  var $opt = $('#set-selector option:selected');
-  if ($opt.length) $opt.attr('data-version', String(next));
+  applySetVersion(next, window.APP_DATA.lastSetId);
 }
 
-function handleVersionConflict(response, data) {
-  var msg = (data && data.message) || 'Chat was modified in another tab. Reloading…';
-  if (typeof appendMessage === 'function') {
-    appendMessage(msg, 'system-message');
+function liveUserPairIndex(userMessageElement) {
+  var el = userMessageElement && userMessageElement.jquery ? userMessageElement[0] : userMessageElement;
+  if (!el) return -1;
+  var nodes = document.querySelectorAll('#chat-content .message.user-message');
+  return Array.prototype.indexOf.call(nodes, el);
+}
+
+function reindexUserPairIndices() {
+  var nodes = document.querySelectorAll('#chat-content .message.user-message');
+  for (var i = 0; i < nodes.length; i++) {
+    nodes[i].setAttribute('data-pair-index', String(i));
+  }
+}
+
+/** Sync CAS version from a 409 body and retry. Never ask the user to reload —
+ *  Capacitor / embedded clients cannot depend on a page refresh. */
+function handleVersionConflict(response, data, retryFn) {
+  if (data) {
+    applySetVersion(
+      data.current_version != null ? data.current_version : data.version,
+      data.set_id,
+      { allowRewind: true }
+    );
+  }
+  if (typeof retryFn === 'function') {
+    return Promise.resolve().then(retryFn);
   }
   var draft = '';
   try { draft = $('#user-input').val() || ''; } catch (e) {}
@@ -1824,7 +1878,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       });
 };
 
-function handleDeleteMessage(buttonElement) {
+function handleDeleteMessage(buttonElement, isRetry) {
   const deleteBtn = $(buttonElement);
   const userMessageElement = deleteBtn.closest('.message.user-message');
   if (userMessageElement.length === 0) return;
@@ -1841,18 +1895,16 @@ function handleDeleteMessage(buttonElement) {
     return;
   }
 
-  const storedPairIndex = userMessageElement.attr('data-pair-index');
-  let pairIndex = storedPairIndex !== undefined && storedPairIndex !== '' ? parseInt(storedPairIndex, 10) : NaN;
-  if (Number.isNaN(pairIndex)) {
-    const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
-    pairIndex = userMsgNodes.indexOf(userMessageElement[0]);
-  }
+  // Live DOM order is the source of truth after local deletes. Stale
+  // data-pair-index from load_set caused every delete after the first to 409.
+  const pairIndex = liveUserPairIndex(userMessageElement);
   if (pairIndex < 0) {
     console.error('Cannot delete: could not resolve pair index');
     return;
   }
+  userMessageElement.attr('data-pair-index', String(pairIndex));
 
-  console.debug('Deleting message pair:', { pairIndex, userTextLen: userText.length });
+  console.debug('Deleting message pair:', { pairIndex, userTextLen: userText.length, isRetry: !!isRetry });
 
   // Server matches pair_index + user_message only (ai_message is ignored). Do not
   // send aiText — image-bearing user_message alone can approach the body limit.
@@ -1870,13 +1922,31 @@ function handleDeleteMessage(buttonElement) {
   })
   .then(result => {
     if (!result) return;
-    if (result.status === 409 || (result.data && result.data.error === 'version_conflict')) {
+    if (result.data && result.data.error === 'version_conflict') {
+      applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
+      if (!isRetry) {
+        return handleDeleteMessage(buttonElement, true);
+      }
       return handleVersionConflict(null, result.data);
+    }
+    if (result.status === 409) {
+      const mismatch = result.data && /content mismatch/i.test(String(result.data.error || ''));
+      if (mismatch) {
+        reindexUserPairIndices();
+        if (!isRetry) {
+          return handleDeleteMessage(buttonElement, true);
+        }
+      }
+      const errMsg = (result.data && result.data.error) || 'delete conflict';
+      console.error('Server failed to delete message:', errMsg);
+      appendMessage('Failed to delete message: ' + errMsg, 'error-message');
+      return;
     }
     if (result.ok && result.data && result.data.status === 'success') {
       noteSetVersionFromResponse(result.data);
       aiMessageElement.remove();
       userMessageElement.remove();
+      reindexUserPairIndices();
       return;
     }
     const errMsg = (result.data && result.data.error) || `delete failed (${result.status})`;
@@ -1885,6 +1955,7 @@ function handleDeleteMessage(buttonElement) {
       // existed client-side in the DOM. Remove it locally without error.
       aiMessageElement.remove();
       userMessageElement.remove();
+      reindexUserPairIndices();
       console.debug('Removed client-side-only message pair (server reported out of range)');
       return;
     }
@@ -2441,11 +2512,11 @@ $(document).ready(function() {
               console.debug('Last set not found, falling back to default');
           }
 
-          // Always sync setVersion from the selected option so stale values
-          // don't cause CAS conflicts on the next mutation.
+          // Sync setVersion from the selected option, but never rewind a version
+          // we already observed (in-flight get_sets after delete/chat persist).
           const $selectedOpt = $selector.find('option:selected');
           if ($selectedOpt.length) {
-            window.APP_DATA.setVersion = $selectedOpt.attr('data-version') || null;
+            applySetVersion($selectedOpt.attr('data-version'), $selectedOpt.val());
           }
 
           if (shouldTriggerChange) {
@@ -2491,10 +2562,8 @@ $(document).ready(function() {
         })
         .then(r => r.json())
         .then(data => {
-          if (data.set_id) window.APP_DATA.lastSetId = data.set_id;
           if (data.name) window.APP_DATA.lastSet = data.name;
-          if (data.version != null) window.APP_DATA.setVersion = data.version;
-          $opt.attr('data-version', data.version != null ? data.version : '');
+          noteSetVersionFromResponse(data);
           if (data.name) $opt.attr('data-name', data.name).text(data.name);
           $('#user-system-prompt').val(data.system_prompt || '');
           $('#user-memory').val(data.memory || '');
@@ -2683,7 +2752,8 @@ $(document).ready(function() {
       fullMessage = message + '\n[IMAGE:' + pendingImageData + ']';
     }
 
-    appendMessage(fullMessage, 'user-message');
+    const pairIndex = document.querySelectorAll('#chat-content .message.user-message').length;
+    appendMessage(fullMessage, 'user-message', pairIndex);
     const $pendingUserMessage = $('#chat-content .message.user-message').last();
 
     const requestData = activeSetPayload({
@@ -2907,7 +2977,7 @@ $(document).ready(function() {
       fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(activeSetPayload({})) })
         .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
         .then(result => {
-          if (result.status === 409 || (result.data && result.data.error === 'version_conflict')) {
+          if (result.data && result.data.error === 'version_conflict') {
             return handleVersionConflict(null, result.data);
           }
           if (result.ok && result.data && result.data.status === 'success') {

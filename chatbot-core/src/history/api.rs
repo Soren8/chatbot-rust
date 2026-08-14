@@ -809,6 +809,30 @@ mod tests {
         assert_eq!(reset.version, v4);
     }
 
+    /// Client deletes from the top of a loaded set: after pair 0 is removed, remaining
+    /// pairs shift down. Each call must use the version returned by the previous delete.
+    #[test]
+    fn sequential_delete_pair_from_front_advances_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("seqdel", "chat", &key).unwrap();
+        let mut v = created.version;
+        for (u, a) in [("first", "a1"), ("second", "a2"), ("third", "a3")] {
+            v = svc
+                .append_pair("seqdel", created.set_id, v, u, a, &key)
+                .unwrap();
+        }
+        for expected_user in ["first", "second", "third"] {
+            v = svc
+                .delete_pair("seqdel", created.set_id, v, 0, expected_user, &key)
+                .unwrap();
+        }
+        let empty = svc.load("seqdel", created.set_id, &key).unwrap();
+        assert!(empty.history.is_empty());
+        assert_eq!(empty.version, v);
+    }
+
     #[test]
     fn find_by_display_name_and_ensure_default() {
         let dir = tempfile::tempdir().unwrap();
