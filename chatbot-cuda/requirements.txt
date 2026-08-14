@@ -4,7 +4,7 @@ qwen-tts==0.1.1
 nemo_toolkit[asr]==2.7.2
 kokoro==0.9.4
 misaki[en]==0.9.4
-spacy==3.8.14
+spacy==3.8.15
 pydub==0.25.1
 python-multipart==0.0.24
 numpy==2.4.4
