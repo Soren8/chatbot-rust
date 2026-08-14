@@ -1,20 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
-FROM debian:bookworm-slim AS rust-tools
+FROM rust:1.97.1-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS rust-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    ca-certificates \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ENV CARGO_HOME=/app/.cargo
-RUN mkdir -p /app/.cargo
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
-RUN /app/.cargo/bin/rustup component add rustfmt
-ENV PATH="/app/.cargo/bin:$PATH"
+RUN rustup component add rustfmt
 
 # Fetch dependencies (only invalidates on Cargo.toml/lock changes)
 FROM rust-tools AS rust-deps
@@ -22,7 +15,7 @@ ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY chatbot-core/Cargo.toml ./chatbot-core/
 COPY chatbot-server/Cargo.toml ./chatbot-server/
 COPY chatbot-test-support/Cargo.toml ./chatbot-test-support/
@@ -35,8 +28,8 @@ RUN mkdir -p chatbot-core/src chatbot-server/src chatbot-test-support/src \
     && touch chatbot-core/src/lib.rs \
     && touch chatbot-test-support/src/lib.rs
 
-RUN --mount=type=cache,target=/app/.cargo/registry \
-    --mount=type=cache,target=/app/.cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     cargo fetch
 
 # Build the Rust server (invalidates when source changes, but reuses dep cache)
@@ -47,11 +40,11 @@ COPY chatbot-server /build/chatbot-server
 COPY chatbot-test-support /build/chatbot-test-support
 COPY static /build/static
 
-RUN --mount=type=cache,target=/app/.cargo/registry \
-    --mount=type=cache,target=/app/.cargo/git \
-    --mount=type=cache,target=/app/.cargo/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/cargo/target \
     sh -ec '\
-      export CARGO_TARGET_DIR=/app/.cargo/target; \
+      export CARGO_TARGET_DIR=/usr/local/cargo/target; \
       if [ "$RUST_BUILD_PROFILE" = "debug" ]; then \
         cargo build -p chatbot-server; \
         profile_dir=debug; \
@@ -60,17 +53,16 @@ RUN --mount=type=cache,target=/app/.cargo/registry \
         profile_dir="$RUST_BUILD_PROFILE"; \
       fi; \
       mkdir -p "/build/target/$profile_dir"; \
-      cp "/app/.cargo/target/$profile_dir/chatbot-server" "/build/target/$profile_dir/chatbot-server" \
+      cp "/usr/local/cargo/target/$profile_dir/chatbot-server" "/build/target/$profile_dir/chatbot-server" \
     '
 
 # Test image with cargo available
 FROM rust-tools AS test
 # Toolchain lives outside /app so the dev bind-mount (./:/app) cannot hide cargo on CI.
 ENV CARGO_HOME=/opt/cargo
-ENV PATH="/opt/cargo/bin:$PATH"
-RUN mkdir -p /opt/cargo && cp -a /app/.cargo/. /opt/cargo/
+ENV PATH="/usr/local/cargo/bin:${PATH}"
 WORKDIR /app
-COPY Cargo.toml Cargo.lock /app/
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /app/
 COPY chatbot-core /app/chatbot-core
 COPY chatbot-server /app/chatbot-server
 COPY chatbot-test-support /app/chatbot-test-support
@@ -81,7 +73,7 @@ ENV CHATBOT_STATIC_ROOT="/app/static"
 ENV CARGO_TARGET_DIR=/app/.cargo/target
 
 # Production image with Axum binary
-FROM debian:bookworm-slim AS prod
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS prod
 ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 

@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -7,33 +7,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NEMO_CACHE_DIR=/app/model_cache/nemo \
     CUDA_DEVICE_ORDER=PCI_BUS_ID
 
+WORKDIR /app
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.12 \
-    python3-pip \
-    python3.12-dev \
     ffmpeg \
     libsndfile1 \
     sox \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
 COPY requirements.txt .
-
-# Install PyTorch for CUDA 12.6 first so NeMo and qwen-tts reuse it
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --break-system-packages \
-    torch torchaudio \
-    --index-url https://download.pytorch.org/whl/cu128
-
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --break-system-packages -r requirements.txt
+    python3 -m pip install --break-system-packages -r requirements.txt
 
 # misaki[en] (Kokoro's G2P engine) requires spaCy's en_core_web_sm model.
 # Bake it into the image so it's available offline at runtime.
-RUN python3 -m spacy download en_core_web_sm --break-system-packages
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --break-system-packages \
+    https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 COPY src/ ./src/
 COPY start.sh .

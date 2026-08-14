@@ -50,3 +50,40 @@ updates:
     commit-message:
       prefix: "docker"
       include: scope
+
+  - package-ecosystem: docker
+    directory: /chatbot-cuda
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "docker"
+      include: scope
+
+  - package-ecosystem: pip
+    directory: /chatbot-cuda
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "deps"
+      include: scope
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "deps"
+      include: scope
+
