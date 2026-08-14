@@ -1,6 +1,7 @@
 //! redb key encoding — UUIDs and usernames only; never display names.
 
 use crate::history::types::SetId;
+use uuid::Uuid;
 
 pub fn set_id_key(set_id: SetId) -> [u8; 16] {
     *set_id.as_bytes()
@@ -57,4 +58,44 @@ pub fn parse_user_set_key(key: &[u8]) -> Option<(String, SetId)> {
 
 pub fn migrated_user_meta_key(user_id: &str) -> String {
     format!("migrated_user:{user_id}")
+}
+
+/// Composite chunk key: `set_id (16) || id (16)` — range-scanable by set.
+pub fn chunk_key(set_id: SetId, id: Uuid) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[..16].copy_from_slice(set_id.as_bytes());
+    key[16..].copy_from_slice(id.as_bytes());
+    key
+}
+
+pub fn set_chunk_prefix(set_id: SetId) -> [u8; 16] {
+    *set_id.as_bytes()
+}
+
+/// Exclusive end bound for a range over one set's chunk keys (increment set_id).
+pub fn chunk_prefix_end(set_id: SetId) -> Option<[u8; 16]> {
+    let mut end = *set_id.as_bytes();
+    for i in (0..end.len()).rev() {
+        if end[i] != 0xff {
+            end[i] += 1;
+            return Some(end);
+        }
+        end[i] = 0;
+    }
+    None
+}
+
+#[allow(dead_code)]
+pub fn parse_chunk_key(key: &[u8]) -> Option<(SetId, Uuid)> {
+    if key.len() != 32 {
+        return None;
+    }
+    let mut set_bytes = [0u8; 16];
+    let mut id_bytes = [0u8; 16];
+    set_bytes.copy_from_slice(&key[..16]);
+    id_bytes.copy_from_slice(&key[16..]);
+    Some((
+        SetId::from_uuid(Uuid::from_bytes(set_bytes)),
+        Uuid::from_bytes(id_bytes),
+    ))
 }

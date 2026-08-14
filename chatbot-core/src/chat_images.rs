@@ -12,12 +12,19 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use image::imageops::FilterType;
 use image::DynamicImage;
+use std::collections::HashMap;
 use std::io::Cursor;
 use tracing::debug;
+
+use crate::history::ImageId;
 
 /// Marker prefix used in stored user messages.
 pub const IMAGE_TAG_PREFIX: &str = "[IMAGE:";
 const IMAGE_TAG_SUFFIX: char = ']';
+/// Payload prefix for a stable image ref: `[IMAGE:img:<uuid>]`.
+pub const IMAGE_REF_PREFIX: &str = "img:";
+/// Wire/page placeholder when a stored image or thumb blob is missing.
+pub const IMAGE_UNAVAILABLE: &str = "unavailable";
 
 /// How many full-resolution images to send in one model request (including the
 /// new user turn). Older images are thumbnailed or replaced with a placeholder.
@@ -285,6 +292,226 @@ pub fn coalesce_edit_user_message(incoming: &str, stored: &str) -> String {
     })
 }
 
+/// One extracted attachment: new `ImageId`, mime, raw bytes, and durable thumb.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedImage {
+    pub image_id: ImageId,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    pub thumb_mime: String,
+    pub thumb_bytes: Vec<u8>,
+    pub thumb_fell_back: bool,
+}
+
+/// Result of normalizing a pair for a format-2 commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedPair {
+    pub user: String,
+    pub image_ids: Vec<ImageId>,
+    pub new_images: Vec<ExtractedImage>,
+    pub dropped_image_ids: Vec<ImageId>,
+}
+
+/// Convert `data:` / bare-base64 image tags to `[IMAGE:img:<uuid>]`.
+///
+/// Existing `img:` refs and unknown/opaque tags are left unchanged. Only
+/// decodable image payloads become blobs.
+pub fn extract_images_from_user_message(text: &str) -> (String, Vec<ExtractedImage>) {
+    if !has_image(text) {
+        return (text.to_owned(), Vec::new());
+    }
+    let mut extracted = Vec::new();
+    let rewritten = rewrite_image_payloads(text, |payload| {
+        if parse_image_ref(payload).is_some() || payload == IMAGE_UNAVAILABLE {
+            return payload.to_owned();
+        }
+        match decode_and_thumb_image(payload) {
+            Some(img) => {
+                let tag = format!("{}{}", IMAGE_REF_PREFIX, img.image_id.as_hyphenated());
+                extracted.push(img);
+                tag
+            }
+            None => payload.to_owned(),
+        }
+    });
+    (rewritten, extracted)
+}
+
+/// Slot-aligned normalize used by format-2 `commit_snapshot`.
+///
+/// Occupied slots reuse `stored_image_ids[i]` (a `data:` URL there is a thumb,
+/// not a new attachment). Tags past the stored list are extracted as new ids.
+/// Trailing stored ids are dropped.
+pub fn normalize_pair_for_commit(incoming_user: &str, stored_image_ids: &[ImageId]) -> NormalizedPair {
+    let mut image_ids = Vec::new();
+    let mut new_images = Vec::new();
+    let mut slot = 0usize;
+    let user = if has_image(incoming_user) {
+        rewrite_image_payloads(incoming_user, |payload| {
+            if slot < stored_image_ids.len() {
+                let id = stored_image_ids[slot];
+                slot += 1;
+                image_ids.push(id);
+                format!("{}{}", IMAGE_REF_PREFIX, id.as_hyphenated())
+            } else if let Some(id) = parse_image_ref(payload) {
+                slot += 1;
+                image_ids.push(id);
+                format!("{}{}", IMAGE_REF_PREFIX, id.as_hyphenated())
+            } else if payload == IMAGE_UNAVAILABLE {
+                slot += 1;
+                payload.to_owned()
+            } else if let Some(img) = decode_and_thumb_image(payload) {
+                slot += 1;
+                let tag = format!("{}{}", IMAGE_REF_PREFIX, img.image_id.as_hyphenated());
+                image_ids.push(img.image_id);
+                new_images.push(img);
+                tag
+            } else {
+                slot += 1;
+                payload.to_owned()
+            }
+        })
+    } else {
+        incoming_user.to_owned()
+    };
+    let dropped_image_ids = if slot < stored_image_ids.len() {
+        stored_image_ids[slot..].to_vec()
+    } else {
+        Vec::new()
+    };
+    NormalizedPair {
+        user,
+        image_ids,
+        new_images,
+        dropped_image_ids,
+    }
+}
+
+/// Replace `[IMAGE:img:<uuid>]` with thumbnail data URLs. Miss → `[IMAGE:unavailable]`.
+pub fn materialize_thumbs(text: &str, thumbs: &HashMap<ImageId, (String, Vec<u8>)>) -> String {
+    materialize_refs(text, |id| {
+        thumbs.get(&id).map(|(mime, bytes)| encode_data_url(mime, bytes))
+    })
+}
+
+/// Replace `[IMAGE:img:<uuid>]` with full-resolution data URLs. Miss → `[IMAGE:unavailable]`.
+pub fn materialize_full(text: &str, images: &HashMap<ImageId, (String, Vec<u8>)>) -> String {
+    materialize_refs(text, |id| {
+        images
+            .get(&id)
+            .map(|(mime, bytes)| encode_data_url(mime, bytes))
+    })
+}
+
+fn materialize_refs(text: &str, mut lookup: impl FnMut(ImageId) -> Option<String>) -> String {
+    if !has_image(text) {
+        return text.to_owned();
+    }
+    rewrite_image_payloads(text, |payload| {
+        match parse_image_ref(payload) {
+            Some(id) => lookup(id).unwrap_or_else(|| IMAGE_UNAVAILABLE.to_owned()),
+            None => payload.to_owned(),
+        }
+    })
+}
+
+/// Parse `img:<hyphenated-uuid>` (canonical stored ref).
+pub fn parse_image_ref(payload: &str) -> Option<ImageId> {
+    let rest = payload.strip_prefix(IMAGE_REF_PREFIX)?;
+    ImageId::parse(rest).ok().filter(|id| id.as_hyphenated() == rest)
+}
+
+/// Collect ordered `ImageId`s from `[IMAGE:img:…]` tags (skips opaque / data: tags).
+pub fn collect_image_refs(text: &str) -> Vec<ImageId> {
+    collect_image_payloads(text)
+        .into_iter()
+        .filter_map(|p| parse_image_ref(&p))
+        .collect()
+}
+
+/// Keep stored `img:` refs when the client sends a shorter data URL (UI thumb).
+pub fn coalesce_edit_user_message_refs(incoming: &str, stored: &str) -> String {
+    if incoming == stored {
+        return incoming.to_owned();
+    }
+    if user_messages_match(incoming, stored) {
+        return stored.to_owned();
+    }
+    let incoming_images = collect_image_payloads(incoming);
+    if incoming_images.is_empty() {
+        return incoming.to_owned();
+    }
+    let stored_images = collect_image_payloads(stored);
+    if stored_images.is_empty() {
+        return incoming.to_owned();
+    }
+    let mut stored_iter = stored_images.iter();
+    rewrite_image_payloads(incoming, |inc_payload| match stored_iter.next() {
+        Some(stored_payload)
+            if parse_image_ref(stored_payload).is_some()
+                && (inc_payload.len() < stored_payload.len() || inc_payload.starts_with("data:")) =>
+        {
+            stored_payload.clone()
+        }
+        Some(stored_payload) if inc_payload.len() < stored_payload.len() => stored_payload.clone(),
+        _ => inc_payload.to_owned(),
+    })
+}
+
+fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", STANDARD.encode(bytes))
+}
+
+fn decode_and_thumb_image(payload: &str) -> Option<ExtractedImage> {
+    let (mime, bytes) = decode_image_data_url(payload)?;
+    let image_id = ImageId::new();
+    match encode_jpeg_thumb(&bytes, UI_THUMB_MAX_EDGE, UI_THUMB_JPEG_QUALITY) {
+        Some(thumb) => Some(ExtractedImage {
+            image_id,
+            mime,
+            bytes,
+            thumb_mime: "image/jpeg".into(),
+            thumb_bytes: thumb,
+            thumb_fell_back: false,
+        }),
+        None => {
+            debug!(image_id = %image_id, "history_thumb_fallback");
+            Some(ExtractedImage {
+                image_id,
+                mime: mime.clone(),
+                bytes: bytes.clone(),
+                thumb_mime: mime,
+                thumb_bytes: bytes,
+                thumb_fell_back: true,
+            })
+        }
+    }
+}
+
+fn encode_jpeg_thumb(bytes: &[u8], max_edge: u32, quality: u8) -> Option<Vec<u8>> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let img = image::load_from_memory(bytes).ok()?;
+    let thumb = resize_to_max_edge(img, max_edge);
+    let mut jpeg = Vec::new();
+    {
+        let mut cursor = Cursor::new(&mut jpeg);
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
+        encoder.encode_image(&thumb).ok()?;
+    }
+    if jpeg.is_empty() {
+        return None;
+    }
+    Some(jpeg)
+}
+
+/// Downscale raw image bytes to a 256px / q55 JPEG for model packing.
+pub fn model_thumb_data_url(bytes: &[u8]) -> Option<String> {
+    let jpeg = encode_jpeg_thumb(bytes, THUMB_MAX_EDGE, THUMB_JPEG_QUALITY)?;
+    Some(encode_data_url("image/jpeg", &jpeg))
+}
+
 /// Solid-color JPEG data URL for tests and integration fixtures.
 pub fn fixture_jpeg_data_url(width: u32, height: u32) -> String {
     use image::{DynamicImage, ImageBuffer, Rgb};
@@ -541,5 +768,54 @@ mod tests {
         let b = "goodbye\n[IMAGE:data:image/jpeg;base64,BBB]";
         assert!(!user_messages_match(a, b));
         assert!(user_messages_match(a, "hello\n[IMAGE:data:image/jpeg;base64,ZZZ]"));
+    }
+
+    #[test]
+    fn extract_converts_data_urls_and_leaves_opaque_tags() {
+        let large = large_jpeg_data_url();
+        let text = format!("see [IMAGE:{large}] and [IMAGE:cat]");
+        let (rewritten, extracted) = extract_images_from_user_message(&text);
+        assert_eq!(extracted.len(), 1);
+        assert!(rewritten.contains("[IMAGE:img:"));
+        assert!(rewritten.contains("[IMAGE:cat]"));
+        assert!(!rewritten.contains("data:image"));
+        let id = extracted[0].image_id;
+        assert!(rewritten.contains(&id.as_hyphenated()));
+        assert!(!extracted[0].thumb_bytes.is_empty());
+    }
+
+    #[test]
+    fn normalize_reuses_occupied_slots_and_drops_trailing() {
+        let stored = ImageId::new();
+        let extra = ImageId::new();
+        let large = large_jpeg_data_url();
+        let incoming = format!("hi [IMAGE:{large}]");
+        let out = normalize_pair_for_commit(&incoming, &[stored, extra]);
+        assert_eq!(out.image_ids, vec![stored]);
+        assert!(out.new_images.is_empty());
+        assert_eq!(out.dropped_image_ids, vec![extra]);
+        assert_eq!(
+            out.user,
+            format!("hi [IMAGE:img:{}]", stored.as_hyphenated())
+        );
+    }
+
+    #[test]
+    fn materialize_miss_is_unavailable_not_img_ref() {
+        let id = ImageId::new();
+        let text = format!("x [IMAGE:img:{}]", id.as_hyphenated());
+        let empty: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
+        let out = materialize_full(&text, &empty);
+        assert_eq!(out, "x [IMAGE:unavailable]");
+        assert!(!out.contains("img:"));
+        assert!(user_messages_match(&text, &out));
+    }
+
+    #[test]
+    fn coalesce_refs_keeps_stored_img_when_client_sends_data_url() {
+        let id = ImageId::new();
+        let stored = format!("caption\n[IMAGE:img:{}]", id.as_hyphenated());
+        let incoming = format!("caption\n[IMAGE:{}]", large_jpeg_data_url());
+        assert_eq!(coalesce_edit_user_message_refs(&incoming, &stored), stored);
     }
 }

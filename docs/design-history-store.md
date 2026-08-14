@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` sync-and-retry (no page reload). Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). |
+| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` sync-and-retry (no page reload). Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). **Phase 2 chunked blobs:** see [design-history-chunks.md](design-history-chunks.md). |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 
@@ -599,7 +599,7 @@ Details:
 
 - redb `META["schema"] = 1`
 - Payload `blob_format` for crypto/layout upgrades
-- Future: split `SETS_BLOB` into individual sealed chunks per message pair so load/decrypt can be lazy (page a tail of pairs without opening the whole set). Keep `HistoryService` method names; pair rows stay ciphertext with AAD bound to `user_id|set_id|pair_index` (or pair id). Not started.
+- **Phase 2 (started):** split `SETS_BLOB` into a sealed header + manifest, per-pair text, and extracted image/thumb blobs so load/decrypt is proportional to the page or image requested. See [design-history-chunks.md](design-history-chunks.md).
 
 ---
 

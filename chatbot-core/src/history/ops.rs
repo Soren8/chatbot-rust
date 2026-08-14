@@ -72,7 +72,18 @@ pub fn append_pair(
     let mut next = snapshot.clone();
     next.history
         .push((user_msg.to_owned(), assistant_msg.to_owned()));
+    align_pair_ids_on_append(&mut next.pair_ids, snapshot.history.len(), snapshot.pair_ids.len());
     Ok(next)
+}
+
+/// Keep `pair_ids` aligned with history on append.
+///
+/// Format-2 snapshots (including empty sets) get a new `PairId`. Pre-chunk
+/// fixtures with history but no ids stay without ids.
+fn align_pair_ids_on_append(pair_ids: &mut Vec<crate::history::types::PairId>, history_len_before: usize, pair_ids_len_before: usize) {
+    if pair_ids_len_before == history_len_before && (pair_ids_len_before > 0 || history_len_before == 0) {
+        pair_ids.push(crate::history::types::PairId::new());
+    }
 }
 
 /// Remove a history pair after verifying the user text matches.
@@ -91,12 +102,16 @@ pub fn delete_pair(
         return Err(OpsError::ContentMismatch);
     }
     snapshot.history.remove(pair_index);
+    if pair_index < snapshot.pair_ids.len() {
+        snapshot.pair_ids.remove(pair_index);
+    }
     Ok(snapshot)
 }
 
 /// Clear chat history; keep memory, prompt, name, flags.
 pub fn reset_history(mut snapshot: SetSnapshot) -> SetSnapshot {
     snapshot.history.clear();
+    snapshot.pair_ids.clear();
     snapshot
 }
 
@@ -147,6 +162,7 @@ pub fn apply_regenerate(
     check_message_sizes(user_msg, assistant_response)?;
 
     let mut history = capture.history.clone();
+    let mut pair_ids = capture.pair_ids.clone();
     let pair: HistoryPair = (user_msg.to_owned(), assistant_response.to_owned());
 
     match capture.insertion_index {
@@ -161,12 +177,14 @@ pub fn apply_regenerate(
             } else {
                 check_history_capacity(history.len())?;
                 history.push(pair);
+                align_pair_ids_on_append(&mut pair_ids, capture.history.len(), capture.pair_ids.len());
             }
         }
         None => {
             // Treat as append (chat-style) if no index — unusual for regenerate.
             check_history_capacity(history.len())?;
             history.push(pair);
+            align_pair_ids_on_append(&mut pair_ids, capture.history.len(), capture.pair_ids.len());
         }
     }
 
@@ -177,6 +195,7 @@ pub fn apply_regenerate(
         memory: capture.memory.clone(),
         system_prompt: capture.system_prompt.clone(),
         history,
+        pair_ids,
         is_default: capture.is_default,
     })
 }
@@ -194,6 +213,8 @@ pub fn apply_chat_append(
     check_history_capacity(capture.history.len())?;
     let mut history = capture.history.clone();
     history.push((user_msg.to_owned(), assistant_msg.to_owned()));
+    let mut pair_ids = capture.pair_ids.clone();
+    align_pair_ids_on_append(&mut pair_ids, capture.history.len(), capture.pair_ids.len());
     Ok(SetSnapshot {
         set_id: capture.set_id,
         version: capture.version,
@@ -201,6 +222,7 @@ pub fn apply_chat_append(
         memory: capture.memory.clone(),
         system_prompt: capture.system_prompt.clone(),
         history,
+        pair_ids,
         is_default: capture.is_default,
     })
 }
@@ -285,6 +307,27 @@ mod tests {
         assert_eq!(next.history.len(), 4);
         assert_eq!(next.history[3], ("u4".into(), "a4".into()));
         assert_eq!(next.version, SetVersion(3)); // version unchanged until commit
+        assert!(next.pair_ids.is_empty());
+    }
+
+    #[test]
+    fn append_and_delete_keep_pair_ids_aligned() {
+        let mut s = sample();
+        s.pair_ids = vec![
+            crate::history::types::PairId::new(),
+            crate::history::types::PairId::new(),
+            crate::history::types::PairId::new(),
+        ];
+        let first = s.pair_ids[0];
+        let third = s.pair_ids[2];
+        let next = append_pair(&s, "u4", "a4").unwrap();
+        assert_eq!(next.pair_ids.len(), 4);
+        assert_eq!(next.pair_ids[0], first);
+        let deleted = delete_pair(next, 1, "u2").unwrap();
+        assert_eq!(deleted.history.len(), 3);
+        assert_eq!(deleted.pair_ids.len(), 3);
+        assert_eq!(deleted.pair_ids[0], first);
+        assert_eq!(deleted.pair_ids[1], third);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Sealed durable store. Not public outside `history`.
 
+mod chunks;
 mod keys;
 mod tables;
 
@@ -195,13 +196,22 @@ impl RedbHistoryStore {
         let txn = self.db.begin_write()?;
         {
             let mut meta = txn.open_table(META)?;
-            if meta.get(SCHEMA_KEY)?.is_none() {
+            let current = meta
+                .get(SCHEMA_KEY)?
+                .and_then(|v| v.value().first().copied())
+                .unwrap_or(0);
+            if current < SCHEMA_VERSION {
                 meta.insert(SCHEMA_KEY, [SCHEMA_VERSION].as_slice())?;
             }
             let _ = txn.open_table(SETS_META)?;
             let _ = txn.open_table(SETS_BLOB)?;
             let _ = txn.open_table(SETS_NAME)?;
             let _ = txn.open_table(USER_SETS)?;
+            let _ = txn.open_table(tables::SETS_HEADER)?;
+            let _ = txn.open_table(tables::SETS_MANIFEST)?;
+            let _ = txn.open_table(tables::PAIR_BLOBS)?;
+            let _ = txn.open_table(tables::IMAGE_BLOBS)?;
+            let _ = txn.open_table(tables::THUMB_BLOBS)?;
         }
         txn.commit()?;
         Ok(())
@@ -234,20 +244,14 @@ impl RedbHistoryStore {
         set_id: SetId,
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, StoreError> {
+        let meta = self.load_meta(user_id, set_id)?;
+        if meta.blob_format.is_chunked() {
+            let logical = self.load_logical(user_id, set_id, key)?;
+            return self.materialize_snapshot(user_id, &logical, key);
+        }
         let txn = self.db.begin_read()?;
-        let meta_table = txn.open_table(SETS_META)?;
         let blob_table = txn.open_table(SETS_BLOB)?;
         let id_key = set_id_key(set_id);
-
-        let meta_bytes = meta_table
-            .get(id_key.as_slice())?
-            .ok_or(StoreError::NotFound)?;
-        let meta = SetMetaValue::decode(meta_bytes.value()).ok_or(StoreError::Database(
-            "corrupt set meta".into(),
-        ))?;
-        if meta.user_id != user_id {
-            return Err(StoreError::Forbidden);
-        }
         let blob = blob_table
             .get(id_key.as_slice())?
             .ok_or(StoreError::NotFound)?;
@@ -377,6 +381,8 @@ impl RedbHistoryStore {
             updated_at: now,
             is_default,
             blob_format: BlobFormat::AeadV1,
+            header_generation: 0,
+            pair_count: None,
         };
 
         let txn = self.db.begin_write()?;
@@ -417,6 +423,11 @@ impl RedbHistoryStore {
         key: &EncryptionKey,
     ) -> Result<SetVersion, StoreError> {
         let set_id = snapshot.set_id;
+        if let Ok(meta) = self.load_meta(user_id, set_id) {
+            if meta.blob_format.is_chunked() {
+                return self.commit_chunked(user_id, expected, snapshot, key);
+            }
+        }
         let new_version = expected.next();
         if new_version.get() == expected.get() {
             // overflow
@@ -514,6 +525,7 @@ impl RedbHistoryStore {
             user_table.remove(user_set_key(user_id, set_id).as_slice())?;
         }
         txn.commit()?;
+        let _ = self.delete_chunks_for_set(set_id);
         Ok(())
     }
 
@@ -564,6 +576,8 @@ impl RedbHistoryStore {
                 updated_at: set.updated_at,
                 is_default: set.is_default,
                 blob_format: BlobFormat::AeadV1,
+                header_generation: 0,
+                pair_count: None,
             };
             prepared.push((set.set_id, meta.encode(), blob, name_blob, set.updated_at));
         }
@@ -616,11 +630,43 @@ impl RedbHistoryStore {
         let _ = self.load_meta(user_id, set_id)?;
         let txn = self.db.begin_write()?;
         {
+            let id_key = set_id_key(set_id);
             let mut blob_table = txn.open_table(SETS_BLOB)?;
-            blob_table.remove(set_id_key(set_id).as_slice())?;
+            blob_table.remove(id_key.as_slice())?;
+            let mut header = txn.open_table(tables::SETS_HEADER)?;
+            header.remove(id_key.as_slice())?;
+            let mut manifest = txn.open_table(tables::SETS_MANIFEST)?;
+            manifest.remove(id_key.as_slice())?;
         }
         txn.commit()?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn test_chunk_ciphertexts(
+        &self,
+        set_id: SetId,
+    ) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), StoreError> {
+        let txn = self.db.begin_read()?;
+        let pair_table = txn.open_table(tables::PAIR_BLOBS)?;
+        let image_table = txn.open_table(tables::IMAGE_BLOBS)?;
+        let pair_keys = chunks::collect_prefix_keys(&pair_table, set_id)?;
+        let image_keys = chunks::collect_prefix_keys(&image_table, set_id)?;
+        let mut pairs = Vec::new();
+        for k in pair_keys {
+            if let Some(v) = pair_table.get(k.as_slice())? {
+                pairs.push(v.value().to_vec());
+            }
+        }
+        let mut images = Vec::new();
+        for k in image_keys {
+            if let Some(v) = image_table.get(k.as_slice())? {
+                images.push(v.value().to_vec());
+            }
+        }
+        pairs.sort();
+        images.sort();
+        Ok((pairs, images))
     }
 
     #[cfg(test)]
@@ -920,6 +966,8 @@ mod tests {
             updated_at: now,
             is_default: true,
             blob_format: BlobFormat::AeadV1,
+            header_generation: 0,
+            pair_count: None,
         };
         let meta_bytes = meta.encode();
         let id_key = set_id_key(set_id);

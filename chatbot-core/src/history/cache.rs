@@ -238,6 +238,7 @@ mod tests {
             memory: "m".into(),
             system_prompt: "p".into(),
             history: vec![("u".into(), "a".into())],
+            pair_ids: Vec::new(),
             is_default: false,
         };
         cache.put_snapshot("alice", &snap);

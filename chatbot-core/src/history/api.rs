@@ -25,6 +25,12 @@ fn name_mutation_locks() -> &'static DashMap<String, Mutex<()>> {
     LOCKS.get_or_init(DashMap::new)
 }
 
+/// Per-set lock for v1→v2 chunk migrate. Store helpers must not take this lock.
+fn migrate_locks() -> &'static DashMap<SetId, Mutex<()>> {
+    static LOCKS: OnceLock<DashMap<SetId, Mutex<()>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
 /// Errors returned by [`HistoryService`]. Map to HTTP in the server layer.
 #[derive(Debug, Error)]
 pub enum HistoryError {
@@ -145,13 +151,47 @@ impl HistoryService {
         self.remember(user, &snap);
     }
 
+    /// Split a v0/v1 set into chunks if needed. Does not hold name-mutation locks.
+    pub fn ensure_chunked(
+        &self,
+        user: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<(), HistoryError> {
+        let meta = match self.store.load_meta(user, set_id) {
+            Ok(m) => m,
+            Err(StoreError::NotFound) => return Err(HistoryError::NotFound),
+            Err(StoreError::Forbidden) => return Err(HistoryError::Forbidden),
+            Err(err) => return Err(err.into()),
+        };
+        if meta.blob_format.is_chunked() {
+            return Ok(());
+        }
+        let lock_entry = migrate_locks()
+            .entry(set_id)
+            .or_insert_with(|| Mutex::new(()));
+        let _guard = lock_entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match self.store.migrate_set_to_chunks(user, set_id, key) {
+            Ok(_) => {
+                self.cache.invalidate(user, set_id);
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
     /// Load snapshot, preferring the process cache when durable meta version matches.
+    ///
+    /// After a set is format 2, the cache holds a **logical** snapshot (image refs).
     fn load_snapshot_cached(
         &self,
         user: &str,
         set_id: SetId,
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, HistoryError> {
+        self.ensure_chunked(user, set_id, key)?;
         match self.store.load_meta(user, set_id) {
             Ok(meta) => {
                 if let Some(cached) =
@@ -165,9 +205,67 @@ impl HistoryService {
             Err(StoreError::Forbidden) => return Err(HistoryError::Forbidden),
             Err(err) => return Err(err.into()),
         }
-        let snap = self.store.load_snapshot(user, set_id, key)?;
+        let snap = self.store.load_logical(user, set_id, key)?;
         self.remember(user, &snap);
         Ok(snap)
+    }
+
+    /// Ref-shaped load for mutations. Format-2 pair texts use `[IMAGE:img:…]`.
+    pub fn load_logical(
+        &self,
+        user: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<SetSnapshot, HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        self.load_snapshot_cached(&user, set_id, key)
+    }
+
+    pub fn load_page(
+        &self,
+        user: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+        limit: Option<usize>,
+        before: Option<usize>,
+        thumbnails: bool,
+    ) -> Result<crate::history::types::SetPage, HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        self.ensure_chunked(&user, set_id, key)?;
+        Ok(self
+            .store
+            .load_page(&user, set_id, key, limit, before, thumbnails)?)
+    }
+
+    pub fn load_pair(
+        &self,
+        user: &str,
+        set_id: SetId,
+        pair_index: usize,
+        key: &EncryptionKey,
+    ) -> Result<(SetVersion, crate::history::types::HistoryPair), HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        self.ensure_chunked(&user, set_id, key)?;
+        Ok(self.store.load_pair(&user, set_id, pair_index, key)?)
+    }
+
+    pub fn load_image(
+        &self,
+        user: &str,
+        set_id: SetId,
+        pair_index: usize,
+        image_index: usize,
+        key: &EncryptionKey,
+    ) -> Result<(String, Vec<u8>), HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        self.ensure_chunked(&user, set_id, key)?;
+        Ok(self
+            .store
+            .load_image(&user, set_id, pair_index, image_index, key)?)
     }
 
     /// Test/helper: open a fresh service at a path without touching the process global.
@@ -268,9 +366,9 @@ impl HistoryService {
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        // Cache is optional acceleration; redb remains SoT. Version is checked
-        // against durable meta before serving a cache hit.
-        self.load_snapshot_cached(&user, set_id, key)
+        // Cache holds logical (ref) snapshots; materialize a copy for compat readers.
+        let logical = self.load_snapshot_cached(&user, set_id, key)?;
+        Ok(self.store.materialize_snapshot(&user, &logical, key)?)
     }
 
     /// Resolve display name → set_id for transition shims (decrypts all sets).
@@ -332,6 +430,7 @@ impl HistoryService {
             memory: String::new(),
             system_prompt: self.default_system_prompt.clone(),
             history: Vec::new(),
+            pair_ids: Vec::new(),
             is_default: summary.is_default,
         };
         self.remember(&user, &snap);
@@ -606,6 +705,16 @@ impl HistoryService {
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
         self.remember_committed(&user, next, v);
         Ok(v)
+    }
+
+    #[cfg(test)]
+    pub fn test_chunk_ciphertexts(
+        &self,
+        set_id: SetId,
+    ) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), HistoryError> {
+        self.store
+            .test_chunk_ciphertexts(set_id)
+            .map_err(HistoryError::from)
     }
 
     #[cfg(test)]
@@ -998,6 +1107,67 @@ mod tests {
         let colder = HistoryService::open_ephemeral(&path).unwrap();
         let listed = colder.list_sets("owner", &key).unwrap();
         assert_eq!(listed[0].display_name, "needs-backfill");
+    }
+
+    #[test]
+    fn migrate_then_update_memory_does_not_rewrite_pair_or_image_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("owner", "photos", &key).unwrap();
+        let jpeg = crate::chat_images::fixture_jpeg_data_url(80, 80);
+        let v = svc
+            .append_pair(
+                "owner",
+                created.set_id,
+                created.version,
+                &format!("look\n[IMAGE:{jpeg}]"),
+                "nice",
+                &key,
+            )
+            .unwrap();
+        let (pairs_before, images_before) = svc.test_chunk_ciphertexts(created.set_id).unwrap();
+        assert!(!images_before.is_empty(), "image should be extracted");
+        let v2 = svc
+            .update_memory("owner", created.set_id, v, "remember this", &key)
+            .unwrap();
+        assert_eq!(v2.get(), v.get() + 1);
+        let (pairs_after, images_after) = svc.test_chunk_ciphertexts(created.set_id).unwrap();
+        assert_eq!(pairs_before, pairs_after);
+        assert_eq!(images_before, images_after);
+        let loaded = svc.load("owner", created.set_id, &key).unwrap();
+        assert!(loaded.history[0].0.contains("data:image/jpeg"));
+        assert!(!loaded.history[0].0.contains("img:"));
+        let page = svc
+            .load_page("owner", created.set_id, &key, Some(10), None, true)
+            .unwrap();
+        assert_eq!(page.history_total, 1);
+        assert!(!page.history[0].0.contains("img:"));
+        assert!(page.history[0].0.contains("[IMAGE:"));
+    }
+
+    #[test]
+    fn append_does_not_rewrite_old_image_ciphertext() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("owner", "chat", &key).unwrap();
+        let jpeg = crate::chat_images::fixture_jpeg_data_url(64, 64);
+        let v = svc
+            .append_pair(
+                "owner",
+                created.set_id,
+                created.version,
+                &format!("one\n[IMAGE:{jpeg}]"),
+                "a1",
+                &key,
+            )
+            .unwrap();
+        let (_, images_before) = svc.test_chunk_ciphertexts(created.set_id).unwrap();
+        svc.append_pair("owner", created.set_id, v, "just text", "a2", &key)
+            .unwrap();
+        let (_, images_after) = svc.test_chunk_ciphertexts(created.set_id).unwrap();
+        assert_eq!(images_before, images_after);
     }
 
     #[test]

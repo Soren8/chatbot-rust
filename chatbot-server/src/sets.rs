@@ -446,17 +446,30 @@ pub async fn handle_load_set(
     let key = encryption_key.as_ref().expect("validated encryption key");
     let history = HistoryService::global().map_err(history_error_to_http)?;
 
-    let loaded = match resolve_set(
+    let set_id = match resolve_set_id(
         &history,
         username,
         payload.set_id.as_deref(),
         payload.set_name.as_deref(),
         key,
     ) {
-        Ok(s) => s,
+        Ok(id) => id,
         Err(msg) => {
             return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
         }
+    };
+
+    let thumbnails = payload.thumbnails.unwrap_or(false);
+    let loaded = match history.load_page(
+        username,
+        set_id,
+        key,
+        payload.limit,
+        payload.before,
+        thumbnails,
+    ) {
+        Ok(page) => page,
+        Err(err) => return Err(history_error_to_http(err)),
     };
 
     // Keep session set_id / memory / prompt in sync. Do not copy multi-MB history
@@ -474,19 +487,10 @@ pub async fn handle_load_set(
         return build_service_response(response);
     }
 
-    let page = history::page_history(loaded.history.len(), payload.limit, payload.before);
-    let slice = page.slice(&loaded.history);
-    let thumbnails = payload.thumbnails.unwrap_or(false);
-    let history_json = slice
+    let history_json = loaded
+        .history
         .iter()
-        .map(|(user, assistant)| {
-            let user_out = if thumbnails {
-                chat_images::replace_images_with_ui_thumbnails(user)
-            } else {
-                user.clone()
-            };
-            json!([user_out, assistant])
-        })
+        .map(|(user, assistant)| json!([user, assistant]))
         .collect::<Vec<_>>();
 
     build_json_response(
@@ -498,9 +502,9 @@ pub async fn handle_load_set(
             "memory": loaded.memory,
             "system_prompt": loaded.system_prompt,
             "history": history_json,
-            "history_start": page.start,
-            "history_total": page.total,
-            "has_more": page.has_more,
+            "history_start": loaded.history_start,
+            "history_total": loaded.history_total,
+            "has_more": loaded.has_more,
             "encrypted": true,
             "is_default": loaded.is_default,
         }),
@@ -549,25 +553,56 @@ pub async fn handle_history_pair(
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = HistoryService::global().map_err(history_error_to_http)?;
-        let loaded = match resolve_set(
+        let set_id = match resolve_set_id(
             &history,
             username,
             payload.set_id.as_deref(),
             payload.set_name.as_deref(),
             key,
         ) {
-            Ok(s) => s,
+            Ok(id) => id,
             Err(msg) => {
                 return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
             }
         };
-        return history_pair_json(
-            &loaded.history,
-            pair_index,
-            payload.image_index,
-            Some(loaded.set_id.to_string()),
-            Some(loaded.version.get()),
-        );
+        if let Some(idx) = payload.image_index {
+            return match history.load_image(username, set_id, pair_index, idx, key) {
+                Ok((mime, bytes)) => {
+                    let image_src = format!(
+                        "data:{mime};base64,{}",
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+                    );
+                    build_json_response(
+                        StatusCode::OK,
+                        json!({
+                            "set_id": set_id.to_string(),
+                            "pair_index": pair_index,
+                            "image_src": image_src,
+                        }),
+                    )
+                }
+                Err(_) => build_json_response(
+                    StatusCode::NOT_FOUND,
+                    json!({"error": "image not found"}),
+                ),
+            };
+        }
+        return match history.load_pair(username, set_id, pair_index, key) {
+            Ok((version, (user, assistant))) => build_json_response(
+                StatusCode::OK,
+                json!({
+                    "set_id": set_id.to_string(),
+                    "version": version.get(),
+                    "pair_index": pair_index,
+                    "user": user,
+                    "assistant": assistant,
+                }),
+            ),
+            Err(_) => build_json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "pair_index out of range"}),
+            ),
+        };
     }
 
     let guest_history = session::session_history(&session.session_id);
@@ -622,38 +657,22 @@ pub async fn handle_history_image(
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
     let history = HistoryService::global().map_err(history_error_to_http)?;
-    let loaded = match resolve_set(&history, username, Some(&set_id), None, key) {
-        Ok(s) => s,
-        Err(msg) => {
-            return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
+    let id = match SetId::parse(&set_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return build_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "invalid set_id"}),
+            );
         }
     };
-    if pair_index >= loaded.history.len() {
-        return build_json_response(
+    match history.load_image(username, id, pair_index, image_index, key) {
+        Ok((mime, bytes)) => build_image_response(&mime, bytes),
+        Err(_) => build_json_response(
             StatusCode::NOT_FOUND,
-            json!({"error": "pair_index out of range"}),
-        );
+            json!({"error": "image not found"}),
+        ),
     }
-    let user_msg = &loaded.history[pair_index].0;
-    let data_url = match chat_images::nth_image_data_url(user_msg, image_index) {
-        Some(url) => url,
-        None => {
-            return build_json_response(
-                StatusCode::NOT_FOUND,
-                json!({"error": "image not found"}),
-            );
-        }
-    };
-    let (mime, bytes) = match chat_images::decode_image_data_url(&data_url) {
-        Some(decoded) => decoded,
-        None => {
-            return build_json_response(
-                StatusCode::NOT_FOUND,
-                json!({"error": "image not found"}),
-            );
-        }
-    };
-    build_image_response(&mime, bytes)
 }
 
 fn parse_history_image_path(path: &str) -> Option<(String, u64, usize, usize)> {
@@ -727,6 +746,19 @@ fn history_pair_json(
             "assistant": assistant,
         }),
     )
+}
+
+fn resolve_set_id(
+    history: &HistoryService,
+    username: &str,
+    set_id: Option<&str>,
+    set_name: Option<&str>,
+    key: &chatbot_core::enc_key::EncryptionKey,
+) -> Result<SetId, &'static str> {
+    if let Some(id_str) = set_id.filter(|s| !s.trim().is_empty()) {
+        return SetId::parse(id_str).map_err(|_| "invalid set_id");
+    }
+    Ok(resolve_set(history, username, None, set_name, key)?.set_id)
 }
 
 fn resolve_set(

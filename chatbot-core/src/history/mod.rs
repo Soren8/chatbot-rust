@@ -21,8 +21,9 @@ pub use ops::{
     DEFAULT_HISTORY_PAGE_SIZE, MAX_HISTORY_PAGE_SIZE,
 };
 pub use types::{
-    BlobFormat, HistoryPair, PrepareCapture, SetId, SetPayloadV1, SetSnapshot, SetSummary,
-    SetVersion,
+    BlobFormat, HeaderV1, HistoryPair, ImageId, ImagePayloadV1, ManifestPair, ManifestV1, PairId,
+    PairPayloadV1, PrepareCapture, SetId, SetPage, SetPayloadV1, SetSnapshot, SetSummary,
+    SetVersion, ThumbPayloadV1,
 };
 
 /// Display-name validation shared by HTTP handlers (not storage keys).
