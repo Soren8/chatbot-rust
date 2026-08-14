@@ -1,7 +1,7 @@
 fastapi==0.135.3
 uvicorn[standard]==0.44.0
 qwen-tts==0.1.1
-nemo_toolkit[asr]==2.7.2
+nemo_toolkit[asr]==3.0.0
 kokoro==0.9.4
 misaki[en]==0.9.4
 spacy==3.8.14
