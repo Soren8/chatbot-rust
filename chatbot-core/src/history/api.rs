@@ -268,6 +268,22 @@ impl HistoryService {
             .load_image(&user, set_id, pair_index, image_index, key)?)
     }
 
+    pub fn load_thumb(
+        &self,
+        user: &str,
+        set_id: SetId,
+        pair_index: usize,
+        image_index: usize,
+        key: &EncryptionKey,
+    ) -> Result<(String, Vec<u8>), HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        self.ensure_chunked(&user, set_id, key)?;
+        Ok(self
+            .store
+            .load_thumb(&user, set_id, pair_index, image_index, key)?)
+    }
+
     /// Test/helper: open a fresh service at a path without touching the process global.
     pub fn open_ephemeral(path: impl AsRef<Path>) -> Result<Self, HistoryError> {
         let path = path.as_ref();
@@ -1143,7 +1159,8 @@ mod tests {
             .unwrap();
         assert_eq!(page.history_total, 1);
         assert!(!page.history[0].0.contains("img:"));
-        assert!(page.history[0].0.contains("[IMAGE:"));
+        assert!(!page.history[0].0.contains("data:image"));
+        assert!(page.history[0].0.contains("[IMAGE:]"));
     }
 
     #[test]

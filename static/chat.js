@@ -184,6 +184,10 @@ function historyImageUrl(pairIndex, imageIndex) {
     + '/' + encodeURIComponent(String(idx));
 }
 
+function historyThumbUrl(pairIndex, imageIndex) {
+  return historyImageUrl(pairIndex, imageIndex) + '?size=thumb';
+}
+
 function withCsrf(headers) {
   var result = headers ? Object.assign({}, headers) : {};
   if (window.CSRF_TOKEN) {
@@ -611,20 +615,24 @@ function buildUserMessageSpan(text, imageSrc, opts) {
   }
   span.appendChild(body);
 
-  const safeSrc = sanitizeDataImageSrc(imageSrc);
+  const safeSrc = sanitizeDataImageSrc(imageSrc) || sanitizeLightboxSrc(imageSrc);
   if (safeSrc) {
     span.appendChild(document.createElement('br'));
     const img = document.createElement('img');
     img.className = 'chat-image';
-    img.setAttribute('src', safeSrc);
     img.setAttribute('alt', 'Attached image');
     img.setAttribute('title', 'Click to expand');
-    img.setAttribute('loading', 'lazy');
+    img.setAttribute('decoding', 'async');
     if (opts && opts.pairIndex != null) {
       img.setAttribute('data-pair-index', String(opts.pairIndex));
     }
     if (opts && opts.thumbnail) {
       img.setAttribute('data-thumb', '1');
+    }
+    if (opts && opts.deferSrc) {
+      img.setAttribute('data-pending-src', safeSrc);
+    } else {
+      img.setAttribute('src', safeSrc);
     }
     span.appendChild(img);
   }
@@ -1113,21 +1121,26 @@ function updateSearchToggleVisibility() {
 // Wire format: plain text + optional [IMAGE:data:image/...;base64,...] tag.
 // Keep image payload out of the edit textarea (1MB+ base64 freezes the browser).
 var USER_IMAGE_TAG_RE = /\[IMAGE:(data:image\/[^;]+;base64,[^\]]+)\]/;
+var USER_IMAGE_ANY_RE = /\[IMAGE:([^\]]*)\]/;
 
 function parseUserMessageContent(originalText) {
   var raw = originalText == null ? '' : String(originalText);
-  var imageMatch = raw.match(USER_IMAGE_TAG_RE);
-  // Sanitize at parse time so callers never hold a raw DOM-derived data URL.
-  var imageSrc = imageMatch ? sanitizeDataImageSrc(imageMatch[1]) : null;
-  var text = raw.replace(/\[IMAGE:[^\]]+\]/g, '').trim();
-  return { text: text, imageSrc: imageSrc };
+  var anyMatch = raw.match(USER_IMAGE_ANY_RE);
+  var payload = anyMatch ? anyMatch[1] : '';
+  var imageSrc = payload ? sanitizeDataImageSrc(payload) : null;
+  var deferred = !!anyMatch && !imageSrc && payload !== 'unavailable';
+  var text = raw.replace(/\[IMAGE:[^\]]*\]/g, '').trim();
+  return { text: text, imageSrc: imageSrc, deferred: deferred, hasImage: !!anyMatch };
 }
 
-function composeUserMessageContent(text, imageSrc) {
+function composeUserMessageContent(text, imageSrc, hasImage) {
   var body = (text == null ? '' : String(text)).trim();
   var safeSrc = sanitizeDataImageSrc(imageSrc);
   if (safeSrc) {
     return body + (body ? '\n' : '') + '[IMAGE:' + safeSrc + ']';
+  }
+  if (hasImage || (imageSrc && String(imageSrc).indexOf('/history_image/') === 0)) {
+    return body + (body ? '\n' : '') + '[IMAGE:]';
   }
   return body;
 }
@@ -1188,8 +1201,25 @@ function updateLoadOlderBar() {
   }
 }
 
+function startDeferredThumbs(root, newestFirst) {
+  var scope = root || document;
+  var imgs = scope.querySelectorAll
+    ? scope.querySelectorAll('img.chat-image[data-pending-src]')
+    : [];
+  var list = Array.prototype.slice.call(imgs);
+  if (newestFirst) list.reverse();
+  for (var i = 0; i < list.length; i++) {
+    var url = list[i].getAttribute('data-pending-src');
+    list[i].removeAttribute('data-pending-src');
+    if (newestFirst && i === 0) {
+      list[i].setAttribute('fetchpriority', 'high');
+    }
+    if (url) list[i].setAttribute('src', url);
+  }
+}
+
 function appendHistoryPair(userMsg, aiMsg, pairIndex, mountOpts) {
-  var opts = Object.assign({ thumbnail: true }, mountOpts || {});
+  var opts = Object.assign({ thumbnail: true, deferSrc: true }, mountOpts || {});
   appendMessage(userMsg, 'user-message', pairIndex, opts);
   var formattedAi = formatAiMessage(aiMsg);
   var $aiMsg = appendAiHistoryMessage(formattedAi, opts);
@@ -1220,6 +1250,7 @@ function applyHistoryPage(data, mode) {
     var before = bar && bar.nextSibling ? bar.nextSibling : (chat ? chat.firstChild : null);
     if (chat) chat.insertBefore(frag, before);
     if (chat) chat.scrollTop = prevTop + (chat.scrollHeight - prevHeight);
+    startDeferredThumbs(chat, false);
     updateLoadOlderBar();
     return;
   }
@@ -1228,10 +1259,13 @@ function applyHistoryPage(data, mode) {
   $chat.empty();
   ensureLoadOlderBar();
   for (var j = 0; j < pairs.length; j++) {
-    appendHistoryPair(pairs[j][0], pairs[j][1], start + j, { thumbnail: true });
+    appendHistoryPair(pairs[j][0], pairs[j][1], start + j, { thumbnail: true, deferSrc: true });
   }
   updateLoadOlderBar();
-  setTimeout(function() { scrollToBottom(); }, 0);
+  setTimeout(function() {
+    scrollToBottom();
+    startDeferredThumbs(document.getElementById('chat-content'), true);
+  }, 0);
 }
 
 function loadOlderMessages() {
@@ -1368,14 +1402,24 @@ function appendMessage(message, className, pairIndex, mountOpts) {
         .trim();
     }
 
-    // Handle image attachments [IMAGE:data:image/png;base64,...]
+    // Handle image attachments [IMAGE:data:...] or deferred [IMAGE:] markers.
     const parsed = parseUserMessageContent(originalText);
-    replaceChildrenNative(host, buildUserMessageSpan(parsed.text, parsed.imageSrc, {
+    let displaySrc = parsed.imageSrc;
+    if (!displaySrc && parsed.deferred && pairIndex != null
+        && window.APP_DATA && window.APP_DATA.loggedIn) {
+      displaySrc = asThumbnail
+        ? historyThumbUrl(pairIndex, 0)
+        : historyImageUrl(pairIndex, 0);
+    }
+    replaceChildrenNative(host, buildUserMessageSpan(parsed.text, displaySrc, {
       pairIndex: pairIndex,
-      thumbnail: asThumbnail
+      thumbnail: asThumbnail,
+      deferSrc: !!(mountOpts && mountOpts.deferSrc && displaySrc)
     }));
     // Wire-format plain text only (not HTML); setAttribute does not parse markup.
-    host.setAttribute('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
+    host.setAttribute('data-original', composeUserMessageContent(
+      parsed.text, displaySrc, parsed.hasImage || parsed.deferred
+    ));
     if (asThumbnail) host.setAttribute('data-thumb', '1');
   } else if (isAi) {
     // Stream shell only — never accept bodyHtml here (exception text also enters
@@ -2608,7 +2652,11 @@ $(document).ready(function() {
 
       // Text only in the textarea; keep base64 image out of the input for performance.
       const parsed = parseUserMessageContent(originalText);
-      const editSafeSrc = sanitizeDataImageSrc(parsed.imageSrc);
+      let editSafeSrc = sanitizeDataImageSrc(parsed.imageSrc);
+      if (!editSafeSrc && parsed.deferred && window.APP_DATA && window.APP_DATA.loggedIn) {
+        const idx = liveUserPairIndex($messageElement);
+        if (idx >= 0) editSafeSrc = historyThumbUrl(idx, 0);
+      }
       $messageElement.data('editImageSrc', editSafeSrc);
 
       const $editContainer = $('<div>').addClass('edit-message-container');
@@ -2649,7 +2697,10 @@ $(document).ready(function() {
       const $messageElement = $(saveEditBtn).closest('.message.user-message');
       const textOnly = $messageElement.find('.edit-textarea').val();
       // jQuery .data() returns undefined if never set; null means user removed the image.
-      const imageSrc = sanitizeDataImageSrc($messageElement.data('editImageSrc')) || null;
+      const rawEditSrc = $messageElement.data('editImageSrc');
+      const imageSrc = sanitizeDataImageSrc(rawEditSrc)
+        || sanitizeLightboxSrc(rawEditSrc)
+        || null;
       const newText = composeUserMessageContent(textOnly, imageSrc);
       if (!newText) return;
 

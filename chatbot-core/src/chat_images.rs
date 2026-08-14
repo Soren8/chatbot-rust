@@ -224,6 +224,33 @@ fn thumbnail_payload_with(payload: &str, max_edge: u32, quality: u8) -> Option<S
     Some(format!("data:image/jpeg;base64,{encoded}"))
 }
 
+/// Replace decodable / stored image tags with empty `[IMAGE:]` markers.
+///
+/// Used by `/load_set?thumbnails=true` so the JSON body is text-only; the
+/// client then GETs `/history_image/...?size=thumb` per attachment.
+pub fn defer_image_payloads(text: &str) -> String {
+    if !has_image(text) {
+        return text.to_owned();
+    }
+    rewrite_image_payloads(text, |payload| {
+        if payload == IMAGE_UNAVAILABLE {
+            return IMAGE_UNAVAILABLE.to_owned();
+        }
+        if parse_image_ref(payload).is_some()
+            || payload.starts_with("data:")
+            || decode_image_data_url(payload).is_some()
+        {
+            return String::new();
+        }
+        payload.to_owned()
+    })
+}
+
+/// 384px JPEG bytes for a stored full-res image (thumb GET fallback).
+pub fn ui_thumb_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    encode_jpeg_thumb(bytes, UI_THUMB_MAX_EDGE, UI_THUMB_JPEG_QUALITY)
+}
+
 /// Rewrite every `[IMAGE:...]` in a stored user message to a small JPEG thumbnail.
 ///
 /// Used by `/load_set` so the browser does not parse multi-MB data URLs just to
@@ -768,6 +795,21 @@ mod tests {
         let b = "goodbye\n[IMAGE:data:image/jpeg;base64,BBB]";
         assert!(!user_messages_match(a, b));
         assert!(user_messages_match(a, "hello\n[IMAGE:data:image/jpeg;base64,ZZZ]"));
+    }
+
+    #[test]
+    fn defer_image_payloads_strips_bytes_keeps_marker() {
+        let large = large_jpeg_data_url();
+        let original = format!("caption\n[IMAGE:{large}]");
+        let deferred = defer_image_payloads(&original);
+        assert_eq!(deferred, "caption\n[IMAGE:]");
+        assert!(!deferred.contains("data:"));
+        assert!(user_messages_match(&original, &deferred));
+        assert_eq!(
+            defer_image_payloads("x [IMAGE:unavailable]"),
+            "x [IMAGE:unavailable]"
+        );
+        assert_eq!(defer_image_payloads("plain"), "plain");
     }
 
     #[test]

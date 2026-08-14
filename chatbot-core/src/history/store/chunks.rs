@@ -13,8 +13,8 @@ use super::tables::{
 };
 use super::{RedbHistoryStore, StoreError};
 use crate::chat_images::{
-    extract_images_from_user_message, materialize_full, materialize_thumbs, normalize_pair_for_commit,
-    ExtractedImage,
+    defer_image_payloads, extract_images_from_user_message, materialize_full,
+    normalize_pair_for_commit, ui_thumb_jpeg, ExtractedImage,
 };
 use crate::enc_key::EncryptionKey;
 use crate::history::crypto;
@@ -241,7 +241,7 @@ impl RedbHistoryStore {
             let mut history = page.slice(&snap.history).to_vec();
             if thumbnails {
                 for (user, _) in &mut history {
-                    *user = crate::chat_images::replace_images_with_ui_thumbnails(user);
+                    *user = defer_image_payloads(user);
                 }
             }
             return Ok(SetPage {
@@ -264,31 +264,26 @@ impl RedbHistoryStore {
         let window = &manifest.pairs[page.start..page.end];
         let slice = page.slice(&logical.history);
 
-        let mut thumbs: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
-        let mut images: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
-        for entry in window {
-            for image_id in &entry.image_ids {
-                if thumbnails {
-                    if let Some(t) = self.load_thumb_by_id(user_id, set_id, *image_id, key)? {
-                        thumbs.insert(*image_id, t);
+        let history = if thumbnails {
+            // Text only — client fetches thumbs via GET /history_image?size=thumb.
+            slice
+                .iter()
+                .map(|(u, a)| (defer_image_payloads(u), a.clone()))
+                .collect()
+        } else {
+            let mut images: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
+            for entry in window {
+                for image_id in &entry.image_ids {
+                    if let Some(img) = self.load_image_by_id(user_id, set_id, *image_id, key)? {
+                        images.insert(*image_id, (img.mime, img.bytes));
                     }
-                } else if let Some(img) = self.load_image_by_id(user_id, set_id, *image_id, key)? {
-                    images.insert(*image_id, (img.mime, img.bytes));
                 }
             }
-        }
-
-        let history = slice
-            .iter()
-            .map(|(u, a)| {
-                let user = if thumbnails {
-                    materialize_thumbs(u, &thumbs)
-                } else {
-                    materialize_full(u, &images)
-                };
-                (user, a.clone())
-            })
-            .collect();
+            slice
+                .iter()
+                .map(|(u, a)| (materialize_full(u, &images), a.clone()))
+                .collect()
+        };
 
         Ok(SetPage {
             set_id,
@@ -375,6 +370,46 @@ impl RedbHistoryStore {
             .load_image_by_id(user_id, set_id, image_id, key)?
             .ok_or(StoreError::NotFound)?;
         Ok((payload.mime, payload.bytes))
+    }
+
+    /// One UI thumbnail. Decrypts `THUMB_BLOBS` only; falls back to resizing the
+    /// full image if the thumb row is missing.
+    pub fn load_thumb(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        pair_index: usize,
+        image_index: usize,
+        key: &EncryptionKey,
+    ) -> Result<(String, Vec<u8>), StoreError> {
+        let meta = self.load_meta(user_id, set_id)?;
+        if !meta.blob_format.is_chunked() {
+            let (mime, bytes) = self.load_image(user_id, set_id, pair_index, image_index, key)?;
+            if let Some(jpeg) = ui_thumb_jpeg(&bytes) {
+                return Ok(("image/jpeg".into(), jpeg));
+            }
+            return Ok((mime, bytes));
+        }
+        let manifest = self.load_manifest(user_id, set_id, meta.version, key)?;
+        let entry = manifest
+            .pairs
+            .get(pair_index)
+            .ok_or(StoreError::InvalidInput)?;
+        let image_id = entry
+            .image_ids
+            .get(image_index)
+            .copied()
+            .ok_or(StoreError::NotFound)?;
+        if let Some(thumb) = self.load_thumb_by_id(user_id, set_id, image_id, key)? {
+            return Ok(thumb);
+        }
+        if let Some(img) = self.load_image_by_id(user_id, set_id, image_id, key)? {
+            if let Some(jpeg) = ui_thumb_jpeg(&img.bytes) {
+                return Ok(("image/jpeg".into(), jpeg));
+            }
+            return Ok((img.mime, img.bytes));
+        }
+        Err(StoreError::NotFound)
     }
 
     /// Split a v0/v1 whole-set blob into chunks in one write transaction.

@@ -313,10 +313,17 @@ async fn load_set_thumbnails_then_history_pair_returns_full_image() {
     .await;
     assert_eq!(status, StatusCode::OK, "{loaded}");
     let shown = loaded["history"][0][0].as_str().expect("user msg");
-    assert!(shown.contains("[IMAGE:data:image/jpeg;base64,"), "{shown}");
+    assert!(
+        shown.contains("[IMAGE:]") || shown.contains("[IMAGE]"),
+        "paged JSON should keep an image marker: {shown}"
+    );
+    assert!(
+        !shown.contains("data:image"),
+        "paged JSON must not inline image bytes: {shown}"
+    );
     assert!(
         shown.len() < user_msg.len(),
-        "thumbnail JSON should be smaller than stored message ({} vs {})",
+        "text-only JSON should be smaller than stored message ({} vs {})",
         shown.len(),
         user_msg.len()
     );
@@ -385,6 +392,40 @@ async fn load_set_thumbnails_then_history_pair_returns_full_image() {
     );
     let body = to_bytes(res.into_body(), 2 * 1024 * 1024).await.unwrap();
     assert!(body.starts_with(&[0xFF, 0xD8]), "JPEG SOI marker");
+
+    let thumb_uri = format!("{uri}?size=thumb");
+    let thumb_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(&thumb_uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(thumb_res.status(), StatusCode::OK, "GET {thumb_uri}");
+    let thumb_ctype = thumb_res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        thumb_ctype.starts_with("image/"),
+        "expected thumb image content-type, got {thumb_ctype}"
+    );
+    let thumb_body = to_bytes(thumb_res.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
+    assert!(thumb_body.starts_with(&[0xFF, 0xD8]), "thumb JPEG SOI");
+    assert!(
+        thumb_body.len() < body.len(),
+        "thumb ({} B) should be smaller than full ({} B)",
+        thumb_body.len(),
+        body.len()
+    );
 
     let denied = app
         .clone()

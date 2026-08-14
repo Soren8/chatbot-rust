@@ -28,7 +28,8 @@ struct SetRequest {
     /// Return pairs with index `< before` (older page). Absent = tail of history.
     #[serde(default)]
     before: Option<usize>,
-    /// Replace stored full-resolution `[IMAGE:...]` tags with UI thumbnails.
+    /// When true, strip image bytes from the JSON (`[IMAGE:]` markers only).
+    /// The client loads previews via `GET /history_image/...?size=thumb`.
     #[serde(default)]
     thumbnails: Option<bool>,
 }
@@ -666,13 +667,29 @@ pub async fn handle_history_image(
             );
         }
     };
-    match history.load_image(username, id, pair_index, image_index, key) {
+    let want_thumb = uri_wants_thumb(request.uri().query());
+    let loaded = if want_thumb {
+        history.load_thumb(username, id, pair_index, image_index, key)
+    } else {
+        history.load_image(username, id, pair_index, image_index, key)
+    };
+    match loaded {
         Ok((mime, bytes)) => build_image_response(&mime, bytes),
         Err(_) => build_json_response(
             StatusCode::NOT_FOUND,
             json!({"error": "image not found"}),
         ),
     }
+}
+
+fn uri_wants_thumb(query: Option<&str>) -> bool {
+    let Some(q) = query else {
+        return false;
+    };
+    q.split('&').any(|part| {
+        let part = part.trim();
+        part == "size=thumb" || part == "thumb=1" || part == "thumb=true"
+    })
 }
 
 fn parse_history_image_path(path: &str) -> Option<(String, u64, usize, usize)> {
