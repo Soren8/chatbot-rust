@@ -1267,8 +1267,12 @@ fn build_regenerate_context(
         ));
     };
 
+    let stored_user = &full_history[insertion_index].0;
+    let effective_user =
+        crate::chat_images::coalesce_edit_user_message(request.message, stored_user);
     if let Some(cap) = prepare_capture.as_mut() {
-        *cap = cap.clone().with_regenerate(insertion_index, request.message);
+        cap.insertion_index = Some(insertion_index);
+        cap.replace_user_message = Some(effective_user);
     }
 
     // Guest and authed: prepare is non-destructive. Model context is a prefix only;

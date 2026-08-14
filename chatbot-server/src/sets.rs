@@ -3,6 +3,7 @@ use axum::{
     http::{header, Method, Request, Response, StatusCode},
 };
 use chatbot_core::{
+    chat_images,
     history::{self, HistoryError, HistoryService, SetId, SetVersion},
     session,
 };
@@ -21,6 +22,26 @@ struct SetRequest {
     set_id: Option<String>,
     #[serde(default)]
     expected_version: Option<u64>,
+    /// Max pairs to return. Absent = full history (legacy clients / tests).
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Return pairs with index `< before` (older page). Absent = tail of history.
+    #[serde(default)]
+    before: Option<usize>,
+    /// Replace stored full-resolution `[IMAGE:...]` tags with UI thumbnails.
+    #[serde(default)]
+    thumbnails: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct HistoryPairRequest {
+    #[serde(default)]
+    set_name: Option<String>,
+    #[serde(default)]
+    set_id: Option<String>,
+    pair_index: i32,
+    #[serde(default)]
+    image_index: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -454,10 +475,19 @@ pub async fn handle_load_set(
         return build_service_response(response);
     }
 
-    let history_json = loaded
-        .history
+    let page = history::page_history(loaded.history.len(), payload.limit, payload.before);
+    let slice = page.slice(&loaded.history);
+    let thumbnails = payload.thumbnails.unwrap_or(false);
+    let history_json = slice
         .iter()
-        .map(|(user, assistant)| json!([user, assistant]))
+        .map(|(user, assistant)| {
+            let user_out = if thumbnails {
+                chat_images::replace_images_with_ui_thumbnails(user)
+            } else {
+                user.clone()
+            };
+            json!([user_out, assistant])
+        })
         .collect::<Vec<_>>();
 
     build_json_response(
@@ -469,8 +499,122 @@ pub async fn handle_load_set(
             "memory": loaded.memory,
             "system_prompt": loaded.system_prompt,
             "history": history_json,
+            "history_start": page.start,
+            "history_total": page.total,
+            "has_more": page.has_more,
             "encrypted": true,
             "is_default": loaded.is_default,
+        }),
+    )
+}
+
+/// Return one history pair at full fidelity (for lightbox / edit / regenerate).
+pub async fn handle_history_pair(
+    request: Request<Body>,
+) -> Result<Response<Body>, HttpError> {
+    if request.method() != Method::POST {
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
+    }
+
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+
+    let body_bytes = body::to_bytes(body, 128 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "sets::history_pair"))?;
+
+    let payload: HistoryPairRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|err| map_json_parse_err(err, "sets::history_pair"))?;
+
+    if payload.pair_index < 0 {
+        return build_json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "pair_index is required"}),
+        );
+    }
+    let pair_index = payload.pair_index as usize;
+
+    let cookie_header = extract_cookie(&headers);
+    let csrf_token = extract_csrf(&headers);
+    validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::history_pair::session"))?;
+
+    if let Some(username) = session.username.as_deref() {
+        if let Err(response) =
+            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        {
+            return build_service_response(response);
+        }
+        let key = encryption_key.as_ref().expect("validated encryption key");
+        let history = HistoryService::global().map_err(history_error_to_http)?;
+        let loaded = match resolve_set(
+            &history,
+            username,
+            payload.set_id.as_deref(),
+            payload.set_name.as_deref(),
+            key,
+        ) {
+            Ok(s) => s,
+            Err(msg) => {
+                return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
+            }
+        };
+        return history_pair_json(
+            &loaded.history,
+            pair_index,
+            payload.image_index,
+            Some(loaded.set_id.to_string()),
+            Some(loaded.version.get()),
+        );
+    }
+
+    let guest_history = session::session_history(&session.session_id);
+    history_pair_json(&guest_history, pair_index, payload.image_index, None, None)
+}
+
+fn history_pair_json(
+    history: &[(String, String)],
+    pair_index: usize,
+    image_index: Option<usize>,
+    set_id: Option<String>,
+    version: Option<u64>,
+) -> Result<Response<Body>, HttpError> {
+    if pair_index >= history.len() {
+        return build_json_response(
+            StatusCode::NOT_FOUND,
+            json!({"error": "pair_index out of range"}),
+        );
+    }
+    let (user, assistant) = &history[pair_index];
+    if let Some(idx) = image_index {
+        let image_src = chat_images::nth_image_data_url(user, idx);
+        if image_src.is_none() {
+            return build_json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "image not found"}),
+            );
+        }
+        return build_json_response(
+            StatusCode::OK,
+            json!({
+                "set_id": set_id,
+                "version": version,
+                "pair_index": pair_index,
+                "image_src": image_src,
+            }),
+        );
+    }
+    build_json_response(
+        StatusCode::OK,
+        json!({
+            "set_id": set_id,
+            "version": version,
+            "pair_index": pair_index,
+            "user": user,
+            "assistant": assistant,
         }),
     )
 }

@@ -105,6 +105,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/delete_set", post(sets::handle_delete_set))
         .route("/rename_set", post(sets::handle_rename_set))
         .route("/load_set", post(sets::handle_load_set))
+        .route("/history_pair", post(sets::handle_history_pair))
         .route("/update_memory", post(memory::handle_update_memory))
         .route(
             "/update_system_prompt",

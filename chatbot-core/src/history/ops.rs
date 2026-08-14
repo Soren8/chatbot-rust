@@ -87,7 +87,7 @@ pub fn delete_pair(
         return Err(OpsError::PairIndexOutOfRange);
     }
     let (stored_user, _) = &snapshot.history[pair_index];
-    if stored_user.trim() != expected_user_msg.trim() {
+    if !crate::chat_images::user_messages_match(stored_user, expected_user_msg) {
         return Err(OpsError::ContentMismatch);
     }
     snapshot.history.remove(pair_index);
@@ -211,6 +211,57 @@ pub fn with_version(mut snapshot: SetSnapshot, version: SetVersion) -> SetSnapsh
     snapshot
 }
 
+/// Default number of most-recent pairs returned by `/load_set` when the client
+/// asks for a page (not applied unless `limit` is present).
+pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 40;
+/// Hard cap on a single history page so a client cannot request the entire set
+/// of multi-MB image pairs in one JSON body.
+pub const MAX_HISTORY_PAGE_SIZE: usize = 200;
+
+/// Window into a history vec: `[start, end)` plus whether older pairs exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryPage {
+    pub start: usize,
+    pub end: usize,
+    pub total: usize,
+    pub has_more: bool,
+}
+
+impl HistoryPage {
+    pub fn slice<'a, T>(&self, history: &'a [T]) -> &'a [T] {
+        let end = self.end.min(history.len());
+        let start = self.start.min(end);
+        &history[start..end]
+    }
+}
+
+/// Select a chronological window of pairs.
+///
+/// * `limit = None` — whole history (legacy `/load_set` clients and tests).
+/// * `before = None` — the most recent `limit` pairs (tail).
+/// * `before = Some(i)` — pairs with index `< i` (older page).
+pub fn page_history(total: usize, limit: Option<usize>, before: Option<usize>) -> HistoryPage {
+    match limit {
+        None => HistoryPage {
+            start: 0,
+            end: total,
+            total,
+            has_more: false,
+        },
+        Some(raw_limit) => {
+            let limit = raw_limit.clamp(1, MAX_HISTORY_PAGE_SIZE);
+            let end = before.unwrap_or(total).min(total);
+            let start = end.saturating_sub(limit);
+            HistoryPage {
+                start,
+                end,
+                total,
+                has_more: start > 0,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +311,69 @@ mod tests {
             delete_pair(s, 9, "u1"),
             Err(OpsError::PairIndexOutOfRange)
         ));
+    }
+
+    #[test]
+    fn delete_pair_matches_thumbnail_image_payload() {
+        let mut s = sample();
+        s.history[1].0 = "see\n[IMAGE:data:image/jpeg;base64,FULLRESOLUTIONPAYLOAD]".into();
+        let next = delete_pair(
+            s.clone(),
+            1,
+            "see\n[IMAGE:data:image/jpeg;base64,THUMB]",
+        )
+        .unwrap();
+        assert_eq!(next.history.len(), 2);
+        assert_eq!(next.history[1].0, "u3");
+        assert!(matches!(
+            delete_pair(s, 1, "other\n[IMAGE:data:image/jpeg;base64,THUMB]"),
+            Err(OpsError::ContentMismatch)
+        ));
+    }
+
+    #[test]
+    fn page_history_none_limit_is_full_legacy() {
+        let page = page_history(50, None, None);
+        assert_eq!(
+            page,
+            HistoryPage {
+                start: 0,
+                end: 50,
+                total: 50,
+                has_more: false
+            }
+        );
+    }
+
+    #[test]
+    fn page_history_tail_then_older() {
+        let tail = page_history(50, Some(10), None);
+        assert_eq!(tail.start, 40);
+        assert_eq!(tail.end, 50);
+        assert!(tail.has_more);
+        let items: Vec<usize> = (0..50).collect();
+        assert_eq!(tail.slice(&items), &items[40..50]);
+
+        let older = page_history(50, Some(10), Some(40));
+        assert_eq!(older.start, 30);
+        assert_eq!(older.end, 40);
+        assert!(older.has_more);
+
+        let first = page_history(50, Some(10), Some(10));
+        assert_eq!(first.start, 0);
+        assert_eq!(first.end, 10);
+        assert!(!first.has_more);
+    }
+
+    #[test]
+    fn page_history_clamps_limit_and_before() {
+        let page = page_history(5, Some(0), None);
+        assert_eq!(page.start, 4);
+        assert_eq!(page.end, 5);
+        let overflow = page_history(8, Some(10), Some(99));
+        assert_eq!(overflow.start, 0);
+        assert_eq!(overflow.end, 8);
+        assert!(!overflow.has_more);
     }
 
     #[test]

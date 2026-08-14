@@ -857,6 +857,18 @@ body {
     flex-shrink: 0;
 }
 
+.load-older-bar {
+    display: flex;
+    justify-content: center;
+    padding: 8px 0 12px;
+}
+.load-older-bar[hidden] {
+    display: none !important;
+}
+.load-older-btn {
+    font-size: 0.85rem;
+}
+
 /* Chat attachment thumbnails — click to expand */
 .chat-image {
     max-width: 300px;

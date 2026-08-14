@@ -178,7 +178,16 @@ pub async fn handle_regenerate(
         _ => unreachable!("provider_type should be filtered earlier"),
     };
 
-    let prepared = chat::prepare_chat_messages(&context, payload.message.as_str());
+    // Prefer the capture's coalesced user text so a UI thumbnail is not
+    // persisted (or sent to the model) in place of the stored full image.
+    let user_message = context
+        .prepare_capture
+        .as_ref()
+        .and_then(|c| c.replace_user_message.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| payload.message.clone());
+
+    let prepared = chat::prepare_chat_messages(&context, user_message.as_str());
 
     if prepared.was_truncated() {
         debug!(
@@ -204,7 +213,6 @@ pub async fn handle_regenerate(
     let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
     let prepare_capture = context.prepare_capture.clone();
-    let user_message = payload.message.clone();
     let encryption_key_for_finalize = encryption_key.clone();
 
     let mut provider_stream = match provider_kind {

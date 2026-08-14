@@ -140,7 +140,8 @@ window.fetch = function(input, init) {
         url.includes('/update_memory') ||
         url.includes('/update_system_prompt') ||
         url.includes('/delete_message') ||
-        url.includes('/reset_chat')
+        url.includes('/reset_chat') ||
+        url.includes('/history_pair')
       )) {
         return response;
       }
@@ -254,17 +255,35 @@ function noteLocalVersionBumpAfterPersist() {
   applySetVersion(next, window.APP_DATA.lastSetId);
 }
 
+var HISTORY_PAGE_SIZE = 40;
+var HISTORY_OFFSET = 0;
+var HISTORY_TOTAL = 0;
+var HISTORY_HAS_MORE = false;
+var HISTORY_LOADING_OLDER = false;
+var HISTORY_SET_GEN = 0;
+
+function resetHistoryWindow() {
+  HISTORY_OFFSET = 0;
+  HISTORY_TOTAL = 0;
+  HISTORY_HAS_MORE = false;
+  HISTORY_LOADING_OLDER = false;
+}
+
 function liveUserPairIndex(userMessageElement) {
   var el = userMessageElement && userMessageElement.jquery ? userMessageElement[0] : userMessageElement;
   if (!el) return -1;
   var nodes = document.querySelectorAll('#chat-content .message.user-message');
-  return Array.prototype.indexOf.call(nodes, el);
+  var i = Array.prototype.indexOf.call(nodes, el);
+  if (i < 0) return -1;
+  return HISTORY_OFFSET + i;
 }
 
 function reindexUserPairIndices() {
   var nodes = document.querySelectorAll('#chat-content .message.user-message');
   for (var i = 0; i < nodes.length; i++) {
-    nodes[i].setAttribute('data-pair-index', String(i));
+    nodes[i].setAttribute('data-pair-index', String(HISTORY_OFFSET + i));
+    var img = nodes[i].querySelector('img.chat-image');
+    if (img) img.setAttribute('data-pair-index', String(HISTORY_OFFSET + i));
   }
 }
 
@@ -553,7 +572,7 @@ function sanitizeDataImageSrc(src) {
 // Build the user-message display node without interpreting message text as HTML
 // (CodeQL js/xss-through-dom). Text goes through createTextNode only; images use
 // a reconstructed data:image URL from sanitizeDataImageSrc.
-function buildUserMessageSpan(text, imageSrc) {
+function buildUserMessageSpan(text, imageSrc, opts) {
   const span = document.createElement('span');
   span.className = 'user-message-text';
 
@@ -580,6 +599,12 @@ function buildUserMessageSpan(text, imageSrc) {
     img.setAttribute('alt', 'Attached image');
     img.setAttribute('title', 'Click to expand');
     img.setAttribute('loading', 'lazy');
+    if (opts && opts.pairIndex != null) {
+      img.setAttribute('data-pair-index', String(opts.pairIndex));
+    }
+    if (opts && opts.thumbnail) {
+      img.setAttribute('data-thumb', '1');
+    }
     span.appendChild(img);
   }
 
@@ -699,10 +724,19 @@ function buildAiStreamChildren() {
 }
 
 // Mount a pre-built message node into #chat-content (shared chrome, no content).
-function mountChatMessage(hostEl) {
+function mountChatMessage(hostEl, mountOpts) {
   const $chatContent = $('#chat-content');
-  if ($chatContent[0] && hostEl) $chatContent[0].appendChild(hostEl);
-  if (typeof __autoScroll !== 'undefined' ? __autoScroll : isAtBottom()) {
+  const parent = $chatContent[0];
+  if (parent && hostEl) {
+    if (mountOpts && mountOpts.fragment) {
+      mountOpts.fragment.appendChild(hostEl);
+    } else if (mountOpts && mountOpts.before) {
+      parent.insertBefore(hostEl, mountOpts.before);
+    } else {
+      parent.appendChild(hostEl);
+    }
+  }
+  if (!(mountOpts && mountOpts.skipScroll) && (typeof __autoScroll !== 'undefined' ? __autoScroll : isAtBottom())) {
     scrollToBottom();
   }
 }
@@ -710,10 +744,10 @@ function mountChatMessage(hostEl) {
 // History AI bubble — separate entry point from appendMessage so exception text
 // that flows into appendMessage(message, 'error-message') cannot reach innerHTML
 // via field-insensitive joining of the shared `message` parameter.
-function appendAiHistoryMessage(safeHtml) {
+function appendAiHistoryMessage(safeHtml, mountOpts) {
   const $messageElement = $('<div>').addClass('message ai-message');
   replaceChildrenNative($messageElement[0], buildAiHistoryChildren(safeHtml));
-  mountChatMessage($messageElement[0]);
+  mountChatMessage($messageElement[0], mountOpts);
   return $messageElement;
 }
 
@@ -1022,6 +1056,144 @@ function composeUserMessageContent(text, imageSrc) {
   return body;
 }
 
+function fetchHistoryPair(pairIndex, extra) {
+  return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
+    return fetch('/history_pair', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(activeSetPayload(Object.assign({ pair_index: pairIndex }, extra || {})))
+    });
+  }).then(function(r) {
+    if (r.status === 401) {
+      window.location.href = '/login';
+      throw new Error('Session expired');
+    }
+    if (!r.ok) throw new Error('Failed to load message');
+    return r.json();
+  });
+}
+
+function ensureLoadOlderBar() {
+  var existing = document.getElementById('load-older-bar');
+  if (existing) return existing;
+  var chat = document.getElementById('chat-content');
+  if (!chat) return null;
+  var bar = document.createElement('div');
+  bar.id = 'load-older-bar';
+  bar.className = 'load-older-bar';
+  bar.hidden = true;
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = 'load-older-btn';
+  btn.className = 'btn btn-sm btn-outline-secondary load-older-btn';
+  btn.textContent = 'Load older messages';
+  btn.addEventListener('click', function() { loadOlderMessages(); });
+  bar.appendChild(btn);
+  chat.insertBefore(bar, chat.firstChild);
+  return bar;
+}
+
+function updateLoadOlderBar() {
+  var bar = ensureLoadOlderBar();
+  if (!bar) return;
+  var btn = document.getElementById('load-older-btn');
+  if (HISTORY_HAS_MORE && HISTORY_OFFSET > 0) {
+    bar.hidden = false;
+    if (btn) {
+      btn.disabled = !!HISTORY_LOADING_OLDER;
+      btn.textContent = HISTORY_LOADING_OLDER
+        ? 'Loading…'
+        : (HISTORY_OFFSET === 1
+          ? 'Load older message'
+          : 'Load older messages (' + HISTORY_OFFSET + ' earlier)');
+    }
+  } else {
+    bar.hidden = true;
+  }
+}
+
+function appendHistoryPair(userMsg, aiMsg, pairIndex, mountOpts) {
+  var opts = Object.assign({ thumbnail: true }, mountOpts || {});
+  appendMessage(userMsg, 'user-message', pairIndex, opts);
+  var formattedAi = formatAiMessage(aiMsg);
+  var $aiMsg = appendAiHistoryMessage(formattedAi, opts);
+  $aiMsg.attr('data-original', aiMsg);
+}
+
+function applyHistoryPage(data, mode) {
+  var pairs = (data && data.history) ? data.history : [];
+  var start = data && data.history_start != null ? Number(data.history_start) : 0;
+  if (Number.isNaN(start)) start = 0;
+  HISTORY_TOTAL = data && data.history_total != null ? Number(data.history_total) : pairs.length;
+  HISTORY_HAS_MORE = !!(data && data.has_more);
+  HISTORY_OFFSET = start;
+
+  if (mode === 'prepend') {
+    var chat = document.getElementById('chat-content');
+    var prevHeight = chat ? chat.scrollHeight : 0;
+    var prevTop = chat ? chat.scrollTop : 0;
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < pairs.length; i++) {
+      appendHistoryPair(pairs[i][0], pairs[i][1], start + i, {
+        fragment: frag,
+        thumbnail: true,
+        skipScroll: true
+      });
+    }
+    var bar = ensureLoadOlderBar();
+    var before = bar && bar.nextSibling ? bar.nextSibling : (chat ? chat.firstChild : null);
+    if (chat) chat.insertBefore(frag, before);
+    if (chat) chat.scrollTop = prevTop + (chat.scrollHeight - prevHeight);
+    updateLoadOlderBar();
+    return;
+  }
+
+  var $chat = $('#chat-content');
+  $chat.empty();
+  ensureLoadOlderBar();
+  for (var j = 0; j < pairs.length; j++) {
+    appendHistoryPair(pairs[j][0], pairs[j][1], start + j, { thumbnail: true });
+  }
+  updateLoadOlderBar();
+  setTimeout(function() { scrollToBottom(); }, 0);
+}
+
+function loadOlderMessages() {
+  if (!HISTORY_HAS_MORE || HISTORY_LOADING_OLDER || HISTORY_OFFSET <= 0) return;
+  if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
+  HISTORY_LOADING_OLDER = true;
+  updateLoadOlderBar();
+  var before = HISTORY_OFFSET;
+  var gen = HISTORY_SET_GEN;
+  var setId = window.APP_DATA.lastSetId;
+  var setName = window.APP_DATA.lastSet;
+  withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
+    return fetch('/load_set', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        set_id: setId,
+        set_name: setName,
+        limit: HISTORY_PAGE_SIZE,
+        before: before,
+        thumbnails: true
+      })
+    });
+  }).then(function(r) {
+    if (r.status === 401) return handle401OrRetry(r, function() { return Promise.reject(new Error('unauthorized')); });
+    if (!r.ok) throw new Error('Failed to load older messages');
+    return r.json();
+  }).then(function(data) {
+    if (gen !== HISTORY_SET_GEN) return;
+    applyHistoryPage(data, 'prepend');
+  }).catch(function(err) {
+    console.error('Failed to load older messages:', err);
+  }).then(function() {
+    HISTORY_LOADING_OLDER = false;
+    updateLoadOlderBar();
+  });
+}
+
 function sizeEditTextarea(textarea) {
   if (!textarea) return;
   // Grow with content (capped) so long multiline messages are usable while editing.
@@ -1084,11 +1256,12 @@ function replaceChildrenNative(parent, node) {
 // - user-message: plain wire text (optional [IMAGE:data:...] tag)
 // - system-message / error-message: plain text scalar only (textContent)
 // - ai-message: streaming shell only — history HTML uses appendAiHistoryMessage
-function appendMessage(message, className, pairIndex) {
+function appendMessage(message, className, pairIndex, mountOpts) {
   const $messageElement = $('<div>').addClass('message ' + className);
   const host = $messageElement[0];
   const isUser = className && className.indexOf('user-message') !== -1;
   const isAi = className && className.indexOf('ai-message') !== -1;
+  const asThumbnail = !!(mountOpts && mountOpts.thumbnail);
 
   if (isUser) {
     let originalText = message;
@@ -1104,9 +1277,13 @@ function appendMessage(message, className, pairIndex) {
 
     // Handle image attachments [IMAGE:data:image/png;base64,...]
     const parsed = parseUserMessageContent(originalText);
-    replaceChildrenNative(host, buildUserMessageSpan(parsed.text, parsed.imageSrc));
+    replaceChildrenNative(host, buildUserMessageSpan(parsed.text, parsed.imageSrc, {
+      pairIndex: pairIndex,
+      thumbnail: asThumbnail
+    }));
     // Wire-format plain text only (not HTML); setAttribute does not parse markup.
     host.setAttribute('data-original', composeUserMessageContent(parsed.text, parsed.imageSrc));
+    if (asThumbnail) host.setAttribute('data-thumb', '1');
   } else if (isAi) {
     // Stream shell only — never accept bodyHtml here (exception text also enters
     // appendMessage via error-message calls; keep that param off the HTML path).
@@ -1150,7 +1327,7 @@ function appendMessage(message, className, pairIndex) {
     } catch (e) { console.debug('Failed to add buttons:', e); }
   }
 
-  mountChatMessage(host);
+  mountChatMessage(host, mountOpts);
   return $messageElement;
 }
 
@@ -1682,12 +1859,18 @@ window.regenerateMessage = function regenerateMessage(button) {
   const $aiMessageElement = $(button).closest('.message');
   const $previousUserMessage = $aiMessageElement.prev('.message.user-message');
   if ($previousUserMessage.length === 0) return;
-  const userText = ($previousUserMessage.attr('data-original') || ($previousUserMessage.find('.user-message-text').text() || $previousUserMessage.text() || '').replace(/^\s*You:\s*/, '')).trim();
-  const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
-  let pairIndex = userMsgNodes.indexOf($previousUserMessage[0]);
-  if (pairIndex === -1) {
-    const prevText = ($previousUserMessage.find('.user-message-text').text() || '').trim();
-    pairIndex = userMsgNodes.findIndex(n => (n.querySelector('.user-message-text') || {}).textContent?.trim() === prevText);
+  let userText = ($previousUserMessage.attr('data-original') || ($previousUserMessage.find('.user-message-text').text() || $previousUserMessage.text() || '').replace(/^\s*You:\s*/, '')).trim();
+  const pairIndex = liveUserPairIndex($previousUserMessage);
+  if (pairIndex < 0) return;
+  const needsFull = $previousUserMessage.attr('data-thumb') === '1' || /\[IMAGE:/.test(userText);
+  if (needsFull && window.APP_DATA && window.APP_DATA.loggedIn) {
+    fetchHistoryPair(pairIndex).then(function(full) {
+      if (full && full.user) userText = full.user;
+      window.performRegeneration($aiMessageElement[0], userText, pairIndex);
+    }).catch(function() {
+      window.performRegeneration($aiMessageElement[0], userText, pairIndex);
+    });
+    return;
   }
   window.performRegeneration($aiMessageElement[0], userText, pairIndex);
 };
@@ -1946,7 +2129,9 @@ function handleDeleteMessage(buttonElement, isRetry) {
       noteSetVersionFromResponse(result.data);
       aiMessageElement.remove();
       userMessageElement.remove();
+      if (HISTORY_TOTAL > 0) HISTORY_TOTAL -= 1;
       reindexUserPairIndices();
+      updateLoadOlderBar();
       return;
     }
     const errMsg = (result.data && result.data.error) || `delete failed (${result.status})`;
@@ -2142,17 +2327,34 @@ $(document).ready(function() {
     } else if ($scrollToBottomBtn.is(':hidden')) {
       $scrollToBottomBtn.css('display', 'flex').hide().fadeIn(200);
     }
+    if (this.scrollTop < 80) {
+      loadOlderMessages();
+    }
   });
 
   $scrollToBottomBtn.on('click', function() {
     scrollToBottom();
   });
 
-  // Expand chat image attachments to full size
+  // Expand chat image attachments to full size (fetch original if this is a thumb)
   $(document).on('click', 'img.chat-image', function(e) {
     e.preventDefault();
     e.stopPropagation();
-    openImageLightbox(this.getAttribute('src'));
+    const img = this;
+    const thumb = img.getAttribute('data-thumb') === '1';
+    const pairIndex = img.getAttribute('data-pair-index');
+    if (thumb && pairIndex != null && window.APP_DATA && window.APP_DATA.loggedIn) {
+      fetchHistoryPair(Number(pairIndex), { image_index: 0 }).then(function(full) {
+        const src = (full && full.image_src)
+          || (full && parseUserMessageContent(full.user).imageSrc)
+          || img.getAttribute('src');
+        openImageLightbox(src);
+      }).catch(function() {
+        openImageLightbox(img.getAttribute('src'));
+      });
+      return;
+    }
+    openImageLightbox(img.getAttribute('src'));
   });
   $(document).on('keydown', function(e) {
     if (e.key === 'Escape' && $('#image-lightbox').hasClass('is-open')) {
@@ -2360,21 +2562,37 @@ $(document).ready(function() {
       const newText = composeUserMessageContent(textOnly, imageSrc);
       if (!newText) return;
 
-      const userMsgNodes = Array.from(document.querySelectorAll('.message.user-message'));
-      const pairIndex = userMsgNodes.indexOf($messageElement[0]);
+      const pairIndex = liveUserPairIndex($messageElement);
+      if (pairIndex < 0) return;
 
-      const saved = parseUserMessageContent(newText);
+      const finishEdit = function(finalText) {
+        const saved = parseUserMessageContent(finalText);
+        $messageElement.attr('data-original', finalText);
+        $messageElement.find('.user-message-text').replaceWith(buildUserMessageSpan(saved.text, saved.imageSrc, {
+          pairIndex: pairIndex,
+          thumbnail: $messageElement.attr('data-thumb') === '1'
+        }));
+        $messageElement.find('.edit-message-container').remove();
+        $messageElement.removeData('editImageSrc');
+        $messageElement.find('.regenerate-container').show();
 
-      $messageElement.attr('data-original', newText);
-      $messageElement.find('.user-message-text').replaceWith(buildUserMessageSpan(saved.text, saved.imageSrc));
-      $messageElement.find('.edit-message-container').remove();
-      $messageElement.removeData('editImageSrc');
-      $messageElement.find('.regenerate-container').show();
+        const $aiMessageElement = $messageElement.next('.message.ai-message');
+        if ($aiMessageElement.length > 0) {
+          window.performRegeneration($aiMessageElement[0], finalText, pairIndex);
+        }
+      };
 
-      const $aiMessageElement = $messageElement.next('.message.ai-message');
-      if ($aiMessageElement.length > 0) {
-        window.performRegeneration($aiMessageElement[0], newText, pairIndex);
+      if (imageSrc && window.APP_DATA && window.APP_DATA.loggedIn && $messageElement.attr('data-thumb') === '1') {
+        fetchHistoryPair(pairIndex).then(function(full) {
+          const storedImg = full && parseUserMessageContent(full.user).imageSrc;
+          finishEdit(composeUserMessageContent(textOnly, storedImg || imageSrc));
+        }).catch(function() {
+          finishEdit(newText);
+        });
+        return;
       }
+
+      finishEdit(newText);
       return;
     }
 
@@ -2539,13 +2757,20 @@ $(document).ready(function() {
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
       window.APP_DATA.setVersion = $opt.attr('data-version') || null;
+      HISTORY_SET_GEN += 1;
+      var loadGen = HISTORY_SET_GEN;
       savePreferences();
       function fetchSet() {
         return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
           return fetch('/load_set', {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ set_id: setId, set_name: setName })
+            body: JSON.stringify({
+              set_id: setId,
+              set_name: setName,
+              limit: HISTORY_PAGE_SIZE,
+              thumbnails: true
+            })
           });
         });
       }
@@ -2562,23 +2787,13 @@ $(document).ready(function() {
         })
         .then(r => r.json())
         .then(data => {
+          if (loadGen !== HISTORY_SET_GEN) return;
           if (data.name) window.APP_DATA.lastSet = data.name;
           noteSetVersionFromResponse(data);
           if (data.name) $opt.attr('data-name', data.name).text(data.name);
           $('#user-system-prompt').val(data.system_prompt || '');
           $('#user-memory').val(data.memory || '');
-          $('#chat-content').empty();
-          if (data.history && data.history.length > 0) {
-            data.history.forEach(([userMsg, aiMsg], pairIndex) => {
-              appendMessage(userMsg, 'user-message', pairIndex);
-              const formattedAi = formatAiMessage(aiMsg);
-              // Dedicated entry point — do not pass HTML through appendMessage
-              // (that parameter also carries exception text for error-message).
-              const $aiMsg = appendAiHistoryMessage(formattedAi);
-              $aiMsg.attr('data-original', aiMsg);
-            });
-            setTimeout(function() { scrollToBottom(); }, 0);
-          }
+          applyHistoryPage(data, 'replace');
           appendMessage('Loaded set: ' + setName, 'system-message');
         })
         .catch(error => { appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
@@ -2752,8 +2967,9 @@ $(document).ready(function() {
       fullMessage = message + '\n[IMAGE:' + pendingImageData + ']';
     }
 
-    const pairIndex = document.querySelectorAll('#chat-content .message.user-message').length;
+    const pairIndex = HISTORY_OFFSET + document.querySelectorAll('#chat-content .message.user-message').length;
     appendMessage(fullMessage, 'user-message', pairIndex);
+    HISTORY_TOTAL = Math.max(HISTORY_TOTAL, pairIndex + 1);
     const $pendingUserMessage = $('#chat-content .message.user-message').last();
 
     const requestData = activeSetPayload({
@@ -2983,6 +3199,7 @@ $(document).ready(function() {
           if (result.ok && result.data && result.data.status === 'success') {
             noteSetVersionFromResponse(result.data);
             $('#chat-content').empty();
+            resetHistoryWindow();
             appendMessage('Chat history has been reset for set ' + (result.data.set_name || '') + '.', 'system-message');
             return;
           }

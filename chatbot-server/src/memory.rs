@@ -434,7 +434,7 @@ pub async fn handle_delete_message(
         );
     }
     let (stored_user, _stored_assistant) = &history[pair_index];
-    if stored_user.trim() != trimmed {
+    if !chatbot_core::chat_images::user_messages_match(stored_user, trimmed) {
         return build_json_response(
             StatusCode::CONFLICT,
             json!({"status": "error", "error": "content mismatch at pair_index"}),

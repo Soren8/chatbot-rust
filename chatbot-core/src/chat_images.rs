@@ -34,6 +34,10 @@ const THUMB_DATA_URL_LEN_HINT: usize = 48_000;
 const THUMB_MAX_EDGE: u32 = 256;
 /// JPEG quality for context thumbnails (size vs legibility).
 const THUMB_JPEG_QUALITY: u8 = 55;
+/// Longest edge (px) for chat-history UI thumbnails (click-to-expand).
+const UI_THUMB_MAX_EDGE: u32 = 384;
+/// JPEG quality for chat-history UI thumbnails.
+const UI_THUMB_JPEG_QUALITY: u8 = 70;
 
 /// Placeholder when decode/resize fails for a non-priority image.
 const IMAGE_OMITTED_PLACEHOLDER: &str = "[prior image omitted to fit context]";
@@ -172,6 +176,10 @@ pub fn prepare_history_images(
 
 /// Build a compact `data:image/jpeg;base64,...` payload from a stored image tag body.
 fn thumbnail_payload(payload: &str) -> Option<String> {
+    thumbnail_payload_with(payload, THUMB_MAX_EDGE, THUMB_JPEG_QUALITY)
+}
+
+fn thumbnail_payload_with(payload: &str, max_edge: u32, quality: u8) -> Option<String> {
     let (mime, b64) = split_data_url_or_raw(payload)?;
     let bytes = STANDARD.decode(b64.trim()).ok()?;
     if bytes.is_empty() {
@@ -189,11 +197,11 @@ fn thumbnail_payload(payload: &str) -> Option<String> {
     }
 
     let img = image::load_from_memory(&bytes).ok()?;
-    let thumb = resize_to_max_edge(img, THUMB_MAX_EDGE);
+    let thumb = resize_to_max_edge(img, max_edge);
     let mut jpeg = Vec::new();
     {
         let mut cursor = Cursor::new(&mut jpeg);
-        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, THUMB_JPEG_QUALITY);
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
         encoder.encode_image(&thumb).ok()?;
     }
     if jpeg.is_empty() {
@@ -203,9 +211,145 @@ fn thumbnail_payload(payload: &str) -> Option<String> {
     debug!(
         original_bytes = bytes.len(),
         thumb_bytes = jpeg.len(),
-        "chat image thumbnailed for context packing"
+        max_edge,
+        "chat image thumbnailed"
     );
     Some(format!("data:image/jpeg;base64,{encoded}"))
+}
+
+/// Rewrite every `[IMAGE:...]` in a stored user message to a small JPEG thumbnail.
+///
+/// Used by `/load_set` so the browser does not parse multi-MB data URLs just to
+/// show a 300×200 preview. Durable storage is unchanged.
+pub fn replace_images_with_ui_thumbnails(text: &str) -> String {
+    if !has_image(text) {
+        return text.to_owned();
+    }
+    rewrite_image_payloads(text, |payload| {
+        thumbnail_payload_with(payload, UI_THUMB_MAX_EDGE, UI_THUMB_JPEG_QUALITY)
+            .unwrap_or_else(|| payload.to_owned())
+    })
+}
+
+/// Replace each `[IMAGE:payload]` with `[IMAGE]` so UI thumbnails can match
+/// stored full-resolution attachments on delete.
+pub fn strip_image_payloads(text: &str) -> String {
+    if !has_image(text) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len().min(8 * 1024));
+    let mut rest = text;
+    while let Some(start) = rest.find(IMAGE_TAG_PREFIX) {
+        out.push_str(&rest[..start]);
+        out.push_str(IMAGE_TAG_PREFIX);
+        out.push(IMAGE_TAG_SUFFIX);
+        rest = &rest[start + IMAGE_TAG_PREFIX.len()..];
+        if let Some(end) = rest.find(IMAGE_TAG_SUFFIX) {
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// True when two user messages are the same aside from image payload bytes.
+pub fn user_messages_match(a: &str, b: &str) -> bool {
+    strip_image_payloads(a.trim()) == strip_image_payloads(b.trim())
+}
+
+/// Keep stored full-resolution attachments when the client sends a UI thumbnail
+/// (or edits only the caption). Removing an image in the incoming text is honored.
+pub fn coalesce_edit_user_message(incoming: &str, stored: &str) -> String {
+    if incoming == stored {
+        return incoming.to_owned();
+    }
+    if user_messages_match(incoming, stored) {
+        return stored.to_owned();
+    }
+    let incoming_images = collect_image_payloads(incoming);
+    if incoming_images.is_empty() {
+        return incoming.to_owned();
+    }
+    let stored_images = collect_image_payloads(stored);
+    if stored_images.is_empty() {
+        return incoming.to_owned();
+    }
+    let mut stored_iter = stored_images.iter();
+    rewrite_image_payloads(incoming, |inc_payload| match stored_iter.next() {
+        Some(stored_payload) if inc_payload.len() < stored_payload.len() => {
+            stored_payload.clone()
+        }
+        _ => inc_payload.to_owned(),
+    })
+}
+
+/// Solid-color JPEG data URL for tests and integration fixtures.
+pub fn fixture_jpeg_data_url(width: u32, height: u32) -> String {
+    use image::{DynamicImage, ImageBuffer, Rgb};
+    let w = width.max(1);
+    let h = height.max(1);
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+        ImageBuffer::from_fn(w, h, |x, y| Rgb([(x % 255) as u8, (y % 255) as u8, 80]));
+    let mut jpeg = Vec::new();
+    {
+        let mut cursor = Cursor::new(&mut jpeg);
+        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
+        enc.encode_image(&DynamicImage::ImageRgb8(img)).expect("encode fixture jpeg");
+    }
+    format!("data:image/jpeg;base64,{}", STANDARD.encode(&jpeg))
+}
+
+/// Return the `index`-th image tag payload as a `data:` URL, if present.
+pub fn nth_image_data_url(text: &str, index: usize) -> Option<String> {
+    collect_image_payloads(text)
+        .into_iter()
+        .nth(index)
+        .map(|payload| {
+            if payload.starts_with("data:") {
+                payload
+            } else {
+                format!("data:image/jpeg;base64,{payload}")
+            }
+        })
+}
+
+fn collect_image_payloads(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(IMAGE_TAG_PREFIX) {
+        rest = &rest[start + IMAGE_TAG_PREFIX.len()..];
+        if let Some(end) = rest.find(IMAGE_TAG_SUFFIX) {
+            out.push(rest[..end].to_owned());
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+fn rewrite_image_payloads(text: &str, mut rewrite: impl FnMut(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len().min(64 * 1024));
+    let mut rest = text;
+    while let Some(start) = rest.find(IMAGE_TAG_PREFIX) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + IMAGE_TAG_PREFIX.len()..];
+        if let Some(end) = rest.find(IMAGE_TAG_SUFFIX) {
+            let payload = &rest[..end];
+            rest = &rest[end + 1..];
+            out.push_str(IMAGE_TAG_PREFIX);
+            out.push_str(&rewrite(payload));
+            out.push(IMAGE_TAG_SUFFIX);
+        } else {
+            out.push_str(IMAGE_TAG_PREFIX);
+            out.push_str(rest);
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn split_data_url_or_raw(payload: &str) -> Option<(&str, &str)> {
@@ -263,16 +407,7 @@ mod tests {
     }
 
     fn large_jpeg_data_url() -> String {
-        // 400x400 solid image — large enough to force resize path.
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-            ImageBuffer::from_fn(400, 400, |x, y| Rgb([(x % 255) as u8, (y % 255) as u8, 80]));
-        let mut jpeg = Vec::new();
-        {
-            let mut cursor = Cursor::new(&mut jpeg);
-            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
-            enc.encode_image(&DynamicImage::ImageRgb8(img)).unwrap();
-        }
-        format!("data:image/jpeg;base64,{}", STANDARD.encode(&jpeg))
+        fixture_jpeg_data_url(400, 400)
     }
 
     #[test]
@@ -333,5 +468,60 @@ mod tests {
         let prepared = prepare_history_images(&[(hist_msg.clone(), "ok".into())], &mut slots);
         assert!(prepared[0].0.len() < hist_msg.len());
         assert!(prepared[0].0.contains("[IMAGE:"));
+    }
+
+    #[test]
+    fn ui_thumbnails_shrink_large_images_and_preserve_caption() {
+        let large = large_jpeg_data_url();
+        let original = format!("look at this\n[IMAGE:{large}]");
+        let thumbed = replace_images_with_ui_thumbnails(&original);
+        assert!(thumbed.starts_with("look at this\n[IMAGE:data:image/jpeg;base64,"));
+        assert!(
+            thumbed.len() < original.len(),
+            "ui thumb should be smaller ({} vs {})",
+            thumbed.len(),
+            original.len()
+        );
+        assert!(user_messages_match(&original, &thumbed));
+        assert_eq!(nth_image_data_url(&original, 0).as_deref(), Some(large.as_str()));
+    }
+
+    #[test]
+    fn coalesce_keeps_stored_full_image_when_client_sends_thumb() {
+        let large = large_jpeg_data_url();
+        let stored = format!("caption\n[IMAGE:{large}]");
+        let incoming = replace_images_with_ui_thumbnails(&stored);
+        assert_ne!(incoming, stored);
+        assert_eq!(coalesce_edit_user_message(&incoming, &stored), stored);
+    }
+
+    #[test]
+    fn coalesce_applies_caption_edit_but_keeps_stored_image() {
+        let large = large_jpeg_data_url();
+        let stored = format!("old caption\n[IMAGE:{large}]");
+        let incoming = format!(
+            "new caption\n[IMAGE:{}]",
+            replace_images_with_ui_thumbnails(&format!("[IMAGE:{large}]"))
+                .trim_start_matches("[IMAGE:")
+                .trim_end_matches(']')
+        );
+        let merged = coalesce_edit_user_message(&incoming, &stored);
+        assert!(merged.starts_with("new caption\n[IMAGE:"));
+        assert!(merged.contains(&large), "stored full payload must be kept");
+    }
+
+    #[test]
+    fn coalesce_honors_image_removal() {
+        let large = large_jpeg_data_url();
+        let stored = format!("caption\n[IMAGE:{large}]");
+        assert_eq!(coalesce_edit_user_message("caption only", &stored), "caption only");
+    }
+
+    #[test]
+    fn strip_payloads_distinguishes_different_captions() {
+        let a = "hello\n[IMAGE:data:image/jpeg;base64,AAA]";
+        let b = "goodbye\n[IMAGE:data:image/jpeg;base64,BBB]";
+        assert!(!user_messages_match(a, b));
+        assert!(user_messages_match(a, "hello\n[IMAGE:data:image/jpeg;base64,ZZZ]"));
     }
 }

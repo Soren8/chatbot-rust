@@ -16,8 +16,9 @@ mod types;
 pub use api::{HistoryError, HistoryService};
 pub use cache::SetCache;
 pub use ops::{
-    append_pair, apply_chat_append, apply_regenerate, delete_pair, rename, reset_history,
-    update_memory, update_system_prompt, with_version, OpsError,
+    append_pair, apply_chat_append, apply_regenerate, delete_pair, page_history, rename,
+    reset_history, update_memory, update_system_prompt, with_version, HistoryPage, OpsError,
+    DEFAULT_HISTORY_PAGE_SIZE, MAX_HISTORY_PAGE_SIZE,
 };
 pub use types::{
     BlobFormat, HistoryPair, PrepareCapture, SetId, SetPayloadV1, SetSnapshot, SetSummary,
