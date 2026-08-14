@@ -1,5 +1,5 @@
 fastapi==0.135.3
-uvicorn[standard]==0.44.0
+uvicorn[standard]==0.52.1
 qwen-tts==0.1.1
 nemo_toolkit[asr]==2.7.2
 kokoro==0.9.4
