@@ -7,8 +7,17 @@ use crate::history::types::{BlobFormat, SetVersion};
 /// set_id (16 bytes) → SetMetaValue bytes
 pub const SETS_META: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("sets_meta");
 
-/// set_id (16 bytes) → ciphertext
+/// set_id (16 bytes) → whole-set history ciphertext (memory, prompt, all pairs).
+///
+/// Future: split into per-pair chunks so load/decrypt can be lazy per message
+/// instead of opening the entire set.
 pub const SETS_BLOB: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("sets_blob");
+
+/// set_id (16 bytes) → sealed display name (no history / memory / prompt).
+///
+/// Separate from `SETS_META` (plaintext structure) and `SETS_BLOB` (full snapshot)
+/// so `/get_sets` can decrypt names without opening chat content.
+pub const SETS_NAME: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("sets_name");
 
 /// (user, set_id) → updated_at le u64 (for listing/sort without decrypt)
 pub const USER_SETS: TableDefinition<'_, &[u8], u64> = TableDefinition::new("user_sets");

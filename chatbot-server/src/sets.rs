@@ -87,8 +87,7 @@ pub async fn handle_get_sets(
     let key = encryption_key.as_ref().expect("validated encryption key");
 
     let history = HistoryService::global().map_err(history_error_to_http)?;
-    // Single list_sets call (was twice: empty-check + list). Cold list still decrypts
-    // each set once; warm hits use the process summary cache.
+    // Single list_sets call. Decrypts sealed display names only; history blobs stay closed.
     let mut sets = history.list_sets(username, key).map_err(history_error_to_http)?;
     if sets.is_empty() {
         history

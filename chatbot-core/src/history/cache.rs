@@ -2,10 +2,11 @@
 //!
 //! Never authoritative — redb via [`super::api::HistoryService`] is source of truth.
 //!
-//! Entries hold **decrypted** snapshots (and lightweight list summaries) so hot paths
-//! like `list_sets`, delete, and reload do not re-AEAD-decrypt and re-JSON-parse
-//! multi-megabyte histories on every request. The durable store remains ciphertext;
-//! this cache is process-local and discarded on restart / eviction.
+//! Entries hold **decrypted** snapshots (and lightweight list summaries) so hot
+//! paths like delete and reload do not re-AEAD-decrypt multi-megabyte histories.
+//! `list_sets` reads the sealed name row, not the history blob; the summary cache
+//! is optional. The durable store remains ciphertext; this cache is process-local
+//! and discarded on restart / eviction.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -20,7 +20,7 @@ use keys::{
     migrated_user_meta_key, set_id_key, user_set_key, user_sets_prefix, user_sets_prefix_end,
 };
 use tables::{
-    SetMetaValue, META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, USER_SETS,
+    SetMetaValue, META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, SETS_NAME, USER_SETS,
 };
 
 /// One set to insert during legacy migration (pre-sealed in one txn).
@@ -200,6 +200,7 @@ impl RedbHistoryStore {
             }
             let _ = txn.open_table(SETS_META)?;
             let _ = txn.open_table(SETS_BLOB)?;
+            let _ = txn.open_table(SETS_NAME)?;
             let _ = txn.open_table(USER_SETS)?;
         }
         txn.commit()?;
@@ -259,6 +260,52 @@ impl RedbHistoryStore {
             key,
         )?;
         Ok(payload.into_snapshot(set_id, meta.version, meta.is_default))
+    }
+
+    /// Decrypt only the sealed display name. Does not open `SETS_BLOB`.
+    pub fn load_display_name(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<String, StoreError> {
+        let txn = self.db.begin_read()?;
+        let meta_table = txn.open_table(SETS_META)?;
+        let name_table = txn.open_table(SETS_NAME)?;
+        let id_key = set_id_key(set_id);
+
+        let meta_bytes = meta_table
+            .get(id_key.as_slice())?
+            .ok_or(StoreError::NotFound)?;
+        let meta = SetMetaValue::decode(meta_bytes.value()).ok_or(StoreError::Database(
+            "corrupt set meta".into(),
+        ))?;
+        if meta.user_id != user_id {
+            return Err(StoreError::Forbidden);
+        }
+        let blob = name_table
+            .get(id_key.as_slice())?
+            .ok_or(StoreError::NotFound)?;
+        Ok(crypto::open_name_v1(user_id, set_id, blob.value(), key)?)
+    }
+
+    /// Write / replace the sealed display name without touching the history blob.
+    pub fn put_display_name(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        display_name: &str,
+        key: &EncryptionKey,
+    ) -> Result<(), StoreError> {
+        let _ = self.load_meta(user_id, set_id)?;
+        let sealed = crypto::seal_name_v1(user_id, set_id, display_name, key)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut name_table = txn.open_table(SETS_NAME)?;
+            name_table.insert(set_id_key(set_id).as_slice(), sealed.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     pub fn list_set_ids(&self, user_id: &str) -> Result<Vec<(SetId, u64)>, StoreError> {
@@ -322,6 +369,7 @@ impl RedbHistoryStore {
             &payload,
             key,
         )?;
+        let name_blob = crypto::seal_name_v1(user_id, set_id, display_name, key)?;
         let meta = SetMetaValue {
             user_id: user_id.to_owned(),
             version,
@@ -343,6 +391,8 @@ impl RedbHistoryStore {
             meta_table.insert(id_key.as_slice(), meta_bytes.as_slice())?;
             let mut blob_table = txn.open_table(SETS_BLOB)?;
             blob_table.insert(id_key.as_slice(), blob.as_slice())?;
+            let mut name_table = txn.open_table(SETS_NAME)?;
+            name_table.insert(id_key.as_slice(), name_blob.as_slice())?;
             let mut user_table = txn.open_table(USER_SETS)?;
             user_table.insert(user_set_key(user_id, set_id).as_slice(), now)?;
         }
@@ -382,6 +432,8 @@ impl RedbHistoryStore {
             &payload,
             key,
         )?;
+        let name_blob =
+            crypto::seal_name_v1(user_id, set_id, &snapshot.display_name, key)?;
         let now = now_millis();
         let id_key = set_id_key(set_id);
 
@@ -413,6 +465,8 @@ impl RedbHistoryStore {
 
             let mut blob_table = txn.open_table(SETS_BLOB)?;
             blob_table.insert(id_key.as_slice(), blob.as_slice())?;
+            let mut name_table = txn.open_table(SETS_NAME)?;
+            name_table.insert(id_key.as_slice(), name_blob.as_slice())?;
 
             let mut user_table = txn.open_table(USER_SETS)?;
             user_table.insert(user_set_key(user_id, set_id).as_slice(), now)?;
@@ -454,6 +508,8 @@ impl RedbHistoryStore {
             meta_table.remove(id_key.as_slice())?;
             let mut blob_table = txn.open_table(SETS_BLOB)?;
             blob_table.remove(id_key.as_slice())?;
+            let mut name_table = txn.open_table(SETS_NAME)?;
+            let _ = name_table.remove(id_key.as_slice())?;
             let mut user_table = txn.open_table(USER_SETS)?;
             user_table.remove(user_set_key(user_id, set_id).as_slice())?;
         }
@@ -482,7 +538,8 @@ impl RedbHistoryStore {
         }
 
         let version = SetVersion(1);
-        let mut prepared: Vec<(SetId, Vec<u8>, Vec<u8>, u64)> = Vec::with_capacity(sets.len());
+        let mut prepared: Vec<(SetId, Vec<u8>, Vec<u8>, Vec<u8>, u64)> =
+            Vec::with_capacity(sets.len());
         for set in sets {
             let payload = SetPayloadV1 {
                 display_name: set.display_name.clone(),
@@ -498,6 +555,8 @@ impl RedbHistoryStore {
                 &payload,
                 key,
             )?;
+            let name_blob =
+                crypto::seal_name_v1(user_id, set.set_id, &set.display_name, key)?;
             let meta = SetMetaValue {
                 user_id: user_id.to_owned(),
                 version,
@@ -506,7 +565,7 @@ impl RedbHistoryStore {
                 is_default: set.is_default,
                 blob_format: BlobFormat::AeadV1,
             };
-            prepared.push((set.set_id, meta.encode(), blob, set.updated_at));
+            prepared.push((set.set_id, meta.encode(), blob, name_blob, set.updated_at));
         }
 
         let mig_key = migrated_user_meta_key(user_id);
@@ -524,8 +583,9 @@ impl RedbHistoryStore {
                 {
                     let mut meta_table = txn.open_table(SETS_META)?;
                     let mut blob_table = txn.open_table(SETS_BLOB)?;
+                    let mut name_table = txn.open_table(SETS_NAME)?;
                     let mut user_table = txn.open_table(USER_SETS)?;
-                    for (set_id, meta_bytes, blob, updated_at) in &prepared {
+                    for (set_id, meta_bytes, blob, name_blob, updated_at) in &prepared {
                         let id_key = set_id_key(*set_id);
                         let exists = meta_table.get(id_key.as_slice())?.is_some();
                         if exists {
@@ -533,6 +593,7 @@ impl RedbHistoryStore {
                         }
                         meta_table.insert(id_key.as_slice(), meta_bytes.as_slice())?;
                         blob_table.insert(id_key.as_slice(), blob.as_slice())?;
+                        name_table.insert(id_key.as_slice(), name_blob.as_slice())?;
                         user_table.insert(user_set_key(user_id, *set_id).as_slice(), *updated_at)?;
                         count += 1;
                     }
@@ -544,6 +605,34 @@ impl RedbHistoryStore {
         };
         txn.commit()?;
         Ok(inserted)
+    }
+
+    #[cfg(test)]
+    pub fn test_remove_history_blob(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+    ) -> Result<(), StoreError> {
+        let _ = self.load_meta(user_id, set_id)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut blob_table = txn.open_table(SETS_BLOB)?;
+            blob_table.remove(set_id_key(set_id).as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn test_remove_name_blob(&self, user_id: &str, set_id: SetId) -> Result<(), StoreError> {
+        let _ = self.load_meta(user_id, set_id)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut name_table = txn.open_table(SETS_NAME)?;
+            name_table.remove(set_id_key(set_id).as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     /// Mark user migrated with no sets (no legacy file).
@@ -662,6 +751,18 @@ mod tests {
                 .any(|w| w == secret_name.as_bytes()),
             "display name must not appear in redb file"
         );
+
+        assert_eq!(
+            store.load_display_name("alice", set_id, &key).unwrap(),
+            secret_name
+        );
+        store.test_remove_history_blob("alice", set_id).unwrap();
+        assert_eq!(
+            store.load_display_name("alice", set_id, &key).unwrap(),
+            secret_name,
+            "name row must not depend on the history blob"
+        );
+        assert!(store.load_snapshot("alice", set_id, &key).is_err());
     }
 
     #[test]

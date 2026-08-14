@@ -43,8 +43,68 @@ pub fn build_aad(user_id: &str, set_id: SetId, format: BlobFormat, version: SetV
     aad
 }
 
+const NAME_AAD_KIND: &[u8] = b"set_name_v1";
+
+/// AAD for the sealed display-name value. Not bound to set version: names are
+/// independent of history contents (updated only when the name itself changes).
+pub fn build_name_aad(user_id: &str, set_id: SetId) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(user_id.len() + 16 + NAME_AAD_KIND.len() + 2);
+    aad.extend_from_slice(user_id.as_bytes());
+    aad.push(0xff);
+    aad.extend_from_slice(set_id.as_bytes());
+    aad.push(0xff);
+    aad.extend_from_slice(NAME_AAD_KIND);
+    aad
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SetNameV1 {
+    display_name: String,
+}
+
 fn nonce_array(bytes: [u8; NONCE_LEN]) -> aes_gcm::Nonce<<Aes256Gcm as AeadCore>::NonceSize> {
     bytes.into()
+}
+
+fn aead_seal(aad: &[u8], plaintext: &[u8], enc_key: &EncryptionKey) -> Result<Vec<u8>, CryptoError> {
+    let aes_key = derive_aes_key(enc_key);
+    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Encrypt)?;
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = nonce_array(nonce_bytes);
+    let ct = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Encrypt)?;
+    let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+fn aead_open(aad: &[u8], blob: &[u8], enc_key: &EncryptionKey) -> Result<Vec<u8>, CryptoError> {
+    if blob.len() < NONCE_LEN + 16 {
+        return Err(CryptoError::Framing);
+    }
+    let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
+    let nonce_fixed: [u8; NONCE_LEN] = nonce_bytes.try_into().map_err(|_| CryptoError::Framing)?;
+    let aes_key = derive_aes_key(enc_key);
+    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Decrypt)?;
+    let nonce = nonce_array(nonce_fixed);
+    cipher
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ct,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::Decrypt)
 }
 
 fn derive_aes_key(enc_key: &EncryptionKey) -> [u8; 32] {
@@ -65,28 +125,8 @@ pub fn seal_payload_v1(
     key: &EncryptionKey,
 ) -> Result<Vec<u8>, CryptoError> {
     let plaintext = serde_json::to_vec(payload)?;
-    let aes_key = derive_aes_key(key);
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Encrypt)?;
-
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::rng().fill_bytes(&mut nonce_bytes);
-    let nonce = nonce_array(nonce_bytes);
-
     let aad = build_aad(user_id, set_id, BlobFormat::AeadV1, version);
-    let ct = cipher
-        .encrypt(
-            &nonce,
-            Payload {
-                msg: &plaintext,
-                aad: &aad,
-            },
-        )
-        .map_err(|_| CryptoError::Encrypt)?;
-
-    let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(&ct);
-    Ok(out)
+    aead_seal(&aad, &plaintext, key)
 }
 
 pub fn open_payload_v1(
@@ -96,29 +136,35 @@ pub fn open_payload_v1(
     blob: &[u8],
     key: &EncryptionKey,
 ) -> Result<SetPayloadV1, CryptoError> {
-    if blob.len() < NONCE_LEN + 16 {
-        return Err(CryptoError::Framing);
-    }
-    let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
-    let nonce_fixed: [u8; NONCE_LEN] = nonce_bytes
-        .try_into()
-        .map_err(|_| CryptoError::Framing)?;
-    let aes_key = derive_aes_key(key);
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Decrypt)?;
-    let nonce = nonce_array(nonce_fixed);
     let aad = build_aad(user_id, set_id, BlobFormat::AeadV1, version);
-
-    let plaintext = cipher
-        .decrypt(
-            &nonce,
-            Payload {
-                msg: ct,
-                aad: &aad,
-            },
-        )
-        .map_err(|_| CryptoError::Decrypt)?;
-
+    let plaintext = aead_open(&aad, blob, key)?;
     Ok(serde_json::from_slice(&plaintext)?)
+}
+
+pub fn seal_name_v1(
+    user_id: &str,
+    set_id: SetId,
+    display_name: &str,
+    key: &EncryptionKey,
+) -> Result<Vec<u8>, CryptoError> {
+    let payload = SetNameV1 {
+        display_name: display_name.to_owned(),
+    };
+    let plaintext = serde_json::to_vec(&payload)?;
+    let aad = build_name_aad(user_id, set_id);
+    aead_seal(&aad, &plaintext, key)
+}
+
+pub fn open_name_v1(
+    user_id: &str,
+    set_id: SetId,
+    blob: &[u8],
+    key: &EncryptionKey,
+) -> Result<String, CryptoError> {
+    let aad = build_name_aad(user_id, set_id);
+    let plaintext = aead_open(&aad, blob, key)?;
+    let payload: SetNameV1 = serde_json::from_slice(&plaintext)?;
+    Ok(payload.display_name)
 }
 
 /// Seal using legacy Fernet (migration / interim). No AAD — format flagged in meta.
@@ -210,5 +256,17 @@ mod tests {
         assert!(open_payload_v1("bob", set_id, SetVersion(2), &blob, &key).is_err());
         assert!(open_payload_v1("alice", set_id, SetVersion(3), &blob, &key).is_err());
         assert!(open_payload_v1("alice", SetId::new(), SetVersion(2), &blob, &key).is_err());
+    }
+
+    #[test]
+    fn name_aead_round_trip_and_binding() {
+        let key = test_key();
+        let set_id = SetId::new();
+        let blob = seal_name_v1("alice", set_id, "secret-name", &key).unwrap();
+        assert_eq!(open_name_v1("alice", set_id, &blob, &key).unwrap(), "secret-name");
+        assert!(open_name_v1("bob", set_id, &blob, &key).is_err());
+        assert!(open_name_v1("alice", SetId::new(), &blob, &key).is_err());
+        // Name AAD is not the payload AAD — swapping the two ciphertexts must fail.
+        assert!(open_payload_v1("alice", set_id, SetVersion(1), &blob, &key).is_err());
     }
 }

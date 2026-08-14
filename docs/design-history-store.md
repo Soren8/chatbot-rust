@@ -16,7 +16,7 @@ Production-like long sessions can lose a large fraction of chat history (~80% af
 
 This design replaces the file-backed `DataPersistence` history path with an embedded **redb** store of opaque AEAD ciphertext blobs plus non-sensitive structural metadata (`set_id`, version, timestamps, ownership). All durable history access goes through a narrow, invariant-enforcing API in `chatbot-core` (`history` module). Mutations are prepare/commit with CAS on version; conflicts return HTTP 409 and force client reload.
 
-Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message rows). Set display names live only inside ciphertext. Legacy `data/user_sets/{user}/sets.json` is migrated once into redb.
+Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message rows). Set display names are sealed separately (`sets_name`) so listing does not open history. Legacy `data/user_sets/{user}/sets.json` is migrated once into redb.
 
 ---
 
@@ -208,7 +208,7 @@ chatbot-core/src/
 | :--- | :--- | :--- |
 | `set_id` | Non-sensitive UUID (v4) | redb primary key; API and client use this |
 | `user_id` | Username (already used in paths/verifiers) | redb secondary / ownership column |
-| `display_name` | **Sensitive** | Only inside encrypted set payload |
+| `display_name` | **Sensitive** | Sealed `sets_name` row (and still inside the history payload) |
 | `version` | Non-sensitive u64 | Plain metadata for CAS |
 | `created_at` / `updated_at` | Non-sensitive | Plain metadata (ordering for UI) |
 | `schema_version` | Non-sensitive | Blob format version |
@@ -236,10 +236,15 @@ table SETS_META: SetId (u128/uuid bytes) -> SetMetaValue {
     blob_format: u8,          // 1 = whole-set AEAD v1, 0 = legacy Fernet-wrapped payload during migrate
 }
 
-// sets_blob: opaque ciphertext only
+// sets_blob: opaque whole-set history ciphertext
 table SETS_BLOB: SetId -> BlobValue {
     ciphertext: &[u8],
     // optional: nonce prefix if not included in ciphertext framing
+}
+
+// sets_name: sealed display name only (same key, distinct AAD kind set_name_v1)
+table SETS_NAME: SetId -> BlobValue {
+    ciphertext: &[u8],  // { display_name } — list/decrypt without opening SETS_BLOB
 }
 
 // user_sets: secondary index for list by user
@@ -249,7 +254,7 @@ table USER_SETS: (UserId, SetId) -> ()   // or updated_at for sort without decry
 table META: &str -> &[u8]   // e.g. "schema" -> 1, "migrated_users/{user}" -> 1
 ```
 
-**Listing sets without leaking names:** `USER_SETS` yields `set_id`s; handler loads each blob, decrypts with request key, extracts `display_name` for JSON response. Failed decrypt on one set → skip or 401 depending on policy (prefer 401 if verifier passed but blob fails — key wrong/corrupt).
+**Listing sets without leaking names:** `USER_SETS` yields `set_id`s; handler decrypts each `SETS_NAME` row with the request key. Failed decrypt → 401 if the verifier passed (key wrong/corrupt). Missing `SETS_NAME` (pre-cutover rows) backfills once from `SETS_BLOB`.
 
 ### Encrypted payload (whole-set snapshot)
 
@@ -594,7 +599,7 @@ Details:
 
 - redb `META["schema"] = 1`
 - Payload `blob_format` for crypto/layout upgrades
-- Future Phase 2 (out of scope): per-message table without breaking `HistoryService` method names
+- Future: split `SETS_BLOB` into individual sealed chunks per message pair so load/decrypt can be lazy (page a tail of pairs without opening the whole set). Keep `HistoryService` method names; pair rows stay ciphertext with AAD bound to `user_id|set_id|pair_index` (or pair id). Not started.
 
 ---
 
@@ -678,7 +683,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 | :--- | :--- | :--- |
 | Wrong-set write residual if capture omitted | **High** | Code review checklist; unit tests on finalize ignoring session RAM |
 | Migration decrypt fail (wrong key) | Medium | Do not mark migrated; return 401 |
-| Large histories rewrite whole blob | Medium (Phase 1 accepted) | Phase 2 per-message; size soft-warn in logs |
+| Large histories rewrite whole blob | Medium (Phase 1 accepted) | Future per-pair chunks; size soft-warn in logs |
 | redb corruption | Low | fsync defaults; volume backups; single writer |
 | Client forgets version | Medium | Treat missing version as load-first required; or force load on each mutation |
 | Dual-tab 409 UX friction | Low | Apply `current_version` and retry; no page reload |

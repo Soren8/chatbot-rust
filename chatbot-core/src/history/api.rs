@@ -208,7 +208,6 @@ impl HistoryService {
         let ids = self.store.list_set_ids(&user)?;
         let mut out = Vec::with_capacity(ids.len());
         for (set_id, updated_at) in ids {
-            // Cheap meta read + summary cache avoids full AEAD+JSON on every /get_sets.
             let meta = match self.store.load_meta(&user, set_id) {
                 Ok(m) => m,
                 Err(StoreError::Forbidden) => continue,
@@ -221,21 +220,42 @@ impl HistoryService {
                 out.push(summary);
                 continue;
             }
-            match self.store.load_snapshot(&user, set_id, key) {
-                Ok(snap) => {
-                    self.remember(&user, &snap);
-                    out.push(SetSummary {
-                        set_id: snap.set_id,
-                        version: snap.version,
-                        display_name: snap.display_name,
-                        updated_at,
-                        is_default: snap.is_default,
-                    });
+            let display_name = match self.store.load_display_name(&user, set_id, key) {
+                Ok(name) => name,
+                Err(StoreError::NotFound) => {
+                    // Pre-name-row sets: decrypt the snapshot once and persist the name.
+                    match self.store.load_snapshot(&user, set_id, key) {
+                        Ok(snap) => {
+                            if let Err(err) = self.store.put_display_name(
+                                &user,
+                                set_id,
+                                &snap.display_name,
+                                key,
+                            ) {
+                                return Err(err.into());
+                            }
+                            snap.display_name
+                        }
+                        Err(StoreError::DecryptFailed) => {
+                            return Err(HistoryError::DecryptFailed)
+                        }
+                        Err(StoreError::Forbidden) => continue,
+                        Err(err) => return Err(err.into()),
+                    }
                 }
                 Err(StoreError::DecryptFailed) => return Err(HistoryError::DecryptFailed),
                 Err(StoreError::Forbidden) => continue,
                 Err(err) => return Err(err.into()),
-            }
+            };
+            let summary = SetSummary {
+                set_id,
+                version: meta.version,
+                display_name,
+                updated_at,
+                is_default: meta.is_default,
+            };
+            self.cache.put_summary(&user, &summary);
+            out.push(summary);
         }
         Ok(out)
     }
@@ -588,6 +608,24 @@ impl HistoryService {
         Ok(v)
     }
 
+    #[cfg(test)]
+    pub fn test_remove_history_blob(
+        &self,
+        user: &str,
+        set_id: SetId,
+    ) -> Result<(), HistoryError> {
+        self.store
+            .test_remove_history_blob(user, set_id)
+            .map_err(HistoryError::from)
+    }
+
+    #[cfg(test)]
+    pub fn test_remove_name_blob(&self, user: &str, set_id: SetId) -> Result<(), HistoryError> {
+        self.store
+            .test_remove_name_blob(user, set_id)
+            .map_err(HistoryError::from)
+    }
+
     /// Build a prepare capture from durable state (source of truth).
     pub fn prepare_capture(
         &self,
@@ -907,6 +945,110 @@ mod tests {
         let listed = svc.list_sets("perf", &key).unwrap();
         assert_eq!(listed[0].version, v2);
         assert!(t2.elapsed().as_millis() < 100);
+    }
+
+    #[test]
+    fn list_sets_does_not_open_history_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.redb");
+        let svc = HistoryService::open_ephemeral(&path).unwrap();
+        let key = key();
+        let created = svc.create_set("owner", "secret-project", &key).unwrap();
+        svc.append_pair(
+            "owner",
+            created.set_id,
+            created.version,
+            "see this\n[IMAGE:data:image/jpeg;base64,AAAA]",
+            "ok",
+            &key,
+        )
+        .unwrap();
+        svc.test_remove_history_blob("owner", created.set_id)
+            .unwrap();
+        drop(svc);
+
+        let cold = HistoryService::open_ephemeral(&path).unwrap();
+        let listed = cold.list_sets("owner", &key).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].display_name, "secret-project");
+        assert!(
+            cold.load("owner", created.set_id, &key).is_err(),
+            "history blob was removed; load must fail"
+        );
+    }
+
+    #[test]
+    fn list_sets_backfills_missing_name_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.redb");
+        let svc = HistoryService::open_ephemeral(&path).unwrap();
+        let key = key();
+        let created = svc.create_set("owner", "needs-backfill", &key).unwrap();
+        svc.test_remove_name_blob("owner", created.set_id).unwrap();
+        drop(svc);
+
+        let cold = HistoryService::open_ephemeral(&path).unwrap();
+        let listed = cold.list_sets("owner", &key).unwrap();
+        assert_eq!(listed[0].display_name, "needs-backfill");
+
+        // Name row now exists: listing still works if the history blob is gone.
+        cold.test_remove_history_blob("owner", created.set_id)
+            .unwrap();
+        drop(cold);
+        let colder = HistoryService::open_ephemeral(&path).unwrap();
+        let listed = colder.list_sets("owner", &key).unwrap();
+        assert_eq!(listed[0].display_name, "needs-backfill");
+    }
+
+    #[test]
+    fn cold_list_stays_fast_with_large_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.redb");
+        let svc = HistoryService::open_ephemeral(&path).unwrap();
+        let key = key();
+        let created = svc.create_set("perf", "big", &key).unwrap();
+        let big_user = format!(
+            "see this\n[IMAGE:data:image/jpeg;base64,{}]",
+            "A".repeat(1_200_000)
+        );
+        svc.append_pair(
+            "perf",
+            created.set_id,
+            created.version,
+            &big_user,
+            "looks like a photo",
+            &key,
+        )
+        .unwrap();
+        drop(svc);
+
+        let cold = HistoryService::open_ephemeral(&path).unwrap();
+        let t0 = std::time::Instant::now();
+        let listed = cold.list_sets("perf", &key).unwrap();
+        let elapsed = t0.elapsed();
+        assert_eq!(listed[0].display_name, "big");
+        assert!(
+            elapsed.as_millis() < 200,
+            "cold list_sets must not decrypt the history blob: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn rename_is_visible_on_cold_list_without_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.redb");
+        let svc = HistoryService::open_ephemeral(&path).unwrap();
+        let key = key();
+        let created = svc.create_set("owner", "alpha", &key).unwrap();
+        svc.rename_set("owner", created.set_id, created.version, "omega", &key)
+            .unwrap();
+        svc.test_remove_history_blob("owner", created.set_id)
+            .unwrap();
+        drop(svc);
+
+        let cold = HistoryService::open_ephemeral(&path).unwrap();
+        let listed = cold.list_sets("owner", &key).unwrap();
+        assert_eq!(listed[0].display_name, "omega");
     }
 
     #[test]
