@@ -21,7 +21,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Lower friction for new chats by assigning a temporary title (e.g., "New Chat") that is automatically replaced with a contextual name based on chat content.
   - [x] Ability to delete chats from history (`/delete_message` requires `pair_index` + matching `user_message` at that index; content mismatch → 409. `ai_message` may be sent by the client but is not used for the server-side match). Image payload bytes are ignored in the match so UI thumbnails still delete the stored full-resolution attachment.
   - [x] Ability to edit old chat entries.
-  - [x] Lazy-load long chats: `/load_set` accepts `limit`/`before` and returns the most recent page first (`history_start` / `history_total` / `has_more`). `thumbnails: true` replaces stored `[IMAGE:...]` data URLs with small JPEGs; `POST /history_pair` returns the full pair (or one `image_src`) for expand/edit/regenerate. Durable storage is unchanged (whole-set AEAD blob).
+  - [x] Lazy-load long chats: `/load_set` accepts `limit`/`before` and returns the most recent page first (`history_start` / `history_total` / `has_more`). `thumbnails: true` replaces stored `[IMAGE:...]` data URLs with small JPEGs; expand uses `GET /history_image/...` as a normal image (browser HTTP cache); `POST /history_pair` returns the full pair for edit/regenerate. Durable storage is unchanged (whole-set AEAD blob).
 
 - **Authentication & Security**
   - [ ] Outsource authentication to Keycloak or Authentik (or other OIDC-compliant systems).

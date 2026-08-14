@@ -106,6 +106,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/rename_set", post(sets::handle_rename_set))
         .route("/load_set", post(sets::handle_load_set))
         .route("/history_pair", post(sets::handle_history_pair))
+        .route(
+            "/history_image/{set_id}/{version}/{pair_index}/{image_index}",
+            get(sets::handle_history_image),
+        )
         .route("/update_memory", post(memory::handle_update_memory))
         .route(
             "/update_system_prompt",

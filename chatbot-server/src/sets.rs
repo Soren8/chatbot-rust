@@ -575,6 +575,117 @@ pub async fn handle_history_pair(
     history_pair_json(&guest_history, pair_index, payload.image_index, None, None)
 }
 
+/// GET a stored attachment as a real image so the browser/WebView HTTP cache
+/// can reuse it. Version in the path is a cache key only (not CAS).
+///
+/// `<img src>` cannot send `X-Enc-Key`; the client mirrors the key in a
+/// Path=/history_image cookie (`hist_enc_key`).
+pub async fn handle_history_image(
+    request: Request<Body>,
+) -> Result<Response<Body>, HttpError> {
+    if request.method() != Method::GET {
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only GET allowed"));
+    }
+
+    let path = request.uri().path();
+    let (set_id, _version, pair_index, image_index) = match parse_history_image_path(path) {
+        Some(parts) => parts,
+        None => {
+            return build_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "invalid history image path"}),
+            );
+        }
+    };
+
+    let headers = request.headers();
+    let cookie_header = extract_cookie(headers);
+    let encryption_key = crate::chat_utils::extract_enc_key(headers)
+        .or_else(|| extract_hist_enc_cookie(cookie_header.as_deref()));
+
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::history_image::session"))?;
+
+    let username = match session.username.as_deref() {
+        Some(value) => value,
+        None => {
+            return build_json_response(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": "Not authenticated"}),
+            );
+        }
+    };
+
+    if let Err(response) =
+        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+    {
+        return build_service_response(response);
+    }
+    let key = encryption_key.as_ref().expect("validated encryption key");
+    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let loaded = match resolve_set(&history, username, Some(&set_id), None, key) {
+        Ok(s) => s,
+        Err(msg) => {
+            return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
+        }
+    };
+    if pair_index >= loaded.history.len() {
+        return build_json_response(
+            StatusCode::NOT_FOUND,
+            json!({"error": "pair_index out of range"}),
+        );
+    }
+    let user_msg = &loaded.history[pair_index].0;
+    let data_url = match chat_images::nth_image_data_url(user_msg, image_index) {
+        Some(url) => url,
+        None => {
+            return build_json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "image not found"}),
+            );
+        }
+    };
+    let (mime, bytes) = match chat_images::decode_image_data_url(&data_url) {
+        Some(decoded) => decoded,
+        None => {
+            return build_json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "image not found"}),
+            );
+        }
+    };
+    build_image_response(&mime, bytes)
+}
+
+fn parse_history_image_path(path: &str) -> Option<(String, u64, usize, usize)> {
+    let rest = path.strip_prefix("/history_image/")?;
+    let mut parts = rest.split('/');
+    let set_id = parts.next()?.to_owned();
+    if set_id.is_empty() {
+        return None;
+    }
+    let version = parts.next()?.parse().ok()?;
+    let pair_index = parts.next()?.parse().ok()?;
+    let image_index = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((set_id, version, pair_index, image_index))
+}
+
+fn extract_hist_enc_cookie(cookie_header: Option<&str>) -> Option<chatbot_core::enc_key::EncryptionKey> {
+    let header = cookie_header?;
+    for part in header.split(';') {
+        let part = part.trim();
+        let Some(value) = part.strip_prefix("hist_enc_key=") else {
+            continue;
+        };
+        let decoded = urlencoding::decode(value).ok()?;
+        return chatbot_core::enc_key::EncryptionKey::from_header_value(decoded.as_ref());
+    }
+    None
+}
+
 fn history_pair_json(
     history: &[(String, String)],
     pair_index: usize,
@@ -692,4 +803,15 @@ fn build_json_response(
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .map_err(|err| map_response_build_err(err, "sets::json_response"))
+}
+
+fn build_image_response(mime: &str, bytes: Vec<u8>) -> Result<Response<Body>, HttpError> {
+    let len = bytes.len();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable")
+        .header(header::CONTENT_LENGTH, len.to_string())
+        .body(Body::from(bytes))
+        .map_err(|err| map_response_build_err(err, "sets::image_response"))
 }

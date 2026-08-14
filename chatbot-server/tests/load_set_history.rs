@@ -346,6 +346,63 @@ async fn load_set_thumbnails_then_history_pair_returns_full_image() {
     assert_eq!(status, StatusCode::OK, "{img}");
     assert_eq!(img["image_src"].as_str(), Some(full.as_str()));
     assert!(img.get("user").is_none(), "image-only response must omit full pair");
+
+    let uri = format!("/history_image/{set_id}/{version}/0/0");
+    let cookie = format!(
+        "{}; hist_enc_key={}",
+        auth.cookie,
+        urlencoding::encode(&auth.enc_key)
+    );
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(&uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "GET {uri}");
+    let headers = res.headers().clone();
+    let ctype = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ctype.starts_with("image/"),
+        "expected image content-type, got {ctype}"
+    );
+    let cache = headers
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        cache.contains("private") && cache.contains("max-age="),
+        "browser-cacheable Cache-Control required, got {cache}"
+    );
+    let body = to_bytes(res.into_body(), 2 * 1024 * 1024).await.unwrap();
+    assert!(body.starts_with(&[0xFF, 0xD8]), "JPEG SOI marker");
+
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(&uri)
+                .header(header::COOKIE, &auth.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.status(),
+        StatusCode::UNAUTHORIZED,
+        "image GET without enc key must 401"
+    );
 }
 
 #[tokio::test]

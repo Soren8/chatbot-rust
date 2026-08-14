@@ -141,7 +141,8 @@ window.fetch = function(input, init) {
         url.includes('/update_system_prompt') ||
         url.includes('/delete_message') ||
         url.includes('/reset_chat') ||
-        url.includes('/history_pair')
+        url.includes('/history_pair') ||
+        url.includes('/history_image')
       )) {
         return response;
       }
@@ -165,6 +166,24 @@ try {
   }
 } catch (e) { /* no-op */ }
 
+function syncHistoryImageEncCookie(encKey) {
+  if (!encKey) return;
+  var secure = (window.location.protocol === 'https:') ? '; Secure' : '';
+  document.cookie = 'hist_enc_key=' + encodeURIComponent(encKey)
+    + '; Path=/history_image; SameSite=Strict' + secure;
+}
+
+function historyImageUrl(pairIndex, imageIndex) {
+  var setId = (window.APP_DATA && window.APP_DATA.lastSetId) || '';
+  var version = (window.APP_DATA && window.APP_DATA.setVersion != null)
+    ? window.APP_DATA.setVersion : 0;
+  var idx = imageIndex == null ? 0 : imageIndex;
+  return '/history_image/' + encodeURIComponent(setId)
+    + '/' + encodeURIComponent(String(version))
+    + '/' + encodeURIComponent(String(pairIndex))
+    + '/' + encodeURIComponent(String(idx));
+}
+
 function withCsrf(headers) {
   var result = headers ? Object.assign({}, headers) : {};
   if (window.CSRF_TOKEN) {
@@ -174,6 +193,7 @@ function withCsrf(headers) {
     var encKey = window.EncKey.getKeyForRequestSync();
     if (encKey) {
       result['X-Enc-Key'] = encKey;
+      syncHistoryImageEncCookie(encKey);
     }
   }
   return result;
@@ -188,6 +208,7 @@ async function withCsrfAsync(headers) {
     var encKey = await window.EncKey.getKeyForRequest();
     if (encKey) {
       result['X-Enc-Key'] = encKey;
+      syncHistoryImageEncCookie(encKey);
     }
   }
   return result;
@@ -862,6 +883,61 @@ function renderMarkdown(text) {
   return safe.replace(/\n/g, '<br>');
 }
 
+// Top-level on purpose: appendHistoryPair / applyHistoryPage run outside the
+// logged-in document.ready closure (a nested helper is ReferenceError there).
+function formatAiMessage(text) {
+  if (!text) return '';
+
+  const openTag = '<think>';
+  const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
+
+  let thinkingParts = [];
+  let visibleParts = [];
+  let buffer = text;
+  let state = 'visible';
+
+  while (buffer.length > 0) {
+    if (state === 'visible') {
+      const idx = buffer.indexOf(openTag);
+      if (idx !== -1) {
+        visibleParts.push(buffer.substring(0, idx));
+        buffer = buffer.substring(idx + openTag.length);
+        state = 'thinking';
+      } else {
+        visibleParts.push(buffer);
+        buffer = '';
+      }
+    } else {
+      let firstCloseIdx = -1;
+      let usedTagLen = 0;
+      for (const tag of closeTags) {
+        const idx = buffer.indexOf(tag);
+        if (idx !== -1 && (firstCloseIdx === -1 || idx < firstCloseIdx)) {
+          firstCloseIdx = idx;
+          usedTagLen = tag.length;
+        }
+      }
+      if (firstCloseIdx !== -1) {
+        thinkingParts.push(buffer.substring(0, firstCloseIdx));
+        buffer = buffer.substring(firstCloseIdx + usedTagLen);
+        state = 'visible';
+      } else {
+        thinkingParts.push(buffer);
+        buffer = '';
+      }
+    }
+  }
+
+  let html = '';
+  const fullThinking = thinkingParts.join('').trim();
+  if (fullThinking) {
+    html += `<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">${escapeHTML(fullThinking).replace(/\n/g, '<br>')}</div></div>`;
+  }
+
+  html += renderMarkdown(visibleParts.join(''));
+  return html;
+}
+
 // Scroll helpers for the chat content container
 function isAtBottom() {
   const container = document.getElementById('chat-content');
@@ -1223,10 +1299,27 @@ function ensureImageLightbox() {
   return $overlay;
 }
 
+function sanitizeLightboxSrc(src) {
+  const dataSrc = sanitizeDataImageSrc(src);
+  if (dataSrc) return dataSrc;
+  if (src == null) return null;
+  try {
+    const u = new URL(String(src), window.location.href);
+    if (u.origin !== window.location.origin) return null;
+    if (!/^\/history_image\/[A-Za-z0-9._~-]+\/[0-9]+\/[0-9]+\/[0-9]+$/.test(u.pathname)) {
+      return null;
+    }
+    return u.pathname + u.search;
+  } catch (e) {
+    return null;
+  }
+}
+
 function openImageLightbox(src) {
   // src may come from img.getAttribute('src') (DOM text). Only assign a
-  // reconstructed data:image URL (CodeQL js/xss-through-dom).
-  const safeSrc = sanitizeDataImageSrc(src);
+  // reconstructed data:image URL or same-origin /history_image/... path
+  // (CodeQL js/xss-through-dom).
+  const safeSrc = sanitizeLightboxSrc(src);
   if (!safeSrc) return;
   const $overlay = ensureImageLightbox();
   $overlay.find('.image-lightbox-img').attr('src', safeSrc);
@@ -2192,6 +2285,10 @@ $(document).on('click', '.delete-button', function(e) {
 
 // Main ready block
 $(document).ready(function() {
+  $('#reload-ui').on('click', function() {
+    window.location.reload();
+  });
+
   disablePremiumModels();
   updateSearchToggleVisibility();
 
@@ -2336,7 +2433,8 @@ $(document).ready(function() {
     scrollToBottom();
   });
 
-  // Expand chat image attachments to full size (fetch original if this is a thumb)
+  // Expand chat image attachments to full size. Thumbs use a GET /history_image
+  // URL so the browser/WebView HTTP cache handles repeat views.
   $(document).on('click', 'img.chat-image', function(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -2344,14 +2442,7 @@ $(document).ready(function() {
     const thumb = img.getAttribute('data-thumb') === '1';
     const pairIndex = img.getAttribute('data-pair-index');
     if (thumb && pairIndex != null && window.APP_DATA && window.APP_DATA.loggedIn) {
-      fetchHistoryPair(Number(pairIndex), { image_index: 0 }).then(function(full) {
-        const src = (full && full.image_src)
-          || (full && parseUserMessageContent(full.user).imageSrc)
-          || img.getAttribute('src');
-        openImageLightbox(src);
-      }).catch(function() {
-        openImageLightbox(img.getAttribute('src'));
-      });
+      openImageLightbox(historyImageUrl(Number(pairIndex), 0));
       return;
     }
     openImageLightbox(img.getAttribute('src'));
@@ -2631,59 +2722,6 @@ $(document).ready(function() {
 
   // Load sets for logged-in users (wait for encryption key from login storage first)
   if (window.APP_DATA.loggedIn) {
-    function formatAiMessage(text) {
-      if (!text) return '';
-      
-      const openTag = '<think>';
-      const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
-      
-      let thinkingParts = [];
-      let visibleParts = [];
-      let buffer = text;
-      let state = 'visible';
-
-      while (buffer.length > 0) {
-        if (state === 'visible') {
-          const idx = buffer.indexOf(openTag);
-          if (idx !== -1) {
-            visibleParts.push(buffer.substring(0, idx));
-            buffer = buffer.substring(idx + openTag.length);
-            state = 'thinking';
-          } else {
-            visibleParts.push(buffer);
-            buffer = '';
-          }
-        } else {
-          let firstCloseIdx = -1;
-          let usedTagLen = 0;
-          for (const tag of closeTags) {
-            const idx = buffer.indexOf(tag);
-            if (idx !== -1 && (firstCloseIdx === -1 || idx < firstCloseIdx)) {
-              firstCloseIdx = idx;
-              usedTagLen = tag.length;
-            }
-          }
-          if (firstCloseIdx !== -1) {
-            thinkingParts.push(buffer.substring(0, firstCloseIdx));
-            buffer = buffer.substring(firstCloseIdx + usedTagLen);
-            state = 'visible';
-          } else {
-            thinkingParts.push(buffer);
-            buffer = '';
-          }
-        }
-      }
-
-      let html = '';
-      const fullThinking = thinkingParts.join('').trim();
-      if (fullThinking) {
-        html += `<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">${escapeHTML(fullThinking).replace(/\n/g, '<br>')}</div></div>`;
-      }
-      
-      html += renderMarkdown(visibleParts.join(''));
-      return html;
-    }
-
     function loadSets(shouldTriggerChange = true) {
       async function fetchSets() {
         return fetch('/get_sets', { headers: await withCsrfAsync() });

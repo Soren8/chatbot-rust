@@ -315,6 +315,21 @@ pub fn nth_image_data_url(text: &str, index: usize) -> Option<String> {
         })
 }
 
+/// Decode a stored `[IMAGE:...]` payload or data URL to mime + bytes.
+pub fn decode_image_data_url(payload: &str) -> Option<(String, Vec<u8>)> {
+    let (mime, b64) = split_data_url_or_raw(payload)?;
+    let bytes = STANDARD.decode(b64.trim()).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let mime = if mime.starts_with("image/") {
+        mime.to_owned()
+    } else {
+        format!("image/{mime}")
+    };
+    Some((mime, bytes))
+}
+
 fn collect_image_payloads(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -484,6 +499,9 @@ mod tests {
         );
         assert!(user_messages_match(&original, &thumbed));
         assert_eq!(nth_image_data_url(&original, 0).as_deref(), Some(large.as_str()));
+        let (mime, bytes) = decode_image_data_url(&large).expect("decode fixture");
+        assert_eq!(mime, "image/jpeg");
+        assert!(!bytes.is_empty());
     }
 
     #[test]

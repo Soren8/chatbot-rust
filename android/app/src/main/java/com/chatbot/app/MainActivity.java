@@ -26,8 +26,8 @@ public class MainActivity extends BridgeActivity {
         super.onStart();
         WebView webView = getBridge().getWebView();
         if (webView != null) {
-            webView.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
-            Log.i(TAG, "Disabled WebView caching");
+            webView.getSettings().setCacheMode(WebSettings.LOAD_DEFAULT);
+            Log.i(TAG, "WebView HTTP cache enabled (LOAD_DEFAULT)");
         }
     }
 }

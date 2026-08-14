@@ -132,6 +132,42 @@ fn message_edit_ui_shows_image_preview_not_base64_in_textarea() {
     );
 }
 
+/// History paging calls formatAiMessage from a top-level helper. A nested
+/// definition inside document.ready is a ReferenceError on Capacitor/WebView.
+#[test]
+fn format_ai_message_is_top_level_for_history_paging() {
+    let chat_js = include_str!("../../static/chat.js");
+    let fmt = chat_js
+        .find("function formatAiMessage(text)")
+        .expect("formatAiMessage helper");
+    let append = chat_js
+        .find("function appendHistoryPair(")
+        .expect("appendHistoryPair");
+    assert!(
+        fmt < append,
+        "formatAiMessage must be defined at top level before appendHistoryPair"
+    );
+    assert_eq!(
+        chat_js.matches("function formatAiMessage(text)").count(),
+        1,
+        "formatAiMessage must not also be nested inside document.ready"
+    );
+    let html = include_str!("../../static/templates/chat.html");
+    assert!(
+        html.contains("id=\"reload-ui\""),
+        "Capacitor/WebView needs a reload control (no browser refresh chrome)"
+    );
+    assert!(
+        chat_js.contains("function historyImageUrl")
+            && chat_js.contains("openImageLightbox(historyImageUrl"),
+        "thumbnail expand must use a GET /history_image URL, not POST JSON"
+    );
+    assert!(
+        chat_js.contains("hist_enc_key="),
+        "img src cannot send X-Enc-Key; key must be a Path=/history_image cookie"
+    );
+}
+
 /// Regression: AI message body supports speak-from-sentence (hover highlight +
 /// click speaks that exact DOM sentence list; restartable HTMLAudio playback).
 #[test]
