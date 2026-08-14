@@ -6,7 +6,7 @@ kokoro==0.9.4
 misaki[en]==0.9.4
 spacy==3.8.14
 pydub==0.25.1
-python-multipart==0.0.24
+python-multipart==0.0.31
 numpy==2.4.4
 soundfile==0.13.1
 librosa==0.11.0
