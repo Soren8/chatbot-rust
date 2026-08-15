@@ -87,8 +87,10 @@ public class NativeMicPlugin extends Plugin {
         Log.d(TAG, "start called, isRecording=" + isRecording);
         FileLogger.log(TAG, "start called, isRecording=" + isRecording);
         if (isRecording) {
-            call.reject("Already recording");
-            return;
+            // Capacitor reload leaves the plugin recording after JS is gone.
+            // Take ownership of a fresh session instead of rejecting.
+            FileLogger.log(TAG, "start: already recording, restarting capture");
+            stopRecording();
         }
 
         if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)

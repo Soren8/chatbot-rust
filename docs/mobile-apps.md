@@ -176,6 +176,8 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 3. **`NativeMicUtteranceVAD`** (chat.js) — RMS-only on native PCM (same approach as `VoiceScreen.java`):
    - No Silero / WebView `AudioContext` on the native path
    - **600 ms PCM pre-roll**; skip utterance start during TTS; RMS barge-in; **400 ms** post-TTS cooldown
+   - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
+   - Late STT while a reply is in flight **amends the last user turn** and regenerates (retry 429). Do not send a second `/chat` or surface `[Stopped]` / generate-lock errors to the driver
 
 4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_MEDIA` (normal speaker / A2DP). Do not use `USAGE_VOICE_COMMUNICATION` or `AudioManager.setMode`.
 

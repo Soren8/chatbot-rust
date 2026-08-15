@@ -91,6 +91,21 @@ try {
     };
     window.nativeMicAvailable = true;
 
+    window._recoverNativeVoice = function () {
+      const tasks = [];
+      tasks.push(window.NativeMic.stop().catch(function () {}));
+      if (window.NativeVoiceTts) {
+        tasks.push(window.NativeVoiceTts.stop().catch(function () {}));
+      }
+      return Promise.all(tasks);
+    };
+    window.addEventListener('pagehide', function () {
+      window.NativeMic.stop().catch(function () {});
+      if (window.NativeVoiceTts) {
+        window.NativeVoiceTts.stop().catch(function () {});
+      }
+    });
+
     window.NativeVoiceTts = {
       isAvailable: function () {
         return !!(window.Capacitor && window.Capacitor.nativePromise);
@@ -1133,6 +1148,23 @@ function parseUserMessageContent(originalText) {
   return { text: text, imageSrc: imageSrc, deferred: deferred, hasImage: !!anyMatch };
 }
 
+/** Join a late voice fragment onto the previous user utterance. */
+function joinVoiceUtterances(previous, next) {
+  const prev = String(previous == null ? '' : previous).trim();
+  const added = String(next == null ? '' : next).trim();
+  if (!prev) return added;
+  if (!added) return prev;
+  if (added === prev || prev.endsWith(added)) return prev;
+  if (added.startsWith(prev)) return added;
+  return prev + ' ' + added;
+}
+
+/** True when a new STT result is a continuation of the in-flight voice turn. */
+function shouldAmendLastVoiceTurn(state) {
+  state = state || {};
+  return !!(state.lastUserExists && (state.generating || state.ttsActive));
+}
+
 function composeUserMessageContent(text, imageSrc, hasImage) {
   var body = (text == null ? '' : String(text)).trim();
   var safeSrc = sanitizeDataImageSrc(imageSrc);
@@ -1469,6 +1501,57 @@ function appendMessage(message, className, pairIndex, mountOpts) {
 }
 
 let currentAbortController = null;
+let chatRequestSeq = 0;
+
+function beginChatRequest() {
+  chatRequestSeq += 1;
+  if (currentAbortController) {
+    try { currentAbortController.abort(); } catch (e) { /* ignore */ }
+  }
+  currentAbortController = new AbortController();
+  setGeneratingState(true);
+  return chatRequestSeq;
+}
+
+function isLiveChatRequest(seq) {
+  return seq === chatRequestSeq;
+}
+
+function finishChatRequest(seq) {
+  if (!isLiveChatRequest(seq)) return false;
+  setGeneratingState(false);
+  currentAbortController = null;
+  return true;
+}
+
+function abortChatRequestQuietly() {
+  chatRequestSeq += 1;
+  if (currentAbortController) {
+    try { currentAbortController.abort(); } catch (e) { /* ignore */ }
+    currentAbortController = null;
+  }
+}
+
+function sleepMs(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+function fetchWithGenerateRetry(url, init, attempt) {
+  attempt = attempt || 0;
+  return fetch(url, init).then(function (res) {
+    if ((res.status === 429 || (res.status === 400 && attempt < 8)) && attempt < 12) {
+      return sleepMs(200 + attempt * 150).then(function () {
+        if (init && init.signal && init.signal.aborted) {
+          const err = new Error('Aborted');
+          err.name = 'AbortError';
+          throw err;
+        }
+        return fetchWithGenerateRetry(url, init, attempt + 1);
+      });
+    }
+    return res;
+  });
+}
 
 function setGeneratingState(isGenerating) {
   const $btn = $('#send-button');
@@ -2022,11 +2105,9 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     if (playBtn) setTimeout(() => (window.voiceModeActive ? window.playTTSVoiceMode(playBtn) : window.playTTS(playBtn)), 50);
   }
 
-  if (currentAbortController) currentAbortController.abort();
-  currentAbortController = new AbortController();
-  setGeneratingState(true);
+  const seq = beginChatRequest();
 
-  fetch('/regenerate', {
+  fetchWithGenerateRetry('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
     signal: currentAbortController.signal,
     body: JSON.stringify(activeSetPayload({
@@ -2156,8 +2237,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
                 const playBtn = $target.find('.play-button').prop('disabled', false);
                 if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
-              setGeneratingState(false);
-              currentAbortController = null;
+              finishChatRequest(seq);
               noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
@@ -2170,18 +2250,19 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
             }
             read();
           }).catch(err => {
+            if (!isLiveChatRequest(seq)) return;
             try {
               $target.find('.regenerate-button').prop('disabled', false);
               const playBtn = $target.find('.play-button').prop('disabled', false);
               if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
-            setGeneratingState(false);
-            currentAbortController = null;
+            finishChatRequest(seq);
           });
         }
         read();
       })
       .catch(err => {
+        if (!isLiveChatRequest(seq)) return;
         if (err.name === 'AbortError') {
           $target.find('.ai-message-text').append(' [Stopped]');
         } else {
@@ -2193,8 +2274,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           const playBtn = $target.find('.play-button').prop('disabled', false);
           if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
         } catch (e) {}
-        setGeneratingState(false);
-        currentAbortController = null;
+        finishChatRequest(seq);
       });
 };
 
@@ -2330,6 +2410,12 @@ $(document).on('click', '.delete-button', function(e) {
 // Main ready block
 $(document).ready(function() {
   $('#reload-ui').on('click', function() {
+    if (window._recoverNativeVoice) {
+      window._recoverNativeVoice().finally(function () {
+        window.location.reload();
+      });
+      return;
+    }
     window.location.reload();
   });
 
@@ -3035,14 +3121,15 @@ $(document).ready(function() {
       .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
   });
 
-  function sendMessage() {
+  function sendMessage(opts) {
+    opts = opts || {};
     const $systemPromptElement = $('#user-system-prompt');
     const $userInputElement = $('#user-input');
     if ($systemPromptElement.length === 0 || $userInputElement.length === 0) {
       appendMessage('Chat system not properly initialized. Please refresh the page.', 'error-message');
       return;
     }
-    const message = $userInputElement.val().trim();
+    const message = (opts.message != null ? String(opts.message) : $userInputElement.val()).trim();
     if (!message && !pendingImageData) return;
     const systemPrompt = $systemPromptElement.val() || window.DEFAULT_SYSTEM_PROMPT;
     const activeSet = (typeof activeSetName === 'function' ? activeSetName() : ($('#set-selector option:selected').attr('data-name') || 'default'));
@@ -3056,10 +3143,18 @@ $(document).ready(function() {
       fullMessage = message + '\n[IMAGE:' + pendingImageData + ']';
     }
 
-    const pairIndex = HISTORY_OFFSET + document.querySelectorAll('#chat-content .message.user-message').length;
-    appendMessage(fullMessage, 'user-message', pairIndex);
-    HISTORY_TOTAL = Math.max(HISTORY_TOTAL, pairIndex + 1);
-    const $pendingUserMessage = $('#chat-content .message.user-message').last();
+    const reuseLastUser = !!opts.reuseLastUser;
+    let pairIndex;
+    let $pendingUserMessage;
+    if (reuseLastUser) {
+      $pendingUserMessage = $('#chat-content .message.user-message').last();
+      pairIndex = liveUserPairIndex($pendingUserMessage);
+    } else {
+      pairIndex = HISTORY_OFFSET + document.querySelectorAll('#chat-content .message.user-message').length;
+      appendMessage(fullMessage, 'user-message', pairIndex);
+      HISTORY_TOTAL = Math.max(HISTORY_TOTAL, pairIndex + 1);
+      $pendingUserMessage = $('#chat-content .message.user-message').last();
+    }
 
     const requestData = activeSetPayload({
       message: fullMessage,
@@ -3070,11 +3165,9 @@ $(document).ready(function() {
       send_thoughts: $('#check-send-thoughts').is(':checked')
     });
 
-    if (currentAbortController) currentAbortController.abort();
-    currentAbortController = new AbortController();
-    setGeneratingState(true);
+    const seq = beginChatRequest();
 
-    fetch('/chat', {
+    fetchWithGenerateRetry('/chat', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
       signal: currentAbortController.signal,
@@ -3224,8 +3317,7 @@ $(document).ready(function() {
                 const playBtn = $targetElement.find('.play-button').prop('disabled', false);
                 if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
-              setGeneratingState(false);
-              currentAbortController = null;
+              finishChatRequest(seq);
               noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
@@ -3238,18 +3330,19 @@ $(document).ready(function() {
             }
             return readStream();
           }).catch(err => {
+            if (!isLiveChatRequest(seq)) return;
             try {
               $targetElement.find('.regenerate-button').prop('disabled', false);
               const playBtn = $targetElement.find('.play-button').prop('disabled', false);
               if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
-            setGeneratingState(false);
-            currentAbortController = null;
+            finishChatRequest(seq);
           });
         }
         readStream();
       })
       .catch(error => {
+        if (!isLiveChatRequest(seq)) return;
         if (error.name === 'AbortError') {
           const $lastAI = $('.ai-message:last-child');
           $lastAI.find('.ai-message-text').append(' [Stopped]');
@@ -3259,11 +3352,10 @@ $(document).ready(function() {
             if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
           } catch (e) {}
         } else {
-          if ($pendingUserMessage.length) $pendingUserMessage.remove();
+          if ($pendingUserMessage.length && !reuseLastUser) $pendingUserMessage.remove();
           appendMessage(error && error.message ? error.message : String(error), 'error-message');
         }
-        setGeneratingState(false);
-        currentAbortController = null;
+        finishChatRequest(seq);
       });
   }
 
@@ -3629,7 +3721,13 @@ $(document).ready(function() {
       this.speechActiveMs = 0;
       this.chunkCount = 0;
 
-      await window.NativeMic.start();
+      try {
+        await window.NativeMic.start();
+      } catch (first) {
+        nativeLog('VAD', 'NativeMic.start retry after: ' + (first && first.message ? first.message : first));
+        try { await window.NativeMic.stop(); } catch (e) { /* ignore */ }
+        await window.NativeMic.start();
+      }
 
       this.nativeListener = window.NativeMic.addListener('nativeMicData', function (data) {
         if (!data || !data.data) return;
@@ -3641,7 +3739,7 @@ $(document).ready(function() {
       });
       this.isRecording = true;
     } catch (err) {
-      this.onError('Failed to start Voice Mode: ' + err.message);
+      nativeLog('VAD', 'NativeMicUtteranceVAD start failed: ' + (err && err.message ? err.message : err));
       throw err;
     }
   };
@@ -3764,13 +3862,35 @@ $(document).ready(function() {
     nativeVoiceTtsSessionPromise = null;
   }
 
-  async function startVoiceMode() {
+  const VOICE_MODE_WANTED_KEY = 'chatbotVoiceModeWanted';
+
+  function persistVoiceModeWanted(on) {
+    try {
+      if (on) sessionStorage.setItem(VOICE_MODE_WANTED_KEY, '1');
+      else sessionStorage.removeItem(VOICE_MODE_WANTED_KEY);
+    } catch (e) { /* ignore */ }
+  }
+
+  function voiceModeWanted() {
+    try { return sessionStorage.getItem(VOICE_MODE_WANTED_KEY) === '1'; } catch (e) { return false; }
+  }
+
+  async function startVoiceMode(attempt) {
+    attempt = attempt || 0;
+    persistVoiceModeWanted(true);
     try {
       const useNativeMicVAD = window.nativeMicAvailable && isMobile;
 
       if (useNativeMicVAD) {
+        if (nativeMicBridge) {
+          try { await nativeMicBridge.stop(); } catch (e) { /* ignore */ }
+          nativeMicBridge = null;
+        }
+        if (window._recoverNativeVoice && attempt > 0) {
+          await window._recoverNativeVoice();
+        }
         nativeMicBridge = new NativeMicUtteranceVAD(function (err) {
-          appendMessage(err == null ? 'Native mic error' : String(err), 'error-message');
+          nativeLog('VAD', err == null ? 'Native mic error' : String(err));
         });
         await nativeMicBridge.start();
       } else {
@@ -3792,9 +3912,35 @@ $(document).ready(function() {
       $voiceModeBtn.addClass('active');
       $micBtn.prop('disabled', true);
     } catch (err) {
-      appendMessage('Voice mode failed to start: ' + (err && err.message ? err.message : String(err)), 'error-message');
+      nativeLog('VAD', 'startVoiceMode failed attempt=' + attempt + ' ' + (err && err.message ? err.message : err));
+      window.voiceModeActive = false;
+      $voiceModeBtn.removeClass('active');
+      $micBtn.prop('disabled', false);
+      if (nativeMicBridge) {
+        try { nativeMicBridge.stop(); } catch (e) { /* ignore */ }
+        nativeMicBridge = null;
+      }
+      if (attempt < 5 && voiceModeWanted()) {
+        setTimeout(function () { startVoiceMode(attempt + 1); }, 400 * (attempt + 1));
+        return;
+      }
+      persistVoiceModeWanted(false);
     }
   }
+
+  function recoverAndMaybeResumeVoiceMode() {
+    const resume = function () {
+      if (voiceModeWanted() && !window.voiceModeActive) {
+        startVoiceMode();
+      }
+    };
+    if (window._recoverNativeVoice) {
+      window._recoverNativeVoice().then(resume).catch(resume);
+    } else {
+      resume();
+    }
+  }
+  recoverAndMaybeResumeVoiceMode();
 
   function createVAD(stream, hooks) {
     hooks = hooks || {};
@@ -3842,8 +3988,8 @@ $(document).ready(function() {
       voiceModeVAD.start();
     } catch (e) {
       console.error('VAD reinitialize failed:', e);
-      appendMessage('Voice detection failed to recover. Please toggle voice mode off and on.', 'error-message');
-      stopVoiceMode();
+      nativeLog('VAD', 'VAD reinitialize failed: ' + (e && e.message ? e.message : e));
+      if (window.voiceModeActive) startVoiceMode(1);
     }
   }
 
@@ -3871,11 +4017,12 @@ $(document).ready(function() {
     tearDownNativeVoiceTtsSession();
     nativeVoiceTtsOnSessionEnded = null;
     bargeInFrames = 0;
+    persistVoiceModeWanted(false);
     $voiceModeBtn.removeClass('active');
     $micBtn.prop('disabled', false);
   }
 
-  function handleBargeIn() {
+  function stopVoicePlaybackOnly() {
     voiceModeTtsPlaying = false;
     voiceModeTtsSessionActive = false;
     voiceModeListenCooldownUntil = 0;
@@ -3892,11 +4039,99 @@ $(document).ready(function() {
       CURRENT_AUDIO = null;
       CURRENT_AUDIO_BUTTON = null;
     }
-    if (currentAbortController) {
-      currentAbortController.abort();
-      currentAbortController = null;
-      setGeneratingState(false);
+  }
+
+  function handleBargeIn() {
+    // Stop TTS only. Aborting /chat here races a follow-up send into a 429
+    // and paints [Stopped]. Late speech is applied in submitVoiceUtterance.
+    stopVoicePlaybackOnly();
+  }
+
+  function applyVoiceAmendToUserMessage($el, extraText) {
+    const original = $el.attr('data-original') || '';
+    const parsed = parseUserMessageContent(original);
+    const combinedPlain = joinVoiceUtterances(parsed.text, extraText);
+    const finalText = composeUserMessageContent(
+      combinedPlain, parsed.imageSrc, parsed.hasImage || parsed.deferred
+    );
+    const pairIndex = liveUserPairIndex($el);
+    $el.attr('data-original', finalText);
+    const $span = $el.find('.user-message-text');
+    if ($span.length) {
+      $span.replaceWith(buildUserMessageSpan(combinedPlain, parsed.imageSrc, {
+        pairIndex: pairIndex,
+        thumbnail: $el.attr('data-thumb') === '1'
+      }));
     }
+    return finalText;
+  }
+
+  let pendingVoiceAmend = '';
+  let voiceAmendTimer = null;
+
+  function queueVoiceContinuation(text) {
+    pendingVoiceAmend = joinVoiceUtterances(pendingVoiceAmend, text);
+    stopVoicePlaybackOnly();
+    abortChatRequestQuietly();
+    if (voiceAmendTimer) clearTimeout(voiceAmendTimer);
+    voiceAmendTimer = setTimeout(flushVoiceContinuation, 350);
+  }
+
+  function flushVoiceContinuation() {
+    voiceAmendTimer = null;
+    const extra = pendingVoiceAmend;
+    pendingVoiceAmend = '';
+    if (!extra) return;
+    const $lastUser = $('#chat-content .message.user-message').last();
+    if (!$lastUser.length) {
+      $('#user-input').val(extra);
+      sendMessage();
+      return;
+    }
+    const finalText = applyVoiceAmendToUserMessage($lastUser, extra);
+    const pairIndex = liveUserPairIndex($lastUser);
+    $('#user-input').val('');
+
+    function tryRegen(attempt) {
+      if (!window.voiceModeActive && !voiceModeWanted()) return;
+      let $ai = $lastUser.next('.message.ai-message');
+      if ($ai.length && pairIndex >= 0) {
+        window.performRegeneration($ai[0], finalText, pairIndex);
+        return;
+      }
+      if (attempt < 8 && pairIndex >= 0) {
+        setTimeout(function () { tryRegen(attempt + 1); }, 200);
+        return;
+      }
+      if (pairIndex >= 0 && !$ai.length) {
+        appendMessage(null, 'ai-message');
+        $ai = $lastUser.next('.message.ai-message');
+        if ($ai.length) {
+          window.performRegeneration($ai[0], finalText, pairIndex);
+          return;
+        }
+      }
+      sendMessage({ reuseLastUser: true, message: finalText });
+    }
+    tryRegen(0);
+  }
+
+  function submitVoiceUtterance(text) {
+    text = (text || '').trim();
+    if (!text) return;
+    const $lastUser = $('#chat-content .message.user-message').last();
+    const generating = !!currentAbortController || $('#send-button').hasClass('is-generating');
+    const ttsActive = !!(voiceModeTtsSessionActive || voiceModeTtsPlaying);
+    if (shouldAmendLastVoiceTurn({
+      lastUserExists: $lastUser.length > 0,
+      generating: generating,
+      ttsActive: ttsActive
+    })) {
+      queueVoiceContinuation(text);
+      return;
+    }
+    $('#user-input').val(text);
+    sendMessage();
   }
 
   async function handleSpeechEnd(vadAudio) {
@@ -3935,18 +4170,19 @@ $(document).ready(function() {
       const text = (data.text || '').trim();
 
       if (text) {
-        $('#user-input').val(text);
-        sendMessage();
+        submitVoiceUtterance(text);
       }
     } catch (err) {
-      appendMessage('Voice STT failed: ' + (err && err.message ? err.message : String(err)), 'error-message');
+      nativeLog('VAD', 'STT failed: ' + (err && err.message ? err.message : err));
     } finally {
       vadSttInProgress = false;
       if (window.voiceModeActive) {
         await reinitializeVAD();
       }
+      if (nativeMicBridge && nativeMicBridge.hasSpeechCapture()) {
+        setTimeout(function () { handleSpeechEnd(); }, 0);
+      }
     }
-  }
 
   // Pause/resume VAD when page is hidden
   document.addEventListener('visibilitychange', function () {
