@@ -13,8 +13,8 @@
   /** RMS barge-in during TTS — matches Android Auto VoiceScreen. */
   const BARGE_IN_RMS_THRESHOLD = 800;
   const BARGE_IN_RMS_FRAMES = 3; // ~60 ms at 20 ms native frames
-  /** Stricter threshold for starting an STT utterance (impacts exceed this less often). */
-  const SPEECH_RMS_THRESHOLD = 1400;
+  /** Speakerphone-distance speech start. Duration gates still reject tap spikes. */
+  const SPEECH_RMS_THRESHOLD = 500;
   const SPEECH_START_FRAMES = 6; // ~120 ms sustained speech before capture
   const SPEECH_END_SILENCE_MS = 800;
   /** Minimum ms with RMS above SPEECH_RMS_THRESHOLD before sending to STT. */
@@ -193,7 +193,7 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 5,
+    VOICE_MODE_NATIVE_VAD_VERSION: 6,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,

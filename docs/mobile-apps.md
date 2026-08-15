@@ -39,7 +39,8 @@ Capacitor wraps the existing web UI in a native Android shell. The WebView loads
 │  │  ┌───────────────────────┐  │                             │
 │  │  │  NativeMicPlugin.java │  │                             │
 │  │  │  - 16kHz mono PCM     │  │                             │
-│  │  │  - VOICE_RECOGNITION  │  │                             │
+│  │  │  - VOICE_COMMUNICATION│  │                             │
+│  │  │  - speakerphone route │  │                             │
 │  │  └───────────────────────┘  │                             │
 │  │  Desktop browser: Silero VAD (not shown)                  │
 │  └─────────────────────────────┘                             │
@@ -92,23 +93,23 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 **Goal**: Voice mode works reliably without browser restrictions.
 
 1. Write `NativeMicPlugin.java`:
-   - Uses `AudioRecord` for 16kHz mono PCM capture (`VOICE_RECOGNITION` — speech capture without call/HFP routing)
+   - Uses `AudioRecord` for 16kHz mono PCM capture (`VOICE_COMMUNICATION` — VoIP/speakerphone uplink with hardware AEC/AGC)
    - Sends fixed 20 ms frames to JS via Capacitor events (`nativeMicData`)
-   - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` to web layer
-   - Does **not** call `AudioManager.setMode` or request `USAGE_VOICE_COMMUNICATION` focus. That path switches Bluetooth between HFP/SCO (call speaker) and A2DP (media speaker) and interrupts TTS.
+   - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` / `enterVoiceRoute()` / `exitVoiceRoute()` to web layer
+   - Handheld voice mode holds `MODE_IN_COMMUNICATION` + built-in speaker (`setCommunicationDevice` on API 31+, `setSpeakerphoneOn` fallback) for the **whole session**. Do not enter/exit that route per TTS clip — that is what flipped Bluetooth HFP/SCO.
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — **RMS-only**, not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
    - 600 ms PCM pre-roll; skips utterance detection during TTS; RMS barge-in while TTS plays
    - 400 ms cooldown after TTS before listening resumes
-   - `NativeVoiceTtsPlugin` plays `/tts_stream/{token}` via `AudioTrack` + `USAGE_MEDIA` so car/Bluetooth stays on the media speaker
+   - `NativeVoiceTtsPlugin` plays `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so AEC has a playback reference on the speakerphone stream
 
 3. Desktop/browser still uses Silero VAD (`static/deps/vad/`) with `getUserMedia` when not on Capacitor.
 
 **Key Bugs Fixed**:
 1. Early experiments feeding Silero via ScriptProcessor/`NativeMicVADBridge` were abandoned on native: Silero + WebView audio breaks during TTS; RMS matches Android Auto `VoiceScreen`.
 2. After speech detection, restarting Silero (`pause`/`start` or recreate) broke subsequent detection on WebView — native path avoids Silero entirely.
-3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Native VAD skips utterance start during TTS and uses a post-TTS cooldown; software AEC/NS/AGC still attach when the device provides them. Do **not** use `VOICE_COMMUNICATION` / `MODE_IN_COMMUNICATION` — that flips call vs media speaker on Bluetooth and did not fix Android Auto echo.
+3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD still skips utterance start during TTS and uses a post-TTS cooldown. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
 
 **Effort**: ~1 week.
 
@@ -169,7 +170,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 ### Native (Capacitor) vs desktop VAD
 
-1. **NativeMicPlugin.java** — 16kHz mono PCM via `AudioRecord` (`VOICE_RECOGNITION`, software AEC/NS/AGC when available), 20 ms frames → `nativeMicData`.
+1. **NativeMicPlugin.java** — 16kHz mono PCM via `AudioRecord` (`VOICE_COMMUNICATION`, software AEC/AGC when available), 20 ms frames → `nativeMicData`. Voice mode calls `enterVoiceRoute` once for speakerphone.
 
 2. **`static/native-audio.js`** — PCM16 WAV helpers for STT upload and related buffering.
 
@@ -179,7 +180,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
    - Late STT while a reply is in flight **amends the last user turn** and regenerates (retry 429). Do not send a second `/chat` or surface `[Stopped]` / generate-lock errors to the driver
 
-4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_MEDIA` (normal speaker / A2DP). Do not use `USAGE_VOICE_COMMUNICATION` or `AudioManager.setMode`.
+4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` (speakerphone stream + AEC reference). Do not change `AudioManager` mode here; `NativeMic.enterVoiceRoute` owns that for the session.
 
 5. **Desktop/browser**: Silero VAD remains. After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 
@@ -313,7 +314,7 @@ Product flavors configure `server_url` string resource:
 | `android/` | Create — Capacitor Android project |
 | `android/.../MainActivity.java` | Modify — server-pull WebView, disable cache, register plugins |
 | `android/.../AndroidManifest.xml` | Modify — audio permissions, CarAppService |
-| `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture with `VOICE_RECOGNITION` source (no call-audio routing) |
+| `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture with `VOICE_COMMUNICATION` source + session speakerphone route |
 | `android/.../car/ChatbotCarAppService.java` | Create — Android Auto entry |
 | `android/.../car/VoiceSession.java` | Create — Android Auto session |
 | `android/.../car/VoiceScreen.java` | Create — Android Auto UI, reads server URL from flavor string |

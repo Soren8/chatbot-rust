@@ -85,6 +85,12 @@ try {
       stop: function() {
         return window.Capacitor.nativePromise('NativeMic', 'stop', {});
       },
+      enterVoiceRoute: function() {
+        return window.Capacitor.nativePromise('NativeMic', 'enterVoiceRoute', {});
+      },
+      exitVoiceRoute: function() {
+        return window.Capacitor.nativePromise('NativeMic', 'exitVoiceRoute', {});
+      },
       addListener: function(eventName, callback) {
         return window.Capacitor.addListener('NativeMic', eventName, callback);
       }
@@ -94,6 +100,9 @@ try {
     window._recoverNativeVoice = function () {
       const tasks = [];
       tasks.push(window.NativeMic.stop().catch(function () {}));
+      if (window.NativeMic.exitVoiceRoute) {
+        tasks.push(window.NativeMic.exitVoiceRoute().catch(function () {}));
+      }
       if (window.NativeVoiceTts) {
         tasks.push(window.NativeVoiceTts.stop().catch(function () {}));
       }
@@ -101,6 +110,9 @@ try {
     };
     window.addEventListener('pagehide', function () {
       window.NativeMic.stop().catch(function () {});
+      if (window.NativeMic.exitVoiceRoute) {
+        window.NativeMic.exitVoiceRoute().catch(function () {});
+      }
       if (window.NativeVoiceTts) {
         window.NativeVoiceTts.stop().catch(function () {});
       }
@@ -3972,6 +3984,9 @@ $(document).ready(function() {
         if (window._recoverNativeVoice && attempt > 0) {
           await window._recoverNativeVoice();
         }
+        if (window.NativeMic && window.NativeMic.enterVoiceRoute) {
+          await window.NativeMic.enterVoiceRoute();
+        }
         nativeMicBridge = new NativeMicUtteranceVAD(function (err) {
           nativeLog('VAD', err == null ? 'Native mic error' : String(err));
         });
@@ -4008,6 +4023,9 @@ $(document).ready(function() {
         return;
       }
       persistVoiceModeWanted(false);
+      if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
+        window.NativeMic.exitVoiceRoute().catch(function () {});
+      }
     }
   }
 
@@ -4099,6 +4117,9 @@ $(document).ready(function() {
     }
     tearDownNativeVoiceTtsSession();
     nativeVoiceTtsOnSessionEnded = null;
+    if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
+      window.NativeMic.exitVoiceRoute().catch(function () {});
+    }
     bargeInFrames = 0;
     persistVoiceModeWanted(false);
     $voiceModeBtn.removeClass('active');
