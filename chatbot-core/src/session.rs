@@ -527,6 +527,7 @@ fn build_json_response(status: u16, payload: serde_json::Value) -> ServiceRespon
 }
 
 fn invalid_request(message: &str) -> ServiceResponse {
+    warn!(error = message, "bad request");
     build_json_response(400, json!({ "error": message }))
 }
 
@@ -1252,6 +1253,13 @@ fn build_regenerate_context(
     // Fail fast on invalid indices so we never stream then fail commit.
     let insertion_index = if let Some(index) = request.pair_index {
         if index < 0 || (index as usize) >= full_history.len() {
+            warn!(
+                pair_index = index,
+                history_len = full_history.len(),
+                message_chars = request.message.chars().count(),
+                set = %set_name,
+                "regenerate rejected: pair_index out of range"
+            );
             return Err(invalid_request("pair_index out of range"));
         }
         index as usize
@@ -1262,6 +1270,12 @@ fn build_regenerate_context(
     {
         full_history.len().saturating_sub(1)
     } else {
+        warn!(
+            history_len = full_history.len(),
+            message_chars = request.message.chars().count(),
+            set = %set_name,
+            "regenerate rejected: pair_index required (message is not the last user turn)"
+        );
         return Err(invalid_request(
             "pair_index is required when message is not the last user turn",
         ));

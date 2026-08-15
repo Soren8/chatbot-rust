@@ -11,10 +11,17 @@ use tracing::{error, warn};
 pub type HttpError = (StatusCode, Json<Value>);
 
 pub fn api_error(status: StatusCode, message: impl Into<String>) -> HttpError {
-    (status, Json(json!({ "error": message.into() })))
+    let message = message.into();
+    if status == StatusCode::BAD_REQUEST {
+        warn!(status = 400, error = %message, "http 400");
+    }
+    (status, Json(json!({ "error": message })))
 }
 
 pub fn api_error_json(status: StatusCode, body: Value) -> HttpError {
+    if status == StatusCode::BAD_REQUEST {
+        warn!(status = 400, body = %body, "http 400");
+    }
     (status, Json(body))
 }
 

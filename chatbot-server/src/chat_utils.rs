@@ -1,6 +1,7 @@
 use axum::{
+    body::Body,
     extract::ConnectInfo,
-    http::{Extensions, HeaderMap, StatusCode},
+    http::{header, Extensions, HeaderMap, Response, StatusCode},
 };
 use chatbot_core::{
     enc_key::EncryptionKey,
@@ -11,7 +12,8 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::http_error::HttpError;
+use crate::http_error::{map_response_build_err, HttpError};
+use tracing::warn;
 
 pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
     headers
@@ -174,6 +176,57 @@ impl Drop for StreamCompletionGuard {
             let _ = self.complete_success();
         }
     }
+}
+
+pub fn service_error_message(resp: &session::ServiceResponse) -> String {
+    serde_json::from_slice::<Value>(&resp.body)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.as_str())
+                .map(|s| s.to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| String::from_utf8_lossy(&resp.body).into_owned())
+}
+
+/// Persist a /chat or /regenerate failure as a real history pair and return it
+/// as a 200 text/plain assistant turn so the client can regenerate.
+pub fn error_as_saved_chat_turn(
+    session: &session::SessionContext,
+    set_name: Option<&str>,
+    user_message: &str,
+    error_message: &str,
+    encryption_key: Option<&EncryptionKey>,
+    insertion_index: Option<usize>,
+) -> Result<Response<Body>, HttpError> {
+    let set = set_name.filter(|s| !s.trim().is_empty()).unwrap_or("default");
+    let assistant = format!("[Error] {error_message}");
+    warn!(
+        error = error_message,
+        user_chars = user_message.chars().count(),
+        insertion_index,
+        "saving /chat or /regenerate error as assistant turn"
+    );
+    if let Some(idx) = insertion_index {
+        session::regenerate_finalize(
+            session,
+            set,
+            user_message,
+            &assistant,
+            Some(idx),
+            encryption_key,
+        );
+    } else {
+        session::chat_finalize(session, set, user_message, &assistant, encryption_key);
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header("X-Accel-Buffering", "no")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(assistant))
+        .map_err(|err| map_response_build_err(err, "chat_utils::error_as_saved_chat_turn"))
 }
 
 /// Standard CAS conflict body for durable set mutations.

@@ -584,7 +584,9 @@ async fn regenerate_prepare_without_finalize_keeps_durable_history() {
     let before = load_set_by_name(&app, &auth, "default").await;
     assert_eq!(before["history"].as_array().unwrap().len(), 2);
 
-    // Invalid pair_index must fail before streaming (no durable change, no partial save).
+    // Invalid pair_index must not apply LLM chunks to an existing pair.
+    // The user turn is saved as a new pair with an [Error] assistant so it
+    // can be regenerated instead of discarded.
     env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["should-not-persist"]"#);
     let res = app
         .clone()
@@ -608,26 +610,27 @@ async fn regenerate_prepare_without_finalize_keeps_durable_history() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::BAD_REQUEST,
-        "invalid pair_index must fail prepare"
-    );
+    assert_eq!(res.status(), StatusCode::OK, "error is returned as a chat turn");
     let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
     let err_text = String::from_utf8_lossy(&body);
     assert!(
-        err_text.to_lowercase().contains("pair_index")
-            || err_text.to_lowercase().contains("out of range"),
+        err_text.contains("[Error]")
+            && (err_text.to_lowercase().contains("pair_index")
+                || err_text.to_lowercase().contains("out of range")),
         "unexpected error body: {err_text}"
     );
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 
-    // Core guarantee: original pairs still present (exactly 2)
     let after = load_set_by_name(&app, &auth, "default").await;
     let hist = after["history"].as_array().unwrap();
-    assert_eq!(hist.len(), 2);
+    assert_eq!(hist.len(), 3);
     assert_eq!(hist[0][0], "keep-me");
     assert_eq!(hist[1][0], "also-keep");
+    assert_eq!(hist[2][0], "keep-me");
+    assert!(
+        hist[2][1].as_str().unwrap_or("").contains("[Error]"),
+        "new pair should store the error as assistant text"
+    );
 }
 
 #[tokio::test]

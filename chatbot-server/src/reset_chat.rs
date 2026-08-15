@@ -158,6 +158,9 @@ fn build_json_response(
     status: StatusCode,
     payload: serde_json::Value,
 ) -> Result<Response<Body>, HttpError> {
+    if status == StatusCode::BAD_REQUEST {
+        tracing::warn!(status = 400, body = %payload, "http 400");
+    }
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")

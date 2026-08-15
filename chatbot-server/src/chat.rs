@@ -18,7 +18,9 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, warn};
 
-use crate::chat_utils::{ChatLockGuard, StreamCompletionGuard};
+use crate::chat_utils::{
+    error_as_saved_chat_turn, service_error_message, ChatLockGuard, StreamCompletionGuard,
+};
 use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
     HttpError,
@@ -81,6 +83,9 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     let encryption_key = crate::chat_utils::extract_enc_key(&headers);
 
+    let session_context = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "chat::post::session"))?;
+
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 
     let provider_config = match get_provider_config(if selected_model.is_empty() {
@@ -96,6 +101,16 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
                 selected_model.as_str()
             };
             error!(model = %model, "requested model not found");
+            if !payload.message.trim().is_empty() {
+                return error_as_saved_chat_turn(
+                    &session_context,
+                    payload.set_name.as_deref(),
+                    &payload.message,
+                    "requested model not found",
+                    encryption_key.as_ref(),
+                    None,
+                );
+            }
             return Err(api_error(StatusCode::BAD_REQUEST, "requested model not found"));
         }
     };
@@ -116,11 +131,18 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
             provider_type = %provider_type,
             "unsupported provider type for chat"
         );
+        if !payload.message.trim().is_empty() {
+            return error_as_saved_chat_turn(
+                &session_context,
+                payload.set_name.as_deref(),
+                &payload.message,
+                "unsupported provider type",
+                encryption_key.as_ref(),
+                None,
+            );
+        }
         return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type"));
     }
-
-    let session_context = session::session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "chat::post::session"))?;
 
     let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
     let username = session_context.username.as_deref().unwrap_or("guest");
@@ -161,6 +183,17 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     );
 
     if let Some(py_response) = prepare.error {
+        if py_response.status == 400 && !payload.message.trim().is_empty() {
+            let msg = service_error_message(&py_response);
+            return error_as_saved_chat_turn(
+                &session_context,
+                payload.set_name.as_deref(),
+                &payload.message,
+                &msg,
+                encryption_key.as_ref(),
+                None,
+            );
+        }
         return crate::build_response(py_response);
     }
 
@@ -176,20 +209,36 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     }
 
     let provider_kind = match provider_type.as_str() {
-        "openai" => OpenAiProvider::new(&context.provider)
-            .map(ProviderKind::OpenAi)
-            .map_err(|err| {
+        "openai" => match OpenAiProvider::new(&context.provider) {
+            Ok(p) => ProviderKind::OpenAi(p),
+            Err(err) => {
                 error!(?err, "failed to construct OpenAI provider");
                 lock_guard.lock().unwrap().release_if_needed();
-                api_error(StatusCode::BAD_GATEWAY, "provider setup failed")
-            })?,
-        "xai" => XaiProvider::new(&context.provider)
-            .map(ProviderKind::Xai)
-            .map_err(|err| {
+                return error_as_saved_chat_turn(
+                    &session_context,
+                    Some(context.set_name.as_str()),
+                    payload.message.as_str(),
+                    "provider setup failed",
+                    encryption_key.as_ref(),
+                    None,
+                );
+            }
+        },
+        "xai" => match XaiProvider::new(&context.provider) {
+            Ok(p) => ProviderKind::Xai(p),
+            Err(err) => {
                 error!(?err, "failed to construct XAI provider");
                 lock_guard.lock().unwrap().release_if_needed();
-                api_error(StatusCode::BAD_GATEWAY, "provider setup failed")
-            })?,
+                return error_as_saved_chat_turn(
+                    &session_context,
+                    Some(context.set_name.as_str()),
+                    payload.message.as_str(),
+                    "provider setup failed",
+                    encryption_key.as_ref(),
+                    None,
+                );
+            }
+        },
         _ => unreachable!("provider_type should be filtered earlier"),
     };
 
@@ -245,7 +294,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
                 Err(err) => {
                     error!(?err, "provider stream setup failed");
                     lock_guard.lock().unwrap().release_if_needed();
-                    return Err(api_error(StatusCode::BAD_GATEWAY, "provider request failed"));
+                    return error_as_saved_chat_turn(
+                        &session_context,
+                        Some(set_name.as_str()),
+                        user_message.as_str(),
+                        "provider request failed",
+                        encryption_key.as_ref(),
+                        None,
+                    );
                 }
             }
         },
@@ -281,7 +337,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
                 Err(err) => {
                     error!(?err, "provider stream setup failed");
                     lock_guard.lock().unwrap().release_if_needed();
-                    return Err(api_error(StatusCode::BAD_GATEWAY, "provider request failed"));
+                    return error_as_saved_chat_turn(
+                        &session_context,
+                        Some(set_name.as_str()),
+                        user_message.as_str(),
+                        "provider request failed",
+                        encryption_key.as_ref(),
+                        None,
+                    );
                 }
             }
         },
@@ -313,7 +376,6 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
             },
         );
 
-        let mut provider_failed = false;
         while let Some(item) = provider_stream.next().await {
             match item {
                 Ok(chunk) => {
@@ -322,12 +384,9 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
                 }
                 Err(err) => {
                     error!(?err, "error while reading provider stream");
-                    // Do not persist partial/error-tainted assistant text.
-                    guard.mark_provider_error();
                     let msg = format!("\n[Error] {err}\n");
+                    guard.push_chunk(&msg);
                     yield Bytes::from(msg.into_bytes());
-                    guard.complete_without_persist();
-                    provider_failed = true;
                     break;
                 }
             }
@@ -336,11 +395,9 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         // Full stream consumed: persist + unlock. If the client aborted earlier,
         // this generator was dropped and StreamCompletionGuard::drop already
         // finalized whatever partial text we had (so Stop → Edit can regenerate).
-        if !provider_failed {
-            let extras = guard.complete_success();
-            for chunk in extras {
-                yield Bytes::from(chunk.into_bytes());
-            }
+        let extras = guard.complete_success();
+        for chunk in extras {
+            yield Bytes::from(chunk.into_bytes());
         }
     };
 

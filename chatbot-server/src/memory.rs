@@ -531,6 +531,9 @@ fn build_json_response(
     status: StatusCode,
     payload: serde_json::Value,
 ) -> Result<Response<Body>, HttpError> {
+    if status == StatusCode::BAD_REQUEST {
+        tracing::warn!(status = 400, body = %payload, "http 400");
+    }
     let body = serde_json::to_vec(&payload)
         .map_err(|err| map_serialization_err(err, "memory::json_response"))?;
 

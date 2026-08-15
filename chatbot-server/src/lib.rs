@@ -10,7 +10,7 @@ use chatbot_core::{logging, session::ServiceResponse};
 use std::{env, net::SocketAddr, path::PathBuf};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod background;
 mod brave;
@@ -142,6 +142,14 @@ pub(crate) fn build_response(
 ) -> Result<Response, http_error::HttpError> {
     let status = StatusCode::from_u16(service_response.status)
         .map_err(|_| http_error::api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid status"))?;
+
+    if service_response.status == 400 {
+        let preview: String = String::from_utf8_lossy(&service_response.body)
+            .chars()
+            .take(500)
+            .collect();
+        warn!(status = 400, body = %preview, "http 400");
+    }
 
     let mut response = Response::builder()
         .status(status)
