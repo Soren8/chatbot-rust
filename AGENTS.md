@@ -27,6 +27,8 @@ Optional args replace the default command (same as `docker compose run --rm test
 ./scripts/run-tests.sh cargo test --test login -- --nocapture
 ```
 
+First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`, locked in `Cargo.lock`). Do not install Node/npm for this, and do not add hand-rolled brace scanners.
+
 ### Why `run-tests.sh` (devcontainer / agent sandbox)
 
 The agent environment uses **docker-outside-of-docker** (CLI in the container, daemon on the host). Compose **bind mounts** are resolved by the host daemon. A bare `./` volume from inside the sandbox points at a path that often does **not** match this checkout on the host, so the tests container may miss `Cargo.toml` and sources.
