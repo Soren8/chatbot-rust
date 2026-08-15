@@ -318,6 +318,51 @@ function liveUserPairIndex(userMessageElement) {
   return HISTORY_OFFSET + i;
 }
 
+function isLocalOnlyTurn(el) {
+  var node = el && el.jquery ? el[0] : el;
+  if (!node) return false;
+  if (node.getAttribute('data-local-only') === '1') return true;
+  var prev = node.previousElementSibling;
+  if (node.classList && node.classList.contains('ai-message') && prev
+      && prev.classList.contains('user-message')
+      && prev.getAttribute('data-local-only') === '1') {
+    return true;
+  }
+  return false;
+}
+
+function markLocalOnlyTurn($user, $ai) {
+  if ($user && $user.length) $user.attr('data-local-only', '1');
+  if ($ai && $ai.length) $ai.attr('data-local-only', '1');
+}
+
+function clearLocalOnlyTurn($user, $ai) {
+  if ($user && $user.length) $user.removeAttr('data-local-only');
+  if ($ai && $ai.length) $ai.removeAttr('data-local-only');
+}
+
+function removeLocalOnlyTurn($user) {
+  if (!$user || !$user.length) return;
+  var $ai = $user.next('.message.ai-message');
+  $ai.remove();
+  $user.remove();
+  reindexUserPairIndices();
+  if (typeof updateLoadOlderBar === 'function') updateLoadOlderBar();
+}
+
+function paintFailedAiTurn($user, errorText) {
+  if (!$user || !$user.length) return $();
+  var $ai = $user.next('.message.ai-message');
+  if (!$ai.length) {
+    appendMessage(null, 'ai-message');
+    $ai = $user.next('.message.ai-message');
+  }
+  if (!$ai.length) return $();
+  replaceChildrenNative($ai[0], buildAiErrorChildren(errorText));
+  markLocalOnlyTurn($user, $ai);
+  return $ai;
+}
+
 function reindexUserPairIndices() {
   var nodes = document.querySelectorAll('#chat-content .message.user-message');
   for (var i = 0; i < nodes.length; i++) {
@@ -732,6 +777,7 @@ function buildAiErrorChildren(errorText) {
   errSpan.className = 'error-message';
   errSpan.textContent = 'Error: ' + String(errorText == null ? '' : errorText);
   frag.appendChild(errSpan);
+  frag.appendChild(buildAiRegenerateContainer(true));
   return frag;
 }
 
@@ -2080,6 +2126,12 @@ window.regenerateMessage = function regenerateMessage(button) {
   const $previousUserMessage = $aiMessageElement.prev('.message.user-message');
   if ($previousUserMessage.length === 0) return;
   let userText = ($previousUserMessage.attr('data-original') || ($previousUserMessage.find('.user-message-text').text() || $previousUserMessage.text() || '').replace(/^\s*You:\s*/, '')).trim();
+  if ($previousUserMessage.attr('data-local-only') === '1') {
+    if (typeof window.sendMessage === 'function') {
+      window.sendMessage({ reuseLastUser: true, message: userText });
+    }
+    return;
+  }
   const pairIndex = liveUserPairIndex($previousUserMessage);
   if (pairIndex < 0) return;
   const needsFull = $previousUserMessage.attr('data-thumb') === '1' || /\[IMAGE:/.test(userText);
@@ -2238,6 +2290,8 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
                 if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
+              var $regenUser = $target.prev('.message.user-message');
+              clearLocalOnlyTurn($regenUser, $target);
               noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
@@ -2284,8 +2338,12 @@ function handleDeleteMessage(buttonElement, isRetry) {
   if (userMessageElement.length === 0) return;
 
   const aiMessageElement = userMessageElement.next('.ai-message');
+  if (userMessageElement.attr('data-local-only') === '1' || isLocalOnlyTurn(userMessageElement)) {
+    removeLocalOnlyTurn(userMessageElement);
+    return;
+  }
   if (aiMessageElement.length === 0) {
-    console.error('Cannot delete: missing AI message pair');
+    removeLocalOnlyTurn(userMessageElement);
     return;
   }
 
@@ -2335,6 +2393,12 @@ function handleDeleteMessage(buttonElement, isRetry) {
         reindexUserPairIndices();
         if (!isRetry) {
           return handleDeleteMessage(buttonElement, true);
+        }
+        var users = document.querySelectorAll('#chat-content .message.user-message');
+        var isLast = users.length && users[users.length - 1] === userMessageElement[0];
+        if (isLast) {
+          removeLocalOnlyTurn(userMessageElement);
+          return;
         }
       }
       const errMsg = (result.data && result.data.error) || 'delete conflict';
@@ -3150,9 +3214,12 @@ $(document).ready(function() {
       $pendingUserMessage = $('#chat-content .message.user-message').last();
       pairIndex = liveUserPairIndex($pendingUserMessage);
     } else {
+      const $ghost = $('#chat-content .message.user-message').last();
+      if ($ghost.attr('data-local-only') === '1') {
+        removeLocalOnlyTurn($ghost);
+      }
       pairIndex = HISTORY_OFFSET + document.querySelectorAll('#chat-content .message.user-message').length;
       appendMessage(fullMessage, 'user-message', pairIndex);
-      HISTORY_TOTAL = Math.max(HISTORY_TOTAL, pairIndex + 1);
       $pendingUserMessage = $('#chat-content .message.user-message').last();
     }
 
@@ -3183,6 +3250,7 @@ $(document).ready(function() {
         }
         pendingImageData = null;
         $('#image-input').val('');
+        if ($pendingUserMessage.length) $pendingUserMessage.removeAttr('data-local-only');
         return response;
       })
       .then(response => {
@@ -3318,6 +3386,8 @@ $(document).ready(function() {
                 if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
+              HISTORY_TOTAL = Math.max(HISTORY_TOTAL, pairIndex + 1);
+              clearLocalOnlyTurn($pendingUserMessage, $targetElement);
               noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
@@ -3352,12 +3422,25 @@ $(document).ready(function() {
             if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
           } catch (e) {}
         } else {
-          if ($pendingUserMessage.length && !reuseLastUser) $pendingUserMessage.remove();
-          appendMessage(error && error.message ? error.message : String(error), 'error-message');
+          const errText = error && error.message ? error.message : String(error);
+          if ($pendingUserMessage.length) {
+            paintFailedAiTurn($pendingUserMessage, errText);
+            if (window.voiceModeActive && !opts.voiceRetried) {
+              sendMessage({
+                reuseLastUser: true,
+                message: fullMessage,
+                voiceRetried: true
+              });
+              return;
+            }
+          } else {
+            appendMessage(errText, 'error-message');
+          }
         }
         finishChatRequest(seq);
       });
   }
+  window.sendMessage = sendMessage;
 
   $('#user-input').on('keypress', function(e) { if (e.key === 'Enter') { e.preventDefault(); if (!$('#send-button').hasClass('is-generating')) sendMessage(); } });
   $('#send-button').on('click', function() {

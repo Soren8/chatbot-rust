@@ -56,3 +56,23 @@ fn late_voice_utterance_amends_last_user_turn_instead_of_sending_a_new_one() {
         "amend must retry the generate lock instead of showing the 429 to the driver"
     );
 }
+
+/// A /chat or /regenerate HTTP failure must stay retryable and deletable.
+/// Ghost pairs were never saved; delete must not 409 content-mismatch.
+#[test]
+fn failed_turn_keeps_regenerate_and_local_delete() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        chat_js.contains("function buildAiErrorChildren")
+            && chat_js.contains("buildAiRegenerateContainer(true)"),
+        "failed AI chrome must include an enabled regenerate button"
+    );
+    assert!(
+        chat_js.contains("data-local-only"),
+        "unsaved failed turns must be marked so delete does not hit the server"
+    );
+    assert!(
+        chat_js.contains("reuseLastUser") && chat_js.contains("data-local-only"),
+        "retry of a local-only turn must resend /chat, not /regenerate"
+    );
+}
