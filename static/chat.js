@@ -4183,6 +4183,7 @@ $(document).ready(function() {
         setTimeout(function () { handleSpeechEnd(); }, 0);
       }
     }
+  }
 
   // Pause/resume VAD when page is hidden
   document.addEventListener('visibilitychange', function () {
