@@ -28,10 +28,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs, USAGE_VOICE_COMMUNICATION.
+ * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs, USAGE_MEDIA.
+ * Media usage keeps Bluetooth/car output on the A2DP speaker path. USAGE_VOICE_COMMUNICATION
+ * switched HFP/SCO (call speaker + volume) on every clip and interrupted playback.
  * Each URL is downloaded fully and parsed before PCM is written (matches desktop decodeAudioData).
- * Does not request audio focus or change {@code AudioManager} mode — call-speaker routing is
- * owned by {@code NativeMic.enterVoiceRoute} for the whole voice-mode session.
  */
 @CapacitorPlugin(name = "NativeVoiceTts")
 public class NativeVoiceTtsPlugin extends Plugin {
@@ -285,7 +285,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
         trackSampleRate = sampleRate;
         AudioAttributes attrs = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
         AudioFormat format = new AudioFormat.Builder()

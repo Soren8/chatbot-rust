@@ -1,26 +1,19 @@
 package com.chatbot.app;
 
 import android.Manifest;
-import android.content.Context;
 import android.content.pm.PackageManager;
-import android.media.AudioAttributes;
-import android.media.AudioDeviceInfo;
-import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
-import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import com.chatbot.app.audio.VoiceAudioRoute;
 import com.chatbot.app.util.FileLogger;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -51,11 +44,6 @@ public class NativeMicPlugin extends Plugin {
     private Thread recordingThread = null;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private PluginCall permissionCall = null;
-    private AudioManager audioManager = null;
-    private AudioFocusRequest audioFocusRequest = null;
-    private boolean hasAudioFocus = false;
-    private final VoiceAudioRoute voiceAudioRoute = new VoiceAudioRoute();
-    private final VoiceAudioRoute.Backend voiceAudioBackend = new AudioManagerBackend();
     private AcousticEchoCanceler echoCanceler = null;
     private NoiseSuppressor noiseSuppressor = null;
     private AutomaticGainControl automaticGainControl = null;
@@ -65,7 +53,6 @@ public class NativeMicPlugin extends Plugin {
         super.load();
         FileLogger.init(getContext().getApplicationContext());
         FileLogger.log(TAG, "NativeMicPlugin.load()");
-        audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
     }
 
     @PluginMethod
@@ -120,8 +107,9 @@ public class NativeMicPlugin extends Plugin {
 
         try {
             Log.d(TAG, "Creating AudioRecord...");
+            // VOICE_RECOGNITION: speech capture without entering call/HFP routing.
             audioRecord = new AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
@@ -187,163 +175,6 @@ public class NativeMicPlugin extends Plugin {
         call.resolve(result);
     }
 
-    /** Call-speaker routing for Capacitor voice mode. Idempotent; only the voice-mode button should call this. */
-    @PluginMethod
-    public void enterVoiceRoute(PluginCall call) {
-        boolean applied = voiceAudioRoute.enter(voiceAudioBackend);
-        FileLogger.log(TAG, "enterVoiceRoute applied=" + applied + " active=" + voiceAudioRoute.isActive());
-        JSObject result = new JSObject();
-        result.put("applied", applied);
-        result.put("active", voiceAudioRoute.isActive());
-        call.resolve(result);
-    }
-
-    /** Restore pre-voice-mode routing. Idempotent; only voice-mode teardown should call this. */
-    @PluginMethod
-    public void exitVoiceRoute(PluginCall call) {
-        boolean applied = voiceAudioRoute.exit(voiceAudioBackend);
-        FileLogger.log(TAG, "exitVoiceRoute applied=" + applied + " active=" + voiceAudioRoute.isActive());
-        JSObject result = new JSObject();
-        result.put("applied", applied);
-        result.put("active", voiceAudioRoute.isActive());
-        call.resolve(result);
-    }
-
-    private void requestAudioFocus() {
-        if (audioManager == null || hasAudioFocus) {
-            FileLogger.log(TAG, "requestAudioFocus skipped: audioManager=" + (audioManager != null) + " hasAudioFocus=" + hasAudioFocus);
-            return;
-        }
-        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                .setOnAudioFocusChangeListener(change -> {
-                    Log.i(TAG, "Audio focus change: " + change);
-                    FileLogger.log(TAG, "AudioFocusChangeListener: " + change);
-                })
-                .build();
-        int result = audioManager.requestAudioFocus(audioFocusRequest);
-        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
-        FileLogger.log(TAG, "requestAudioFocus result=" + result + " granted=" + hasAudioFocus);
-    }
-
-    private AudioDeviceInfo findBuiltInSpeaker() {
-        if (audioManager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return null;
-        }
-        for (AudioDeviceInfo device : audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-            if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                return device;
-            }
-        }
-        return null;
-    }
-
-    private final class AudioManagerBackend implements VoiceAudioRoute.Backend {
-        @Override
-        public int getMode() {
-            return audioManager != null ? audioManager.getMode() : AudioManager.MODE_NORMAL;
-        }
-
-        @Override
-        public void setMode(int mode) {
-            if (audioManager != null) {
-                audioManager.setMode(mode);
-                FileLogger.log(TAG, "setMode " + mode + " current=" + audioManager.getMode());
-            }
-        }
-
-        @Override
-        public boolean isSpeakerphoneOn() {
-            return audioManager != null && audioManager.isSpeakerphoneOn();
-        }
-
-        @Override
-        public void setSpeakerphoneOn(boolean on) {
-            if (audioManager != null) {
-                audioManager.setSpeakerphoneOn(on);
-            }
-        }
-
-        @Override
-        public int getVoiceCallVolume() {
-            if (audioManager == null) {
-                return -1;
-            }
-            return audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL);
-        }
-
-        @Override
-        public int getVoiceCallMaxVolume() {
-            if (audioManager == null) {
-                return 0;
-            }
-            return audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
-        }
-
-        @Override
-        public void setVoiceCallVolume(int index) {
-            if (audioManager != null && index >= 0) {
-                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, index, 0);
-            }
-        }
-
-        @Override
-        public boolean requestCommunicationFocus() {
-            requestAudioFocus();
-            return hasAudioFocus;
-        }
-
-        @Override
-        public void abandonCommunicationFocus() {
-            abandonAudioFocus();
-        }
-
-        @Override
-        public boolean supportsCommunicationDevice() {
-            return audioManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S;
-        }
-
-        @Override
-        public Object getCommunicationDevice() {
-            if (!supportsCommunicationDevice()) {
-                return null;
-            }
-            return audioManager.getCommunicationDevice();
-        }
-
-        @Override
-        public boolean setCommunicationDeviceToSpeaker() {
-            if (!supportsCommunicationDevice()) {
-                return false;
-            }
-            AudioDeviceInfo speaker = findBuiltInSpeaker();
-            if (speaker == null) {
-                return false;
-            }
-            boolean ok = audioManager.setCommunicationDevice(speaker);
-            FileLogger.log(TAG, "setCommunicationDevice speaker id=" + speaker.getId() + " ok=" + ok);
-            return ok;
-        }
-
-        @Override
-        public void restoreCommunicationDevice(Object previous) {
-            if (!supportsCommunicationDevice() || !(previous instanceof AudioDeviceInfo)) {
-                return;
-            }
-            audioManager.setCommunicationDevice((AudioDeviceInfo) previous);
-        }
-
-        @Override
-        public void clearCommunicationDevice() {
-            if (supportsCommunicationDevice()) {
-                audioManager.clearCommunicationDevice();
-            }
-        }
-    }
-
     private void enableAudioEffects(int audioSessionId) {
         FileLogger.log(TAG, "AudioRecord sessionId=" + audioSessionId
                 + " aecAvailable=" + AcousticEchoCanceler.isAvailable()
@@ -375,14 +206,6 @@ public class NativeMicPlugin extends Plugin {
             } else {
                 FileLogger.log(TAG, "AGC create returned null");
             }
-        }
-    }
-
-    private void abandonAudioFocus() {
-        if (audioManager != null && audioFocusRequest != null && hasAudioFocus) {
-            audioManager.abandonAudioFocusRequest(audioFocusRequest);
-            FileLogger.log(TAG, "abandonAudioFocus");
-            hasAudioFocus = false;
         }
     }
 
@@ -460,7 +283,6 @@ public class NativeMicPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         stopRecording();
-        voiceAudioRoute.exit(voiceAudioBackend);
         super.handleOnDestroy();
     }
 }

@@ -85,12 +85,6 @@ try {
       stop: function() {
         return window.Capacitor.nativePromise('NativeMic', 'stop', {});
       },
-      enterVoiceRoute: function() {
-        return window.Capacitor.nativePromise('NativeMic', 'enterVoiceRoute', {});
-      },
-      exitVoiceRoute: function() {
-        return window.Capacitor.nativePromise('NativeMic', 'exitVoiceRoute', {});
-      },
       addListener: function(eventName, callback) {
         return window.Capacitor.addListener('NativeMic', eventName, callback);
       }
@@ -3775,9 +3769,6 @@ $(document).ready(function() {
       const useNativeMicVAD = window.nativeMicAvailable && isMobile;
 
       if (useNativeMicVAD) {
-        if (window.NativeMic && window.NativeMic.enterVoiceRoute) {
-          await window.NativeMic.enterVoiceRoute();
-        }
         nativeMicBridge = new NativeMicUtteranceVAD(function (err) {
           appendMessage(err == null ? 'Native mic error' : String(err), 'error-message');
         });
@@ -3801,9 +3792,6 @@ $(document).ready(function() {
       $voiceModeBtn.addClass('active');
       $micBtn.prop('disabled', true);
     } catch (err) {
-      if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
-        window.NativeMic.exitVoiceRoute().catch(function () {});
-      }
       appendMessage('Voice mode failed to start: ' + (err && err.message ? err.message : String(err)), 'error-message');
     }
   }
@@ -3882,9 +3870,6 @@ $(document).ready(function() {
     }
     tearDownNativeVoiceTtsSession();
     nativeVoiceTtsOnSessionEnded = null;
-    if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
-      window.NativeMic.exitVoiceRoute().catch(function () {});
-    }
     bargeInFrames = 0;
     $voiceModeBtn.removeClass('active');
     $micBtn.prop('disabled', false);

@@ -133,7 +133,7 @@ public class VoiceScreen extends Screen {
 
         try {
             audioRecord = new AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     SAMPLE_RATE,
                     CHANNEL_IN_CONFIG,
                     AUDIO_ENCODING,
@@ -386,7 +386,7 @@ public class VoiceScreen extends Screen {
 
         int sampleRate = 24000;
         AudioAttributes audioAttrs = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
         FileLogger.log(TAG, "playTts: AudioTrack USAGE=" + audioAttrs.getUsage() + " CONTENT=" + audioAttrs.getContentType());
@@ -436,7 +436,7 @@ public class VoiceScreen extends Screen {
         if (audioManager == null || hasAudioFocus) return;
         audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build())
                 .setOnAudioFocusChangeListener(change -> {
