@@ -829,6 +829,9 @@ function buildAiStreamChildren() {
 function mountChatMessage(hostEl, mountOpts) {
   const $chatContent = $('#chat-content');
   const parent = $chatContent[0];
+  // Sample before insert: a new bubble taller than the at-bottom slop would
+  // otherwise unpin and skip the scroll (voice transcripts are often a paragraph).
+  const follow = !(mountOpts && mountOpts.skipScroll) && shouldStickChatToBottom();
   if (parent && hostEl) {
     if (mountOpts && mountOpts.fragment) {
       mountOpts.fragment.appendChild(hostEl);
@@ -838,7 +841,7 @@ function mountChatMessage(hostEl, mountOpts) {
       parent.appendChild(hostEl);
     }
   }
-  if (!(mountOpts && mountOpts.skipScroll) && (typeof __autoScroll !== 'undefined' ? __autoScroll : isAtBottom())) {
+  if (follow) {
     scrollToBottom();
   }
 }
@@ -1023,18 +1026,34 @@ function formatAiMessage(text) {
 function isAtBottom() {
   const container = document.getElementById('chat-content');
   if (!container) return false;
-  const threshold = 30; // pixels from bottom to be considered "at bottom"
+  // Voice-mode WebView layout can land a few dozen px short; stay sticky there.
+  const threshold = window.voiceModeActive ? 120 : 30;
   return (container.scrollTop + container.clientHeight) >= (container.scrollHeight - threshold);
+}
+
+function shouldStickChatToBottom() {
+  if (typeof __autoScroll !== 'undefined') return __autoScroll;
+  if (window.voiceModeActive) return true;
+  return isAtBottom();
 }
 
 function scrollToBottom() {
   const container = document.getElementById('chat-content');
   if (!container) return;
-  // Use scrollTo for more reliable behavior in some browsers
-  container.scrollTo({
-    top: container.scrollHeight,
-    behavior: 'instant'
-  });
+  // Direct scrollTop: scrollTo({ behavior: 'instant' }) can no-op or stop short
+  // in Android WebView. Pin again after layout so markdown/images settle.
+  const pin = function () {
+    container.scrollTop = container.scrollHeight;
+  };
+  pin();
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(function () {
+      pin();
+      requestAnimationFrame(pin);
+    });
+  } else {
+    setTimeout(pin, 0);
+  }
 }
 
 let CURRENT_AUDIO = null;
@@ -2309,7 +2328,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               return;
             }
             buffer += decoder.decode(value, {stream:true});
-            const nearBottom = isAtBottom();
+            const nearBottom = shouldStickChatToBottom();
             processBuffer();
             if (nearBottom) {
               scrollToBottom();
@@ -3405,7 +3424,7 @@ $(document).ready(function() {
               return;
             }
             const chunk = decoder.decode(value, { stream: true });
-            const nearBottom = isAtBottom();
+            const nearBottom = shouldStickChatToBottom();
             processChunk(chunk);
             if (nearBottom) {
               scrollToBottom();
@@ -3665,7 +3684,7 @@ $(document).ready(function() {
     this.utteranceChunks = [];
     this.inSpeech = false;
     this.speechAboveCount = 0;
-    this.bargeAboveCount = 0;
+    this.bargeInFired = false;
     this.silenceMs = 0;
     this.speechActiveMs = 0;
     this.nativeListener = null;
@@ -3676,6 +3695,45 @@ $(document).ready(function() {
   /** Ms after TTS ends before RMS utterance detection resumes. */
   const TTS_LISTEN_COOLDOWN_MS = 400;
 
+  NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
+    this.speechAboveCount = 0;
+    this.bargeInFired = false;
+    this.silenceMs = 0;
+    this.speechActiveMs = 0;
+  };
+
+  NativeMicUtteranceVAD.prototype._maybeStartUtterance = function (rms, skipPreRoll) {
+    if (this.inSpeech || vadSttInProgress) return;
+    if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
+      this.speechAboveCount++;
+      if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
+        nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
+        this._beginUtterance(skipPreRoll);
+      }
+    } else {
+      this.speechAboveCount = 0;
+    }
+  };
+
+  NativeMicUtteranceVAD.prototype._accumulateUtterance = function (copy, rms, frameMs) {
+    this.utteranceChunks.push(copy);
+    if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
+      this.silenceMs = 0;
+      this.speechActiveMs += frameMs;
+      if (voiceModeTtsPlaying && !this.bargeInFired
+          && this.speechActiveMs >= NativeAudio.BARGE_IN_CONFIRM_MS) {
+        this.bargeInFired = true;
+        nativeLog('VAD', 'barge-in confirmed speechMs=' + this.speechActiveMs);
+        handleBargeIn();
+      }
+    } else {
+      this.silenceMs += frameMs;
+      if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
+        this._endUtterance();
+      }
+    }
+  };
+
   NativeMicUtteranceVAD.prototype._onNativePcm = function (pcm16) {
     const copy = pcm16.slice();
     const rms = NativeAudio.pcm16Rms(copy);
@@ -3685,39 +3743,20 @@ $(document).ready(function() {
     this.preRollBuffer.push(copy);
     this.chunkCount++;
 
-    // During TTS session: skip classification while fetching; barge-in only while audio plays.
+    // During TTS session: skip start while fetching. Stop playback only after
+    // the same confirmed-speech duration used for STT — not a noise burst.
     if (voiceModeTtsSessionActive) {
       if (voiceModeTtsPlaying) {
-        if (rms > NativeAudio.BARGE_IN_RMS_THRESHOLD) {
-          this.bargeAboveCount++;
-          if (this.bargeAboveCount >= NativeAudio.BARGE_IN_RMS_FRAMES) {
-            this.bargeAboveCount = 0;
-            nativeLog('VAD', 'barge-in TTS rms=' + Math.round(rms));
-            handleBargeIn();
-            if (!this.inSpeech && !vadSttInProgress) {
-              this._beginUtterance(true);
-            }
-          }
-        } else {
-          this.bargeAboveCount = 0;
-        }
-      } else {
-        this.bargeAboveCount = 0;
+        this._maybeStartUtterance(rms, true);
+      } else if (!this.inSpeech) {
+        this.speechAboveCount = 0;
       }
       if (this.inSpeech) {
-        this.utteranceChunks.push(copy);
-        if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
-          this.silenceMs = 0;
-          this.speechActiveMs += frameMs;
-        } else {
-          this.silenceMs += frameMs;
-          if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
-            this._endUtterance();
-          }
-        }
+        this._accumulateUtterance(copy, rms, frameMs);
       }
       if (this.chunkCount % 50 === 0) {
         nativeLog('VAD', 'pcm#' + this.chunkCount + ' ttsSess=1 ttsPlay=' + voiceModeTtsPlaying
+          + ' inSpeech=' + this.inSpeech + ' speechMs=' + this.speechActiveMs
           + ' rms=' + Math.round(rms));
       }
       return;
@@ -3727,31 +3766,9 @@ $(document).ready(function() {
       return;
     }
 
-    if (!this.inSpeech && !vadSttInProgress) {
-      if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
-        this.speechAboveCount++;
-        if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
-          nativeLog('VAD', 'utterance start rms=' + Math.round(rms));
-          this._beginUtterance();
-        }
-      } else {
-        this.speechAboveCount = 0;
-      }
-    }
-
+    this._maybeStartUtterance(rms, false);
     if (this.inSpeech) {
-      this.utteranceChunks.push(copy);
-      if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
-        this.silenceMs = 0;
-        this.speechActiveMs += frameMs;
-      } else {
-        this.silenceMs += frameMs;
-        if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
-          nativeLog('VAD', 'utterance end rms=' + Math.round(rms) + ' chunks=' + this.utteranceChunks.length
-            + ' speechMs=' + this.speechActiveMs);
-          this._endUtterance();
-        }
-      }
+      this._accumulateUtterance(copy, rms, frameMs);
     }
 
     if (this.chunkCount % 50 === 0) {
@@ -3763,12 +3780,10 @@ $(document).ready(function() {
   NativeMicUtteranceVAD.prototype._beginUtterance = function (skipPreRoll) {
     if (this.inSpeech || vadSttInProgress) return;
     this.inSpeech = true;
-    this.speechAboveCount = 0;
-    this.silenceMs = 0;
-    this.speechActiveMs = 0;
+    this._resetSpeechCounters();
     if (skipPreRoll) {
       this.utteranceChunks = [];
-      nativeLog('VAD', 'utterance begin (post-barge-in, no pre-roll)');
+      nativeLog('VAD', 'utterance begin (during TTS, no pre-roll)');
     } else {
       this.utteranceChunks = this.preRollBuffer.snapshotChunks();
       nativeLog('VAD', 'utterance begin preRollChunks=' + this.utteranceChunks.length);
@@ -3780,6 +3795,7 @@ $(document).ready(function() {
     this.inSpeech = false;
     this.speechAboveCount = 0;
     this.silenceMs = 0;
+    this.bargeInFired = false;
     if (this.speechActiveMs < NativeAudio.SPEECH_MIN_ACTIVE_MS) {
       nativeLog('VAD', 'utterance rejected: speechActiveMs=' + this.speechActiveMs
         + ' min=' + NativeAudio.SPEECH_MIN_ACTIVE_MS);
@@ -3787,6 +3803,8 @@ $(document).ready(function() {
       this.speechActiveMs = 0;
       return;
     }
+    nativeLog('VAD', 'utterance end chunks=' + this.utteranceChunks.length
+      + ' speechMs=' + this.speechActiveMs);
     handleSpeechEnd();
   };
 
@@ -3810,10 +3828,7 @@ $(document).ready(function() {
       this.preRollBuffer.clear();
       this.utteranceChunks = [];
       this.inSpeech = false;
-      this.speechAboveCount = 0;
-      this.bargeAboveCount = 0;
-      this.silenceMs = 0;
-      this.speechActiveMs = 0;
+      this._resetSpeechCounters();
       this.chunkCount = 0;
 
       try {
@@ -3865,10 +3880,7 @@ $(document).ready(function() {
     this.preRollBuffer.clear();
     this.inSpeech = false;
     this.utteranceChunks = [];
-    this.speechAboveCount = 0;
-    this.bargeAboveCount = 0;
-    this.silenceMs = 0;
-    this.speechActiveMs = 0;
+    this._resetSpeechCounters();
   };
 
   function useNativeVoiceTtsPlayback() {
@@ -3958,6 +3970,39 @@ $(document).ready(function() {
   }
 
   const VOICE_MODE_WANTED_KEY = 'chatbotVoiceModeWanted';
+  let voiceScreenWakeLock = null;
+
+  function releaseVoiceScreenWakeLock() {
+    const lock = voiceScreenWakeLock;
+    voiceScreenWakeLock = null;
+    if (lock && lock.release) {
+      try { lock.release(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function acquireVoiceScreenWakeLock() {
+    if (!navigator.wakeLock || typeof navigator.wakeLock.request !== 'function') {
+      return Promise.resolve();
+    }
+    if (document.hidden || !window.voiceModeActive) {
+      return Promise.resolve();
+    }
+    return navigator.wakeLock.request('screen').then(function (lock) {
+      if (!window.voiceModeActive) {
+        try { lock.release(); } catch (e) { /* ignore */ }
+        return;
+      }
+      releaseVoiceScreenWakeLock();
+      voiceScreenWakeLock = lock;
+      lock.addEventListener('release', function () {
+        if (voiceScreenWakeLock === lock) {
+          voiceScreenWakeLock = null;
+        }
+      });
+    }).catch(function () {
+      voiceScreenWakeLock = null;
+    });
+  }
 
   function persistVoiceModeWanted(on) {
     try {
@@ -4009,6 +4054,7 @@ $(document).ready(function() {
       window.voiceModeActive = true;
       $voiceModeBtn.addClass('active');
       $micBtn.prop('disabled', true);
+      acquireVoiceScreenWakeLock();
     } catch (err) {
       nativeLog('VAD', 'startVoiceMode failed attempt=' + attempt + ' ' + (err && err.message ? err.message : err));
       window.voiceModeActive = false;
@@ -4122,6 +4168,7 @@ $(document).ready(function() {
     }
     bargeInFrames = 0;
     persistVoiceModeWanted(false);
+    releaseVoiceScreenWakeLock();
     $voiceModeBtn.removeClass('active');
     $micBtn.prop('disabled', false);
   }
@@ -4167,6 +4214,7 @@ $(document).ready(function() {
         thumbnail: $el.attr('data-thumb') === '1'
       }));
     }
+    scrollToBottom();
     return finalText;
   }
 
@@ -4236,6 +4284,7 @@ $(document).ready(function() {
     }
     $('#user-input').val(text);
     sendMessage();
+    scrollToBottom();
   }
 
   async function handleSpeechEnd(vadAudio) {
@@ -4291,6 +4340,9 @@ $(document).ready(function() {
 
   // Pause/resume VAD when page is hidden
   document.addEventListener('visibilitychange', function () {
+    if (window.voiceModeActive && !document.hidden) {
+      acquireVoiceScreenWakeLock();
+    }
     // With native mic bridge, we don't pause - native mic continues
     if (nativeMicBridge) return;
     if (!voiceModeVAD) return;

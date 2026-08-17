@@ -10,15 +10,14 @@
   const VAD_PREFETCH_SAMPLES = 4800; // 300 ms @ 16 kHz
   /** Short pre-roll for native RMS VAD (Silero used more; 600 ms caused noise false positives). */
   const SPEECH_PREROLL_SAMPLES = 1600; // 100 ms @ 16 kHz
-  /** RMS barge-in during TTS — matches Android Auto VoiceScreen. */
-  const BARGE_IN_RMS_THRESHOLD = 800;
-  const BARGE_IN_RMS_FRAMES = 3; // ~60 ms at 20 ms native frames
   /** Speakerphone-distance speech start. Duration gates still reject tap spikes. */
   const SPEECH_RMS_THRESHOLD = 500;
   const SPEECH_START_FRAMES = 6; // ~120 ms sustained speech before capture
   const SPEECH_END_SILENCE_MS = 800;
   /** Minimum ms with RMS above SPEECH_RMS_THRESHOLD before sending to STT. */
   const SPEECH_MIN_ACTIVE_MS = 350;
+  /** Stop TTS only after the same confirmed-speech duration used for STT. */
+  const BARGE_IN_CONFIRM_MS = SPEECH_MIN_ACTIVE_MS;
   /** Min PCM bytes (excl. WAV header), aligned with VoiceScreen (~125 ms floor). */
   const SPEECH_MIN_PCM_BYTES = 4000;
 
@@ -193,16 +192,15 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 6,
+    VOICE_MODE_NATIVE_VAD_VERSION: 7,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,
-    BARGE_IN_RMS_THRESHOLD: BARGE_IN_RMS_THRESHOLD,
-    BARGE_IN_RMS_FRAMES: BARGE_IN_RMS_FRAMES,
     SPEECH_RMS_THRESHOLD: SPEECH_RMS_THRESHOLD,
     SPEECH_START_FRAMES: SPEECH_START_FRAMES,
     SPEECH_END_SILENCE_MS: SPEECH_END_SILENCE_MS,
     SPEECH_MIN_ACTIVE_MS: SPEECH_MIN_ACTIVE_MS,
+    BARGE_IN_CONFIRM_MS: BARGE_IN_CONFIRM_MS,
     SPEECH_MIN_PCM_BYTES: SPEECH_MIN_PCM_BYTES,
     decodeNativePcmBase64: decodeNativePcmBase64,
     pcm16ToFloat32: pcm16ToFloat32,

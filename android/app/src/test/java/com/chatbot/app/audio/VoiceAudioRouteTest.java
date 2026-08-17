@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 
 import org.junit.Before;
@@ -92,6 +93,36 @@ public class VoiceAudioRouteTest {
         assertFalse(route.exit(null));
     }
 
+    @Test
+    public void enterDoesNotChangeRouteWhenBluetoothAudioConnected() {
+        backend.bluetoothAudio = true;
+        backend.mode = AudioManager.MODE_NORMAL;
+        backend.speakerphoneOn = false;
+        backend.voiceCallVolume = 3;
+
+        assertFalse(route.enter(backend));
+
+        assertFalse(route.isActive());
+        assertEquals(AudioManager.MODE_NORMAL, backend.mode);
+        assertFalse(backend.speakerphoneOn);
+        assertEquals(3, backend.voiceCallVolume);
+        assertEquals(0, backend.setModeCount);
+        assertEquals(0, backend.setSpeakerphoneCount);
+        assertEquals(0, backend.focusRequests);
+        assertFalse(backend.speakerDeviceSet);
+    }
+
+    @Test
+    public void bluetoothOutputTypesIncludeScoA2dpAndBle() {
+        assertTrue(VoiceAudioRoute.isBluetoothOutputType(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP));
+        assertTrue(VoiceAudioRoute.isBluetoothOutputType(AudioDeviceInfo.TYPE_BLUETOOTH_SCO));
+        assertTrue(VoiceAudioRoute.isBluetoothOutputType(AudioDeviceInfo.TYPE_BLE_HEADSET));
+        assertTrue(VoiceAudioRoute.isBluetoothOutputType(AudioDeviceInfo.TYPE_BLE_SPEAKER));
+        assertTrue(VoiceAudioRoute.isBluetoothOutputType(AudioDeviceInfo.TYPE_HEARING_AID));
+        assertFalse(VoiceAudioRoute.isBluetoothOutputType(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER));
+        assertFalse(VoiceAudioRoute.isBluetoothOutputType(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE));
+    }
+
     private static final class FakeBackend implements VoiceAudioRoute.Backend {
         int mode = AudioManager.MODE_NORMAL;
         boolean speakerphoneOn;
@@ -104,6 +135,7 @@ public class VoiceAudioRouteTest {
         boolean speakerDeviceSet;
         boolean communicationDeviceCleared;
         Object communicationDevice;
+        boolean bluetoothAudio;
 
         @Override
         public int getMode() {
@@ -179,6 +211,11 @@ public class VoiceAudioRouteTest {
         public void clearCommunicationDevice() {
             communicationDeviceCleared = true;
             communicationDevice = null;
+        }
+
+        @Override
+        public boolean hasBluetoothAudio() {
+            return bluetoothAudio;
         }
     }
 }

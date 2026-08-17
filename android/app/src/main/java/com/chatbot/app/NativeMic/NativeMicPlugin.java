@@ -1,6 +1,7 @@
 package com.chatbot.app;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.AudioAttributes;
@@ -16,10 +17,13 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.Window;
+import android.view.WindowManager;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.chatbot.app.audio.VoiceAudioRoute;
+import com.chatbot.app.audio.VoiceSessionKeepAwake;
 import com.chatbot.app.util.FileLogger;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -55,6 +59,8 @@ public class NativeMicPlugin extends Plugin {
     private boolean hasAudioFocus = false;
     private final VoiceAudioRoute voiceAudioRoute = new VoiceAudioRoute();
     private final VoiceAudioRoute.Backend voiceAudioBackend = new AudioManagerBackend();
+    private final VoiceSessionKeepAwake voiceSessionKeepAwake = new VoiceSessionKeepAwake();
+    private final VoiceSessionKeepAwake.Backend keepAwakeBackend = new ActivityKeepAwakeBackend();
     private AcousticEchoCanceler echoCanceler = null;
     private AutomaticGainControl automaticGainControl = null;
 
@@ -195,11 +201,18 @@ public class NativeMicPlugin extends Plugin {
     /** Speakerphone routing for Capacitor voice mode. Idempotent; only the voice-mode button should call this. */
     @PluginMethod
     public void enterVoiceRoute(PluginCall call) {
+        boolean bluetooth = voiceAudioBackend.hasBluetoothAudio();
         boolean applied = voiceAudioRoute.enter(voiceAudioBackend);
-        FileLogger.log(TAG, "enterVoiceRoute applied=" + applied + " active=" + voiceAudioRoute.isActive());
+        boolean keepAwake = voiceSessionKeepAwake.enter(keepAwakeBackend);
+        FileLogger.log(TAG, "enterVoiceRoute applied=" + applied
+                + " active=" + voiceAudioRoute.isActive() + " bluetooth=" + bluetooth
+                + " keepAwake=" + keepAwake);
         JSObject result = new JSObject();
         result.put("applied", applied);
         result.put("active", voiceAudioRoute.isActive());
+        result.put("bluetooth", bluetooth);
+        result.put("keepAwake", keepAwake);
+        result.put("keepAwakeActive", voiceSessionKeepAwake.isActive());
         call.resolve(result);
     }
 
@@ -207,10 +220,14 @@ public class NativeMicPlugin extends Plugin {
     @PluginMethod
     public void exitVoiceRoute(PluginCall call) {
         boolean applied = voiceAudioRoute.exit(voiceAudioBackend);
-        FileLogger.log(TAG, "exitVoiceRoute applied=" + applied + " active=" + voiceAudioRoute.isActive());
+        boolean keepAwake = voiceSessionKeepAwake.exit(keepAwakeBackend);
+        FileLogger.log(TAG, "exitVoiceRoute applied=" + applied + " active=" + voiceAudioRoute.isActive()
+                + " keepAwake=" + keepAwake);
         JSObject result = new JSObject();
         result.put("applied", applied);
         result.put("active", voiceAudioRoute.isActive());
+        result.put("keepAwake", keepAwake);
+        result.put("keepAwakeActive", voiceSessionKeepAwake.isActive());
         call.resolve(result);
     }
 
@@ -353,6 +370,57 @@ public class NativeMicPlugin extends Plugin {
                 audioManager.clearCommunicationDevice();
             }
         }
+
+        @Override
+        public boolean hasBluetoothAudio() {
+            if (audioManager == null) {
+                return false;
+            }
+            for (AudioDeviceInfo device : audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                if (VoiceAudioRoute.isBluetoothOutputType(device.getType())) {
+                    FileLogger.log(TAG, "bluetooth output type=" + device.getType()
+                            + " id=" + device.getId());
+                    return true;
+                }
+            }
+            if (supportsCommunicationDevice()) {
+                AudioDeviceInfo comm = audioManager.getCommunicationDevice();
+                if (comm != null && VoiceAudioRoute.isBluetoothOutputType(comm.getType())) {
+                    FileLogger.log(TAG, "bluetooth communication device type=" + comm.getType());
+                    return true;
+                }
+            }
+            if (audioManager.isBluetoothScoOn() || audioManager.isBluetoothA2dpOn()) {
+                FileLogger.log(TAG, "bluetooth sco/a2dp flag on");
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private final class ActivityKeepAwakeBackend implements VoiceSessionKeepAwake.Backend {
+        @Override
+        public boolean setKeepScreenOn(final boolean on) {
+            Activity activity = getActivity();
+            if (activity == null) {
+                FileLogger.log(TAG, "setKeepScreenOn(" + on + ") skipped: no activity");
+                return !on;
+            }
+            activity.runOnUiThread(() -> {
+                Window window = activity.getWindow();
+                if (window == null) {
+                    FileLogger.log(TAG, "setKeepScreenOn(" + on + ") skipped: no window");
+                    return;
+                }
+                if (on) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
+                FileLogger.log(TAG, "FLAG_KEEP_SCREEN_ON=" + on);
+            });
+            return true;
+        }
     }
 
     private void enableAudioEffects(int audioSessionId) {
@@ -459,6 +527,7 @@ public class NativeMicPlugin extends Plugin {
     protected void handleOnDestroy() {
         stopRecording();
         voiceAudioRoute.exit(voiceAudioBackend);
+        voiceSessionKeepAwake.exit(keepAwakeBackend);
         super.handleOnDestroy();
     }
 }

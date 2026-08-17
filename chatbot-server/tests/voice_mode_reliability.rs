@@ -134,6 +134,93 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
     );
 }
 
+/// Handheld voice mode is JS-driven. Auto screen sleep pauses the Activity /
+/// WebView, so VAD, STT, and TTS stop. Hold FLAG_KEEP_SCREEN_ON for the
+/// session (and a JS screen wake lock on HTTPS) instead of requiring a
+/// background microphone service.
+#[test]
+fn voice_mode_holds_screen_awake_for_the_session() {
+    let keep = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceSessionKeepAwake.java"
+    );
+    let plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+    let tests = include_str!(
+        "../../android/app/src/test/java/com/chatbot/app/audio/VoiceSessionKeepAwakeTest.java"
+    );
+    let chat_js = include_str!("../../static/chat.js");
+
+    assert!(
+        keep.contains("setKeepScreenOn") && plugin.contains("FLAG_KEEP_SCREEN_ON"),
+        "voice session must hold FLAG_KEEP_SCREEN_ON so auto screen sleep cannot kill VAD"
+    );
+    assert!(
+        plugin.contains("voiceSessionKeepAwake.enter")
+            && plugin.contains("voiceSessionKeepAwake.exit")
+            && plugin.contains("enterVoiceRoute")
+            && plugin.contains("exitVoiceRoute"),
+        "keep-awake must follow the voice-mode session, not TTS start/stop"
+    );
+    assert!(
+        tests.contains("enterKeepsScreenOnOnce")
+            && tests.contains("secondEnterDoesNotRetouchScreen"),
+        "unit test must lock idempotent keep-awake enter/exit"
+    );
+    assert!(
+        chat_js.contains("acquireVoiceScreenWakeLock")
+            && chat_js.contains("releaseVoiceScreenWakeLock")
+            && chat_js.contains("navigator.wakeLock"),
+        "HTTPS / browser voice mode must request a Screen Wake Lock"
+    );
+    assert!(
+        function_contains(chat_js, "startVoiceMode", "acquireVoiceScreenWakeLock")
+            && function_contains(chat_js, "stopVoiceMode", "releaseVoiceScreenWakeLock"),
+        "JS wake lock must be acquired for the voice-mode session and released on stop"
+    );
+    assert!(
+        !function_contains(chat_js, "stopVoicePlaybackOnly", "releaseVoiceScreenWakeLock")
+            && !function_contains(chat_js, "stopVoicePlaybackOnly", "exitVoiceRoute"),
+        "barge-in must not drop keep-awake or speakerphone routing"
+    );
+}
+
+/// Voice Mode must not yank playback off a connected Bluetooth headset.
+#[test]
+fn voice_mode_leaves_bluetooth_route_alone() {
+    let route = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceAudioRoute.java"
+    );
+    let plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+    let tests = include_str!(
+        "../../android/app/src/test/java/com/chatbot/app/audio/VoiceAudioRouteTest.java"
+    );
+
+    assert!(
+        route.contains("hasBluetoothAudio")
+            && route.contains("backend.hasBluetoothAudio()"),
+        "enter() must refuse speakerphone routing when Bluetooth audio is connected"
+    );
+    assert!(
+        route.contains("TYPE_BLUETOOTH_A2DP")
+            && route.contains("TYPE_BLUETOOTH_SCO")
+            && route.contains("TYPE_BLE_HEADSET"),
+        "Bluetooth detection must include A2DP, SCO, and BLE headsets"
+    );
+    assert!(
+        plugin.contains("hasBluetoothAudio")
+            && plugin.contains("GET_DEVICES_OUTPUTS")
+            && plugin.contains("isBluetoothA2dpOn"),
+        "NativeMic must inspect current Bluetooth outputs before enterVoiceRoute"
+    );
+    assert!(
+        tests.contains("enterDoesNotChangeRouteWhenBluetoothAudioConnected"),
+        "unit test must lock the Bluetooth no-op path"
+    );
+}
+
 /// Far-field speech is much quieter than close-talk. 1400 RMS required the
 /// mouth on the phone; speakerphone VAD must accept table-distance speech.
 #[test]
@@ -144,6 +231,71 @@ fn native_vad_rms_threshold_accepts_speakerphone_distance() {
     assert!(
         (300..=800).contains(&threshold),
         "SPEECH_RMS_THRESHOLD={threshold} is not a speakerphone-distance gate"
+    );
+}
+
+/// Voice transcripts append a user bubble then send /chat. Checking
+/// isAtBottom() after insert unpins (bubble > 30px) and leaves the new text
+/// off-screen. Stick must be sampled before insert, and scrollTop must pin.
+#[test]
+fn voice_send_scrolls_chat_to_bottom() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        chat_js.contains("function shouldStickChatToBottom"),
+        "chat follow-state must be shared by mount and stream"
+    );
+    assert!(
+        function_contains(chat_js, "mountChatMessage", "shouldStickChatToBottom"),
+        "mountChatMessage must sample stick-to-bottom before inserting the bubble"
+    );
+    assert!(
+        function_contains(chat_js, "scrollToBottom", "scrollTop = container.scrollHeight"),
+        "scrollToBottom must assign scrollTop (WebView-safe pin)"
+    );
+    assert!(
+        function_contains(chat_js, "submitVoiceUtterance", "scrollToBottom")
+            && function_contains(chat_js, "applyVoiceAmendToUserMessage", "scrollToBottom"),
+        "voice send and amend must pin the chat to the new text"
+    );
+}
+
+/// Background noise must not cut TTS. Only the same confirmed-speech duration
+/// used to send audio to STT may call handleBargeIn().
+#[test]
+fn native_tts_barge_in_requires_confirmed_speech() {
+    let chat_js = include_str!("../../static/chat.js");
+    let native_audio = include_str!("../../static/native-audio.js");
+
+    assert!(
+        !chat_js.contains("BARGE_IN_RMS_THRESHOLD") && !chat_js.contains("BARGE_IN_RMS_FRAMES"),
+        "TTS barge-in must not trip on a short RMS energy burst"
+    );
+    assert!(
+        chat_js.contains("BARGE_IN_CONFIRM_MS") && chat_js.contains("handleBargeIn()"),
+        "TTS stop must wait for confirmed speech, not raw energy"
+    );
+    assert!(
+        chat_js.contains("_maybeStartUtterance") && chat_js.contains("SPEECH_START_FRAMES"),
+        "speech start during TTS must use the utterance start gate"
+    );
+
+    let confirm_ms = parse_js_int_const(native_audio, "BARGE_IN_CONFIRM_MS")
+        .or_else(|| {
+            native_audio
+                .contains("const BARGE_IN_CONFIRM_MS = SPEECH_MIN_ACTIVE_MS")
+                .then(|| parse_js_int_const(native_audio, "SPEECH_MIN_ACTIVE_MS"))
+                .flatten()
+        })
+        .expect("BARGE_IN_CONFIRM_MS must equal SPEECH_MIN_ACTIVE_MS");
+    let min_speech_ms = parse_js_int_const(native_audio, "SPEECH_MIN_ACTIVE_MS")
+        .expect("SPEECH_MIN_ACTIVE_MS must be declared in native-audio.js");
+    assert_eq!(
+        confirm_ms, min_speech_ms,
+        "barge-in confirm must match the real-speech STT gate"
+    );
+    assert!(
+        min_speech_ms >= 300,
+        "SPEECH_MIN_ACTIVE_MS={min_speech_ms} is too short to reject noise bursts"
     );
 }
 
