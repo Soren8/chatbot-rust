@@ -1596,9 +1596,19 @@ function isLiveChatRequest(seq) {
 
 function finishChatRequest(seq) {
   if (!isLiveChatRequest(seq)) return false;
-  setGeneratingState(false);
   currentAbortController = null;
+  syncSendButtonState();
   return true;
+}
+
+function isVoiceTtsActive() {
+  return !!(voiceModeTtsSessionActive || voiceModeTtsPlaying);
+}
+
+function syncSendButtonState() {
+  const generating = !!currentAbortController;
+  const voiceTts = !!window.voiceModeActive && isVoiceTtsActive();
+  setGeneratingState(generating || voiceTts);
 }
 
 function abortChatRequestQuietly() {
@@ -1640,11 +1650,14 @@ function setGeneratingState(isGenerating) {
 }
 
 function handleStopClick() {
+  if (typeof window.stopAllTtsPlayback === 'function') {
+    window.stopAllTtsPlayback();
+  }
   if (currentAbortController) {
     currentAbortController.abort();
     currentAbortController = null;
-    setGeneratingState(false);
   }
+  syncSendButtonState();
 }
 
 // Sanitize raw markdown text for TTS: strip URLs, citations, and formatting
@@ -2120,7 +2133,11 @@ window.playTTS = function playTTS(button, options) {
 
   // Toggle stop when this control is already the active speaker.
   if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
-    stopCurrentDesktopTts();
+    if (typeof window.stopAllTtsPlayback === 'function') {
+      window.stopAllTtsPlayback();
+    } else {
+      stopCurrentDesktopTts();
+    }
     return;
   }
 
@@ -2152,6 +2169,17 @@ window.playTTS = function playTTS(button, options) {
   }
   playMessageBodyTts(sessionId, button, $messageElement);
 }
+
+/** Voice mode uses the voice TTS backend on desktop and mobile; only the output device differs. */
+function playMessageTts(button, options) {
+  if (window.voiceModeActive && typeof window.playTTSVoiceMode === 'function') {
+    window.playTTSVoiceMode(button);
+    return;
+  }
+  window.playTTS(button, options);
+}
+window.playMessageTts = playMessageTts;
+
 window.regenerateMessage = function regenerateMessage(button) {
   const $aiMessageElement = $(button).closest('.message');
   const $previousUserMessage = $aiMessageElement.prev('.message.user-message');
@@ -2185,7 +2213,7 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
 
 if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     const playBtn = $target.find('.play-button')[0];
-    if (playBtn) setTimeout(() => (window.voiceModeActive ? window.playTTSVoiceMode(playBtn) : window.playTTS(playBtn)), 50);
+    if (playBtn) setTimeout(() => playMessageTts(playBtn), 50);
   }
 
   const seq = beginChatRequest();
@@ -2779,7 +2807,16 @@ $(document).ready(function() {
     // While this message is speaking: click always stops (do not start another).
     if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === playBtn) {
       clearTtsHoverHighlight();
-      stopCurrentDesktopTts();
+      if (typeof window.stopAllTtsPlayback === 'function') {
+        window.stopAllTtsPlayback();
+      } else {
+        stopCurrentDesktopTts();
+      }
+      return;
+    }
+    if (window.voiceModeActive && typeof window.playTTSVoiceMode === 'function') {
+      clearTtsHoverHighlight();
+      window.playTTSVoiceMode(playBtn);
       return;
     }
 
@@ -2811,7 +2848,7 @@ $(document).ready(function() {
     const target = event.target;
     const playBtn = target.closest && target.closest('.play-button');
     if (playBtn) {
-      window.playTTS(playBtn);
+      playMessageTts(playBtn);
       return;
     }
 
@@ -3293,7 +3330,7 @@ $(document).ready(function() {
 
         if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           const playBtn = $targetElement.find('.play-button')[0];
-          if (playBtn) setTimeout(() => (window.voiceModeActive ? window.playTTSVoiceMode(playBtn) : window.playTTS(playBtn)), 50);
+          if (playBtn) setTimeout(() => playMessageTts(playBtn), 50);
         }
 
         // Initial scroll to bottom when AI starts responding
@@ -3702,7 +3739,7 @@ $(document).ready(function() {
     this.speechActiveMs = 0;
   };
 
-  NativeMicUtteranceVAD.prototype._maybeStartUtterance = function (rms, skipPreRoll) {
+  NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(rms, skipPreRoll) {
     if (this.inSpeech || vadSttInProgress) return;
     if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
       this.speechAboveCount++;
@@ -3715,17 +3752,11 @@ $(document).ready(function() {
     }
   };
 
-  NativeMicUtteranceVAD.prototype._accumulateUtterance = function (copy, rms, frameMs) {
+  NativeMicUtteranceVAD.prototype._accumulateUtterance = function _accumulateUtterance(copy, rms, frameMs) {
     this.utteranceChunks.push(copy);
     if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
       this.silenceMs = 0;
       this.speechActiveMs += frameMs;
-      if (voiceModeTtsPlaying && !this.bargeInFired
-          && this.speechActiveMs >= NativeAudio.BARGE_IN_CONFIRM_MS) {
-        this.bargeInFired = true;
-        nativeLog('VAD', 'barge-in confirmed speechMs=' + this.speechActiveMs);
-        handleBargeIn();
-      }
     } else {
       this.silenceMs += frameMs;
       if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
@@ -3734,7 +3765,7 @@ $(document).ready(function() {
     }
   };
 
-  NativeMicUtteranceVAD.prototype._onNativePcm = function (pcm16) {
+  NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16) {
     const copy = pcm16.slice();
     const rms = NativeAudio.pcm16Rms(copy);
     const frameMs = 20;
@@ -3743,14 +3774,10 @@ $(document).ready(function() {
     this.preRollBuffer.push(copy);
     this.chunkCount++;
 
-    // During TTS session: skip start while fetching. Stop playback only after
-    // the same confirmed-speech duration used for STT — not a noise burst.
-    if (voiceModeTtsSessionActive) {
-      if (voiceModeTtsPlaying) {
-        this._maybeStartUtterance(rms, true);
-      } else if (!this.inSpeech) {
-        this.speechAboveCount = 0;
-      }
+    // During TTS fetch or playback: start an utterance as soon as real speech
+    // is detected (SPEECH_START_FRAMES). That start is also barge-in.
+    if (voiceModeTtsSessionActive || voiceModeTtsPlaying) {
+      this._maybeStartUtterance(rms, true);
       if (this.inSpeech) {
         this._accumulateUtterance(copy, rms, frameMs);
       }
@@ -3777,7 +3804,7 @@ $(document).ready(function() {
     }
   };
 
-  NativeMicUtteranceVAD.prototype._beginUtterance = function (skipPreRoll) {
+  NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance(skipPreRoll) {
     if (this.inSpeech || vadSttInProgress) return;
     this.inSpeech = true;
     this._resetSpeechCounters();
@@ -3787,6 +3814,11 @@ $(document).ready(function() {
     } else {
       this.utteranceChunks = this.preRollBuffer.snapshotChunks();
       nativeLog('VAD', 'utterance begin preRollChunks=' + this.utteranceChunks.length);
+    }
+    if ((voiceModeTtsSessionActive || voiceModeTtsPlaying) && !this.bargeInFired) {
+      this.bargeInFired = true;
+      nativeLog('VAD', 'barge-in on speech start');
+      handleBargeIn();
     }
   };
 
@@ -3890,6 +3922,10 @@ $(document).ready(function() {
   function finishVoiceModeTtsSession() {
     voiceModeTtsSessionActive = false;
     voiceModeTtsPlaying = false;
+    syncSendButtonState();
+  }
+
+  function armTtsListenCooldown() {
     voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
   }
 
@@ -4140,7 +4176,42 @@ $(document).ready(function() {
     }
   }
 
+  function stopAllTtsPlayback(opts) {
+    opts = opts || {};
+    if (stopAllTtsPlayback._busy) return;
+    stopAllTtsPlayback._busy = true;
+    try {
+      voiceModeTtsPlaying = false;
+      voiceModeTtsSessionActive = false;
+      if (opts.preserveListen) {
+        voiceModeListenCooldownUntil = 0;
+      } else {
+        armTtsListenCooldown();
+      }
+      const audio = CURRENT_AUDIO;
+      if (audio && audio.stop) {
+        try { audio.stop(); } catch (e) { /* ignore */ }
+      }
+      if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
+        window.NativeVoiceTts.stop().catch(function () {});
+      }
+      tearDownNativeVoiceTtsSession();
+      nativeVoiceTtsOnSessionEnded = null;
+      stopCurrentDesktopTts();
+      syncSendButtonState();
+    } finally {
+      stopAllTtsPlayback._busy = false;
+    }
+  }
+  window.stopAllTtsPlayback = stopAllTtsPlayback;
+
+  function stopVoicePlaybackOnly() {
+    stopAllTtsPlayback({ preserveListen: true });
+  }
+
   function stopVoiceMode() {
+    window.voiceModeActive = false;
+    stopAllTtsPlayback();
     if (nativeMicBridge) {
       nativeMicBridge.stop();
       nativeMicBridge = null;
@@ -4154,15 +4225,6 @@ $(document).ready(function() {
       voiceModeStream.getTracks().forEach(track => track.stop());
       voiceModeStream = null;
     }
-    window.voiceModeActive = false;
-    voiceModeTtsPlaying = false;
-    voiceModeTtsSessionActive = false;
-    voiceModeListenCooldownUntil = 0;
-    if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
-      window.NativeVoiceTts.stop().catch(function () {});
-    }
-    tearDownNativeVoiceTtsSession();
-    nativeVoiceTtsOnSessionEnded = null;
     if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
       window.NativeMic.exitVoiceRoute().catch(function () {});
     }
@@ -4171,31 +4233,13 @@ $(document).ready(function() {
     releaseVoiceScreenWakeLock();
     $voiceModeBtn.removeClass('active');
     $micBtn.prop('disabled', false);
-  }
-
-  function stopVoicePlaybackOnly() {
-    voiceModeTtsPlaying = false;
-    voiceModeTtsSessionActive = false;
-    voiceModeListenCooldownUntil = 0;
-    if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
-      window.NativeVoiceTts.stop().catch(function () {});
-    }
-    tearDownNativeVoiceTtsSession();
-    nativeVoiceTtsOnSessionEnded = null;
-    if (CURRENT_AUDIO) {
-      if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
-      if (CURRENT_AUDIO_BUTTON) {
-        $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-      }
-      CURRENT_AUDIO = null;
-      CURRENT_AUDIO_BUTTON = null;
-    }
+    syncSendButtonState();
   }
 
   function handleBargeIn() {
     // Stop TTS only. Aborting /chat here races a follow-up send into a 429
     // and paints [Stopped]. Late speech is applied in submitVoiceUtterance.
-    stopVoicePlaybackOnly();
+    stopAllTtsPlayback({ preserveListen: true });
   }
 
   function applyVoiceAmendToUserMessage($el, extraText) {
@@ -4361,14 +4405,11 @@ $(document).ready(function() {
   // Voice mode TTS: native AudioTrack on Capacitor (AEC-safe), HTML audio on desktop
   window.playTTSVoiceMode = function playTTSVoiceMode(button) {
     if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
-      if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
-      if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-      CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null; return;
+      stopAllTtsPlayback();
+      return;
     }
     if (CURRENT_AUDIO) {
-      if (CURRENT_AUDIO.stop) CURRENT_AUDIO.stop();
-      if (CURRENT_AUDIO_BUTTON) $(CURRENT_AUDIO_BUTTON).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-      CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
+      stopAllTtsPlayback();
     }
 
     const $messageElement = $(button).closest('.message');
@@ -4381,6 +4422,7 @@ $(document).ready(function() {
     let nativeTtsCloseRequested = false;
     nativeTtsFetchChain = Promise.resolve();
     voiceModeTtsSessionActive = true;
+    syncSendButtonState();
 
     function getPendingText() {
       const fullText = getMessageTtsText($messageElement);
@@ -4438,6 +4480,7 @@ $(document).ready(function() {
           CURRENT_AUDIO_BUTTON = null;
         }
         finishVoiceModeTtsSession();
+        armTtsListenCooldown();
         return;
       }
       nativeVoiceTtsOnSessionEnded = function () {
@@ -4447,6 +4490,7 @@ $(document).ready(function() {
           CURRENT_AUDIO_BUTTON = null;
         }
         finishVoiceModeTtsSession();
+        armTtsListenCooldown();
       };
       closeNativeVoiceTtsSession().catch(function () {
         if (nativeVoiceTtsOnSessionEnded) {
@@ -4527,6 +4571,7 @@ $(document).ready(function() {
               CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
             }
             finishVoiceModeTtsSession();
+            armTtsListenCooldown();
             return;
           }
         } else {

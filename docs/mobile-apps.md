@@ -101,8 +101,9 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — **RMS-only**, not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
-   - 600 ms PCM pre-roll; skips utterance detection during TTS; RMS barge-in while TTS plays
-   - 400 ms cooldown after TTS before listening resumes
+   - 100 ms PCM pre-roll; utterance start during TTS (`SPEECH_START_FRAMES`, ~120 ms) stops playback immediately — same as desktop Silero `onSpeechStart`
+   - **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
+   - One `stopAllTtsPlayback` path for play/stop, message click, Send/Stop, barge-in, and disabling voice mode (desktop HTML audio + native `AudioTrack`)
    - `NativeVoiceTtsPlugin` plays `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so AEC has a playback reference on the speakerphone stream
 
 3. Desktop/browser still uses Silero VAD (`static/deps/vad/`) with `getUserMedia` when not on Capacitor.
@@ -110,7 +111,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 **Key Bugs Fixed**:
 1. Early experiments feeding Silero via ScriptProcessor/`NativeMicVADBridge` were abandoned on native: Silero + WebView audio breaks during TTS; RMS matches Android Auto `VoiceScreen`.
 2. After speech detection, restarting Silero (`pause`/`start` or recreate) broke subsequent detection on WebView — native path avoids Silero entirely.
-3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD still skips utterance start during TTS and uses a post-TTS cooldown. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
+3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD barges in at utterance start during TTS (same as desktop Silero) and uses a post-TTS cooldown only when playback ends on its own. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
 
 **Effort**: ~1 week.
 
@@ -177,7 +178,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 3. **`NativeMicUtteranceVAD`** (chat.js) — RMS-only on native PCM (same approach as `VoiceScreen.java`):
    - No Silero / WebView `AudioContext` on the native path
-   - **600 ms PCM pre-roll**; skip utterance start during TTS; RMS barge-in; **400 ms** post-TTS cooldown
+   - 100 ms PCM pre-roll; RMS utterance start (`SPEECH_START_FRAMES`) barges in immediately; **400 ms** post-TTS cooldown (not after barge-in)
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
    - Late STT while a reply is in flight **amends the last user turn** and regenerates (retry 429). Do not send a second `/chat` or surface `[Stopped]` / generate-lock errors to the driver
 

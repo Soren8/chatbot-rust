@@ -259,44 +259,100 @@ fn voice_send_scrolls_chat_to_bottom() {
     );
 }
 
-/// Background noise must not cut TTS. Only the same confirmed-speech duration
-/// used to send audio to STT may call handleBargeIn().
+/// TTS must stop when real speech is first detected (utterance start), not
+/// after the user finishes talking. SPEECH_START_FRAMES is the noise gate;
+/// SPEECH_MIN_ACTIVE_MS is only for sending to STT.
 #[test]
-fn native_tts_barge_in_requires_confirmed_speech() {
+fn native_tts_barge_in_on_initial_speech() {
     let chat_js = include_str!("../../static/chat.js");
     let native_audio = include_str!("../../static/native-audio.js");
 
+    assert!(
+        !chat_js.contains("BARGE_IN_CONFIRM_MS") && !native_audio.contains("BARGE_IN_CONFIRM_MS"),
+        "barge-in must not wait for SPEECH_MIN_ACTIVE_MS / BARGE_IN_CONFIRM_MS"
+    );
     assert!(
         !chat_js.contains("BARGE_IN_RMS_THRESHOLD") && !chat_js.contains("BARGE_IN_RMS_FRAMES"),
         "TTS barge-in must not trip on a short RMS energy burst"
     );
     assert!(
-        chat_js.contains("BARGE_IN_CONFIRM_MS") && chat_js.contains("handleBargeIn()"),
-        "TTS stop must wait for confirmed speech, not raw energy"
+        function_contains(chat_js, "_beginUtterance", "handleBargeIn"),
+        "native barge-in must fire at utterance start (same idea as Silero onSpeechStart)"
     );
     assert!(
-        chat_js.contains("_maybeStartUtterance") && chat_js.contains("SPEECH_START_FRAMES"),
-        "speech start during TTS must use the utterance start gate"
+        !function_contains(chat_js, "_accumulateUtterance", "handleBargeIn"),
+        "do not wait for the utterance to finish accumulating before stopping TTS"
     );
+    assert!(
+        function_contains(chat_js, "_onNativePcm", "_maybeStartUtterance")
+            && function_contains(chat_js, "_onNativePcm", "voiceModeTtsSessionActive"),
+        "speech start during a TTS session must use the utterance start gate"
+    );
+    assert!(
+        function_contains(chat_js, "createVAD", "onSpeechStart")
+            && function_contains(chat_js, "createVAD", "handleBargeIn"),
+        "desktop Silero must also barge in on speech start"
+    );
+    let start_frames = parse_js_int_const(native_audio, "SPEECH_START_FRAMES")
+        .expect("SPEECH_START_FRAMES must be declared in native-audio.js");
+    assert!(
+        (3..=8).contains(&start_frames),
+        "SPEECH_START_FRAMES={start_frames} should be a short initial-speech gate"
+    );
+}
 
-    let confirm_ms = parse_js_int_const(native_audio, "BARGE_IN_CONFIRM_MS")
-        .or_else(|| {
-            native_audio
-                .contains("const BARGE_IN_CONFIRM_MS = SPEECH_MIN_ACTIVE_MS")
-                .then(|| parse_js_int_const(native_audio, "SPEECH_MIN_ACTIVE_MS"))
-                .flatten()
-        })
-        .expect("BARGE_IN_CONFIRM_MS must equal SPEECH_MIN_ACTIVE_MS");
-    let min_speech_ms = parse_js_int_const(native_audio, "SPEECH_MIN_ACTIVE_MS")
-        .expect("SPEECH_MIN_ACTIVE_MS must be declared in native-audio.js");
-    assert_eq!(
-        confirm_ms, min_speech_ms,
-        "barge-in confirm must match the real-speech STT gate"
+/// Desktop and mobile share one TTS stop. The play icon, message click, Stop
+/// button, barge-in, and disabling voice mode must all halt playback — not
+/// only bump the desktop HTMLAudio session.
+#[test]
+fn voice_mode_gui_stop_halts_tts_on_desktop_and_mobile() {
+    let chat_js = include_str!("../../static/chat.js");
+
+    assert!(
+        chat_js.contains("function stopAllTtsPlayback"),
+        "one shared TTS stop for voice-mode HTML audio and NativeVoiceTts"
     );
     assert!(
-        min_speech_ms >= 300,
-        "SPEECH_MIN_ACTIVE_MS={min_speech_ms} is too short to reject noise bursts"
+        function_contains(chat_js, "handleStopClick", "stopAllTtsPlayback"),
+        "Send/Stop must halt TTS, not only abort /chat"
     );
+    assert!(
+        function_contains(chat_js, "stopVoiceMode", "stopAllTtsPlayback"),
+        "disabling voice mode must halt TTS (desktop audioEl and native)"
+    );
+    assert!(
+        function_contains(chat_js, "handleBargeIn", "stopAllTtsPlayback"),
+        "barge-in must use the same stop as the GUI"
+    );
+    assert!(
+        function_contains(chat_js, "playTTS", "stopAllTtsPlayback"),
+        "play/stop icon must not call stopCurrentDesktopTts alone (leaves voice audio playing)"
+    );
+    assert!(
+        chat_js.contains("stopAllTtsPlayback")
+            && chat_js.contains("Click to stop speech")
+            && function_contains_near(chat_js, "CURRENT_AUDIO_BUTTON === playBtn", "stopAllTtsPlayback"),
+        "clicking the speaking message must use the shared stop"
+    );
+    assert!(
+        function_contains(chat_js, "stopAllTtsPlayback", "NativeVoiceTts")
+            && function_contains(chat_js, "stopAllTtsPlayback", "stopCurrentDesktopTts"),
+        "shared stop must kill both native AudioTrack and desktop HTMLAudio"
+    );
+    assert!(
+        chat_js.contains("function playMessageTts")
+            && function_contains(chat_js, "playMessageTts", "playTTSVoiceMode"),
+        "voice-mode play/autoplay must use the voice TTS path on desktop and mobile"
+    );
+}
+
+fn function_contains_near(src: &str, anchor: &str, needle: &str) -> bool {
+    let Some(idx) = src.find(anchor) else {
+        return false;
+    };
+    let start = idx.saturating_sub(200);
+    let end = (idx + anchor.len() + 400).min(src.len());
+    src[start..end].contains(needle)
 }
 
 fn parse_js_int_const(src: &str, name: &str) -> Option<i32> {
