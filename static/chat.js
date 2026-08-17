@@ -1236,10 +1236,19 @@ function joinVoiceUtterances(previous, next) {
   return prev + ' ' + added;
 }
 
+/** False end-of-speech / quick add-on window. After this, start a new turn. */
+const VOICE_AMEND_WINDOW_MS = 2000;
+let lastVoiceSpeechEndedAt = 0;
+let lastVoiceUtteranceStartedAt = 0;
+
 /** True when a new STT result is a continuation of the in-flight voice turn. */
 function shouldAmendLastVoiceTurn(state) {
   state = state || {};
-  return !!(state.lastUserExists && (state.generating || state.ttsActive));
+  if (!state.lastUserExists || !(state.generating || state.ttsActive)) return false;
+  const endedAt = Number(state.lastSpeechEndedAt) || 0;
+  const startedAt = Number(state.utteranceStartedAt) || 0;
+  if (!endedAt || !startedAt) return false;
+  return (startedAt - endedAt) <= VOICE_AMEND_WINDOW_MS;
 }
 
 function composeUserMessageContent(text, imageSrc, hasImage) {
@@ -3808,6 +3817,8 @@ $(document).ready(function() {
     if (this.inSpeech || vadSttInProgress) return;
     this.inSpeech = true;
     this._resetSpeechCounters();
+    this.utteranceStartedAt = Date.now();
+    lastVoiceUtteranceStartedAt = this.utteranceStartedAt;
     if (skipPreRoll) {
       this.utteranceChunks = [];
       nativeLog('VAD', 'utterance begin (during TTS, no pre-roll)');
@@ -4139,6 +4150,7 @@ $(document).ready(function() {
       getStream: async () => stream,
       onSpeechStart: hooks.onSpeechStart || function () {
         nativeLog('VAD', 'onSpeechStart');
+        lastVoiceUtteranceStartedAt = Date.now();
         if (CURRENT_AUDIO) handleBargeIn();
       },
       onFrameProcessed: hooks.onFrameProcessed || function (probs) {
@@ -4229,6 +4241,8 @@ $(document).ready(function() {
       window.NativeMic.exitVoiceRoute().catch(function () {});
     }
     bargeInFrames = 0;
+    lastVoiceSpeechEndedAt = 0;
+    lastVoiceUtteranceStartedAt = 0;
     persistVoiceModeWanted(false);
     releaseVoiceScreenWakeLock();
     $voiceModeBtn.removeClass('active');
@@ -4236,10 +4250,41 @@ $(document).ready(function() {
     syncSendButtonState();
   }
 
+  function interruptVoiceReplyForNewTurn(opts) {
+    opts = opts || {};
+    if (!opts.ttsAlreadyStopped) {
+      stopAllTtsPlayback();
+    }
+    if (currentAbortController) {
+      currentAbortController.abort();
+      currentAbortController = null;
+      chatRequestSeq += 1;
+      const $lastAI = $('#chat-content .message.ai-message').last();
+      if ($lastAI.length) {
+        const $text = $lastAI.find('.ai-message-text');
+        const raw = ($text.text() || '');
+        if (raw.indexOf('[Stopped]') === -1) {
+          $text.append(' [Stopped]');
+        }
+        $lastAI.find('.regenerate-button').prop('disabled', false);
+        $lastAI.find('.play-button').prop('disabled', false);
+      }
+    }
+    if (voiceAmendTimer) {
+      clearTimeout(voiceAmendTimer);
+      voiceAmendTimer = null;
+      pendingVoiceAmend = '';
+    }
+    syncSendButtonState();
+  }
+
   function handleBargeIn() {
-    // Stop TTS only. Aborting /chat here races a follow-up send into a 429
-    // and paints [Stopped]. Late speech is applied in submitVoiceUtterance.
     stopAllTtsPlayback({ preserveListen: true });
+    const endedAt = lastVoiceSpeechEndedAt || 0;
+    const startedAt = lastVoiceUtteranceStartedAt || Date.now();
+    if (endedAt && (startedAt - endedAt) > VOICE_AMEND_WINDOW_MS) {
+      interruptVoiceReplyForNewTurn({ ttsAlreadyStopped: true });
+    }
   }
 
   function applyVoiceAmendToUserMessage($el, extraText) {
@@ -4312,19 +4357,25 @@ $(document).ready(function() {
     tryRegen(0);
   }
 
-  function submitVoiceUtterance(text) {
+  function submitVoiceUtterance(text, timing) {
     text = (text || '').trim();
     if (!text) return;
+    timing = timing || {};
     const $lastUser = $('#chat-content .message.user-message').last();
     const generating = !!currentAbortController || $('#send-button').hasClass('is-generating');
     const ttsActive = !!(voiceModeTtsSessionActive || voiceModeTtsPlaying);
     if (shouldAmendLastVoiceTurn({
       lastUserExists: $lastUser.length > 0,
       generating: generating,
-      ttsActive: ttsActive
+      ttsActive: ttsActive,
+      lastSpeechEndedAt: timing.lastSpeechEndedAt,
+      utteranceStartedAt: timing.utteranceStartedAt
     })) {
       queueVoiceContinuation(text);
       return;
+    }
+    if (generating || ttsActive) {
+      interruptVoiceReplyForNewTurn();
     }
     $('#user-input').val(text);
     sendMessage();
@@ -4335,6 +4386,11 @@ $(document).ready(function() {
     console.log('[VAD] handleSpeechEnd called, vadSttInProgress=', vadSttInProgress);
     if (vadSttInProgress) return;
     vadSttInProgress = true;
+    const prevSpeechEndedAt = lastVoiceSpeechEndedAt;
+    const utteranceStartedAt = (nativeMicBridge && nativeMicBridge.utteranceStartedAt)
+      || lastVoiceUtteranceStartedAt
+      || Date.now();
+    lastVoiceSpeechEndedAt = Date.now();
     // Desktop only: pause VAD during STT; reinitializeVAD() resumes before TTS.
     // Native bridge must NEVER pause — Silero cannot restart in Android WebView, and
     // barge-in during TTS requires continuous VAD.
@@ -4367,7 +4423,10 @@ $(document).ready(function() {
       const text = (data.text || '').trim();
 
       if (text) {
-        submitVoiceUtterance(text);
+        submitVoiceUtterance(text, {
+          lastSpeechEndedAt: prevSpeechEndedAt,
+          utteranceStartedAt: utteranceStartedAt
+        });
       }
     } catch (err) {
       nativeLog('VAD', 'STT failed: ' + (err && err.message ? err.message : err));

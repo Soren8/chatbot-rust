@@ -180,7 +180,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
    - No Silero / WebView `AudioContext` on the native path
    - 100 ms PCM pre-roll; RMS utterance start (`SPEECH_START_FRAMES`) barges in immediately; **400 ms** post-TTS cooldown (not after barge-in)
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
-   - Late STT while a reply is in flight **amends the last user turn** and regenerates (retry 429). Do not send a second `/chat` or surface `[Stopped]` / generate-lock errors to the driver
+   - STT that starts within **2s** of the last speech end **amends** the last user turn and regenerates (retry 429). After that window, stop generation/TTS (`[Stopped]`) and send a **new** `/chat`
 
 4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` (speakerphone stream + AEC reference). Do not change `AudioManager` mode here; `NativeMic.enterVoiceRoute` owns that for the session.
 

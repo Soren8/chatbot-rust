@@ -41,7 +41,7 @@ fn late_voice_utterance_amends_last_user_turn_instead_of_sending_a_new_one() {
     );
     assert!(
         chat_js.contains("function shouldAmendLastVoiceTurn"),
-        "in-flight generation or TTS must amend the last turn, not open a new /chat"
+        "a quick follow-up must amend the last turn, not open a new /chat"
     );
     assert!(
         chat_js.contains("submitVoiceUtterance") || chat_js.contains("queueVoiceContinuation"),
@@ -54,6 +54,45 @@ fn late_voice_utterance_amends_last_user_turn_instead_of_sending_a_new_one() {
     assert!(
         chat_js.contains("fetchWithGenerateRetry") || chat_js.contains("status === 429"),
         "amend must retry the generate lock instead of showing the 429 to the driver"
+    );
+}
+
+/// Amend is only for a false end-of-speech or a quick add-on. After 1–2s,
+/// barge-in must stop generation/TTS and send a new user turn.
+#[test]
+fn voice_amend_only_within_two_seconds_of_last_speech_end() {
+    let chat_js = include_str!("../../static/chat.js");
+    let window_ms = parse_js_int_const(chat_js, "VOICE_AMEND_WINDOW_MS")
+        .expect("VOICE_AMEND_WINDOW_MS must be declared in chat.js");
+    assert!(
+        (1000..=2000).contains(&window_ms),
+        "VOICE_AMEND_WINDOW_MS={window_ms} must be 1–2 seconds"
+    );
+    assert!(
+        function_contains(chat_js, "shouldAmendLastVoiceTurn", "lastSpeechEndedAt")
+            && function_contains(chat_js, "shouldAmendLastVoiceTurn", "utteranceStartedAt")
+            && function_contains(chat_js, "shouldAmendLastVoiceTurn", "VOICE_AMEND_WINDOW_MS"),
+        "amend must require the new utterance to start within the window of the last speech end"
+    );
+    assert!(
+        function_contains(chat_js, "shouldAmendLastVoiceTurn", "generating")
+            && function_contains(chat_js, "shouldAmendLastVoiceTurn", "ttsActive"),
+        "outside an in-flight reply there is nothing to amend"
+    );
+    assert!(
+        function_contains(chat_js, "submitVoiceUtterance", "interruptVoiceReplyForNewTurn")
+            && function_contains(chat_js, "submitVoiceUtterance", "sendMessage"),
+        "speech after the window must stop the current reply and send a new /chat"
+    );
+    assert!(
+        function_contains(chat_js, "interruptVoiceReplyForNewTurn", "[Stopped]")
+            && function_contains(chat_js, "interruptVoiceReplyForNewTurn", "stopAllTtsPlayback"),
+        "a new voice turn must halt TTS and finalize the interrupted AI bubble"
+    );
+    assert!(
+        function_contains(chat_js, "handleBargeIn", "VOICE_AMEND_WINDOW_MS")
+            && function_contains(chat_js, "handleBargeIn", "interruptVoiceReplyForNewTurn"),
+        "barge-in after the window must stop generation immediately, not wait for STT"
     );
 }
 
