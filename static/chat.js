@@ -3727,6 +3727,7 @@ $(document).ready(function() {
     this.onError = onError;
     this.preRollBuffer = new NativeAudio.Pcm16RingBuffer(NativeAudio.SPEECH_PREROLL_SAMPLES);
     this.utteranceChunks = [];
+    this.startGateChunks = [];
     this.inSpeech = false;
     this.speechAboveCount = 0;
     this.nonSpeechLikeCount = 0;
@@ -3744,14 +3745,16 @@ $(document).ready(function() {
   NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
     this.speechAboveCount = 0;
     this.nonSpeechLikeCount = 0;
+    this.startGateChunks = [];
     this.bargeInFired = false;
     this.silenceMs = 0;
     this.speechActiveMs = 0;
   };
 
   NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
-    if (this.inSpeech || vadSttInProgress) return;
+    if (this.inSpeech) return;
     if (NativeAudio.pcm16IsSpeechLike(pcm16, rms)) {
+      this.startGateChunks.push(pcm16.slice());
       this.speechAboveCount++;
       this.nonSpeechLikeCount = 0;
       if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
@@ -3762,10 +3765,12 @@ $(document).ready(function() {
       this.nonSpeechLikeCount++;
       if (this.nonSpeechLikeCount >= NativeAudio.SPEECH_START_MISS_FRAMES) {
         this.speechAboveCount = 0;
+        this.startGateChunks = [];
       }
     } else {
       this.speechAboveCount = 0;
       this.nonSpeechLikeCount = 0;
+      this.startGateChunks = [];
     }
   };
 
@@ -3822,14 +3827,17 @@ $(document).ready(function() {
   };
 
   NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance(skipPreRoll) {
-    if (this.inSpeech || vadSttInProgress) return;
+    if (this.inSpeech) return;
     this.inSpeech = true;
+    const startChunks = this.startGateChunks;
+    this.startGateChunks = [];
     this._resetSpeechCounters();
     this.utteranceStartedAt = Date.now();
     lastVoiceUtteranceStartedAt = this.utteranceStartedAt;
     if (skipPreRoll) {
-      this.utteranceChunks = [];
-      nativeLog('VAD', 'utterance begin (during TTS, no pre-roll)');
+      // Keep the speech-like start-gate frames; drop earlier pre-roll (TTS leak).
+      this.utteranceChunks = startChunks;
+      nativeLog('VAD', 'utterance begin (during TTS, start-gate frames=' + startChunks.length + ')');
     } else {
       this.utteranceChunks = this.preRollBuffer.snapshotChunks();
       nativeLog('VAD', 'utterance begin preRollChunks=' + this.utteranceChunks.length);
@@ -3870,6 +3878,10 @@ $(document).ready(function() {
     return this.utteranceChunks.length > 0;
   };
 
+  NativeMicUtteranceVAD.prototype.hasCompletedSpeechCapture = function () {
+    return !this.inSpeech && this.utteranceChunks.length > 0;
+  };
+
   NativeMicUtteranceVAD.prototype.start = async function () {
     const self = this;
     if (typeof NativeAudio === 'undefined') {
@@ -3879,6 +3891,7 @@ $(document).ready(function() {
       nativeLog('VAD', 'NativeMicUtteranceVAD start (RMS v' + NativeAudio.VOICE_MODE_NATIVE_VAD_VERSION + ')');
       this.preRollBuffer.clear();
       this.utteranceChunks = [];
+      this.startGateChunks = [];
       this.inSpeech = false;
       this._resetSpeechCounters();
       this.chunkCount = 0;
@@ -3918,6 +3931,7 @@ $(document).ready(function() {
 
       this.preRollBuffer.clear();
       this.utteranceChunks = [];
+      this.startGateChunks = [];
       await window.NativeMic.stop();
     } catch (err) {
       console.error('Error stopping Voice Mode native VAD:', err);
@@ -3932,6 +3946,7 @@ $(document).ready(function() {
     this.preRollBuffer.clear();
     this.inSpeech = false;
     this.utteranceChunks = [];
+    this.startGateChunks = [];
     this._resetSpeechCounters();
   };
 
@@ -4155,7 +4170,7 @@ $(document).ready(function() {
       onnxWASMBasePath: '/static/deps/vad/ort/',
       positiveSpeechThreshold: 0.7,
       negativeSpeechThreshold: 0.4,
-      redemptionMs: 800,
+      redemptionMs: 1500,
       minSpeechMs: 400,
       getStream: async () => stream,
       onSpeechStart: hooks.onSpeechStart || function () {
@@ -4451,7 +4466,7 @@ $(document).ready(function() {
       if (window.voiceModeActive) {
         await reinitializeVAD();
       }
-      if (nativeMicBridge && nativeMicBridge.hasSpeechCapture()) {
+      if (nativeMicBridge && nativeMicBridge.hasCompletedSpeechCapture()) {
         setTimeout(function () { handleSpeechEnd(); }, 0);
       }
     }

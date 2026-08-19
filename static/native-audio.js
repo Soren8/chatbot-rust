@@ -8,8 +8,8 @@
   const NATIVE_MIC_SAMPLE_RATE = 16000;
   /** Minimum buffered audio before starting Silero VAD (avoids initial underruns). */
   const VAD_PREFETCH_SAMPLES = 4800; // 300 ms @ 16 kHz
-  /** Short pre-roll for native RMS VAD (Silero used more; 600 ms caused noise false positives). */
-  const SPEECH_PREROLL_SAMPLES = 1600; // 100 ms @ 16 kHz
+  /** Pre-roll so unvoiced onsets before the speech-like gate reach STT. 600 ms sent noise. */
+  const SPEECH_PREROLL_SAMPLES = 4800; // 300 ms @ 16 kHz
   /** Speakerphone-distance energy floor. Speech-like shape is required on top. */
   const SPEECH_RMS_THRESHOLD = 500;
   const SPEECH_START_FRAMES = 6; // ~120 ms of speech-like frames before capture
@@ -20,7 +20,7 @@
   const SPEECH_ZCR_MAX = 0.30;
   /** Peak/RMS above this is an impulse (cough, clap), not sustained speech. */
   const SPEECH_CREST_MAX = 9;
-  const SPEECH_END_SILENCE_MS = 800;
+  const SPEECH_END_SILENCE_MS = 1500;
   /** Minimum ms with RMS above SPEECH_RMS_THRESHOLD before sending to STT. */
   const SPEECH_MIN_ACTIVE_MS = 350;
   /** Min PCM bytes (excl. WAV header), aligned with VoiceScreen (~125 ms floor). */
@@ -230,7 +230,7 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 9,
+    VOICE_MODE_NATIVE_VAD_VERSION: 10,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,

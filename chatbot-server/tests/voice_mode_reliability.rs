@@ -374,6 +374,52 @@ fn native_tts_barge_in_on_initial_speech() {
     );
 }
 
+/// Short mid-sentence pauses must not end the utterance (that forces a lossy
+/// STT split + join). Leading audio of the next fragment must still be kept.
+#[test]
+fn native_vad_keeps_leading_audio_and_longer_end_silence() {
+    let chat_js = include_str!("../../static/chat.js");
+    let native_audio = include_str!("../../static/native-audio.js");
+
+    let end_ms = parse_js_int_const(native_audio, "SPEECH_END_SILENCE_MS")
+        .expect("SPEECH_END_SILENCE_MS must be declared in native-audio.js");
+    assert!(
+        (1200..=1800).contains(&end_ms),
+        "SPEECH_END_SILENCE_MS={end_ms} should ignore short pauses (~1.2–1.8s)"
+    );
+    assert!(
+        chat_js.contains("redemptionMs: 1500") || chat_js.contains("redemptionMs:1500"),
+        "desktop Silero end-silence must match the native hangover"
+    );
+
+    let preroll = parse_js_int_const(native_audio, "SPEECH_PREROLL_SAMPLES")
+        .expect("SPEECH_PREROLL_SAMPLES must be declared in native-audio.js");
+    assert!(
+        preroll >= 4800,
+        "SPEECH_PREROLL_SAMPLES={preroll} must cover ~300ms so unvoiced onsets reach STT"
+    );
+
+    assert!(
+        function_contains(chat_js, "_maybeStartUtterance", "startGateChunks")
+            && function_contains(chat_js, "_beginUtterance", "startChunks"),
+        "speech-like start-gate frames must be kept for the utterance"
+    );
+    assert!(
+        function_contains(chat_js, "_beginUtterance", "startChunks")
+            && !chat_js.contains("utterance begin (during TTS, no pre-roll)"),
+        "TTS barge-in must keep start-gate audio, not start the utterance empty"
+    );
+    assert!(
+        !function_contains(chat_js, "_maybeStartUtterance", "vadSttInProgress")
+            && !function_contains(chat_js, "_beginUtterance", "vadSttInProgress"),
+        "STT in flight must not drop the start of the next utterance"
+    );
+    assert!(
+        function_contains(chat_js, "handleSpeechEnd", "hasCompletedSpeechCapture"),
+        "do not send an in-progress follow-up utterance to STT"
+    );
+}
+
 /// Desktop and mobile share one TTS stop. The play icon, message click, Stop
 /// button, barge-in, and disabling voice mode must all halt playback — not
 /// only bump the desktop HTMLAudio session.

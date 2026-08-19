@@ -101,8 +101,8 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — **RMS-only**, not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
-   - 100 ms PCM pre-roll; utterance start during TTS requires `SPEECH_START_FRAMES` (~120 ms) of **speech-like** frames (ZCR + crest, not raw RMS). That start stops playback immediately — same as desktop Silero `onSpeechRealStart` / high-confidence frames. Coughs, claps, and hiss do not barge in.
-   - **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
+   - 300 ms PCM pre-roll (unvoiced onsets). During TTS, keep the speech-like start-gate frames (~120 ms) and drop earlier pre-roll (TTS leak). Coughs, claps, and hiss do not barge in.
+   - **1500 ms** end-of-speech silence (short mid-sentence pauses do not split); **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
    - One `stopAllTtsPlayback` path for play/stop, message click, Send/Stop, barge-in, and disabling voice mode (desktop HTML audio + native `AudioTrack`)
    - `NativeVoiceTtsPlugin` plays `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so AEC has a playback reference on the speakerphone stream
 
@@ -178,13 +178,13 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 3. **`NativeMicUtteranceVAD`** (chat.js) — RMS-only on native PCM (same approach as `VoiceScreen.java`):
    - No Silero / WebView `AudioContext` on the native path
-   - 100 ms PCM pre-roll; speech-like utterance start (`SPEECH_START_FRAMES` of ZCR+crest, not raw RMS) barges in immediately; **400 ms** post-TTS cooldown (not after barge-in)
+   - 300 ms PCM pre-roll; during TTS keep start-gate frames (not empty); speech-like start barges in immediately; **1500 ms** end silence; **400 ms** post-TTS cooldown (not after barge-in). STT in flight does not drop the next utterance.
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
    - STT that starts within **2s** of the last speech end **amends** the last user turn and regenerates (retry 429). After that window, stop generation/TTS (`[Stopped]`) and send a **new** `/chat`
 
 4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` (speakerphone stream + AEC reference). Do not change `AudioManager` mode here; `NativeMic.enterVoiceRoute` owns that for the session.
 
-5. **Desktop/browser**: Silero VAD remains. Barge-in uses `onSpeechRealStart` and high-confidence `onFrameProcessed` (`isSpeech > 0.85` for ~128 ms), not first-frame `onSpeechStart`. After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
+5. **Desktop/browser**: Silero VAD remains. Barge-in uses `onSpeechRealStart` and high-confidence `onFrameProcessed` (`isSpeech > 0.85` for ~128 ms), not first-frame `onSpeechStart`. `redemptionMs` is 1500 (same end-silence as native). After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 
 ### VAD Evaluation
 
