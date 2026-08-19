@@ -48,6 +48,11 @@ fn late_voice_utterance_amends_last_user_turn_instead_of_sending_a_new_one() {
         "handleSpeechEnd must route through an amend/resend helper"
     );
     assert!(
+        function_contains(chat_js, "flushVoiceContinuation", "performRegeneration")
+            && function_contains(chat_js, "flushVoiceContinuation", "liveUserPairIndex"),
+        "joined speech must regenerate the live pair index (server accepts index == history.len())"
+    );
+    assert!(
         chat_js.contains("abortChatRequestQuietly") || chat_js.contains("chatRequestSeq"),
         "aborted /chat must not clobber the replacement request or paint [Stopped]/error"
     );

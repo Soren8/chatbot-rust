@@ -1251,8 +1251,10 @@ fn build_regenerate_context(
 
     // Non-destructive: compute insertion index without mutating durable/shared history.
     // Fail fast on invalid indices so we never stream then fail commit.
+    // pair_index == history.len() is the live index for an in-flight unsaved
+    // turn (voice amend of two quick utterances). Finalize appends that pair.
     let insertion_index = if let Some(index) = request.pair_index {
-        if index < 0 || (index as usize) >= full_history.len() {
+        if index < 0 || (index as usize) > full_history.len() {
             warn!(
                 pair_index = index,
                 history_len = full_history.len(),
@@ -1281,9 +1283,14 @@ fn build_regenerate_context(
         ));
     };
 
-    let stored_user = &full_history[insertion_index].0;
-    let effective_user =
-        crate::chat_images::coalesce_edit_user_message(request.message, stored_user);
+    let effective_user = if insertion_index < full_history.len() {
+        crate::chat_images::coalesce_edit_user_message(
+            request.message,
+            &full_history[insertion_index].0,
+        )
+    } else {
+        request.message.to_owned()
+    };
     if let Some(cap) = prepare_capture.as_mut() {
         cap.insertion_index = Some(insertion_index);
         cap.replace_user_message = Some(effective_user);
@@ -1712,6 +1719,72 @@ mod tests {
         assert_eq!(after[2].0, "User3");
 
         // Cleanup
+        release_session_lock(session_id);
+    }
+
+    #[test]
+    fn regenerate_pair_index_equal_len_appends_in_flight_turn() {
+        let session_id = "guest_test-session-regen-append";
+        SessionStore::global().entry(session_id);
+        update_session_history(
+            session_id,
+            &[("User1".to_string(), "AI1".to_string())],
+        );
+
+        let session = SessionContext {
+            session_id: session_id.to_string(),
+            username: None,
+        };
+        let provider = ProviderConfig {
+            provider_name: "default".to_string(),
+            provider_type: "openai".to_string(),
+            tier: None,
+            model_name: "default".to_string(),
+            context_size: Some(4096),
+            base_url: "http://localhost".to_string(),
+            api_key: None,
+            allowed_providers: vec![],
+            request_timeout: None,
+            test_chunks: None,
+            search: false,
+            xai_search: true,
+            xai_zdr: false,
+        };
+        let request = RegenerateRequestData {
+            set_id: None,
+            message: "User1 more words",
+            system_prompt: None,
+            set_name: Some("default"),
+            model_name: None,
+            encrypted: false,
+            pair_index: Some(1),
+            send_thoughts: false,
+        };
+
+        let result = regenerate_prepare(&session, &request, &provider, None);
+        assert!(
+            result.error.is_none(),
+            "pair_index == history.len() must prepare as an append, not out of range: {:?}",
+            result.error
+        );
+        assert_eq!(result.insertion_index, Some(1));
+        let context = result.context.expect("context");
+        assert_eq!(context.history.len(), 1);
+        assert_eq!(context.history[0].0, "User1");
+
+        regenerate_finalize(
+            &session,
+            "default",
+            "User1 more words",
+            "joined-reply",
+            result.insertion_index,
+            None,
+        );
+        let after = session_history(session_id);
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0], ("User1".into(), "AI1".into()));
+        assert_eq!(after[1], ("User1 more words".into(), "joined-reply".into()));
+
         release_session_lock(session_id);
     }
 }

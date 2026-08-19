@@ -520,6 +520,17 @@ mod tests {
     }
 
     #[test]
+    fn apply_regenerate_at_len_appends_in_flight_turn() {
+        let s = sample();
+        let capture = PrepareCapture::from_snapshot(&s).with_regenerate(3, "u4-joined");
+        assert_eq!(capture.history.len(), 3);
+        let next = apply_regenerate(&capture, "a4").unwrap();
+        assert_eq!(next.history.len(), 4);
+        assert_eq!(next.history[3], ("u4-joined".into(), "a4".into()));
+        assert_eq!(next.history[2].0, "u3");
+    }
+
+    #[test]
     fn apply_regenerate_without_index_appends() {
         let s = sample();
         let capture = PrepareCapture::from_snapshot(&s);

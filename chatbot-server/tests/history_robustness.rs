@@ -633,6 +633,67 @@ async fn regenerate_prepare_without_finalize_keeps_durable_history() {
     );
 }
 
+/// Voice amend of two quick utterances sends /regenerate with the live
+/// pair_index of the in-flight (not yet saved) turn, which equals history.len().
+/// That must create the joined pair, not paint [Error] pair_index out of range.
+#[tokio::test]
+async fn regenerate_pair_index_equal_len_creates_joined_turn() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+    seed_user(workspace.path(), "voice_amend_user", "V0iceAmend!");
+    let app = build_router(resolve_static_root());
+    let auth = login_user(&app, "voice_amend_user", "V0iceAmend!").await;
+
+    chat(&app, &auth, "default", "first fragment", None).await;
+    let before = load_set_by_name(&app, &auth, "default").await;
+    assert_eq!(before["history"].as_array().unwrap().len(), 1);
+
+    env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["joined-reply"]"#);
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/regenerate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &auth.cookie)
+                .header("X-CSRF-Token", &auth.csrf)
+                .header("X-Enc-Key", &auth.enc_key)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "message": "first fragment and more",
+                        "set_name": "default",
+                        "pair_index": 1
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("joined-reply"),
+        "expected a real reply, got: {text}"
+    );
+    assert!(
+        !text.to_lowercase().contains("pair_index"),
+        "pair_index == len must not be treated as out of range: {text}"
+    );
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
+
+    let after = load_set_by_name(&app, &auth, "default").await;
+    let hist = after["history"].as_array().unwrap();
+    assert_eq!(hist.len(), 2);
+    assert_eq!(hist[0][0], "first fragment");
+    assert_eq!(hist[1][0], "first fragment and more");
+    assert_eq!(hist[1][1], "joined-reply");
+}
+
 #[tokio::test]
 async fn regenerate_replaces_pair_keeps_later_messages() {
     common::init_tracing();
