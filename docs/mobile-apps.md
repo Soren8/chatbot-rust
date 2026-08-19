@@ -101,7 +101,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — **RMS-only**, not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
-   - 100 ms PCM pre-roll; utterance start during TTS (`SPEECH_START_FRAMES`, ~120 ms) stops playback immediately — same as desktop Silero `onSpeechStart`
+   - 100 ms PCM pre-roll; utterance start during TTS requires `SPEECH_START_FRAMES` (~120 ms) of **speech-like** frames (ZCR + crest, not raw RMS). That start stops playback immediately — same as desktop Silero `onSpeechRealStart` / high-confidence frames. Coughs, claps, and hiss do not barge in.
    - **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
    - One `stopAllTtsPlayback` path for play/stop, message click, Send/Stop, barge-in, and disabling voice mode (desktop HTML audio + native `AudioTrack`)
    - `NativeVoiceTtsPlugin` plays `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so AEC has a playback reference on the speakerphone stream
@@ -111,7 +111,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 **Key Bugs Fixed**:
 1. Early experiments feeding Silero via ScriptProcessor/`NativeMicVADBridge` were abandoned on native: Silero + WebView audio breaks during TTS; RMS matches Android Auto `VoiceScreen`.
 2. After speech detection, restarting Silero (`pause`/`start` or recreate) broke subsequent detection on WebView — native path avoids Silero entirely.
-3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD barges in at utterance start during TTS (same as desktop Silero) and uses a post-TTS cooldown only when playback ends on its own. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
+3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD barges in at speech-like utterance start during TTS (same as desktop Silero `onSpeechRealStart`) and uses a post-TTS cooldown only when playback ends on its own. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
 
 **Effort**: ~1 week.
 
@@ -178,13 +178,13 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 3. **`NativeMicUtteranceVAD`** (chat.js) — RMS-only on native PCM (same approach as `VoiceScreen.java`):
    - No Silero / WebView `AudioContext` on the native path
-   - 100 ms PCM pre-roll; RMS utterance start (`SPEECH_START_FRAMES`) barges in immediately; **400 ms** post-TTS cooldown (not after barge-in)
+   - 100 ms PCM pre-roll; speech-like utterance start (`SPEECH_START_FRAMES` of ZCR+crest, not raw RMS) barges in immediately; **400 ms** post-TTS cooldown (not after barge-in)
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
    - STT that starts within **2s** of the last speech end **amends** the last user turn and regenerates (retry 429). After that window, stop generation/TTS (`[Stopped]`) and send a **new** `/chat`
 
 4. **`NativeVoiceTtsPlugin.java`** — `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` (speakerphone stream + AEC reference). Do not change `AudioManager` mode here; `NativeMic.enterVoiceRoute` owns that for the session.
 
-5. **Desktop/browser**: Silero VAD remains. After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
+5. **Desktop/browser**: Silero VAD remains. Barge-in uses `onSpeechRealStart` and high-confidence `onFrameProcessed` (`isSpeech > 0.85` for ~128 ms), not first-frame `onSpeechStart`. After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 
 ### VAD Evaluation
 

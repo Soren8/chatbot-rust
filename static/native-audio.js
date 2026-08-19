@@ -10,9 +10,16 @@
   const VAD_PREFETCH_SAMPLES = 4800; // 300 ms @ 16 kHz
   /** Short pre-roll for native RMS VAD (Silero used more; 600 ms caused noise false positives). */
   const SPEECH_PREROLL_SAMPLES = 1600; // 100 ms @ 16 kHz
-  /** Speakerphone-distance speech start. Duration gates still reject tap spikes. */
+  /** Speakerphone-distance energy floor. Speech-like shape is required on top. */
   const SPEECH_RMS_THRESHOLD = 500;
-  const SPEECH_START_FRAMES = 6; // ~120 ms sustained speech before capture
+  const SPEECH_START_FRAMES = 6; // ~120 ms of speech-like frames before capture
+  /** Consecutive non-speech-like energy frames that reset the start counter (allows one plosive). */
+  const SPEECH_START_MISS_FRAMES = 2;
+  /** Voiced-speech ZCR band at 16 kHz. Below is rumble/DC; above is hiss/noise. */
+  const SPEECH_ZCR_MIN = 0.01;
+  const SPEECH_ZCR_MAX = 0.30;
+  /** Peak/RMS above this is an impulse (cough, clap), not sustained speech. */
+  const SPEECH_CREST_MAX = 9;
   const SPEECH_END_SILENCE_MS = 800;
   /** Minimum ms with RMS above SPEECH_RMS_THRESHOLD before sending to STT. */
   const SPEECH_MIN_ACTIVE_MS = 350;
@@ -48,6 +55,39 @@
       sum += pcm16[i] * pcm16[i];
     }
     return Math.sqrt(sum / pcm16.length);
+  }
+
+  function pcm16ZeroCrossingRate(pcm16) {
+    if (!pcm16 || pcm16.length < 2) return 0;
+    let crossings = 0;
+    for (let i = 1; i < pcm16.length; i++) {
+      const prev = pcm16[i - 1];
+      const cur = pcm16[i];
+      if ((prev >= 0 && cur < 0) || (prev < 0 && cur >= 0)) {
+        if (prev !== 0 || cur !== 0) crossings++;
+      }
+    }
+    return crossings / (pcm16.length - 1);
+  }
+
+  function pcm16PeakAbs(pcm16) {
+    if (!pcm16 || pcm16.length === 0) return 0;
+    let peak = 0;
+    for (let i = 0; i < pcm16.length; i++) {
+      const a = pcm16[i] < 0 ? -pcm16[i] : pcm16[i];
+      if (a > peak) peak = a;
+    }
+    return peak;
+  }
+
+  /** True when the frame has speech shape (voiced band + not an impulse), not just energy. */
+  function pcm16IsSpeechLike(pcm16, rms) {
+    if (!pcm16 || pcm16.length === 0) return false;
+    const energy = rms == null ? pcm16Rms(pcm16) : rms;
+    if (energy < SPEECH_RMS_THRESHOLD) return false;
+    const zcr = pcm16ZeroCrossingRate(pcm16);
+    if (zcr < SPEECH_ZCR_MIN || zcr > SPEECH_ZCR_MAX) return false;
+    return pcm16PeakAbs(pcm16) / energy <= SPEECH_CREST_MAX;
   }
 
   /** Rolling buffer of PCM16 chunks; retains the most recent maxSamples. */
@@ -190,18 +230,25 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 8,
+    VOICE_MODE_NATIVE_VAD_VERSION: 9,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,
     SPEECH_RMS_THRESHOLD: SPEECH_RMS_THRESHOLD,
     SPEECH_START_FRAMES: SPEECH_START_FRAMES,
+    SPEECH_START_MISS_FRAMES: SPEECH_START_MISS_FRAMES,
+    SPEECH_ZCR_MIN: SPEECH_ZCR_MIN,
+    SPEECH_ZCR_MAX: SPEECH_ZCR_MAX,
+    SPEECH_CREST_MAX: SPEECH_CREST_MAX,
     SPEECH_END_SILENCE_MS: SPEECH_END_SILENCE_MS,
     SPEECH_MIN_ACTIVE_MS: SPEECH_MIN_ACTIVE_MS,
     SPEECH_MIN_PCM_BYTES: SPEECH_MIN_PCM_BYTES,
     decodeNativePcmBase64: decodeNativePcmBase64,
     pcm16ToFloat32: pcm16ToFloat32,
     pcm16Rms: pcm16Rms,
+    pcm16ZeroCrossingRate: pcm16ZeroCrossingRate,
+    pcm16PeakAbs: pcm16PeakAbs,
+    pcm16IsSpeechLike: pcm16IsSpeechLike,
     mergePcm16Chunks: mergePcm16Chunks,
     pcm16ToWavBlob: pcm16ToWavBlob,
     float32ToWavBlob: float32ToWavBlob,

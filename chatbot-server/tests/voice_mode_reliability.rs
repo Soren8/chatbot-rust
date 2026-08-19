@@ -299,8 +299,9 @@ fn voice_send_scrolls_chat_to_bottom() {
 }
 
 /// TTS must stop when real speech is first detected (utterance start), not
-/// after the user finishes talking. SPEECH_START_FRAMES is the noise gate;
-/// SPEECH_MIN_ACTIVE_MS is only for sending to STT.
+/// after the user finishes talking. Energy-only bursts (cough, clap, hiss)
+/// must not count as speech. SPEECH_START_FRAMES of speech-like frames is
+/// the gate; SPEECH_MIN_ACTIVE_MS is only for sending to STT.
 #[test]
 fn native_tts_barge_in_on_initial_speech() {
     let chat_js = include_str!("../../static/chat.js");
@@ -315,8 +316,19 @@ fn native_tts_barge_in_on_initial_speech() {
         "TTS barge-in must not trip on a short RMS energy burst"
     );
     assert!(
+        native_audio.contains("function pcm16IsSpeechLike")
+            && native_audio.contains("SPEECH_ZCR_MIN")
+            && native_audio.contains("SPEECH_ZCR_MAX")
+            && native_audio.contains("SPEECH_CREST_MAX"),
+        "native VAD must classify speech vs cough/noise, not energy alone"
+    );
+    assert!(
+        function_contains(chat_js, "_maybeStartUtterance", "pcm16IsSpeechLike"),
+        "utterance start (and barge-in) must require speech-like frames"
+    );
+    assert!(
         function_contains(chat_js, "_beginUtterance", "handleBargeIn"),
-        "native barge-in must fire at utterance start (same idea as Silero onSpeechStart)"
+        "native barge-in must fire at utterance start, immediately on detection"
     );
     assert!(
         !function_contains(chat_js, "_accumulateUtterance", "handleBargeIn"),
@@ -328,15 +340,32 @@ fn native_tts_barge_in_on_initial_speech() {
         "speech start during a TTS session must use the utterance start gate"
     );
     assert!(
-        function_contains(chat_js, "createVAD", "onSpeechStart")
-            && function_contains(chat_js, "createVAD", "handleBargeIn"),
-        "desktop Silero must also barge in on speech start"
+        function_contains(chat_js, "createVAD", "onSpeechRealStart")
+            && function_contains_near(chat_js, "onSpeechRealStart", "handleBargeIn")
+            && function_contains(chat_js, "createVAD", "BARGE_IN_SPEECH_PROB"),
+        "desktop Silero must barge in on confirmed / high-confidence speech, not the first suspected frame"
+    );
+    assert!(
+        !chat_js.contains("if (CURRENT_AUDIO) handleBargeIn()"),
+        "first-frame onSpeechStart is cough-prone; do not barge in there"
+    );
+    assert!(
+        function_contains(chat_js, "createVAD", "minSpeechMs")
+            && !function_contains(chat_js, "createVAD", "minSpeechFrames")
+            && !function_contains(chat_js, "createVAD", "redemptionFrames"),
+        "bundled Silero v5 reads minSpeechMs / redemptionMs, not the old frame counts"
     );
     let start_frames = parse_js_int_const(native_audio, "SPEECH_START_FRAMES")
         .expect("SPEECH_START_FRAMES must be declared in native-audio.js");
     assert!(
         (3..=8).contains(&start_frames),
         "SPEECH_START_FRAMES={start_frames} should be a short initial-speech gate"
+    );
+    let min_speech_ms = parse_js_int_const(native_audio, "SPEECH_MIN_ACTIVE_MS")
+        .expect("SPEECH_MIN_ACTIVE_MS must be declared in native-audio.js");
+    assert!(
+        min_speech_ms >= 300,
+        "SPEECH_MIN_ACTIVE_MS={min_speech_ms} is too short to reject noise bursts at STT"
     );
 }
 

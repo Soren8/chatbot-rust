@@ -3700,12 +3700,11 @@ $(document).ready(function() {
   let voiceModeVAD = null;
   let voiceModeStream = null;
   let vadSttInProgress = false;
-  // Sustained-speech barge-in confirmation state
+  // High-confidence Silero frames (~32 ms each) before desktop barge-in.
   let bargeInFrames = 0;
-  const BARGE_IN_FRAMES_DESKTOP = 3;  // ~300ms at 100ms/frame
-  const BARGE_IN_FRAMES_MOBILE = 3;   // ~300ms - same as desktop for fast response
+  const BARGE_IN_FRAMES_DESKTOP = 4;
+  const BARGE_IN_SPEECH_PROB = 0.85;
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
-  const BARGE_IN_THRESHOLD = BARGE_IN_FRAMES_DESKTOP;
   // Native mic bridge for Voice Mode on Android
   let nativeMicBridge = null;
 
@@ -3730,6 +3729,7 @@ $(document).ready(function() {
     this.utteranceChunks = [];
     this.inSpeech = false;
     this.speechAboveCount = 0;
+    this.nonSpeechLikeCount = 0;
     this.bargeInFired = false;
     this.silenceMs = 0;
     this.speechActiveMs = 0;
@@ -3743,21 +3743,29 @@ $(document).ready(function() {
 
   NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
     this.speechAboveCount = 0;
+    this.nonSpeechLikeCount = 0;
     this.bargeInFired = false;
     this.silenceMs = 0;
     this.speechActiveMs = 0;
   };
 
-  NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(rms, skipPreRoll) {
+  NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
     if (this.inSpeech || vadSttInProgress) return;
-    if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
+    if (NativeAudio.pcm16IsSpeechLike(pcm16, rms)) {
       this.speechAboveCount++;
+      this.nonSpeechLikeCount = 0;
       if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
         nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
         this._beginUtterance(skipPreRoll);
       }
+    } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
+      this.nonSpeechLikeCount++;
+      if (this.nonSpeechLikeCount >= NativeAudio.SPEECH_START_MISS_FRAMES) {
+        this.speechAboveCount = 0;
+      }
     } else {
       this.speechAboveCount = 0;
+      this.nonSpeechLikeCount = 0;
     }
   };
 
@@ -3784,9 +3792,9 @@ $(document).ready(function() {
     this.chunkCount++;
 
     // During TTS fetch or playback: start an utterance as soon as real speech
-    // is detected (SPEECH_START_FRAMES). That start is also barge-in.
+    // is detected (speech-like SPEECH_START_FRAMES). That start is also barge-in.
     if (voiceModeTtsSessionActive || voiceModeTtsPlaying) {
-      this._maybeStartUtterance(rms, true);
+      this._maybeStartUtterance(copy, rms, true);
       if (this.inSpeech) {
         this._accumulateUtterance(copy, rms, frameMs);
       }
@@ -3802,7 +3810,7 @@ $(document).ready(function() {
       return;
     }
 
-    this._maybeStartUtterance(rms, false);
+    this._maybeStartUtterance(copy, rms, false);
     if (this.inSpeech) {
       this._accumulateUtterance(copy, rms, frameMs);
     }
@@ -3837,6 +3845,7 @@ $(document).ready(function() {
     if (!this.inSpeech) return;
     this.inSpeech = false;
     this.speechAboveCount = 0;
+    this.nonSpeechLikeCount = 0;
     this.silenceMs = 0;
     this.bargeInFired = false;
     if (this.speechActiveMs < NativeAudio.SPEECH_MIN_ACTIVE_MS) {
@@ -4144,23 +4153,30 @@ $(document).ready(function() {
       model: 'v5',
       baseAssetPath: '/static/deps/vad/',
       onnxWASMBasePath: '/static/deps/vad/ort/',
-      positiveSpeechThreshold: 0.5,
-      redemptionFrames: 5,
-      minSpeechFrames: 1,
+      positiveSpeechThreshold: 0.7,
+      negativeSpeechThreshold: 0.4,
+      redemptionMs: 800,
+      minSpeechMs: 400,
       getStream: async () => stream,
       onSpeechStart: hooks.onSpeechStart || function () {
         nativeLog('VAD', 'onSpeechStart');
         lastVoiceUtteranceStartedAt = Date.now();
-        if (CURRENT_AUDIO) handleBargeIn();
+      },
+      onSpeechRealStart: hooks.onSpeechRealStart || function () {
+        nativeLog('VAD', 'onSpeechRealStart');
+        if (CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying) {
+          handleBargeIn();
+        }
       },
       onFrameProcessed: hooks.onFrameProcessed || function (probs) {
-        if (CURRENT_AUDIO && probs.isSpeech > 0.8) {
+        const ttsActive = CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying;
+        if (ttsActive && probs.isSpeech > BARGE_IN_SPEECH_PROB) {
           bargeInFrames++;
-          if (bargeInFrames >= BARGE_IN_THRESHOLD) {
+          if (bargeInFrames >= BARGE_IN_FRAMES_DESKTOP) {
             bargeInFrames = 0;
             handleBargeIn();
           }
-        } else if (!CURRENT_AUDIO) {
+        } else {
           bargeInFrames = 0;
         }
       },
