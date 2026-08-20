@@ -19,24 +19,32 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.Window;
 import android.view.WindowManager;
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.chatbot.app.audio.VoiceAudioRoute;
 import com.chatbot.app.audio.VoiceSessionKeepAwake;
 import com.chatbot.app.util.FileLogger;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-@CapacitorPlugin(name = "NativeMic")
+@CapacitorPlugin(
+    name = "NativeMic",
+    permissions = {
+        @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO })
+    }
+)
 public class NativeMicPlugin extends Plugin {
     private static final String TAG = "NativeMicPlugin";
+    private static final String MIC_ALIAS = "microphone";
 
     public NativeMicPlugin() {
         Log.d(TAG, "NativeMicPlugin constructor called");
@@ -47,13 +55,11 @@ public class NativeMicPlugin extends Plugin {
     private static final int CHUNK_SAMPLES = 320;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
-    private static final int PERMISSION_REQUEST_CODE = 200;
 
     private AudioRecord audioRecord = null;
     private boolean isRecording = false;
     private Thread recordingThread = null;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private PluginCall permissionCall = null;
     private AudioManager audioManager = null;
     private AudioFocusRequest audioFocusRequest = null;
     private boolean hasAudioFocus = false;
@@ -75,21 +81,36 @@ public class NativeMicPlugin extends Plugin {
     @PluginMethod
     public void requestPermission(PluginCall call) {
         Log.d(TAG, "requestPermission called");
-        if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
-                == PackageManager.PERMISSION_GRANTED) {
+        if (hasMicPermission()) {
             Log.d(TAG, "Permission already granted");
-            JSObject result = new JSObject();
-            result.put("granted", true);
-            call.resolve(result);
-        } else {
-            Log.d(TAG, "Requesting permission");
-            permissionCall = call;
-            ActivityCompat.requestPermissions(
-                getActivity(),
-                new String[]{Manifest.permission.RECORD_AUDIO},
-                PERMISSION_REQUEST_CODE
-            );
+            resolvePermission(call, true);
+            return;
         }
+        Log.d(TAG, "Requesting permission");
+        FileLogger.log(TAG, "requestPermission: prompting RECORD_AUDIO");
+        requestPermissionForAlias(MIC_ALIAS, call, "onMicrophonePermission");
+    }
+
+    @PermissionCallback
+    private void onMicrophonePermission(PluginCall call) {
+        boolean granted = hasMicPermission();
+        Log.d(TAG, "onMicrophonePermission granted=" + granted);
+        FileLogger.log(TAG, "onMicrophonePermission granted=" + granted);
+        resolvePermission(call, granted);
+    }
+
+    @PermissionCallback
+    private void startAfterPermission(PluginCall call) {
+        if (call == null) {
+            FileLogger.log(TAG, "startAfterPermission: no saved call");
+            return;
+        }
+        if (!hasMicPermission()) {
+            FileLogger.log(TAG, "startAfterPermission: denied");
+            call.reject("Microphone permission not granted");
+            return;
+        }
+        startRecording(call);
     }
 
     @PluginMethod
@@ -103,6 +124,15 @@ public class NativeMicPlugin extends Plugin {
     public void start(PluginCall call) {
         Log.d(TAG, "start called, isRecording=" + isRecording);
         FileLogger.log(TAG, "start called, isRecording=" + isRecording);
+        if (!hasMicPermission()) {
+            FileLogger.log(TAG, "start: prompting RECORD_AUDIO");
+            requestPermissionForAlias(MIC_ALIAS, call, "startAfterPermission");
+            return;
+        }
+        startRecording(call);
+    }
+
+    private void startRecording(PluginCall call) {
         if (isRecording) {
             // Capacitor reload leaves the plugin recording after JS is gone.
             // Take ownership of a fresh session instead of rejecting.
@@ -509,18 +539,19 @@ public class NativeMicPlugin extends Plugin {
         });
     }
 
-    @Override
-    protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
-        Log.d(TAG, "handleRequestPermissionsResult: " + requestCode + " results=" + (grantResults.length > 0 ? grantResults[0] : "none"));
-        if (requestCode == PERMISSION_REQUEST_CODE && permissionCall != null) {
-            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-            Log.d(TAG, "Permission result: granted=" + granted);
-            JSObject result = new JSObject();
-            result.put("granted", granted);
-            permissionCall.resolve(result);
-            permissionCall = null;
+    private boolean hasMicPermission() {
+        PermissionState state = getPermissionState(MIC_ALIAS);
+        if (state == PermissionState.GRANTED) {
+            return true;
         }
+        return ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void resolvePermission(PluginCall call, boolean granted) {
+        JSObject result = new JSObject();
+        result.put("granted", granted);
+        call.resolve(result);
     }
 
     @Override

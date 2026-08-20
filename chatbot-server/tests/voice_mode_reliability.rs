@@ -1,5 +1,61 @@
 //! Voice mode must recover without a driver reading errors or tapping again.
 
+/// First launch after storage/permission reset: push-to-talk showed the
+/// RECORD_AUDIO dialog, but voice mode called NativeMic.start() without
+/// requesting and Capacitor @CapacitorPlugin never delivered
+/// handleRequestPermissionsResult. One tap of voice mode must prompt and
+/// continue after grant.
+#[test]
+fn voice_mode_requests_microphone_permission_like_push_to_talk() {
+    let chat_js = include_str!("../../static/chat.js");
+    let plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+
+    assert!(
+        function_contains(chat_js, "ensureNativeMicPermission", "requestPermission")
+            && function_contains(chat_js, "ensureNativeMicPermission", "Microphone permission denied"),
+        "shared helper must call NativeMic.requestPermission and fail closed on deny"
+    );
+    assert!(
+        function_contains(chat_js, "startVoiceMode", "ensureNativeMicPermission"),
+        "tapping voice mode must request the microphone, not only NativeMic.start"
+    );
+    let vad_start = chat_js
+        .find("NativeMicUtteranceVAD.prototype.start")
+        .expect("NativeMicUtteranceVAD.prototype.start");
+    let vad_start_body = &chat_js[vad_start..];
+    let vad_start_end = vad_start_body.find("NativeMicUtteranceVAD.prototype.stop")
+        .unwrap_or(vad_start_body.len());
+    assert!(
+        vad_start_body[..vad_start_end].contains("ensureNativeMicPermission"),
+        "native VAD start must wait for microphone permission before NativeMic.start"
+    );
+    assert!(
+        function_contains(chat_js, "startVoiceMode", "permissionDenied")
+            && function_contains(chat_js, "startVoiceMode", "Microphone access denied"),
+        "permission denial must not be retried and must be shown to the user"
+    );
+
+    assert!(
+        plugin.contains("requestPermissionForAlias")
+            && plugin.contains("@PermissionCallback")
+            && plugin.contains("RECORD_AUDIO")
+            && plugin.contains("startAfterPermission"),
+        "NativeMic must use Capacitor permission callbacks; @CapacitorPlugin does not invoke handleRequestPermissionsResult"
+    );
+    assert!(
+        !plugin.contains("handleRequestPermissionsResult")
+            && !plugin.contains("ActivityCompat.requestPermissions"),
+        "do not use the dead ActivityCompat + handleRequestPermissionsResult path"
+    );
+    assert!(
+        plugin.contains("if (!hasMicPermission())")
+            && plugin.contains("startAfterPermission"),
+        "NativeMic.start must prompt when RECORD_AUDIO is missing, not only reject"
+    );
+}
+
 #[test]
 fn native_mic_start_reuses_or_restarts_instead_of_rejecting_already_recording() {
     let plugin = include_str!(

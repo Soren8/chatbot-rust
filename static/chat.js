@@ -3723,6 +3723,17 @@ $(document).ready(function() {
 
   // Capacitor voice mode: native PCM + RMS VAD only (matches Android Auto VoiceScreen).
   // No Silero / WebView AudioContext — that path breaks during HTML TTS playback.
+  function ensureNativeMicPermission() {
+    if (!window.NativeMic || typeof window.NativeMic.requestPermission !== 'function') {
+      return Promise.resolve();
+    }
+    return window.NativeMic.requestPermission().then(function (result) {
+      if (!result || !result.granted) {
+        throw new Error('Microphone permission denied');
+      }
+    });
+  }
+
   function NativeMicUtteranceVAD(onError) {
     this.onError = onError;
     this.preRollBuffer = new NativeAudio.Pcm16RingBuffer(NativeAudio.SPEECH_PREROLL_SAMPLES);
@@ -3896,10 +3907,13 @@ $(document).ready(function() {
       this._resetSpeechCounters();
       this.chunkCount = 0;
 
+      await ensureNativeMicPermission();
       try {
         await window.NativeMic.start();
       } catch (first) {
-        nativeLog('VAD', 'NativeMic.start retry after: ' + (first && first.message ? first.message : first));
+        const firstMsg = first && first.message ? first.message : String(first);
+        if (/permission/i.test(firstMsg)) throw first;
+        nativeLog('VAD', 'NativeMic.start retry after: ' + firstMsg);
         try { await window.NativeMic.stop(); } catch (e) { /* ignore */ }
         await window.NativeMic.start();
       }
@@ -4100,6 +4114,7 @@ $(document).ready(function() {
         if (window._recoverNativeVoice && attempt > 0) {
           await window._recoverNativeVoice();
         }
+        await ensureNativeMicPermission();
         if (window.NativeMic && window.NativeMic.enterVoiceRoute) {
           await window.NativeMic.enterVoiceRoute();
         }
@@ -4127,7 +4142,8 @@ $(document).ready(function() {
       $micBtn.prop('disabled', true);
       acquireVoiceScreenWakeLock();
     } catch (err) {
-      nativeLog('VAD', 'startVoiceMode failed attempt=' + attempt + ' ' + (err && err.message ? err.message : err));
+      const msg = err && err.message ? err.message : String(err);
+      nativeLog('VAD', 'startVoiceMode failed attempt=' + attempt + ' ' + msg);
       window.voiceModeActive = false;
       $voiceModeBtn.removeClass('active');
       $micBtn.prop('disabled', false);
@@ -4135,7 +4151,8 @@ $(document).ready(function() {
         try { nativeMicBridge.stop(); } catch (e) { /* ignore */ }
         nativeMicBridge = null;
       }
-      if (attempt < 5 && voiceModeWanted()) {
+      const permissionDenied = /permission/i.test(msg);
+      if (!permissionDenied && attempt < 5 && voiceModeWanted()) {
         setTimeout(function () { startVoiceMode(attempt + 1); }, 400 * (attempt + 1));
         return;
       }
@@ -4143,6 +4160,9 @@ $(document).ready(function() {
       if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
         window.NativeMic.exitVoiceRoute().catch(function () {});
       }
+      appendMessage(permissionDenied
+        ? ('Microphone access denied: ' + msg)
+        : ('Voice mode failed: ' + msg), 'error-message');
     }
   }
 
