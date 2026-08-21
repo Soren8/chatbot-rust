@@ -3740,6 +3740,9 @@ $(document).ready(function() {
     this.bargeInFired = false;
     this.silenceMs = 0;
     this.speechActiveMs = 0;
+    this.speechLikeMs = 0;
+    this.voicedMs = 0;
+    this.voicedWindow = [];
     this.nativeListener = null;
     this.isRecording = false;
     this.chunkCount = 0;
@@ -3755,6 +3758,9 @@ $(document).ready(function() {
     this.bargeInFired = false;
     this.silenceMs = 0;
     this.speechActiveMs = 0;
+    this.speechLikeMs = 0;
+    this.voicedMs = 0;
+    this.voicedWindow = [];
   };
 
   NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
@@ -3764,17 +3770,8 @@ $(document).ready(function() {
       this.speechAboveCount++;
       this.nonSpeechLikeCount = 0;
       if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
-        const gate = NativeAudio.mergePcm16Chunks(this.startGateChunks);
-        if (NativeAudio.pcm16IsVoicedSpeech(gate)) {
-          nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
-          this._beginUtterance(skipPreRoll);
-        } else {
-          if (skipPreRoll) {
-            nativeLog('VAD', 'barge-in skipped: start gate not voiced');
-          }
-          this.startGateChunks.shift();
-          this.speechAboveCount = this.startGateChunks.length;
-        }
+        nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
+        this._beginUtterance(skipPreRoll);
       }
     } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
       this.nonSpeechLikeCount++;
@@ -3789,17 +3786,45 @@ $(document).ready(function() {
     }
   };
 
+  NativeMicUtteranceVAD.prototype._maybeBargeIn = function _maybeBargeIn() {
+    if (this.bargeInFired) return;
+    if (!(voiceModeTtsSessionActive || voiceModeTtsPlaying)) return;
+    if (!NativeAudio.pcm16RealSpeechDetected(this.speechLikeMs, this.voicedMs)) return;
+    this.bargeInFired = true;
+    nativeLog('VAD', 'barge-in on real speech likeMs=' + this.speechLikeMs
+      + ' voicedMs=' + this.voicedMs);
+    handleBargeIn();
+  };
+
+  NativeMicUtteranceVAD.prototype._noteVoicedFrame = function _noteVoicedFrame(copy, frameMs) {
+    this.voicedWindow.push(copy);
+    const w = NativeAudio.SPEECH_VOICED_WINDOW_FRAMES;
+    if (this.voicedWindow.length > w) this.voicedWindow.shift();
+    if (this.voicedWindow.length >= w) {
+      const win = NativeAudio.mergePcm16Chunks(this.voicedWindow);
+      if (NativeAudio.pcm16IsVoicedSpeech(win)) this.voicedMs += frameMs;
+    }
+  };
+
   NativeMicUtteranceVAD.prototype._accumulateUtterance = function _accumulateUtterance(copy, rms, frameMs) {
     this.utteranceChunks.push(copy);
-    if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
+    if (NativeAudio.pcm16IsSpeechLike(copy, rms)) {
+      this.silenceMs = 0;
+      this.speechActiveMs += frameMs;
+      this.speechLikeMs += frameMs;
+      this._noteVoicedFrame(copy, frameMs);
+    } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
       this.silenceMs = 0;
       this.speechActiveMs += frameMs;
     } else {
       this.silenceMs += frameMs;
+      this.voicedWindow = [];
       if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
         this._endUtterance();
+        return;
       }
     }
+    this._maybeBargeIn();
   };
 
   NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16) {
@@ -3811,8 +3836,8 @@ $(document).ready(function() {
     this.preRollBuffer.push(copy);
     this.chunkCount++;
 
-    // During TTS fetch or playback: start an utterance as soon as real speech
-    // is detected (speech-like frames + voiced start-gate). That start is barge-in.
+    // During TTS: record from speech-like start (Silero onSpeechStart). Barge-in
+    // only after real speech (REAL_SPEECH_MS + voicing), not on cough/"hey".
     if (voiceModeTtsSessionActive || voiceModeTtsPlaying) {
       this._maybeStartUtterance(copy, rms, true);
       if (this.inSpeech) {
@@ -3849,6 +3874,9 @@ $(document).ready(function() {
     this._resetSpeechCounters();
     this.utteranceStartedAt = Date.now();
     lastVoiceUtteranceStartedAt = this.utteranceStartedAt;
+    this.speechLikeMs = startChunks.length * 20;
+    this.voicedMs = NativeAudio.pcm16VoicedMsFromChunks(startChunks, 20);
+    this.voicedWindow = startChunks.slice(-NativeAudio.SPEECH_VOICED_WINDOW_FRAMES);
     if (skipPreRoll) {
       // Keep the speech-like start-gate frames; drop earlier pre-roll (TTS leak).
       this.utteranceChunks = startChunks;
@@ -3857,11 +3885,7 @@ $(document).ready(function() {
       this.utteranceChunks = this.preRollBuffer.snapshotChunks();
       nativeLog('VAD', 'utterance begin preRollChunks=' + this.utteranceChunks.length);
     }
-    if ((voiceModeTtsSessionActive || voiceModeTtsPlaying) && !this.bargeInFired) {
-      this.bargeInFired = true;
-      nativeLog('VAD', 'barge-in on speech start');
-      handleBargeIn();
-    }
+    this._maybeBargeIn();
   };
 
   NativeMicUtteranceVAD.prototype._endUtterance = function _endUtterance() {
@@ -3871,6 +3895,9 @@ $(document).ready(function() {
     this.nonSpeechLikeCount = 0;
     this.silenceMs = 0;
     this.bargeInFired = false;
+    this.speechLikeMs = 0;
+    this.voicedMs = 0;
+    this.voicedWindow = [];
     if (this.speechActiveMs < NativeAudio.SPEECH_MIN_ACTIVE_MS) {
       nativeLog('VAD', 'utterance rejected: speechActiveMs=' + this.speechActiveMs
         + ' min=' + NativeAudio.SPEECH_MIN_ACTIVE_MS);

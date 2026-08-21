@@ -12,7 +12,7 @@
   const SPEECH_PREROLL_SAMPLES = 4800; // 300 ms @ 16 kHz
   /** Speakerphone-distance energy floor. Speech-like shape is required on top. */
   const SPEECH_RMS_THRESHOLD = 500;
-  const SPEECH_START_FRAMES = 6; // ~120 ms of speech-like frames before capture
+  const SPEECH_START_FRAMES = 6; // ~120 ms of speech-like frames before *recording* (like Silero onSpeechStart)
   /** Consecutive non-speech-like energy frames that reset the start counter (allows one plosive). */
   const SPEECH_START_MISS_FRAMES = 2;
   /** Voiced-speech ZCR band at 16 kHz. Below is rumble/DC; above is hiss/noise. */
@@ -20,11 +20,17 @@
   const SPEECH_ZCR_MAX = 0.30;
   /** Peak/RMS above this is an impulse (cough, clap), not sustained speech. */
   const SPEECH_CREST_MAX = 9;
-  /** Peak normalized autocorr in the 80–400 Hz band. Vowels are periodic; coughs are not. */
-  const SPEECH_PERIODICITY_MIN = 0.30;
+  /** Peak normalized autocorr in the 80–400 Hz band. Loose enough for noisy table speech. */
+  const SPEECH_PERIODICITY_MIN = 0.15;
   /** Autocorr lags at 16 kHz: 400 Hz → 40 samples, 80 Hz → 200 samples. */
   const SPEECH_PITCH_LAG_MIN = 40;
   const SPEECH_PITCH_LAG_MAX = 200;
+  /** Rolling window for voiced evidence (~100 ms). */
+  const SPEECH_VOICED_WINDOW_FRAMES = 5;
+  /** Match desktop Silero minSpeechMs: barge-in only after this much speech-like audio. */
+  const REAL_SPEECH_MS = 400;
+  /** Voiced-window hits required inside that span. A cough/"hey" does not reach this. */
+  const REAL_SPEECH_VOICED_MS = 120;
   const SPEECH_END_SILENCE_MS = 1500;
   /** Minimum ms with RMS above SPEECH_RMS_THRESHOLD before sending to STT. */
   const SPEECH_MIN_ACTIVE_MS = 350;
@@ -122,11 +128,30 @@
     return best;
   }
 
-  /** True when a start-gate window is voiced speech, not a cough/clap burst. */
+  /** True when a short window looks periodic (vowel), not a cough body. */
   function pcm16IsVoicedSpeech(pcm16) {
     if (!pcm16 || pcm16.length < 640) return false;
     if (pcm16Rms(pcm16) < SPEECH_RMS_THRESHOLD) return false;
     return pcm16PitchPeriodicity(pcm16) >= SPEECH_PERIODICITY_MIN;
+  }
+
+  /** Voiced evidence (ms) from overlapping SPEECH_VOICED_WINDOW_FRAMES slices. */
+  function pcm16VoicedMsFromChunks(chunks, frameMs) {
+    const w = SPEECH_VOICED_WINDOW_FRAMES;
+    const ms = frameMs == null ? 20 : frameMs;
+    if (!chunks || chunks.length < w) return 0;
+    let voicedMs = 0;
+    for (let i = w; i <= chunks.length; i++) {
+      if (pcm16IsVoicedSpeech(mergePcm16Chunks(chunks.slice(i - w, i)))) {
+        voicedMs += ms;
+      }
+    }
+    return voicedMs;
+  }
+
+  /** Desktop onSpeechRealStart analog: sustained speech-like + some voicing. */
+  function pcm16RealSpeechDetected(speechLikeMs, voicedMs) {
+    return speechLikeMs >= REAL_SPEECH_MS && voicedMs >= REAL_SPEECH_VOICED_MS;
   }
 
   /** Rolling buffer of PCM16 chunks; retains the most recent maxSamples. */
@@ -269,7 +294,7 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 11,
+    VOICE_MODE_NATIVE_VAD_VERSION: 12,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,
@@ -282,6 +307,9 @@
     SPEECH_PERIODICITY_MIN: SPEECH_PERIODICITY_MIN,
     SPEECH_PITCH_LAG_MIN: SPEECH_PITCH_LAG_MIN,
     SPEECH_PITCH_LAG_MAX: SPEECH_PITCH_LAG_MAX,
+    SPEECH_VOICED_WINDOW_FRAMES: SPEECH_VOICED_WINDOW_FRAMES,
+    REAL_SPEECH_MS: REAL_SPEECH_MS,
+    REAL_SPEECH_VOICED_MS: REAL_SPEECH_VOICED_MS,
     SPEECH_END_SILENCE_MS: SPEECH_END_SILENCE_MS,
     SPEECH_MIN_ACTIVE_MS: SPEECH_MIN_ACTIVE_MS,
     SPEECH_MIN_PCM_BYTES: SPEECH_MIN_PCM_BYTES,
@@ -293,6 +321,8 @@
     pcm16IsSpeechLike: pcm16IsSpeechLike,
     pcm16PitchPeriodicity: pcm16PitchPeriodicity,
     pcm16IsVoicedSpeech: pcm16IsVoicedSpeech,
+    pcm16VoicedMsFromChunks: pcm16VoicedMsFromChunks,
+    pcm16RealSpeechDetected: pcm16RealSpeechDetected,
     mergePcm16Chunks: mergePcm16Chunks,
     pcm16ToWavBlob: pcm16ToWavBlob,
     float32ToWavBlob: float32ToWavBlob,

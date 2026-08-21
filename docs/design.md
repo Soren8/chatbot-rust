@@ -115,7 +115,7 @@ This document captures the current architecture of the project and the potential
 
 - **Voice Mode** — Default TTS provider is `kokoro`; select Qwen3-TTS with `tts_provider: "qwen"` in `.config.yml`.
   - [x] Silero VAD voice activity detection on **desktop/browser** (`static/deps/vad/`, `chat.js`).
-  - [x] Native mobile VAD — energy + speech-like + voiced-pitch `NativeMicUtteranceVAD` on Capacitor (no Silero in WebView); Android Auto `VoiceScreen` stays RMS. See [mobile-apps.md](mobile-apps.md).
+  - [x] Native mobile VAD — record from speech-like start; barge-in on real speech (`REAL_SPEECH_MS`, desktop `minSpeechMs` analog) in `NativeMicUtteranceVAD` (no Silero in WebView). Android Auto `VoiceScreen` stays RMS. See [mobile-apps.md](mobile-apps.md).
   - [ ] Whisper Large v3 turbo.
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml`. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.

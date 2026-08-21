@@ -1,7 +1,6 @@
-//! Speech-like VAD gate used by native barge-in (static/native-audio.js).
-//! RMS energy alone treats coughs and hiss as speech; ZCR + crest reject
-//! impulses and hiss, but cough *body* still looks speech-like. Pitch
-//! periodicity on the start-gate window is what separates real speech.
+//! Native VAD: record from speech-like start; barge-in only on real speech.
+//! Dual invariant: a cough/"hey" must not stop TTS; sustained noisy speech must,
+//! at confirmation (~400 ms, like desktop minSpeechMs), not at end-of-speech.
 
 fn parse_js_number_const(src: &str, name: &str) -> Option<f64> {
     let needle = format!("const {name} = ");
@@ -12,6 +11,10 @@ fn parse_js_number_const(src: &str, name: &str) -> Option<f64> {
         .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
         .collect();
     token.parse().ok()
+}
+
+fn parse_js_int_const(src: &str, name: &str) -> Option<i32> {
+    parse_js_number_const(src, name).map(|v| v as i32)
 }
 
 fn pcm16_rms(samples: &[i16]) -> f64 {
@@ -83,6 +86,11 @@ struct SpeechLikeThresholds {
     periodicity_min: f64,
     pitch_lag_min: usize,
     pitch_lag_max: usize,
+    start_frames: usize,
+    miss_frames: usize,
+    voiced_window_frames: usize,
+    real_speech_ms: u32,
+    real_speech_voiced_ms: u32,
 }
 
 fn load_thresholds() -> SpeechLikeThresholds {
@@ -99,6 +107,16 @@ fn load_thresholds() -> SpeechLikeThresholds {
             .expect("SPEECH_PITCH_LAG_MIN") as usize,
         pitch_lag_max: parse_js_number_const(src, "SPEECH_PITCH_LAG_MAX")
             .expect("SPEECH_PITCH_LAG_MAX") as usize,
+        start_frames: parse_js_int_const(src, "SPEECH_START_FRAMES")
+            .expect("SPEECH_START_FRAMES") as usize,
+        miss_frames: parse_js_int_const(src, "SPEECH_START_MISS_FRAMES")
+            .expect("SPEECH_START_MISS_FRAMES") as usize,
+        voiced_window_frames: parse_js_int_const(src, "SPEECH_VOICED_WINDOW_FRAMES")
+            .expect("SPEECH_VOICED_WINDOW_FRAMES") as usize,
+        real_speech_ms: parse_js_int_const(src, "REAL_SPEECH_MS").expect("REAL_SPEECH_MS")
+            as u32,
+        real_speech_voiced_ms: parse_js_int_const(src, "REAL_SPEECH_VOICED_MS")
+            .expect("REAL_SPEECH_VOICED_MS") as u32,
     }
 }
 
@@ -204,9 +222,24 @@ fn speech_like_thresholds_are_a_speech_band_not_an_energy_gate() {
         t.crest_max
     );
     assert!(
-        (0.2..=0.45).contains(&t.periodicity_min),
-        "SPEECH_PERIODICITY_MIN={} should reject aperiodic coughs without cutting vowels",
+        (0.10..=0.25).contains(&t.periodicity_min),
+        "SPEECH_PERIODICITY_MIN={} must accept noisy table vowels, not only clean sines",
         t.periodicity_min
+    );
+    assert!(
+        (350..=500).contains(&t.real_speech_ms),
+        "REAL_SPEECH_MS={} must match desktop minSpeechMs (~400), not a 120 ms start-gate",
+        t.real_speech_ms
+    );
+    assert!(
+        (80..=200).contains(&t.real_speech_voiced_ms),
+        "REAL_SPEECH_VOICED_MS={} should require some voicing without needing a full vowel hold",
+        t.real_speech_voiced_ms
+    );
+    assert!(
+        (4..=6).contains(&t.voiced_window_frames),
+        "SPEECH_VOICED_WINDOW_FRAMES={} should be ~80–120 ms",
+        t.voiced_window_frames
     );
     assert_eq!(
         t.pitch_lag_min, 40,
@@ -229,7 +262,7 @@ fn voiced_sine_is_speech_like_impulse_hiss_and_silence_are_not() {
     let voiced = sine_frame(200.0, 4000, N, SR);
     assert!(
         classify(&voiced, &t),
-        "200 Hz voiced-like frame must start an utterance / barge-in"
+        "200 Hz voiced-like frame must start recording (onSpeechStart analog)"
     );
 
     let mid_voice = sine_frame(400.0, 2500, N, SR);
@@ -267,55 +300,280 @@ fn voiced_sine_is_speech_like_impulse_hiss_and_silence_are_not() {
     assert!(!classify(&silence, &t), "silence is not speech");
 }
 
+fn lcg_white(i: usize) -> f64 {
+    let mut bits = (i as u32)
+        .wrapping_add(1)
+        .wrapping_mul(747_796_405)
+        .wrapping_add(2_891_336_453);
+    bits ^= bits >> 16;
+    bits = bits.wrapping_mul(2_246_822_519);
+    bits ^= bits >> 13;
+    (bits as f64 / f64::from(u32::MAX)) * 2.0 - 1.0
+}
+
+/// Table-distance vowel + room/AEC-ish noise. Must still count as speech.
+fn noisy_vowel(freq_hz: f64, amp: i16, n: usize, sample_rate: f64, noise_gain: f64) -> Vec<i16> {
+    let mut lp = 0.0_f64;
+    (0..n)
+        .map(|i| {
+            let t = i as f64 / sample_rate;
+            let s = (2.0 * std::f64::consts::PI * freq_hz * t).sin() * f64::from(amp);
+            lp = lp * 0.75 + lcg_white(i.wrapping_add(99)) * 0.25;
+            (s + lp * noise_gain * 8_000.0)
+                .round()
+                .clamp(-32768.0, 32767.0) as i16
+        })
+        .collect()
+}
+
+fn pcm16_voiced_ms_from_chunks(chunks: &[Vec<i16>], t: &SpeechLikeThresholds, frame_ms: u32) -> u32 {
+    let w = t.voiced_window_frames;
+    if chunks.len() < w {
+        return 0;
+    }
+    let mut voiced_ms = 0u32;
+    for i in w..=chunks.len() {
+        let mut merged = Vec::new();
+        for c in &chunks[i - w..i] {
+            merged.extend_from_slice(c);
+        }
+        if pcm16_is_voiced_speech(&merged, t) {
+            voiced_ms += frame_ms;
+        }
+    }
+    voiced_ms
+}
+
+fn real_speech_detected(speech_like_ms: u32, voiced_ms: u32, t: &SpeechLikeThresholds) -> bool {
+    speech_like_ms >= t.real_speech_ms && voiced_ms >= t.real_speech_voiced_ms
+}
+
+/// Mirrors NativeMicUtteranceVAD: record at speech-like start; barge-in only
+/// on pcm16RealSpeechDetected (desktop onSpeechRealStart analog).
+struct NativeVadSim {
+    tts: bool,
+    in_speech: bool,
+    speech_above: usize,
+    non_speech_like: usize,
+    start_gate: Vec<Vec<i16>>,
+    speech_like_ms: u32,
+    voiced_ms: u32,
+    voiced_window: Vec<Vec<i16>>,
+    barge_in: bool,
+    silence_ms: u32,
+}
+
+impl NativeVadSim {
+    fn new(tts: bool) -> Self {
+        Self {
+            tts,
+            in_speech: false,
+            speech_above: 0,
+            non_speech_like: 0,
+            start_gate: Vec::new(),
+            speech_like_ms: 0,
+            voiced_ms: 0,
+            voiced_window: Vec::new(),
+            barge_in: false,
+            silence_ms: 0,
+        }
+    }
+
+    fn maybe_barge_in(&mut self, t: &SpeechLikeThresholds) {
+        if self.barge_in || !self.tts {
+            return;
+        }
+        if real_speech_detected(self.speech_like_ms, self.voiced_ms, t) {
+            self.barge_in = true;
+        }
+    }
+
+    fn note_voiced_frame(&mut self, frame: &[i16], t: &SpeechLikeThresholds, frame_ms: u32) {
+        self.voiced_window.push(frame.to_vec());
+        let w = t.voiced_window_frames;
+        if self.voiced_window.len() > w {
+            self.voiced_window.remove(0);
+        }
+        if self.voiced_window.len() >= w {
+            let mut merged = Vec::new();
+            for c in &self.voiced_window {
+                merged.extend_from_slice(c);
+            }
+            if pcm16_is_voiced_speech(&merged, t) {
+                self.voiced_ms += frame_ms;
+            }
+        }
+    }
+
+    fn begin(&mut self, t: &SpeechLikeThresholds) {
+        if self.in_speech {
+            return;
+        }
+        self.in_speech = true;
+        let start = std::mem::take(&mut self.start_gate);
+        self.speech_above = 0;
+        self.non_speech_like = 0;
+        self.speech_like_ms = (start.len() as u32) * 20;
+        self.voiced_ms = pcm16_voiced_ms_from_chunks(&start, t, 20);
+        let w = t.voiced_window_frames;
+        self.voiced_window = if start.len() > w {
+            start[start.len() - w..].to_vec()
+        } else {
+            start
+        };
+        self.maybe_barge_in(t);
+    }
+
+    fn maybe_start(&mut self, frame: &[i16], rms: f64, t: &SpeechLikeThresholds) {
+        if self.in_speech {
+            return;
+        }
+        if classify(frame, t) {
+            self.start_gate.push(frame.to_vec());
+            self.speech_above += 1;
+            self.non_speech_like = 0;
+            if self.speech_above >= t.start_frames {
+                self.begin(t);
+            }
+        } else if rms > t.rms {
+            self.non_speech_like += 1;
+            if self.non_speech_like >= t.miss_frames {
+                self.speech_above = 0;
+                self.start_gate.clear();
+            }
+        } else {
+            self.speech_above = 0;
+            self.non_speech_like = 0;
+            self.start_gate.clear();
+        }
+    }
+
+    fn accumulate(&mut self, frame: &[i16], rms: f64, t: &SpeechLikeThresholds) {
+        if classify(frame, t) {
+            self.silence_ms = 0;
+            self.speech_like_ms += 20;
+            self.note_voiced_frame(frame, t, 20);
+        } else if rms > t.rms {
+            self.silence_ms = 0;
+        } else {
+            self.silence_ms += 20;
+            self.voiced_window.clear();
+        }
+        self.maybe_barge_in(t);
+    }
+
+    fn feed(&mut self, frame: &[i16], t: &SpeechLikeThresholds) {
+        let rms = pcm16_rms(frame);
+        self.maybe_start(frame, rms, t);
+        if self.in_speech {
+            self.accumulate(frame, rms, t);
+        }
+    }
+}
+
 #[test]
-fn cough_body_can_look_speech_like_but_must_not_count_as_voiced() {
+fn cough_and_hey_do_not_barge_in_sustained_noisy_speech_does() {
     let t = load_thresholds();
     const SR: f64 = 16_000.0;
     const FRAME: usize = 320;
-    let cough = cough_burst(FRAME * 8, SR);
 
-    let mut speech_like_body_frames = 0usize;
-    for frame in cough.chunks(FRAME).skip(1).take(6) {
+    let cough = cough_burst(FRAME * 16, SR);
+    let mut speech_like_body = 0usize;
+    for frame in cough.chunks(FRAME).skip(1).take(8) {
         if classify(frame, &t) {
-            speech_like_body_frames += 1;
+            speech_like_body += 1;
         }
     }
     assert!(
-        speech_like_body_frames >= 6,
-        "cough body must still pass per-frame ZCR+crest ({speech_like_body_frames}/6); that is why barge-in needs a voiced window"
+        speech_like_body >= 6,
+        "cough body still looks speech-like ({speech_like_body}/8); duration+voicing must reject it, not the start-gate"
     );
 
-    let start_gate = &cough[FRAME..FRAME * 7];
-    assert_eq!(start_gate.len(), FRAME * 6);
+    let cough_win = &cough[FRAME..FRAME + FRAME * t.voiced_window_frames];
     assert!(
-        !pcm16_is_voiced_speech(start_gate, &t),
-        "120 ms cough window must not barge in (periodicity={})",
-        pcm16_pitch_periodicity(start_gate, t.pitch_lag_min, t.pitch_lag_max)
+        !pcm16_is_voiced_speech(cough_win, &t),
+        "cough rolling window must not look voiced (periodicity={})",
+        pcm16_pitch_periodicity(cough_win, t.pitch_lag_min, t.pitch_lag_max)
     );
 
-    let vowel = sine_frame(200.0, 4000, FRAME * 6, SR);
+    let mut cough_vad = NativeVadSim::new(true);
+    for frame in cough.chunks(FRAME) {
+        cough_vad.feed(frame, &t);
+        assert!(
+            !cough_vad.barge_in,
+            "cough must not barge in (likeMs={} voicedMs={})",
+            cough_vad.speech_like_ms, cough_vad.voiced_ms
+        );
+    }
+
+    let speech = noisy_vowel(200.0, 1200, FRAME * 30, SR, 0.35);
+    let hey: Vec<&[i16]> = speech.chunks(FRAME).take(10).collect();
+    assert_eq!(hey.len() * 20, 200, "hey fixture is ~200 ms");
+    for frame in &hey {
+        assert!(
+            classify(frame, &t),
+            "noisy table vowel frame must be speech-like so recording can start"
+        );
+    }
+    let hey_win = &speech[..FRAME * t.voiced_window_frames];
     assert!(
-        pcm16_is_voiced_speech(&vowel, &t),
-        "120 ms 200 Hz vowel must barge in immediately (periodicity={})",
-        pcm16_pitch_periodicity(&vowel, t.pitch_lag_min, t.pitch_lag_max)
+        pcm16_is_voiced_speech(hey_win, &t),
+        "noisy table vowel must still look voiced (periodicity={})",
+        pcm16_pitch_periodicity(hey_win, t.pitch_lag_min, t.pitch_lag_max)
     );
 
-    let mid = sine_frame(120.0, 2500, FRAME * 6, SR);
+    let mut hey_vad = NativeVadSim::new(true);
+    for frame in hey {
+        hey_vad.feed(frame, &t);
+    }
     assert!(
-        pcm16_is_voiced_speech(&mid, &t),
-        "120 ms low male vowel must barge in (periodicity={})",
-        pcm16_pitch_periodicity(&mid, t.pitch_lag_min, t.pitch_lag_max)
+        hey_vad.in_speech,
+        "a short hey must still start recording (pre-roll / STT)"
+    );
+    assert!(
+        !hey_vad.barge_in,
+        "a short hey must not stop TTS (likeMs={} voicedMs={} real={} voicedNeed={})",
+        hey_vad.speech_like_ms,
+        hey_vad.voiced_ms,
+        t.real_speech_ms,
+        t.real_speech_voiced_ms
+    );
+
+    let mut talk_vad = NativeVadSim::new(true);
+    let mut barge_at_ms: Option<u32> = None;
+    for (i, frame) in speech.chunks(FRAME).enumerate() {
+        talk_vad.feed(frame, &t);
+        if talk_vad.barge_in && barge_at_ms.is_none() {
+            barge_at_ms = Some(((i + 1) as u32) * 20);
+        }
+    }
+    let barge_at = barge_at_ms.expect("sustained noisy speech must barge in");
+    assert!(
+        (t.real_speech_ms.saturating_sub(40)..=t.real_speech_ms + 120).contains(&barge_at),
+        "barge-in at {barge_at} ms must be at real-speech confirm (~{}), not utterance start (~120) or end-of-speech (1500)",
+        t.real_speech_ms
+    );
+
+    let mut idle = NativeVadSim::new(false);
+    for frame in speech.chunks(FRAME).take(10) {
+        idle.feed(frame, &t);
+    }
+    assert!(
+        idle.in_speech && !idle.barge_in,
+        "idle listen must record a short utterance without barging in"
     );
 }
 
 #[test]
-fn native_audio_js_exports_voiced_speech_gate() {
+fn native_audio_js_exports_real_speech_gate() {
     let src = include_str!("../../static/native-audio.js");
     assert!(
         src.contains("function pcm16PitchPeriodicity")
             && src.contains("function pcm16IsVoicedSpeech")
-            && src.contains("SPEECH_PERIODICITY_MIN")
-            && src.contains("pcm16IsVoicedSpeech: pcm16IsVoicedSpeech"),
-        "native-audio.js must expose a voiced/periodic gate, not only ZCR+crest"
+            && src.contains("function pcm16RealSpeechDetected")
+            && src.contains("function pcm16VoicedMsFromChunks")
+            && src.contains("REAL_SPEECH_MS")
+            && src.contains("pcm16RealSpeechDetected: pcm16RealSpeechDetected"),
+        "native-audio.js must expose record-vs-real-speech helpers, not only ZCR+crest"
     );
 }

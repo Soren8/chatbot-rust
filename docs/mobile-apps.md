@@ -101,7 +101,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
-   - 300 ms PCM pre-roll (unvoiced onsets). During TTS, keep the speech-like start-gate frames (~120 ms) and drop earlier pre-roll (TTS leak). Coughs, claps, and hiss do not barge in (ZCR+crest per frame, then pitch periodicity on the start-gate window). Real speech barges in at that detection, not at end-of-speech.
+   - 300 ms PCM pre-roll. Record from speech-like start (~120 ms, Silero `onSpeechStart`). Barge-in only after **real speech** (`REAL_SPEECH_MS` 400 + voiced windows), matching desktop `minSpeechMs` / `onSpeechRealStart`. A cough or short "hey" does not stop TTS; confirmed speech stops it immediately, not at end-of-speech.
    - **1500 ms** end-of-speech silence (short mid-sentence pauses do not split); **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
    - One `stopAllTtsPlayback` path for play/stop, message click, Send/Stop, barge-in, and disabling voice mode (desktop HTML audio + native `AudioTrack`)
    - `NativeVoiceTtsPlugin` plays `/tts_stream/{token}` via `AudioTrack` + `USAGE_VOICE_COMMUNICATION` so AEC has a playback reference on the speakerphone stream
@@ -111,7 +111,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 **Key Bugs Fixed**:
 1. Early experiments feeding Silero via ScriptProcessor/`NativeMicVADBridge` were abandoned on native: Silero + WebView audio breaks during TTS; RMS matches Android Auto `VoiceScreen`.
 2. After speech detection, restarting Silero (`pause`/`start` or recreate) broke subsequent detection on WebView — native path avoids Silero entirely.
-3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD barges in at voiced/periodic utterance start during TTS (same as desktop Silero `onSpeechRealStart`) and uses a post-TTS cooldown only when playback ends on its own. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
+3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD barges in on confirmed real speech during TTS (same as desktop Silero `onSpeechRealStart` / `minSpeechMs` 400) and uses a post-TTS cooldown only when playback ends on its own. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
 
 **Effort**: ~1 week.
 
@@ -178,7 +178,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 3. **`NativeMicUtteranceVAD`** (chat.js) — energy + speech-like + voiced-pitch on native PCM (handheld). Android Auto `VoiceScreen` stays RMS-only:
    - No Silero / WebView `AudioContext` on the native path
-   - 300 ms PCM pre-roll; during TTS keep start-gate frames (not empty); voiced/periodic start barges in immediately (cough body can still look speech-like on ZCR+crest); **1500 ms** end silence; **400 ms** post-TTS cooldown (not after barge-in). STT in flight does not drop the next utterance.
+   - 300 ms PCM pre-roll; during TTS keep start-gate frames (not empty); record at speech-like start; barge-in only on real speech (~400 ms speech-like + voicing). Cough/"hey" do not barge in. **1500 ms** end silence; **400 ms** post-TTS cooldown (not after barge-in). STT in flight does not drop the next utterance.
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
    - STT that starts within **2s** of the last speech end **amends** the last user turn and regenerates (retry 429). After that window, stop generation/TTS (`[Stopped]`) and send a **new** `/chat`
 

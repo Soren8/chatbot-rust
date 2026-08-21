@@ -359,11 +359,10 @@ fn voice_send_scrolls_chat_to_bottom() {
     );
 }
 
-/// TTS must stop when real speech is first detected (utterance start), not
-/// after the user finishes talking. Energy-only bursts (cough, clap, hiss)
-/// must not count as speech. SPEECH_START_FRAMES of speech-like frames plus
-/// a voiced/periodic start-gate is the native gate; SPEECH_MIN_ACTIVE_MS is
-/// only for sending to STT. Desktop Silero is unchanged.
+/// Record from speech-like start (Silero onSpeechStart). Stop TTS only when
+/// real speech is confirmed (onSpeechRealStart / REAL_SPEECH_MS), immediately
+/// at that point — not on cough/"hey", not when the utterance ends.
+/// SPEECH_MIN_ACTIVE_MS is only for sending to STT. Desktop Silero is unchanged.
 #[test]
 fn native_tts_barge_in_on_initial_speech() {
     let chat_js = include_str!("../../static/chat.js");
@@ -371,7 +370,7 @@ fn native_tts_barge_in_on_initial_speech() {
 
     assert!(
         !chat_js.contains("BARGE_IN_CONFIRM_MS") && !native_audio.contains("BARGE_IN_CONFIRM_MS"),
-        "barge-in must not wait for SPEECH_MIN_ACTIVE_MS / BARGE_IN_CONFIRM_MS"
+        "use REAL_SPEECH_MS (Silero minSpeechMs analog), not BARGE_IN_CONFIRM_MS"
     );
     assert!(
         !chat_js.contains("BARGE_IN_RMS_THRESHOLD") && !chat_js.contains("BARGE_IN_RMS_FRAMES"),
@@ -380,34 +379,41 @@ fn native_tts_barge_in_on_initial_speech() {
     assert!(
         native_audio.contains("function pcm16IsSpeechLike")
             && native_audio.contains("function pcm16IsVoicedSpeech")
-            && native_audio.contains("SPEECH_ZCR_MIN")
-            && native_audio.contains("SPEECH_ZCR_MAX")
-            && native_audio.contains("SPEECH_CREST_MAX")
+            && native_audio.contains("function pcm16RealSpeechDetected")
+            && native_audio.contains("REAL_SPEECH_MS")
             && native_audio.contains("SPEECH_PERIODICITY_MIN"),
-        "native VAD must classify speech vs cough/noise, not energy alone"
+        "native VAD must separate recording-start from real-speech barge-in"
     );
     assert!(
         function_contains(chat_js, "_maybeStartUtterance", "pcm16IsSpeechLike")
-            && function_contains(chat_js, "_maybeStartUtterance", "pcm16IsVoicedSpeech"),
-        "utterance start (and barge-in) must require speech-like frames and a voiced start-gate"
-    );
-    let maybe = function_body(chat_js, "_maybeStartUtterance")
-        .expect("_maybeStartUtterance");
-    let speech_like = maybe.find("pcm16IsSpeechLike").expect("pcm16IsSpeechLike");
-    let voiced = maybe.find("pcm16IsVoicedSpeech").expect("pcm16IsVoicedSpeech");
-    let begin = maybe.find("_beginUtterance").expect("_beginUtterance");
-    assert!(
-        speech_like < voiced && voiced < begin,
-        "voiced/periodic check must gate _beginUtterance; ZCR+crest alone still matches cough body"
+            && !function_contains(chat_js, "_maybeStartUtterance", "pcm16IsVoicedSpeech")
+            && !function_contains(chat_js, "_maybeStartUtterance", "pcm16RealSpeechDetected"),
+        "recording start is speech-like only (coughs may record; they must not barge in)"
     );
     assert!(
-        function_contains(chat_js, "_beginUtterance", "handleBargeIn"),
-        "native barge-in must fire at utterance start, immediately on detection"
+        !function_contains(chat_js, "_beginUtterance", "handleBargeIn"),
+        "do not barge in at utterance start (that is onSpeechStart / cough-prone)"
     );
     assert!(
-        !function_contains(chat_js, "_accumulateUtterance", "handleBargeIn")
-            && !function_contains(chat_js, "_endUtterance", "handleBargeIn"),
-        "do not wait for the utterance to finish accumulating before stopping TTS"
+        function_contains(chat_js, "_maybeBargeIn", "handleBargeIn")
+            && function_contains(chat_js, "_maybeBargeIn", "pcm16RealSpeechDetected")
+            && function_contains(chat_js, "_accumulateUtterance", "_maybeBargeIn")
+            && function_contains(chat_js, "_beginUtterance", "_maybeBargeIn"),
+        "barge-in at real-speech confirm, checked as audio accumulates, not at end-of-speech"
+    );
+    assert!(
+        !function_contains(chat_js, "_endUtterance", "handleBargeIn"),
+        "do not wait for the utterance to finish before stopping TTS"
+    );
+    let real_ms = parse_js_int_const(native_audio, "REAL_SPEECH_MS")
+        .expect("REAL_SPEECH_MS must be declared in native-audio.js");
+    assert!(
+        (350..=500).contains(&real_ms),
+        "REAL_SPEECH_MS={real_ms} must match desktop minSpeechMs (~400)"
+    );
+    assert!(
+        chat_js.contains("minSpeechMs: 400") || chat_js.contains("minSpeechMs:400"),
+        "desktop minSpeechMs must stay aligned with native REAL_SPEECH_MS"
     );
     assert!(
         function_contains(chat_js, "_onNativePcm", "_maybeStartUtterance")
