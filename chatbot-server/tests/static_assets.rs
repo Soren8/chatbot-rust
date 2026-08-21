@@ -226,4 +226,56 @@ fn ai_message_supports_speak_from_text_position() {
         chat_js.contains("function sentenceEndsWithTerminator"),
         "shared complete-sentence check for streaming discover"
     );
+
+    let click_handler = ai_message_text_click_handler(chat_js);
+    assert!(
+        click_handler.contains("playTTS(playBtn, { sentences: toPlay })")
+            || click_handler.contains("playMessageTts(playBtn, { sentences: toPlay })"),
+        "sentence click must start TTS with the clicked sentence list, not the full message"
+    );
+    assert!(
+        !click_handler.contains("playTTSVoiceMode(playBtn)"),
+        "voice-mode must not hijack sentence click into full-message playTTSVoiceMode(playBtn)"
+    );
+    assert!(
+        function_contains(chat_js, "playTTS", "playFixedSentenceList")
+            && function_contains(chat_js, "playTTS", "options.sentences"),
+        "playTTS must speak options.sentences via playFixedSentenceList"
+    );
+}
+
+fn ai_message_text_click_handler(chat_js: &str) -> &str {
+    const START: &str = "$(document).on('click', '.ai-message-text', function (e) {";
+    const END: &str = "// Delegation for play, delete, and edit";
+    let start = chat_js
+        .find(START)
+        .expect("ai-message-text click handler");
+    let rest = &chat_js[start..];
+    let end = rest.find(END).expect("end of ai-message-text click handler");
+    &rest[..end]
+}
+
+fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
+    let header = format!("function {fn_name}(");
+    let Some(start) = src.find(&header) else {
+        return false;
+    };
+    let body = &src[start..];
+    let Some(open) = body.find('{') else {
+        return false;
+    };
+    let mut depth = 0i32;
+    for (i, ch) in body[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return body[open..=open + i].contains(needle);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }

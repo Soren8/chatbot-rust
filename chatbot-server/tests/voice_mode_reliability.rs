@@ -519,6 +519,14 @@ fn voice_mode_gui_stop_halts_tts_on_desktop_and_mobile() {
             && function_contains(chat_js, "playMessageTts", "playTTSVoiceMode"),
         "voice-mode play/autoplay must use the voice TTS path on desktop and mobile"
     );
+    assert!(
+        function_contains(chat_js, "playMessageTts", "playTTSVoiceMode(button, options)"),
+        "voice-mode play must forward sentence options; dropping them plays the whole response"
+    );
+    assert!(
+        function_contains(chat_js, "playTTSVoiceMode", "options.sentences"),
+        "voice-mode TTS must honor a clicked sentence list instead of always starting at the top"
+    );
 }
 
 fn function_contains_near(src: &str, anchor: &str, needle: &str) -> bool {

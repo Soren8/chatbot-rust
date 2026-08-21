@@ -2182,7 +2182,7 @@ window.playTTS = function playTTS(button, options) {
 /** Voice mode uses the voice TTS backend on desktop and mobile; only the output device differs. */
 function playMessageTts(button, options) {
   if (window.voiceModeActive && typeof window.playTTSVoiceMode === 'function') {
-    window.playTTSVoiceMode(button);
+    window.playTTSVoiceMode(button, options);
     return;
   }
   window.playTTS(button, options);
@@ -2823,11 +2823,6 @@ $(document).ready(function() {
       }
       return;
     }
-    if (window.voiceModeActive && typeof window.playTTSVoiceMode === 'function') {
-      clearTtsHoverHighlight();
-      window.playTTSVoiceMode(playBtn);
-      return;
-    }
 
     // Resolve the sentence from the click coordinates only — never from hover cache.
     const offset = getCaretOffsetInElement(textEl, e.clientX, e.clientY);
@@ -2849,7 +2844,7 @@ $(document).ready(function() {
     if (!toPlay.length) return;
 
     clearTtsHoverHighlight();
-    window.playTTS(playBtn, { sentences: toPlay });
+    playMessageTts(playBtn, { sentences: toPlay });
   });
 
   // Delegation for play, delete, and edit
@@ -4513,7 +4508,8 @@ $(document).ready(function() {
   });
 
   // Voice mode TTS: native AudioTrack on Capacitor (AEC-safe), HTML audio on desktop
-  window.playTTSVoiceMode = function playTTSVoiceMode(button) {
+  window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
+    options = options || {};
     if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
       stopAllTtsPlayback();
       return;
@@ -4757,6 +4753,14 @@ $(document).ready(function() {
     };
     CURRENT_AUDIO_BUTTON = button;
     $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
+    if (options.sentences && options.sentences.length) {
+      for (let si = 0; si < options.sentences.length; si++) {
+        const st = options.sentences[si];
+        if (st && String(st).trim()) sentenceQueue.push(String(st));
+      }
+      // Already queued from the click point; only discover text that arrives after this snapshot.
+      processedText = getMessageTtsText($messageElement) || '';
+    }
     playNext();
   };
 

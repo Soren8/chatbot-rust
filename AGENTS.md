@@ -84,12 +84,15 @@ Logs: `temp/test-logs/`. Cargo/build caches for the suite: `temp/.cargo/`, `temp
   1. Write a new test case that reproduces the bug (it should fail).
   2. Implement the fix.
   3. Run the test again to confirm it passes.
+- Confine the fix to the failing behavior. Do not bundle drive-by refactors or extra control-flow changes in the same edit.
 
 ## Scope and user instructions
 - Implement only what the user explicitly requested for the current task.
 - Do not expand scope on your own — extra endpoints, files, refactors, or "obviously helpful" tweaks are out of scope unless the user asked for them.
 - If you believe a related change would help, **stop and ask for confirmation before making it**, even when it seems clearly beneficial. Do not bundle unrequested changes into the same work.
 - When unsure whether something is in scope, ask rather than assume.
+- Make the smallest targeted edit that implements the request. Do not rewrite shared helpers, event handlers, or adjacent features while fixing something else — that is how unrelated behavior (for example speak-from-sentence TTS) gets broken.
+- When you must touch shared code, keep existing callers' behavior identical unless the user asked to change it, and add a regression test for those callers before editing.
 
 ## Git
 
