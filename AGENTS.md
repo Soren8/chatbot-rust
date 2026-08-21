@@ -42,7 +42,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Always validate provider configurations before committing
-- NEVER add cache busting mechanisms (e.g., query parameters on script tags) unless the user explicitly asks for it. Assume the user knows how to clear their cache.
+- Never add cache busting mechanisms (e.g., query parameters on script tags) unless the user explicitly asks for it. Assume the user knows how to clear their cache.
 - When searching, skip gitignored trees (`data/`, `temp/`, `target/`, `.git/`) — they are large and noisy.
 - Do not read `.env`, `.config.yml`, or `data/` unless the user explicitly asks you to; in the sandbox these paths are stubs or examples only.
 - The `/tts` endpoint uses a two-step "Pre-sign" pattern for browser compatibility: a `POST` to `/tts` submits text and receives a token, followed by a `GET /tts_stream/{token}` for native browser streaming. `POST /tts` requires CSRF and respects `tts_access` (`anyone` | `authenticated` | `premium`; default `anyone`). Do not reintroduce unauthenticated webserver `/api/tts*` routes; the voice-service TTS HTTP API is internal (webserver → GPU), not a public product API.
