@@ -1,6 +1,6 @@
 # AGENTS.md - Development Guide
 
-Project-specific agent instructions for chatbot-rust. User-level policy (sandbox, scope, git, working style) lives in `~/.grok/AGENTS.md`. Follow both.
+Project-specific agent instructions for chatbot-rust.
 
 ## Running tests
 
@@ -25,7 +25,9 @@ First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`,
 
 ### Why `run-tests.sh` (devcontainer / agent sandbox)
 
-The sandbox mounts the host Docker socket; compose **bind mounts** are still resolved by the host daemon (see user-level `AGENTS.md`). `./scripts/run-tests.sh` sets **`HOST_PROJECT_DIR`** to this repo's host path (via `scripts/resolve-host-path.sh`) before invoking compose. Never hardcode machine-specific absolute paths in the repo or in docs.
+The agent environment uses **docker-outside-of-docker** (CLI in the container, daemon on the host). Compose **bind mounts** are resolved by the host daemon. A bare `./` volume from inside the sandbox points at a path that often does **not** match this checkout on the host, so the tests container may miss `Cargo.toml` and sources.
+
+`./scripts/run-tests.sh` fixes that by setting **`HOST_PROJECT_DIR`** to the host path of this repo (via `scripts/resolve-host-path.sh`) before invoking compose. Never hardcode machine-specific absolute paths in the repo or in docs.
 
 | Variable | Meaning |
 |----------|---------|
