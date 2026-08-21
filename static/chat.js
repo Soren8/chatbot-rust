@@ -3716,7 +3716,7 @@ $(document).ready(function() {
     }
   });
 
-  // Capacitor voice mode: native PCM + RMS VAD only (matches Android Auto VoiceScreen).
+  // Capacitor voice mode: native PCM + energy/speech-like/voiced VAD (not Silero).
   // No Silero / WebView AudioContext — that path breaks during HTML TTS playback.
   function ensureNativeMicPermission() {
     if (!window.NativeMic || typeof window.NativeMic.requestPermission !== 'function') {
@@ -3764,8 +3764,17 @@ $(document).ready(function() {
       this.speechAboveCount++;
       this.nonSpeechLikeCount = 0;
       if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
-        nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
-        this._beginUtterance(skipPreRoll);
+        const gate = NativeAudio.mergePcm16Chunks(this.startGateChunks);
+        if (NativeAudio.pcm16IsVoicedSpeech(gate)) {
+          nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
+          this._beginUtterance(skipPreRoll);
+        } else {
+          if (skipPreRoll) {
+            nativeLog('VAD', 'barge-in skipped: start gate not voiced');
+          }
+          this.startGateChunks.shift();
+          this.speechAboveCount = this.startGateChunks.length;
+        }
       }
     } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
       this.nonSpeechLikeCount++;
@@ -3803,7 +3812,7 @@ $(document).ready(function() {
     this.chunkCount++;
 
     // During TTS fetch or playback: start an utterance as soon as real speech
-    // is detected (speech-like SPEECH_START_FRAMES). That start is also barge-in.
+    // is detected (speech-like frames + voiced start-gate). That start is barge-in.
     if (voiceModeTtsSessionActive || voiceModeTtsPlaying) {
       this._maybeStartUtterance(copy, rms, true);
       if (this.inSpeech) {
@@ -3855,7 +3864,7 @@ $(document).ready(function() {
     }
   };
 
-  NativeMicUtteranceVAD.prototype._endUtterance = function () {
+  NativeMicUtteranceVAD.prototype._endUtterance = function _endUtterance() {
     if (!this.inSpeech) return;
     this.inSpeech = false;
     this.speechAboveCount = 0;

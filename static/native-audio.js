@@ -20,6 +20,11 @@
   const SPEECH_ZCR_MAX = 0.30;
   /** Peak/RMS above this is an impulse (cough, clap), not sustained speech. */
   const SPEECH_CREST_MAX = 9;
+  /** Peak normalized autocorr in the 80–400 Hz band. Vowels are periodic; coughs are not. */
+  const SPEECH_PERIODICITY_MIN = 0.30;
+  /** Autocorr lags at 16 kHz: 400 Hz → 40 samples, 80 Hz → 200 samples. */
+  const SPEECH_PITCH_LAG_MIN = 40;
+  const SPEECH_PITCH_LAG_MAX = 200;
   const SPEECH_END_SILENCE_MS = 1500;
   /** Minimum ms with RMS above SPEECH_RMS_THRESHOLD before sending to STT. */
   const SPEECH_MIN_ACTIVE_MS = 350;
@@ -88,6 +93,40 @@
     const zcr = pcm16ZeroCrossingRate(pcm16);
     if (zcr < SPEECH_ZCR_MIN || zcr > SPEECH_ZCR_MAX) return false;
     return pcm16PeakAbs(pcm16) / energy <= SPEECH_CREST_MAX;
+  }
+
+  /** Peak normalized autocorrelation in the pitch-lag band (voiced speech). */
+  function pcm16PitchPeriodicity(pcm16) {
+    const n = pcm16 && pcm16.length ? pcm16.length : 0;
+    if (n < 80) return 0;
+    const maxLag = Math.min(SPEECH_PITCH_LAG_MAX, (n >> 1) - 1);
+    if (maxLag < SPEECH_PITCH_LAG_MIN) return 0;
+    const energyPrefix = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) {
+      const x = pcm16[i];
+      energyPrefix[i + 1] = energyPrefix[i] + x * x;
+    }
+    let best = 0;
+    for (let lag = SPEECH_PITCH_LAG_MIN; lag <= maxLag; lag++) {
+      const limit = n - lag;
+      let corr = 0;
+      for (let i = 0; i < limit; i++) {
+        corr += pcm16[i] * pcm16[i + lag];
+      }
+      const e1 = energyPrefix[limit];
+      const e2 = energyPrefix[n] - energyPrefix[lag];
+      if (e1 < 1 || e2 < 1) continue;
+      const norm = corr / Math.sqrt(e1 * e2);
+      if (norm > best) best = norm;
+    }
+    return best;
+  }
+
+  /** True when a start-gate window is voiced speech, not a cough/clap burst. */
+  function pcm16IsVoicedSpeech(pcm16) {
+    if (!pcm16 || pcm16.length < 640) return false;
+    if (pcm16Rms(pcm16) < SPEECH_RMS_THRESHOLD) return false;
+    return pcm16PitchPeriodicity(pcm16) >= SPEECH_PERIODICITY_MIN;
   }
 
   /** Rolling buffer of PCM16 chunks; retains the most recent maxSamples. */
@@ -230,7 +269,7 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 10,
+    VOICE_MODE_NATIVE_VAD_VERSION: 11,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,
@@ -240,6 +279,9 @@
     SPEECH_ZCR_MIN: SPEECH_ZCR_MIN,
     SPEECH_ZCR_MAX: SPEECH_ZCR_MAX,
     SPEECH_CREST_MAX: SPEECH_CREST_MAX,
+    SPEECH_PERIODICITY_MIN: SPEECH_PERIODICITY_MIN,
+    SPEECH_PITCH_LAG_MIN: SPEECH_PITCH_LAG_MIN,
+    SPEECH_PITCH_LAG_MAX: SPEECH_PITCH_LAG_MAX,
     SPEECH_END_SILENCE_MS: SPEECH_END_SILENCE_MS,
     SPEECH_MIN_ACTIVE_MS: SPEECH_MIN_ACTIVE_MS,
     SPEECH_MIN_PCM_BYTES: SPEECH_MIN_PCM_BYTES,
@@ -249,6 +291,8 @@
     pcm16ZeroCrossingRate: pcm16ZeroCrossingRate,
     pcm16PeakAbs: pcm16PeakAbs,
     pcm16IsSpeechLike: pcm16IsSpeechLike,
+    pcm16PitchPeriodicity: pcm16PitchPeriodicity,
+    pcm16IsVoicedSpeech: pcm16IsVoicedSpeech,
     mergePcm16Chunks: mergePcm16Chunks,
     pcm16ToWavBlob: pcm16ToWavBlob,
     float32ToWavBlob: float32ToWavBlob,

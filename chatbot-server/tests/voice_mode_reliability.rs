@@ -361,8 +361,9 @@ fn voice_send_scrolls_chat_to_bottom() {
 
 /// TTS must stop when real speech is first detected (utterance start), not
 /// after the user finishes talking. Energy-only bursts (cough, clap, hiss)
-/// must not count as speech. SPEECH_START_FRAMES of speech-like frames is
-/// the gate; SPEECH_MIN_ACTIVE_MS is only for sending to STT.
+/// must not count as speech. SPEECH_START_FRAMES of speech-like frames plus
+/// a voiced/periodic start-gate is the native gate; SPEECH_MIN_ACTIVE_MS is
+/// only for sending to STT. Desktop Silero is unchanged.
 #[test]
 fn native_tts_barge_in_on_initial_speech() {
     let chat_js = include_str!("../../static/chat.js");
@@ -378,21 +379,34 @@ fn native_tts_barge_in_on_initial_speech() {
     );
     assert!(
         native_audio.contains("function pcm16IsSpeechLike")
+            && native_audio.contains("function pcm16IsVoicedSpeech")
             && native_audio.contains("SPEECH_ZCR_MIN")
             && native_audio.contains("SPEECH_ZCR_MAX")
-            && native_audio.contains("SPEECH_CREST_MAX"),
+            && native_audio.contains("SPEECH_CREST_MAX")
+            && native_audio.contains("SPEECH_PERIODICITY_MIN"),
         "native VAD must classify speech vs cough/noise, not energy alone"
     );
     assert!(
-        function_contains(chat_js, "_maybeStartUtterance", "pcm16IsSpeechLike"),
-        "utterance start (and barge-in) must require speech-like frames"
+        function_contains(chat_js, "_maybeStartUtterance", "pcm16IsSpeechLike")
+            && function_contains(chat_js, "_maybeStartUtterance", "pcm16IsVoicedSpeech"),
+        "utterance start (and barge-in) must require speech-like frames and a voiced start-gate"
+    );
+    let maybe = function_body(chat_js, "_maybeStartUtterance")
+        .expect("_maybeStartUtterance");
+    let speech_like = maybe.find("pcm16IsSpeechLike").expect("pcm16IsSpeechLike");
+    let voiced = maybe.find("pcm16IsVoicedSpeech").expect("pcm16IsVoicedSpeech");
+    let begin = maybe.find("_beginUtterance").expect("_beginUtterance");
+    assert!(
+        speech_like < voiced && voiced < begin,
+        "voiced/periodic check must gate _beginUtterance; ZCR+crest alone still matches cough body"
     );
     assert!(
         function_contains(chat_js, "_beginUtterance", "handleBargeIn"),
         "native barge-in must fire at utterance start, immediately on detection"
     );
     assert!(
-        !function_contains(chat_js, "_accumulateUtterance", "handleBargeIn"),
+        !function_contains(chat_js, "_accumulateUtterance", "handleBargeIn")
+            && !function_contains(chat_js, "_endUtterance", "handleBargeIn"),
         "do not wait for the utterance to finish accumulating before stopping TTS"
     );
     assert!(
@@ -546,15 +560,11 @@ fn parse_js_int_const(src: &str, name: &str) -> Option<i32> {
     digits.parse().ok()
 }
 
-fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
+fn function_body<'a>(src: &'a str, fn_name: &str) -> Option<&'a str> {
     let header = format!("function {fn_name}(");
-    let Some(start) = src.find(&header) else {
-        return false;
-    };
+    let start = src.find(&header)?;
     let body = &src[start..];
-    let Some(open) = body.find('{') else {
-        return false;
-    };
+    let open = body.find('{')?;
     let mut depth = 0i32;
     for (i, ch) in body[open..].char_indices() {
         match ch {
@@ -562,11 +572,15 @@ fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return body[open..=open + i].contains(needle);
+                    return Some(&body[open..=open + i]);
                 }
             }
             _ => {}
         }
     }
-    false
+    None
+}
+
+fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
+    function_body(src, fn_name).is_some_and(|body| body.contains(needle))
 }
