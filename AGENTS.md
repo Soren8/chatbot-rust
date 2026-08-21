@@ -4,10 +4,10 @@ Project-specific agent instructions for chatbot-rust.
 
 ## Running tests
 
-Always the compose `tests` service — full workspace suite, including live integration tests against the test app. Do not run `cargo test` on the host or agent toolchain.
+Always the compose `tests` service. Do not run `cargo test` on the host or agent toolchain.
 
 ```bash
-./scripts/run-tests.sh
+docker compose run --rm tests
 ```
 
 First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`, locked in `Cargo.lock`). Do not install Node/npm for this, and do not add hand-rolled brace scanners.
@@ -16,7 +16,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Build & Run Commands
 
-- Tests: `./scripts/run-tests.sh` (compose `tests` service, full suite)
+- Tests: `docker compose run --rm tests`
 - Do not run `cargo test` / app binaries outside that container
 - Allowed compose from the sandbox: **`tests` only**. It injects its own env and does not need workspace `.env`.
 - Do **not** `docker compose up`, `build`, or recreate **`webserver`** or **`voice-service`**. Ask the **user** to rebuild/restart those on the host when a live deploy is needed.

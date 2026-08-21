@@ -35,7 +35,8 @@
     }
   },
   "remoteEnv": {
-    "PATH": "/home/agent/.grok/bin:${containerEnv:PATH}"
+    "PATH": "/home/agent/.grok/bin:${containerEnv:PATH}",
+    "HOST_PROJECT_DIR": "${localWorkspaceFolder}"
   },
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
@@ -45,5 +46,5 @@
     }
   },
   "runArgs": ["--init"],
-  "postStartCommand": "echo 'Tests: ./scripts/run-tests.sh. Live webserver/voice: host operator only (not from this sandbox).'"
+  "postStartCommand": "echo 'Tests: docker compose run --rm tests. Live webserver/voice: host operator only (not from this sandbox).'"
 }

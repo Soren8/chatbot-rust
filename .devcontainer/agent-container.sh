@@ -112,6 +112,7 @@ start_container() {
     -e RUSTUP_HOME=/home/agent/.rustup \
     -e INSTALL_GROK=1 \
     -e GROK_SANDBOX=off \
+    -e HOST_PROJECT_DIR="${REPO_ROOT}" \
     -e "PATH=/home/agent/.grok/bin:/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "${IMAGE_NAME}" \
     sleep infinity
@@ -147,6 +148,7 @@ exec_agent() {
     -u agent \
     -w /workspace \
     -e GROK_SANDBOX=off \
+    -e HOST_PROJECT_DIR="${REPO_ROOT}" \
     -e "PATH=/home/agent/.grok/bin:/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "${CONTAINER_NAME}" \
     "$@"

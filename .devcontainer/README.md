@@ -18,10 +18,8 @@ Host secret files are masked by bind-mount overlays. Use **Docker only** via
 # Convenience: Grok TUI (optional; installed when INSTALL_GROK=1)
 .devcontainer/agent-container.sh grok
 
-# Integration tests (preferred — works host and agent sandbox)
-.devcontainer/agent-container.sh exec ./scripts/run-tests.sh
-# or, already inside the container shell:
-./scripts/run-tests.sh
+# Integration tests (inside the container)
+docker compose run --rm tests
 
 # Stop
 .devcontainer/agent-container.sh down
@@ -60,29 +58,13 @@ Agents using **Read/grep** never see real secrets. **Compose** invoked from `/wo
 
 ### Running the integration suite inside the agent container
 
-Compose bind mounts are resolved by the **host** Docker daemon. A relative `./` volume from inside this container often does **not** map to the real checkout on the host (classic docker-outside-of-docker path mismatch). The repo therefore parameterizes the `tests` service with **`HOST_PROJECT_DIR`** (defaults to `.` on a normal host checkout).
-
-**Always prefer:**
-
 ```bash
-./scripts/run-tests.sh
+docker compose run --rm tests
 ```
 
-That script:
+Compose bind mounts are resolved by the host daemon. The sandbox sets `HOST_PROJECT_DIR` to this repo’s host path. Default is `.` on a normal host checkout. Do not hardcode machine-specific paths.
 
-1. Resolves this repo’s host path via `scripts/resolve-host-path.sh` (docker inspect / mountinfo — no machine-specific paths in git).
-2. Exports `HOST_PROJECT_DIR` when unset.
-3. Runs `docker compose run --rm tests` (full workspace suite by default).
-
-Manual form if you need to call compose yourself:
-
-```bash
-HOST_PROJECT_DIR="$(./scripts/resolve-host-path.sh .)" docker compose run --rm tests
-```
-
-Do **not** hardcode host home directories (e.g. `/home/<user>/…`) in scripts or docs — other clones must work. Override only when auto-detect fails: `export HOST_PROJECT_DIR=/path/on/host`.
-
-Logs land under `temp/test-logs/`. See also root `AGENTS.md` → **Running tests**.
+Logs land under `temp/test-logs/`.
 
 ## Layout
 

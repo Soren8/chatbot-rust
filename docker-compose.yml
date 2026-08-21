@@ -87,9 +87,7 @@ services:
       context: .
       target: test
       cache_from:
-        # HOST_PROJECT_DIR: host abs path when using docker-outside-of-docker
-        # (agent sandbox). Defaults to "." on a normal host checkout.
-        # Prefer: ./scripts/run-tests.sh (sets HOST_PROJECT_DIR automatically).
+        # HOST_PROJECT_DIR: host path of this repo (docker-outside-of-docker). Default `.`.
         - type=local,src=${HOST_PROJECT_DIR:-.}/temp/.docker/tests
       cache_to:
         - type=local,dest=${HOST_PROJECT_DIR:-.}/temp/.docker/tests,mode=max
@@ -114,9 +112,6 @@ services:
       RATE_LIMIT_PER_USER_PER_MINUTE: "0"
       RATE_LIMIT_GLOBAL_PER_MINUTE: "0"
     volumes:
-      # Bind mounts are resolved by the *host* Docker daemon. Relative "." works
-      # on the host; from an agent container set HOST_PROJECT_DIR to this repo's
-      # host path (see scripts/run-tests.sh / scripts/resolve-host-path.sh).
       - ${HOST_PROJECT_DIR:-.}:/app
       - ${HOST_PROJECT_DIR:-.}/temp/test-logs:/var/log/chatbot-tests
       - ${HOST_PROJECT_DIR:-.}/temp/.cargo/registry:/opt/cargo/registry

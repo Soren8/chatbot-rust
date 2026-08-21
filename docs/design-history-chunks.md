@@ -97,7 +97,7 @@ From `docs/design-privacy.md` and `docs/design-history-store.md`:
 - Regenerate/edit coalesces a shorter incoming image payload back to stored full-res unless the client removed the attachment (`coalesce_edit_user_message`)
 - `/load_set` pagination + `thumbnails` + `/history_image` + `/history_pair` HTTP contracts stay compatible
 - Existing redb files (`data/history/redb`) migrate in place with no operator step
-- Tests via `./scripts/run-tests.sh` only; agents must not rebuild the live stack
+- Tests via `docker compose run --rm tests` only; agents must not rebuild the live stack
 - No cache-busting query params on script tags
 
 ---
@@ -890,7 +890,7 @@ Storage after reclaim: raw image bytes ≈ 0.75× the old base64 JSON. Thumbs ad
 4. Soak: watch `history_chunk_migrate` events and `/load_set` latency. `list_sets` must not emit migrate events. Include a 50-image fixture for first-op timeout behavior.
 5. **Rollback:** previous image can read exact-length v0/v1 meta after PRs 1–4. After PR 5, snapshot `data/history/redb` before deploy; any format-2 write needs that snapshot to roll back.
 6. Docs: update `docs/design-history-store.md` (status + this design as Phase 2), tick the lazy-load bullet in `docs/design.md` to note durable chunks.
-7. Tests: `./scripts/run-tests.sh` only.
+7. Tests: `docker compose run --rm tests` only.
 
 ### Risks
 
@@ -913,7 +913,7 @@ Storage after reclaim: raw image bytes ≈ 0.75× the old base64 JSON. Thumbs ad
 
 ## Test Plan
 
-Follow AGENTS.md: new behavior → tests first; `./scripts/run-tests.sh`; do not delete existing tests.
+Follow AGENTS.md: new behavior → tests first; `docker compose run --rm tests`; do not delete existing tests.
 
 ### New unit tests
 
@@ -983,13 +983,13 @@ Format-2 `create_set` / `sets.json` import, image framing, AAD widths, migrate-o
 - [`chatbot-server/src/sets.rs`](/workspace/chatbot-rust/chatbot-server/src/sets.rs) — `handle_load_set` / `handle_history_image` / `handle_history_pair`
 - [`static/chat.js`](/workspace/chatbot-rust/static/chat.js) — `HISTORY_PAGE_SIZE = 40`, `thumbnails: true`, `historyImageUrl`
 - [`chatbot-server/tests/load_set_history.rs`](/workspace/chatbot-rust/chatbot-server/tests/load_set_history.rs) — HTTP contract tests
-- AGENTS.md — Docker tests via `./scripts/run-tests.sh`; no live-stack rebuild; commit only
+- AGENTS.md — Docker tests via `docker compose run --rm tests`; no live-stack rebuild; commit only
 
 ---
 
 ## PR Plan
 
-Incremental, independently reviewable PRs. Each PR should add tests first where behavior changes (AGENTS.md bug protocol) and pass `./scripts/run-tests.sh`. Do not rebuild the live `webserver` from the agent sandbox.
+Incremental, independently reviewable PRs. Each PR should add tests first where behavior changes (AGENTS.md bug protocol) and pass `docker compose run --rm tests`. Do not rebuild the live `webserver` from the agent sandbox.
 
 **Compat rules that make PRs 5+ mergeable:**
 
