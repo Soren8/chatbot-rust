@@ -3716,8 +3716,10 @@ $(document).ready(function() {
     }
   });
 
-  // Capacitor voice mode: native PCM + energy/speech-like/voiced VAD (not Silero).
-  // No Silero / WebView AudioContext — that path breaks during HTML TTS playback.
+  // Capacitor voice mode: native PCM VAD (not Silero; WebView AudioContext breaks during TTS).
+  // Record at speech-like start (_beginUtterance). Stop TTS only in _maybeBargeIn
+  // after REAL_SPEECH_MS of confirmed speech. Coughs/"hey" may start capture; they
+  // must not barge in. Do not glue the gates.
   function ensureNativeMicPermission() {
     if (!window.NativeMic || typeof window.NativeMic.requestPermission !== 'function') {
       return Promise.resolve();
@@ -3763,6 +3765,7 @@ $(document).ready(function() {
     this.voicedWindow = [];
   };
 
+  /** Phase 1: start capture on speech-like energy. Does not stop TTS. */
   NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
     if (this.inSpeech) return;
     if (NativeAudio.pcm16IsSpeechLike(pcm16, rms)) {
@@ -3786,6 +3789,7 @@ $(document).ready(function() {
     }
   };
 
+  /** Phase 2: stop TTS now if real speech is confirmed. Not called from _endUtterance. */
   NativeMicUtteranceVAD.prototype._maybeBargeIn = function _maybeBargeIn() {
     if (this.bargeInFired) return;
     if (!(voiceModeTtsSessionActive || voiceModeTtsPlaying)) return;
@@ -3866,6 +3870,7 @@ $(document).ready(function() {
     }
   };
 
+  /** Start recording. Barge-in is _maybeBargeIn, not here. */
   NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance(skipPreRoll) {
     if (this.inSpeech) return;
     this.inSpeech = true;

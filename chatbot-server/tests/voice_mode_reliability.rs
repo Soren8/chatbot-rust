@@ -448,6 +448,11 @@ fn native_tts_barge_in_on_initial_speech() {
         min_speech_ms >= 300,
         "SPEECH_MIN_ACTIVE_MS={min_speech_ms} is too short to reject noise bursts at STT"
     );
+    let dual = include_str!("native_vad_speech_like.rs");
+    assert!(
+        dual.contains("fn cough_and_hey_do_not_barge_in_sustained_noisy_speech_does"),
+        "keep the paired cough+speech barge-in test; one-sided tests caused the VAD oscillation"
+    );
 }
 
 /// Short mid-sentence pauses must not end the utterance (that forces a lossy

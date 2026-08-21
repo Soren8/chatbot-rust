@@ -1,6 +1,7 @@
 //! Native VAD: record from speech-like start; barge-in only on real speech.
-//! Dual invariant: a cough/"hey" must not stop TTS; sustained noisy speech must,
-//! at confirmation (REAL_SPEECH_MS), not at end-of-speech.
+//! Dual invariant (keep in ONE test): a cough/"hey" must not stop TTS; sustained
+//! noisy speech must, at confirmation (REAL_SPEECH_MS), not at end-of-speech.
+//! Splitting this into cough-only vs speech-only tests is how the gate oscillated.
 
 fn parse_js_number_const(src: &str, name: &str) -> Option<f64> {
     let needle = format!("const {name} = ");
@@ -471,6 +472,8 @@ impl NativeVadSim {
     }
 }
 
+/// Both sides in this function: fail if coughs barge in OR if noisy sustained
+/// speech never barges in. Do not split into two tests.
 #[test]
 fn cough_and_hey_do_not_barge_in_sustained_noisy_speech_does() {
     let t = load_thresholds();

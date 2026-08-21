@@ -10,6 +10,15 @@
   const VAD_PREFETCH_SAMPLES = 4800; // 300 ms @ 16 kHz
   /** Pre-roll so unvoiced onsets before the speech-like gate reach STT. 600 ms sent noise. */
   const SPEECH_PREROLL_SAMPLES = 4800; // 300 ms @ 16 kHz
+  /**
+   * Two-phase native VAD (desktop Silero analog). Do not collapse these gates.
+   * Phase 1 SPEECH_START_FRAMES: start *recording*. Coughs may enter this. Do
+   *   not stop TTS here; do not AND extra classifiers onto start or table speech
+   *   never records.
+   * Phase 2 REAL_SPEECH_MS + voicing: barge-in. A cough or short "hey" must fail;
+   *   sustained speech must pass immediately, not at end-of-speech.
+   * Dual test: cough_and_hey_do_not_barge_in_sustained_noisy_speech_does.
+   */
   /** Speakerphone-distance energy floor. Speech-like shape is required on top. */
   const SPEECH_RMS_THRESHOLD = 500;
   const SPEECH_START_FRAMES = 6; // ~120 ms of speech-like frames before *recording* (like Silero onSpeechStart)

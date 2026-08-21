@@ -186,6 +186,17 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 5. **Desktop/browser**: Silero VAD remains. Barge-in uses `onSpeechRealStart` and high-confidence `onFrameProcessed` (`isSpeech > 0.85` for ~128 ms), not first-frame `onSpeechStart`. `redemptionMs` is 1500 (same end-silence as native). After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 
+### TTS barge-in dual invariant (do not oscillate)
+
+Handheld native VAD has no Silero. Energy-only start stops TTS on coughs; extra ANDs on *start* kill table-distance speech. Both of these must stay true at once:
+
+1. A cough or short "hey" does **not** stop TTS (may still start recording).
+2. Sustained real speech **does** stop TTS **when confirmed** (`REAL_SPEECH_MS` ~600 ms + voicing), not after end-of-speech silence.
+
+Desktop already splits this: `onSpeechStart` records, `onSpeechRealStart` / `minSpeechMs` 400 barges in. Native mirrors that with `_beginUtterance` vs `_maybeBargeIn`. Do not barge in from `_beginUtterance` or `_endUtterance`. Do not require voicing/`pcm16IsVoicedSpeech` to *start* capture.
+
+The lock is one test that covers **both** sides: `cough_and_hey_do_not_barge_in_sustained_noisy_speech_does` in `chatbot-server/tests/native_vad_speech_like.rs`. Do not split it into a cough-only or speech-only test.
+
 ### VAD Evaluation
 
 Car environments are noisy. If RMS misses too often:
