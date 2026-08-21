@@ -1,6 +1,6 @@
 //! Native VAD: record from speech-like start; barge-in only on real speech.
 //! Dual invariant: a cough/"hey" must not stop TTS; sustained noisy speech must,
-//! at confirmation (~400 ms, like desktop minSpeechMs), not at end-of-speech.
+//! at confirmation (REAL_SPEECH_MS), not at end-of-speech.
 
 fn parse_js_number_const(src: &str, name: &str) -> Option<f64> {
     let needle = format!("const {name} = ");
@@ -227,8 +227,8 @@ fn speech_like_thresholds_are_a_speech_band_not_an_energy_gate() {
         t.periodicity_min
     );
     assert!(
-        (350..=500).contains(&t.real_speech_ms),
-        "REAL_SPEECH_MS={} must match desktop minSpeechMs (~400), not a 120 ms start-gate",
+        (500..=700).contains(&t.real_speech_ms),
+        "REAL_SPEECH_MS={} should be ~1.5× desktop minSpeechMs (400) so short coughs/heys do not barge in",
         t.real_speech_ms
     );
     assert!(
@@ -506,7 +506,7 @@ fn cough_and_hey_do_not_barge_in_sustained_noisy_speech_does() {
         );
     }
 
-    let speech = noisy_vowel(200.0, 1200, FRAME * 30, SR, 0.35);
+    let speech = noisy_vowel(200.0, 1200, FRAME * 40, SR, 0.35);
     let hey: Vec<&[i16]> = speech.chunks(FRAME).take(10).collect();
     assert_eq!(hey.len() * 20, 200, "hey fixture is ~200 ms");
     for frame in &hey {

@@ -408,12 +408,12 @@ fn native_tts_barge_in_on_initial_speech() {
     let real_ms = parse_js_int_const(native_audio, "REAL_SPEECH_MS")
         .expect("REAL_SPEECH_MS must be declared in native-audio.js");
     assert!(
-        (350..=500).contains(&real_ms),
-        "REAL_SPEECH_MS={real_ms} must match desktop minSpeechMs (~400)"
+        (500..=700).contains(&real_ms),
+        "REAL_SPEECH_MS={real_ms} should be ~1.5× desktop minSpeechMs (400)"
     );
     assert!(
         chat_js.contains("minSpeechMs: 400") || chat_js.contains("minSpeechMs:400"),
-        "desktop minSpeechMs must stay aligned with native REAL_SPEECH_MS"
+        "desktop Silero minSpeechMs stays 400; native duration is the looser energy gate"
     );
     assert!(
         function_contains(chat_js, "_onNativePcm", "_maybeStartUtterance")

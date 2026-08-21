@@ -27,8 +27,8 @@
   const SPEECH_PITCH_LAG_MAX = 200;
   /** Rolling window for voiced evidence (~100 ms). */
   const SPEECH_VOICED_WINDOW_FRAMES = 5;
-  /** Match desktop Silero minSpeechMs: barge-in only after this much speech-like audio. */
-  const REAL_SPEECH_MS = 400;
+  /** Speech-like duration before barge-in. Longer than desktop minSpeechMs (400) because native has no Silero. */
+  const REAL_SPEECH_MS = 600;
   /** Voiced-window hits required inside that span. A cough/"hey" does not reach this. */
   const REAL_SPEECH_VOICED_MS = 120;
   const SPEECH_END_SILENCE_MS = 1500;
@@ -294,7 +294,7 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 12,
+    VOICE_MODE_NATIVE_VAD_VERSION: 13,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,
