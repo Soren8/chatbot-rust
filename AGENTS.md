@@ -1,5 +1,7 @@
 # AGENTS.md - Development Guide
 
+Project-specific agent instructions for chatbot-rust. User-level policy lives in `~/.grok/AGENTS.md`.
+
 ## Agent devcontainer (secret-safe)
 
 - **The Docker container is the sandbox** for any coding agent (Grok, Claude, Cursor, Aider, …). Isolation is container + secret bind-mount overlays — not per-agent Landlock/bwrap flags.
@@ -62,58 +64,25 @@ Logs: `temp/test-logs/`. Cargo/build caches for the suite: `temp/.cargo/`, `temp
 `static/` and templates are **copied into the image at build time** (hermetic Docker). UI/asset changes do not show on a running phone or browser until the user rebuilds/restarts **webserver on the host**. Agents should note that in the handoff, not run compose themselves.
 
 ## Code Style Guidelines
+
 - **Imports**: Standard library first, then third-party, then local modules
 - **Error Handling**: Use `anyhow` or `thiserror` for error handling, log errors appropriately with `tracing`
-- **Dead code**: Prefer deleting unused code over commenting it out
-- **History**: Do not add comments about how code used to be; use git history
+- Use logging (via `tracing`) instead of print statements for debugging
 
 ## Scratchpad / Temp Files
+
 - Use `temp/` for ephemeral notes (e.g., TODOs) — it is gitignored
 - Never reference `temp/` items in commit messages
 - Keep `temp/todo.md` updated as you progress
-
-## Refactoring guidelines
-- First write concise, focused integration tests that cover existing functionality if needed.
-- Make sure those tests pass.
-- Write new refactored code that covers all old functionality.
-- Ensure the appropriate tests now pass.
-- Delete the legacy code (but NEVER delete tests). Tests created during feature implementation or bug fixing are permanent artifacts.
-
-## Bug Fixing Protocol
-- When a bug is reported:
-  1. Write a new test case that reproduces the bug (it should fail).
-  2. Implement the fix.
-  3. Run the test again to confirm it passes.
-- Confine the fix to the failing behavior. Do not bundle drive-by refactors or extra control-flow changes in the same edit.
-
-## Scope and user instructions
-- Implement only what the user explicitly requested for the current task.
-- Do not expand scope on your own — extra endpoints, files, refactors, or "obviously helpful" tweaks are out of scope unless the user asked for them.
-- If you believe a related change would help, **stop and ask for confirmation before making it**, even when it seems clearly beneficial. Do not bundle unrequested changes into the same work.
-- When unsure whether something is in scope, ask rather than assume.
-- Make the smallest targeted edit that implements the request. Do not rewrite shared helpers, event handlers, or adjacent features while fixing something else — that is how unrelated behavior (for example speak-from-sentence TTS) gets broken.
-- When you must touch shared code, keep existing callers' behavior identical unless the user asked to change it, and add a regression test for those callers before editing.
-
-## Git
-
-- **Commit only — never push.** The user publishes via GitHub Desktop; remote credentials are intentionally unavailable to coding agents.
-- Do not run `git push`, `gh` push/release commands, or other operations that modify the remote repository.
-- When a task is complete, create a local commit with a concise message. The user will push when ready.
-
-## Important Notes
-- Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
-- Git commit at the completion of each full task (local commit only; see **Git** above).
-- When Docker is available, run integration tests via `./scripts/run-tests.sh` (handles `HOST_PROJECT_DIR` for agent sandboxes). Never rebuild/restart the live stack from the sandbox; the user does host deploys.
-- Do not moralize about the user's language or tone.
 - Preserve the `temp/.cargo/` cache directory; do not delete it because it stores Rust build artifacts used by other agents. If it is missing, recreate it inside `temp/` (never at repo root).
 - Keep Docker build caches under `temp/.docker/`; create that directory inside `temp/` when needed so the repository root stays free of sandbox artefacts.
 - Store test run artifacts under `temp/test-logs/`; do not create a top-level `test-logs/` directory.
+
+## Important Notes
+
+- Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Always validate provider configurations before committing
-- Use logging (via `tracing`) instead of print statements for debugging
-- When asked a question, provide the answer and then stop; do not begin modifying code or implementing changes until the user explicitly provides a "proceed" instruction.
-- Treat the task as complete only after all required tests pass and your changes are committed to git.
-- Update any relevant docs, checklists or todo lists at the end of a task. Only add content to docs, not checklists or todo lists.
 - NEVER add cache busting mechanisms (e.g., query parameters on script tags) unless the user explicitly asks for it. Assume the user knows how to clear their cache.
-- When using shell commands like `grep` or `find`, always ensure gitignored directories (e.g., `data/`, `temp/`, `target/`, `.git/`) are excluded to avoid noise and excessive token usage.
+- When searching, skip gitignored trees (`data/`, `temp/`, `target/`, `.git/`) — they are large and noisy.
 - Do not read `.env`, `.config.yml`, or `data/` unless the user explicitly asks you to; in the devcontainer these paths are stubs or examples only.
 - The `/tts` endpoint uses a two-step "Pre-sign" pattern for browser compatibility: a `POST` to `/tts` submits text and receives a token, followed by a `GET /tts_stream/{token}` for native browser streaming. `POST /tts` requires CSRF and respects `tts_access` (`anyone` | `authenticated` | `premium`; default `anyone`). Do not reintroduce unauthenticated webserver `/api/tts*` routes; the voice-service TTS HTTP API is internal (webserver → GPU), not a public product API.
