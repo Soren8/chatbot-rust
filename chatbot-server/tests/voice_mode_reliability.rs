@@ -409,6 +409,19 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && (activity.contains("getBridge().eval") || plugin.contains("getBridge().eval")),
         "FGS must periodically re-resume the WebView; one-shot onPause freezes after a few minutes"
     );
+    assert!(
+        manifest.contains("REQUEST_IGNORE_BATTERY_OPTIMIZATIONS")
+            && plugin.contains("isIgnoringBatteryOptimizations")
+            && plugin.contains("ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"),
+        "GrapheneOS/AOSP Doze still sleeps Optimized apps after a couple of minutes; prompt Unrestricted"
+    );
+    assert!(
+        service.contains("requestNetwork")
+            && service.contains("NET_CAPABILITY_INTERNET")
+            && activity.contains("fireStatusChange(true)")
+            && activity.contains("getBridge().onResume()"),
+        "hold a network request and re-resume the Capacitor bridge so Doze cannot drop STT/chat/TTS"
+    );
 
     assert!(
         chat_js.contains("window.stopVoiceMode")

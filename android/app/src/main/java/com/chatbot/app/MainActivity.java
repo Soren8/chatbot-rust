@@ -62,6 +62,8 @@ public class MainActivity extends BridgeActivity {
             webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
         if (getBridge() != null) {
+            getBridge().getApp().fireStatusChange(true);
+            getBridge().onResume();
             getBridge().eval("void 0", null);
         }
     }

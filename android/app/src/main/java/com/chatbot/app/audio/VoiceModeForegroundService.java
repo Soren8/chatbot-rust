@@ -4,6 +4,9 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.NetworkRequest;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -24,10 +27,12 @@ public class VoiceModeForegroundService extends Service {
     private static final long KEEP_ALIVE_INTERVAL_MS = 15_000;
 
     private PowerManager.WakeLock cpuWakeLock;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler keepAliveHandler = new Handler(Looper.getMainLooper());
     private final Runnable keepAliveTick = new Runnable() {
         @Override
         public void run() {
+            acquireCpuWakeLock();
             VoiceModeNativeHooks.keepWebViewAlive();
             keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS);
         }
@@ -53,6 +58,7 @@ public class VoiceModeForegroundService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         promoteToForeground();
         acquireCpuWakeLock();
+        acquireNetwork();
         startKeepAlive();
         FileLogger.log(TAG, "onStartCommand action="
                 + (intent != null ? intent.getAction() : "null"));
@@ -62,6 +68,7 @@ public class VoiceModeForegroundService extends Service {
     @Override
     public void onDestroy() {
         stopKeepAlive();
+        releaseNetwork();
         releaseCpuWakeLock();
         FileLogger.log(TAG, "onDestroy");
         super.onDestroy();
@@ -103,6 +110,41 @@ public class VoiceModeForegroundService extends Service {
             cpuWakeLock.release();
         }
         cpuWakeLock = null;
+    }
+
+    private void acquireNetwork() {
+        if (networkCallback != null) {
+            return;
+        }
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm == null) {
+            return;
+        }
+        NetworkRequest request = new NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build();
+        networkCallback = new ConnectivityManager.NetworkCallback();
+        try {
+            cm.requestNetwork(request, networkCallback);
+            FileLogger.log(TAG, "requestNetwork held");
+        } catch (Exception e) {
+            networkCallback = null;
+            FileLogger.log(TAG, "requestNetwork failed: " + e.getMessage(), e);
+        }
+    }
+
+    private void releaseNetwork() {
+        if (networkCallback == null) {
+            return;
+        }
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm != null) {
+            try {
+                cm.unregisterNetworkCallback(networkCallback);
+            } catch (Exception ignored) {
+            }
+        }
+        networkCallback = null;
     }
 
     private void startKeepAlive() {

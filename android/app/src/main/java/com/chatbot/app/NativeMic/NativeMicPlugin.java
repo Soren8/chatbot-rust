@@ -3,7 +3,11 @@ package com.chatbot.app;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
@@ -76,6 +80,7 @@ public class NativeMicPlugin extends Plugin {
     private final VoiceModeForegroundSession.Backend foregroundBackend = new ForegroundServiceBackend();
     private AcousticEchoCanceler echoCanceler = null;
     private AutomaticGainControl automaticGainControl = null;
+    private static boolean batteryExemptionPrompted;
 
     @Override
     public void load() {
@@ -260,6 +265,7 @@ public class NativeMicPlugin extends Plugin {
         boolean applied = voiceAudioRoute.enter(voiceAudioBackend);
         boolean keepAwake = voiceSessionKeepAwake.enter(keepAwakeBackend);
         boolean foreground = voiceForeground.enter(foregroundBackend);
+        requestUnrestrictedBattery();
         keepVoiceWebViewRunning();
         FileLogger.log(TAG, "enterVoiceRoute applied=" + applied
                 + " active=" + voiceAudioRoute.isActive() + " bluetooth=" + bluetooth
@@ -473,6 +479,36 @@ public class NativeMicPlugin extends Plugin {
         voiceAudioRoute.exit(voiceAudioBackend);
         voiceSessionKeepAwake.exit(keepAwakeBackend);
         voiceForeground.exit(foregroundBackend);
+    }
+
+    private void requestUnrestrictedBattery() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return;
+        }
+        Context ctx = getContext();
+        if (ctx == null) {
+            return;
+        }
+        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(ctx.getPackageName())) {
+            return;
+        }
+        if (batteryExemptionPrompted) {
+            return;
+        }
+        Activity activity = getActivity();
+        if (activity == null) {
+            return;
+        }
+        batteryExemptionPrompted = true;
+        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+        intent.setData(Uri.parse("package:" + ctx.getPackageName()));
+        try {
+            activity.startActivity(intent);
+            FileLogger.log(TAG, "requested ignore battery optimizations");
+        } catch (Exception e) {
+            FileLogger.log(TAG, "battery exemption prompt failed: " + e.getMessage(), e);
+        }
     }
 
     private void keepVoiceWebViewRunning() {
