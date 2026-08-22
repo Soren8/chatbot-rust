@@ -229,6 +229,13 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
         "barge-in must not drop speakerphone routing"
     );
     assert!(
+        tts.contains("requestAudioFocus")
+            && tts.contains("STREAM_VOICE_CALL")
+            && plugin.contains("reclaimAudioFocus")
+            && plugin.contains("AUDIOFOCUS_LOSS"),
+        "voice-mode TTS must reclaim audio focus after the battery dialog or another app steals it"
+    );
+    assert!(
         manifest.contains("MODIFY_AUDIO_SETTINGS"),
         "setMode/setSpeakerphoneOn require MODIFY_AUDIO_SETTINGS"
     );

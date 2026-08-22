@@ -521,9 +521,20 @@ public class NativeMicPlugin extends Plugin {
                 && audioManager.getMode() == AudioManager.MODE_IN_CALL;
         if (inCall) {
             pauseForPhoneCall();
-        } else {
-            resumeAfterPhoneCall();
+            return;
         }
+        resumeAfterPhoneCall();
+        reclaimAudioFocus();
+    }
+
+    void reclaimAudioFocus() {
+        if (pausedForPhoneCall || !voiceAudioRoute.isActive()) {
+            return;
+        }
+        if (hasAudioFocus) {
+            return;
+        }
+        requestAudioFocus();
     }
 
     private void pauseForPhoneCall() {
@@ -614,6 +625,7 @@ public class NativeMicPlugin extends Plugin {
     }
 
     private void keepVoiceWebViewRunning() {
+        reclaimAudioFocus();
         Activity activity = getActivity();
         if (activity instanceof MainActivity) {
             activity.runOnUiThread(((MainActivity) activity)::keepVoiceWebViewRunning);

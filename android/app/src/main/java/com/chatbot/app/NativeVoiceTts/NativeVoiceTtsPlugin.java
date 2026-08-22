@@ -1,7 +1,10 @@
 package com.chatbot.app;
 
+import android.content.Context;
 import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.os.Build;
 import android.util.Log;
@@ -414,7 +417,30 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
     }
 
+    private void requestAudioFocus() {
+        Context ctx = getContext();
+        if (ctx == null) {
+            return;
+        }
+        AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) {
+            return;
+        }
+        int max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
+        if (max > 0) {
+            am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, max, 0);
+        }
+        AudioFocusRequest req = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build())
+                .build();
+        am.requestAudioFocus(req);
+    }
+
     private AudioTrack ensureTrackPlaying(int sampleRate) {
+        requestAudioFocus();
         AudioTrack track = audioTrack;
         if (track != null && trackSampleRate == sampleRate) {
             if (track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
