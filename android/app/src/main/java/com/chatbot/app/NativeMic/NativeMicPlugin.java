@@ -81,6 +81,9 @@ public class NativeMicPlugin extends Plugin {
     private AcousticEchoCanceler echoCanceler = null;
     private AutomaticGainControl automaticGainControl = null;
     private static boolean batteryExemptionPrompted;
+    private boolean pausedForPhoneCall;
+    private boolean modeListenerRegistered;
+    private AudioManager.OnModeChangedListener modeChangedListener;
 
     @Override
     public void load() {
@@ -90,6 +93,7 @@ public class NativeMicPlugin extends Plugin {
         audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
         VoiceModeNativeHooks.setHandler(this::stopFromNotification);
         VoiceModeNativeHooks.setKeepAliveHandler(this::keepVoiceWebViewRunning);
+        registerModeListener();
     }
 
     @PluginMethod
@@ -284,6 +288,7 @@ public class NativeMicPlugin extends Plugin {
     /** Restore pre-voice-mode routing. Idempotent; only voice-mode teardown should call this. */
     @PluginMethod
     public void exitVoiceRoute(PluginCall call) {
+        pausedForPhoneCall = false;
         boolean applied = voiceAudioRoute.exit(voiceAudioBackend);
         boolean keepAwake = voiceSessionKeepAwake.exit(keepAwakeBackend);
         boolean foreground = voiceForeground.exit(foregroundBackend);
@@ -312,6 +317,13 @@ public class NativeMicPlugin extends Plugin {
                 .setOnAudioFocusChangeListener(change -> {
                     Log.i(TAG, "Audio focus change: " + change);
                     FileLogger.log(TAG, "AudioFocusChangeListener: " + change);
+                    if (change == AudioManager.AUDIOFOCUS_LOSS
+                            || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                        hasAudioFocus = false;
+                    } else if (change == AudioManager.AUDIOFOCUS_GAIN) {
+                        hasAudioFocus = true;
+                    }
+                    onAudioModeOrFocusChanged();
                 })
                 .build();
         int result = audioManager.requestAudioFocus(audioFocusRequest);
@@ -463,6 +475,96 @@ public class NativeMicPlugin extends Plugin {
                 return true;
             }
             return false;
+        }
+    }
+
+    private void registerModeListener() {
+        if (modeListenerRegistered || audioManager == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return;
+        }
+        try {
+            modeChangedListener = this::onAudioModeChanged;
+            audioManager.addOnModeChangedListener(getContext().getMainExecutor(), modeChangedListener);
+            modeListenerRegistered = true;
+            FileLogger.log(TAG, "OnModeChangedListener registered");
+        } catch (Exception e) {
+            modeChangedListener = null;
+            FileLogger.log(TAG, "addOnModeChangedListener failed: " + e.getMessage(), e);
+        }
+    }
+
+    private void unregisterModeListener() {
+        if (!modeListenerRegistered || audioManager == null || modeChangedListener == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return;
+        }
+        try {
+            audioManager.removeOnModeChangedListener(modeChangedListener);
+        } catch (Exception ignored) {
+        }
+        modeChangedListener = null;
+        modeListenerRegistered = false;
+    }
+
+    private void onAudioModeChanged(int mode) {
+        FileLogger.log(TAG, "onAudioModeChanged mode=" + mode);
+        onAudioModeOrFocusChanged();
+    }
+
+    private void onAudioModeOrFocusChanged() {
+        boolean inCall = audioManager != null
+                && audioManager.getMode() == AudioManager.MODE_IN_CALL;
+        if (inCall) {
+            pauseForPhoneCall();
+        } else {
+            resumeAfterPhoneCall();
+        }
+    }
+
+    private void pauseForPhoneCall() {
+        if (pausedForPhoneCall) {
+            return;
+        }
+        if (!voiceAudioRoute.isActive() && !isRecording) {
+            return;
+        }
+        pausedForPhoneCall = true;
+        FileLogger.log(TAG, "pauseForPhoneCall");
+        NativeVoiceTtsPlugin.stopIfPresent();
+        stopRecording();
+        voiceAudioRoute.exit(voiceAudioBackend);
+        voiceSessionKeepAwake.exit(keepAwakeBackend);
+        voiceForeground.exit(foregroundBackend);
+        JSObject ret = new JSObject();
+        ret.put("type", "phoneCall");
+        ret.put("active", true);
+        notifyListeners("voiceModePhoneCall", ret);
+        if (getBridge() != null) {
+            getBridge().eval(
+                    "if (window.pauseVoiceModeForPhoneCall) window.pauseVoiceModeForPhoneCall();",
+                    null);
+        }
+    }
+
+    private void resumeAfterPhoneCall() {
+        if (!pausedForPhoneCall) {
+            return;
+        }
+        pausedForPhoneCall = false;
+        FileLogger.log(TAG, "resumeAfterPhoneCall");
+        JSObject ret = new JSObject();
+        ret.put("type", "phoneCall");
+        ret.put("active", false);
+        notifyListeners("voiceModePhoneCall", ret);
+        if (getBridge() != null) {
+            getBridge().eval(
+                    "if (window.resumeVoiceModeAfterPhoneCall) window.resumeVoiceModeAfterPhoneCall();",
+                    null);
         }
     }
 
@@ -698,6 +800,8 @@ public class NativeMicPlugin extends Plugin {
     protected void handleOnDestroy() {
         VoiceModeNativeHooks.setHandler(null);
         VoiceModeNativeHooks.setKeepAliveHandler(null);
+        unregisterModeListener();
+        pausedForPhoneCall = false;
         stopRecording();
         voiceAudioRoute.exit(voiceAudioBackend);
         voiceSessionKeepAwake.exit(keepAwakeBackend);

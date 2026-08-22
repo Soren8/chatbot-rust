@@ -435,6 +435,38 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     );
 }
 
+/// An answered GSM/IMS call takes MODE_IN_CALL. Voice mode must yield the
+/// mic, TTS, and communication route for the call, then resume after.
+#[test]
+fn voice_mode_pauses_during_phone_call() {
+    let plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+    let chat_js = include_str!("../../static/chat.js");
+
+    assert!(
+        plugin.contains("MODE_IN_CALL")
+            && plugin.contains("pauseForPhoneCall")
+            && plugin.contains("resumeAfterPhoneCall")
+            && plugin.contains("addOnModeChangedListener"),
+        "native must watch MODE_IN_CALL and yield the voice-mode session"
+    );
+    assert!(
+        plugin.contains("NativeVoiceTtsPlugin.stopIfPresent")
+            && plugin.contains("stopRecording")
+            && plugin.contains("voiceAudioRoute.exit"),
+        "a phone call must stop TTS, release the mic, and drop MODE_IN_COMMUNICATION"
+    );
+    assert!(
+        chat_js.contains("pauseVoiceModeForPhoneCall")
+            && chat_js.contains("resumeVoiceModeAfterPhoneCall")
+            && function_contains(chat_js, "pauseVoiceModeForPhoneCall", "stopAllTtsPlayback")
+            && !function_contains(chat_js, "pauseVoiceModeForPhoneCall", "persistVoiceModeWanted(false)")
+            && function_contains(chat_js, "resumeVoiceModeAfterPhoneCall", "startVoiceMode"),
+        "JS must pause the VAD loop without turning voice mode off, then restart after the call"
+    );
+}
+
 /// Voice Mode must not yank playback off a connected Bluetooth headset.
 #[test]
 fn voice_mode_leaves_bluetooth_route_alone() {

@@ -4337,9 +4337,39 @@ $(document).ready(function() {
     syncSendButtonState();
   }
   window.stopVoiceMode = stopVoiceMode;
+
+  function pauseVoiceModeForPhoneCall() {
+    if (!window.voiceModeActive && !voiceModeWanted()) return;
+    stopAllTtsPlayback();
+    if (nativeMicBridge) {
+      nativeMicBridge.stop();
+      nativeMicBridge = null;
+    }
+    if (voiceModeVAD) {
+      try { voiceModeVAD.pause(); } catch (e) { /* ignore */ }
+      try { voiceModeVAD.destroy(); } catch (e) { /* ignore */ }
+      voiceModeVAD = null;
+    }
+    if (voiceModeStream) {
+      voiceModeStream.getTracks().forEach(function (track) { track.stop(); });
+      voiceModeStream = null;
+    }
+  }
+  window.pauseVoiceModeForPhoneCall = pauseVoiceModeForPhoneCall;
+
+  function resumeVoiceModeAfterPhoneCall() {
+    if (!voiceModeWanted()) return;
+    startVoiceMode(1);
+  }
+  window.resumeVoiceModeAfterPhoneCall = resumeVoiceModeAfterPhoneCall;
+
   if (window.NativeMic && window.NativeMic.addListener) {
     window.NativeMic.addListener('voiceModeStopRequested', function () {
       if (window.voiceModeActive) stopVoiceMode();
+    });
+    window.NativeMic.addListener('voiceModePhoneCall', function (data) {
+      if (data && data.active) pauseVoiceModeForPhoneCall();
+      else resumeVoiceModeAfterPhoneCall();
     });
   }
 
