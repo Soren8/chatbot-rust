@@ -22,6 +22,9 @@ import android.view.WindowManager;
 import androidx.core.content.ContextCompat;
 
 import com.chatbot.app.audio.VoiceAudioRoute;
+import com.chatbot.app.audio.VoiceModeForegroundService;
+import com.chatbot.app.audio.VoiceModeForegroundSession;
+import com.chatbot.app.audio.VoiceModeNativeHooks;
 import com.chatbot.app.audio.VoiceSessionKeepAwake;
 import com.chatbot.app.util.FileLogger;
 import com.getcapacitor.JSObject;
@@ -67,6 +70,8 @@ public class NativeMicPlugin extends Plugin {
     private final VoiceAudioRoute.Backend voiceAudioBackend = new AudioManagerBackend();
     private final VoiceSessionKeepAwake voiceSessionKeepAwake = new VoiceSessionKeepAwake();
     private final VoiceSessionKeepAwake.Backend keepAwakeBackend = new ActivityKeepAwakeBackend();
+    private final VoiceModeForegroundSession voiceForeground = VoiceModeForegroundSession.get();
+    private final VoiceModeForegroundSession.Backend foregroundBackend = new ForegroundServiceBackend();
     private AcousticEchoCanceler echoCanceler = null;
     private AutomaticGainControl automaticGainControl = null;
 
@@ -76,6 +81,7 @@ public class NativeMicPlugin extends Plugin {
         FileLogger.init(getContext().getApplicationContext());
         FileLogger.log(TAG, "NativeMicPlugin.load()");
         audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+        VoiceModeNativeHooks.setHandler(this::stopFromNotification);
     }
 
     @PluginMethod
@@ -234,15 +240,19 @@ public class NativeMicPlugin extends Plugin {
         boolean bluetooth = voiceAudioBackend.hasBluetoothAudio();
         boolean applied = voiceAudioRoute.enter(voiceAudioBackend);
         boolean keepAwake = voiceSessionKeepAwake.enter(keepAwakeBackend);
+        boolean foreground = voiceForeground.enter(foregroundBackend);
+        keepVoiceWebViewRunning();
         FileLogger.log(TAG, "enterVoiceRoute applied=" + applied
                 + " active=" + voiceAudioRoute.isActive() + " bluetooth=" + bluetooth
-                + " keepAwake=" + keepAwake);
+                + " keepAwake=" + keepAwake + " foreground=" + foreground);
         JSObject result = new JSObject();
         result.put("applied", applied);
         result.put("active", voiceAudioRoute.isActive());
         result.put("bluetooth", bluetooth);
         result.put("keepAwake", keepAwake);
         result.put("keepAwakeActive", voiceSessionKeepAwake.isActive());
+        result.put("foreground", foreground);
+        result.put("foregroundActive", voiceForeground.isActive());
         call.resolve(result);
     }
 
@@ -251,13 +261,16 @@ public class NativeMicPlugin extends Plugin {
     public void exitVoiceRoute(PluginCall call) {
         boolean applied = voiceAudioRoute.exit(voiceAudioBackend);
         boolean keepAwake = voiceSessionKeepAwake.exit(keepAwakeBackend);
+        boolean foreground = voiceForeground.exit(foregroundBackend);
         FileLogger.log(TAG, "exitVoiceRoute applied=" + applied + " active=" + voiceAudioRoute.isActive()
-                + " keepAwake=" + keepAwake);
+                + " keepAwake=" + keepAwake + " foreground=" + foreground);
         JSObject result = new JSObject();
         result.put("applied", applied);
         result.put("active", voiceAudioRoute.isActive());
         result.put("keepAwake", keepAwake);
         result.put("keepAwakeActive", voiceSessionKeepAwake.isActive());
+        result.put("foreground", foreground);
+        result.put("foregroundActive", voiceForeground.isActive());
         call.resolve(result);
     }
 
@@ -428,6 +441,60 @@ public class NativeMicPlugin extends Plugin {
         }
     }
 
+    void stopFromNotification() {
+        FileLogger.log(TAG, "stopFromNotification");
+        if (getBridge() != null) {
+            getBridge().eval("if (window.stopVoiceMode) window.stopVoiceMode();", null);
+        }
+        JSObject ret = new JSObject();
+        ret.put("type", "stop");
+        notifyListeners("voiceModeStopRequested", ret);
+        NativeVoiceTtsPlugin.stopIfPresent();
+        stopRecording();
+        voiceAudioRoute.exit(voiceAudioBackend);
+        voiceSessionKeepAwake.exit(keepAwakeBackend);
+        voiceForeground.exit(foregroundBackend);
+    }
+
+    private void keepVoiceWebViewRunning() {
+        Activity activity = getActivity();
+        if (activity instanceof MainActivity) {
+            activity.runOnUiThread(((MainActivity) activity)::keepVoiceWebViewRunning);
+        }
+    }
+
+    private final class ForegroundServiceBackend implements VoiceModeForegroundSession.Backend {
+        @Override
+        public boolean startForeground() {
+            Context ctx = getContext();
+            if (ctx == null) {
+                return false;
+            }
+            try {
+                VoiceModeForegroundService.start(ctx);
+                return true;
+            } catch (Exception e) {
+                FileLogger.log(TAG, "startForeground failed: " + e.getMessage(), e);
+                return false;
+            }
+        }
+
+        @Override
+        public boolean stopForeground() {
+            Context ctx = getContext();
+            if (ctx == null) {
+                return false;
+            }
+            try {
+                VoiceModeForegroundService.stop(ctx);
+                return true;
+            } catch (Exception e) {
+                FileLogger.log(TAG, "stopForeground failed: " + e.getMessage(), e);
+                return false;
+            }
+        }
+    }
+
     private final class ActivityKeepAwakeBackend implements VoiceSessionKeepAwake.Backend {
         @Override
         public boolean setKeepScreenOn(final boolean on) {
@@ -556,9 +623,11 @@ public class NativeMicPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        VoiceModeNativeHooks.setHandler(null);
         stopRecording();
         voiceAudioRoute.exit(voiceAudioBackend);
         voiceSessionKeepAwake.exit(keepAwakeBackend);
+        voiceForeground.exit(foregroundBackend);
         super.handleOnDestroy();
     }
 }

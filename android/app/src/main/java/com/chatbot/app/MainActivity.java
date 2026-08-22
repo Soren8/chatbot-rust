@@ -1,5 +1,6 @@
 package com.chatbot.app;
 
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.webkit.WebSettings;
@@ -7,6 +8,7 @@ import android.webkit.WebView;
 
 import com.chatbot.app.Logger.LoggerPlugin;
 import com.chatbot.app.NativeVoiceTtsPlugin;
+import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -28,6 +30,36 @@ public class MainActivity extends BridgeActivity {
         if (webView != null) {
             webView.getSettings().setCacheMode(WebSettings.LOAD_DEFAULT);
             Log.i(TAG, "WebView HTTP cache enabled (LOAD_DEFAULT)");
+        }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        keepVoiceWebViewRunning();
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        keepVoiceWebViewRunning();
+    }
+
+    public void keepVoiceWebViewRunning() {
+        if (!VoiceModeForegroundSession.get().isActive()) {
+            return;
+        }
+        if (getBridge() == null) {
+            return;
+        }
+        WebView webView = getBridge().getWebView();
+        if (webView == null) {
+            return;
+        }
+        webView.onResume();
+        webView.resumeTimers();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
     }
 }

@@ -41,6 +41,8 @@ Capacitor wraps the existing web UI in a native Android shell. The WebView loads
 │  │  │  - 16kHz mono PCM     │  │                             │
 │  │  │  - VOICE_COMMUNICATION│  │                             │
 │  │  │  - speakerphone route │  │                             │
+│  │  │  VoiceMode FGS        │  │                             │
+│  │  │  - lock-screen Stop   │  │                             │
 │  │  └───────────────────────┘  │                             │
 │  │  Desktop browser: Silero VAD (not shown)                  │
 │  └─────────────────────────────┘                             │
@@ -80,7 +82,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    - WebView caching disabled for development
 
 3. Configure `AndroidManifest.xml`:
-   - `RECORD_AUDIO`, `INTERNET`, `WAKE_LOCK`, `FOREGROUND_SERVICE` permissions
+    - `RECORD_AUDIO`, `INTERNET`, `WAKE_LOCK`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE` permissions
    - `android:exported="true"` for intent filters
 
 4. Build and verify shell app loads and connects to running server.
@@ -96,8 +98,9 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    - Uses `AudioRecord` for 16kHz mono PCM capture (`VOICE_COMMUNICATION` — VoIP/speakerphone uplink with hardware AEC/AGC)
    - Sends fixed 20 ms frames to JS via Capacitor events (`nativeMicData`)
    - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` / `enterVoiceRoute()` / `exitVoiceRoute()` to web layer
-   - Handheld voice mode holds `MODE_IN_COMMUNICATION` + built-in speaker (`setCommunicationDevice` on API 31+, `setSpeakerphoneOn` fallback) for the **whole session**. Do not enter/exit that route per TTS clip — that is what flipped Bluetooth HFP/SCO.
-   - The same session holds `FLAG_KEEP_SCREEN_ON` (`VoiceSessionKeepAwake` via `enterVoiceRoute` / `exitVoiceRoute`) so auto screen sleep cannot pause the WebView VAD/STT/TTS loop. `chat.js` also requests a Screen Wake Lock (HTTPS / browser). Power-button lock still backgrounds the Activity; pocket/screen-off voice would need a microphone foreground service.
+    - Handheld voice mode holds `MODE_IN_COMMUNICATION` + built-in speaker (`setCommunicationDevice` on API 31+, `setSpeakerphoneOn` fallback) for the **whole session**. Do not enter/exit that route per TTS clip — that is what flipped Bluetooth HFP/SCO.
+    - The same session holds `FLAG_KEEP_SCREEN_ON` (`VoiceSessionKeepAwake` via `enterVoiceRoute` / `exitVoiceRoute`) so auto screen sleep cannot pause the WebView VAD/STT/TTS loop. `chat.js` also requests a Screen Wake Lock (HTTPS / browser).
+    - Power-button / pocket lock starts `VoiceModeForegroundService` (microphone FGS + `PARTIAL_WAKE_LOCK`) from the same `enterVoiceRoute` / `exitVoiceRoute` pair. MainActivity keeps the WebView resumed (`resumeTimers`, `RENDERER_PRIORITY_IMPORTANT`) while that session is active. The ongoing notification is `VISIBILITY_PUBLIC` with a compact **Stop** broadcast so the user can end voice mode from the lock screen without unlocking. Do not use an Activity pending intent for Stop.
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
@@ -172,7 +175,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 ### Native (Capacitor) vs desktop VAD
 
-1. **NativeMicPlugin.java** — 16kHz mono PCM via `AudioRecord` (`VOICE_COMMUNICATION`, software AEC/AGC when available), 20 ms frames → `nativeMicData`. Voice mode calls `enterVoiceRoute` once for speakerphone + keep-screen-on.
+1. **NativeMicPlugin.java** — 16kHz mono PCM via `AudioRecord` (`VOICE_COMMUNICATION`, software AEC/AGC when available), 20 ms frames → `nativeMicData`. Voice mode calls `enterVoiceRoute` once for speakerphone + keep-screen-on + microphone FGS.
 
 2. **`static/native-audio.js`** — PCM16 WAV helpers for STT upload and related buffering.
 
@@ -329,6 +332,10 @@ Product flavors configure `server_url` string resource:
 | `android/.../AndroidManifest.xml` | Modify — audio permissions, CarAppService |
 | `android/.../NativeMic/NativeMicPlugin.java` | Create — native mic capture with `VOICE_COMMUNICATION` source + session speakerphone route + keep-screen-on |
 | `android/.../audio/VoiceSessionKeepAwake.java` | Create — session-held `FLAG_KEEP_SCREEN_ON` so auto screen sleep cannot pause WebView voice mode |
+| `android/.../audio/VoiceModeForegroundSession.java` | Create — session-held microphone FGS so power-button lock cannot kill voice mode |
+| `android/.../audio/VoiceModeForegroundService.java` | Create — FGS + CPU wake lock + ongoing notification |
+| `android/.../audio/VoiceModeNotification.java` | Create — lock-screen public Stop broadcast |
+| `android/.../audio/VoiceModeStopReceiver.java` | Create — Stop without unlocking |
 | `android/.../car/ChatbotCarAppService.java` | Create — Android Auto entry |
 | `android/.../car/VoiceSession.java` | Create — Android Auto session |
 | `android/.../car/VoiceScreen.java` | Create — Android Auto UI, reads server URL from flavor string |

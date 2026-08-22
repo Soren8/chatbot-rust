@@ -51,6 +51,20 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private volatile Thread workerThread;
     private volatile AudioTrack audioTrack;
     private volatile int trackSampleRate = DEFAULT_SAMPLE_RATE;
+    private static volatile NativeVoiceTtsPlugin instance;
+
+    @Override
+    public void load() {
+        super.load();
+        instance = this;
+    }
+
+    public static void stopIfPresent() {
+        NativeVoiceTtsPlugin plugin = instance;
+        if (plugin != null) {
+            plugin.stopPlaybackInternal(true);
+        }
+    }
 
     @PluginMethod
     public void beginSession(PluginCall call) {
@@ -394,6 +408,9 @@ public class NativeVoiceTtsPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        if (instance == this) {
+            instance = null;
+        }
         stopPlaybackInternal(false);
         super.handleOnDestroy();
     }

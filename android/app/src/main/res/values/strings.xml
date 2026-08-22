@@ -4,4 +4,8 @@
     <string name="title_activity_main">Chatbot</string>
     <string name="package_name">com.chatbot.app</string>
     <string name="custom_url_scheme">com.chatbot.app</string>
+    <string name="voice_mode_notification_channel">Voice mode</string>
+    <string name="voice_mode_notification_title">Voice mode</string>
+    <string name="voice_mode_notification_text">Listening</string>
+    <string name="voice_mode_notification_stop">Stop</string>
 </resources>

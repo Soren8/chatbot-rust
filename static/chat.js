@@ -4336,6 +4336,12 @@ $(document).ready(function() {
     $micBtn.prop('disabled', false);
     syncSendButtonState();
   }
+  window.stopVoiceMode = stopVoiceMode;
+  if (window.NativeMic && window.NativeMic.addListener) {
+    window.NativeMic.addListener('voiceModeStopRequested', function () {
+      if (window.voiceModeActive) stopVoiceMode();
+    });
+  }
 
   function interruptVoiceReplyForNewTurn(opts) {
     opts = opts || {};

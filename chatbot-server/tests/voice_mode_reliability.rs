@@ -234,10 +234,9 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
     );
 }
 
-/// Handheld voice mode is JS-driven. Auto screen sleep pauses the Activity /
-/// WebView, so VAD, STT, and TTS stop. Hold FLAG_KEEP_SCREEN_ON for the
-/// session (and a JS screen wake lock on HTTPS) instead of requiring a
-/// background microphone service.
+/// Auto screen sleep still pauses the Activity / WebView. Hold
+/// FLAG_KEEP_SCREEN_ON for the session (and a JS screen wake lock on HTTPS).
+/// Power-button lock is a separate path: microphone foreground service.
 #[test]
 fn voice_mode_holds_screen_awake_for_the_session() {
     let keep = include_str!(
@@ -282,6 +281,110 @@ fn voice_mode_holds_screen_awake_for_the_session() {
         !function_contains(chat_js, "stopVoicePlaybackOnly", "releaseVoiceScreenWakeLock")
             && !function_contains(chat_js, "stopVoicePlaybackOnly", "exitVoiceRoute"),
         "barge-in must not drop keep-awake or speakerphone routing"
+    );
+}
+
+/// Power-button lock backgrounds the Activity. Voice mode must keep the
+/// microphone + JS loop alive with a microphone FGS, and expose a lock-screen
+/// Stop that does not require unlocking (broadcast, not an Activity).
+#[test]
+fn voice_mode_survives_screen_off_with_lock_screen_stop() {
+    let session = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeForegroundSession.java"
+    );
+    let notification = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeNotification.java"
+    );
+    let service = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeForegroundService.java"
+    );
+    let receiver = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeStopReceiver.java"
+    );
+    let tests = include_str!(
+        "../../android/app/src/test/java/com/chatbot/app/audio/VoiceModeForegroundSessionTest.java"
+    );
+    let plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+    let activity = include_str!("../../android/app/src/main/java/com/chatbot/app/MainActivity.java");
+    let manifest = include_str!("../../android/app/src/main/AndroidManifest.xml");
+    let chat_js = include_str!("../../static/chat.js");
+
+    assert!(
+        manifest.contains("FOREGROUND_SERVICE_MICROPHONE")
+            && manifest.contains("VoiceModeForegroundService")
+            && manifest.contains("foregroundServiceType=\"microphone\"")
+            && manifest.contains("VoiceModeStopReceiver")
+            && manifest.contains("android:exported=\"false\""),
+        "manifest must declare an unexported microphone FGS and Stop receiver"
+    );
+    assert!(
+        !manifest.contains("FOREGROUND_SERVICE_MEDIA_PLAYBACK")
+            && !service.contains("MEDIA_PLAYBACK"),
+        "do not add mediaPlayback FGS type (API 35+ wants a MediaSession; mic is always on)"
+    );
+
+    assert!(
+        session.contains("startForeground")
+            && session.contains("stopForeground")
+            && plugin.contains("VoiceModeForegroundSession.get()")
+            && plugin.contains("voiceForeground.enter")
+            && plugin.contains("voiceForeground.exit")
+            && plugin.contains("enterVoiceRoute")
+            && plugin.contains("exitVoiceRoute"),
+        "FGS must follow the voice-mode session, not TTS start/stop"
+    );
+    assert!(
+        tests.contains("enterStartsForegroundOnce")
+            && tests.contains("secondEnterDoesNotRestartService"),
+        "unit test must lock idempotent FGS enter/exit"
+    );
+
+    assert!(
+        service.contains("PARTIAL_WAKE_LOCK")
+            && service.contains("startForeground")
+            && service.contains("FOREGROUND_SERVICE_TYPE_MICROPHONE"),
+        "FGS must hold a CPU wake lock and start as microphone type"
+    );
+    assert!(
+        notification.contains("VISIBILITY_PUBLIC")
+            && notification.contains("setOngoing(true)")
+            && notification.contains("ACTION_STOP")
+            && notification.contains("setShowActionsInCompactView")
+            && notification.contains("getBroadcast")
+            && !notification.contains("getActivity"),
+        "lock-screen Stop must be an ongoing public broadcast action, not an Activity"
+    );
+    assert!(
+        receiver.contains("requestStop") || receiver.contains("stopFromNotification"),
+        "Stop receiver must tear down voice mode without unlocking"
+    );
+    assert!(
+        plugin.contains("stopFromNotification")
+            && plugin.contains("voiceModeStopRequested")
+            && plugin.contains("stopVoiceMode"),
+        "notification Stop must ask JS to stopVoiceMode and tear down native audio"
+    );
+
+    assert!(
+        activity.contains("keepVoiceWebViewRunning")
+            && activity.contains("resumeTimers")
+            && activity.contains("RENDERER_PRIORITY_IMPORTANT")
+            && activity.contains("onPause")
+            && activity.contains("VoiceModeForegroundSession.get().isActive()"),
+        "screen-off must keep the WebView JS loop running while the FGS is held"
+    );
+
+    assert!(
+        chat_js.contains("window.stopVoiceMode")
+            && chat_js.contains("voiceModeStopRequested")
+            && function_contains(chat_js, "stopVoiceMode", "exitVoiceRoute"),
+        "JS must expose stopVoiceMode and honor the native lock-screen Stop event"
+    );
+    assert!(
+        !function_contains(chat_js, "stopVoicePlaybackOnly", "exitVoiceRoute"),
+        "barge-in must not drop the screen-off FGS"
     );
 }
 
