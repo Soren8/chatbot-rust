@@ -1121,6 +1121,11 @@ let voiceModeTtsSessionActive = false;
 let voiceModeTtsPlaying = false;
 /** Do not start utterances until this timestamp (ms) — lets AEC settle after TTS. */
 let voiceModeListenCooldownUntil = 0;
+const TTS_LISTEN_COOLDOWN_MS = 400;
+
+function armTtsListenCooldown() {
+  voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
+}
 
 function resetPlayButtonUi(button) {
   if (!button) return;
@@ -1208,8 +1213,29 @@ function stopCurrentDesktopTts() {
   const prevBtn = CURRENT_AUDIO_BUTTON;
   CURRENT_AUDIO = null;
   CURRENT_AUDIO_BUTTON = null;
+  voiceModeTtsSessionActive = false;
+  voiceModeTtsPlaying = false;
   resetPlayButtonUi(prevBtn);
   clearMessageTtsPlayingUi();
+  if (typeof syncSendButtonState === 'function') {
+    syncSendButtonState();
+  }
+}
+
+function completeDesktopTtsPlayback(button) {
+  CURRENT_AUDIO = null;
+  CURRENT_AUDIO_BUTTON = null;
+  resetPlayButtonUi(button);
+  clearMessageTtsPlayingUi();
+  resetDesktopTtsAudioElement();
+  voiceModeTtsSessionActive = false;
+  voiceModeTtsPlaying = false;
+  if (window.voiceModeActive) {
+    armTtsListenCooldown();
+  }
+  if (typeof syncSendButtonState === 'function') {
+    syncSendButtonState();
+  }
 }
 
 function desktopTtsIsLive(sessionId) {
@@ -1660,7 +1686,7 @@ function finishChatRequest(seq) {
 }
 
 function isVoiceTtsActive() {
-  return !!(voiceModeTtsSessionActive || voiceModeTtsPlaying);
+  return !!(CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying);
 }
 
 function syncSendButtonState() {
@@ -2055,12 +2081,24 @@ function playOneTtsUtterance(sessionId, text) {
         settled = true;
         audio.onended = null;
         audio.onerror = null;
+        if (window.voiceModeActive) {
+          voiceModeTtsPlaying = false;
+          if (typeof window.notifyVoiceModeTtsEnded === 'function') {
+            window.notifyVoiceModeTtsEnded();
+          }
+        }
         resolve(!!ok && desktopTtsIsLive(sessionId));
       };
       audio.onended = function () { finish(true); };
       audio.onerror = function () { finish(false); };
       // Always assign a fresh absolute URL; prior load() cleared the element.
       audio.src = '/tts_stream/' + encodeURIComponent(data.token);
+      if (window.voiceModeActive) {
+        voiceModeTtsPlaying = true;
+        if (typeof window.notifyVoiceModeTtsStarted === 'function') {
+          window.notifyVoiceModeTtsStarted();
+        }
+      }
       const playPromise = audio.play();
       if (playPromise && typeof playPromise.then === 'function') {
         playPromise.catch(function (err) {
@@ -2093,12 +2131,7 @@ function playFixedSentenceList(sessionId, button, sentences) {
   });
   chain.then(function () {
     if (!desktopTtsIsLive(sessionId)) return;
-    // Natural end: clear UI without bumping session early mid-flight.
-    CURRENT_AUDIO = null;
-    CURRENT_AUDIO_BUTTON = null;
-    resetPlayButtonUi(button);
-    clearMessageTtsPlayingUi();
-    resetDesktopTtsAudioElement();
+    completeDesktopTtsPlayback(button);
   });
 }
 
@@ -2148,11 +2181,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
       pump();
       return;
     }
-    CURRENT_AUDIO = null;
-    CURRENT_AUDIO_BUTTON = null;
-    resetPlayButtonUi(button);
-    clearMessageTtsPlayingUi();
-    resetDesktopTtsAudioElement();
+    completeDesktopTtsPlayback(button);
   }
 
   function pump() {
@@ -2214,6 +2243,12 @@ window.playTTS = function playTTS(button, options) {
     stop: function () { stopCurrentDesktopTts(); }
   };
   CURRENT_AUDIO_BUTTON = button;
+  if (window.voiceModeActive) {
+    voiceModeTtsSessionActive = true;
+    if (typeof syncSendButtonState === 'function') {
+      syncSendButtonState();
+    }
+  }
 
   $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
   $messageElement.addClass('tts-is-playing');
@@ -2226,7 +2261,11 @@ window.playTTS = function playTTS(button, options) {
   playMessageBodyTts(sessionId, button, $messageElement);
 }
 
-/** Voice mode uses the voice TTS backend on desktop and mobile; only the output device differs. */
+window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
+  window.playTTS(button, options);
+};
+
+/** Voice mode uses the same playTTS / HTML Audio path as the play button. */
 function playMessageTts(button, options) {
   if (window.voiceModeActive && typeof window.playTTSVoiceMode === 'function') {
     window.playTTSVoiceMode(button, options);
@@ -3753,6 +3792,7 @@ $(document).ready(function() {
     if (window.voiceModeActive) {
       stopVoiceMode();
     } else {
+      primeDesktopTtsAudioFromGesture();
       startVoiceMode();
     }
   });
@@ -3790,9 +3830,6 @@ $(document).ready(function() {
     this.isRecording = false;
     this.chunkCount = 0;
   }
-
-  /** Ms after TTS ends before RMS utterance detection resumes. */
-  const TTS_LISTEN_COOLDOWN_MS = 400;
 
   NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
     this.speechAboveCount = 0;
@@ -4041,95 +4078,21 @@ $(document).ready(function() {
     this._resetSpeechCounters();
   };
 
-  function useNativeVoiceTtsPlayback() {
-    return !!(window.nativeVoiceTtsAvailable && window.voiceModeActive && window.NativeVoiceTts);
-  }
-
-  function finishVoiceModeTtsSession() {
-    voiceModeTtsSessionActive = false;
-    voiceModeTtsPlaying = false;
-    syncSendButtonState();
-  }
-
-  function armTtsListenCooldown() {
-    voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
-  }
-
   function onVoiceModeTtsStarted() {
     voiceModeTtsPlaying = true;
     if (nativeMicBridge && nativeMicBridge.onTtsPlaybackStarted) {
       nativeMicBridge.onTtsPlaybackStarted();
     }
-    nativeLog('VAD', 'TTS playback started native=' + useNativeVoiceTtsPlayback());
+    nativeLog('VAD', 'TTS playback started');
   }
 
   function onVoiceModeTtsEnded() {
     voiceModeTtsPlaying = false;
-    // Cooldown only when the full TTS session finishes, not between sentences.
     nativeLog('VAD', 'TTS playback ended');
   }
 
-  let nativeVoiceTtsSessionListener = null;
-  let nativeVoiceTtsSessionPromise = null;
-  let nativeVoiceTtsOnSessionEnded = null;
-  let nativeTtsFetchChain = Promise.resolve();
-
-  function nativeVoiceTtsStreamUrl(token) {
-    return window.location.origin + '/tts_stream/' + encodeURIComponent(token);
-  }
-
-  function ensureNativeVoiceTtsSession() {
-    if (nativeVoiceTtsSessionPromise) {
-      return nativeVoiceTtsSessionPromise;
-    }
-    nativeVoiceTtsSessionPromise = window.NativeVoiceTts.beginSession().then(function () {
-      if (nativeVoiceTtsSessionListener) {
-        nativeVoiceTtsSessionListener.remove();
-      }
-      nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
-        if (data.type === 'started') {
-          onVoiceModeTtsStarted();
-        } else if (data.type === 'ended') {
-          onVoiceModeTtsEnded();
-          tearDownNativeVoiceTtsSession();
-          if (nativeVoiceTtsOnSessionEnded) {
-            var endedCb = nativeVoiceTtsOnSessionEnded;
-            nativeVoiceTtsOnSessionEnded = null;
-            endedCb();
-          }
-        } else if (data.type === 'error') {
-          onVoiceModeTtsEnded();
-          console.error('Native voice TTS error:', data.message);
-        }
-      });
-    });
-    return nativeVoiceTtsSessionPromise;
-  }
-
-  function enqueueNativeVoiceTts(token) {
-    return ensureNativeVoiceTtsSession().then(function () {
-      return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(token));
-    });
-  }
-
-  function closeNativeVoiceTtsSession() {
-    return nativeTtsFetchChain.then(function () {
-      if (!nativeVoiceTtsSessionPromise) {
-        return Promise.resolve();
-      }
-      return nativeVoiceTtsSessionPromise.then(function () {
-        return window.NativeVoiceTts.markEndOfQueue();
-      });
-    });
-  }
-
-  function tearDownNativeVoiceTtsSession() {
-    if (nativeVoiceTtsSessionListener) {
-      nativeVoiceTtsSessionListener.remove();
-      nativeVoiceTtsSessionListener = null;
-    }
-    nativeVoiceTtsSessionPromise = null;
-  }
+  window.notifyVoiceModeTtsStarted = onVoiceModeTtsStarted;
+  window.notifyVoiceModeTtsEnded = onVoiceModeTtsEnded;
 
   const VOICE_MODE_WANTED_KEY = 'chatbotVoiceModeWanted';
   let voiceScreenWakeLock = null;
@@ -4335,8 +4298,6 @@ $(document).ready(function() {
       if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
         window.NativeVoiceTts.stop().catch(function () {});
       }
-      tearDownNativeVoiceTtsSession();
-      nativeVoiceTtsOnSessionEnded = null;
       stopCurrentDesktopTts();
       syncSendButtonState();
     } finally {
@@ -4620,248 +4581,6 @@ $(document).ready(function() {
       }
     }
   });
-
-  // Voice mode TTS: native AudioTrack on Capacitor (AEC-safe), HTML audio on desktop
-  window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
-    options = options || {};
-    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
-      stopAllTtsPlayback();
-      return;
-    }
-    if (CURRENT_AUDIO) {
-      stopAllTtsPlayback();
-    }
-
-    const $messageElement = $(button).closest('.message');
-    let isStopped = false;
-    let processedText = '';
-    let sentenceQueue = [];
-    let isFetching = false;
-    let audioEl = null;
-    let nativeTtsPendingFetches = 0;
-    let nativeTtsCloseRequested = false;
-    nativeTtsFetchChain = Promise.resolve();
-    voiceModeTtsSessionActive = true;
-    syncSendButtonState();
-
-    function getPendingText() {
-      const fullText = getMessageTtsText($messageElement);
-      if (!fullText) return '';
-      if (fullText.startsWith(processedText)) return fullText.substring(processedText.length);
-      const idx = fullText.indexOf(processedText);
-      if (idx !== -1) return fullText.substring(idx + processedText.length);
-      return '';
-    }
-
-    function discoverSentences() {
-      if (isStopped) return;
-      const pending = getPendingText();
-      if (!pending) return;
-      // Same splitter as desktop TTS (ellipsis "..." is one terminator).
-      const parts = splitSentences(pending);
-      if (!parts.length) return;
-      const currentRawText = $messageElement.find('.ai-message-text').text().trim();
-      const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
-      let advancedTo = 0;
-      for (let pi = 0; pi < parts.length; pi++) {
-        const p = parts[pi];
-        // While streaming, leave an unfinished trailing fragment for later.
-        if (!sentenceEndsWithTerminator(p.text) && stillGenerating) break;
-        sentenceQueue.push(p.text);
-        advancedTo = p.end;
-      }
-      if (advancedTo > 0) {
-        // Include whitespace between the previous cursor and this end.
-        processedText += pending.substring(0, advancedTo);
-      }
-    }
-
-    function maybeFinishNativeTtsSession() {
-      if (!useNativeVoiceTtsPlayback() || isStopped || nativeTtsCloseRequested) return;
-      if (nativeTtsPendingFetches > 0 || sentenceQueue.length > 0) return;
-      const currentRawText = $messageElement.find('.ai-message-text').text().trim();
-      const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
-      if (stillGenerating) {
-        setTimeout(playNext, 200);
-        return;
-      }
-      const remaining = getPendingText();
-      if (remaining.trim()) {
-        sentenceQueue.push(remaining);
-        processedText += remaining;
-        playNext();
-        return;
-      }
-      nativeTtsCloseRequested = true;
-      if (!nativeVoiceTtsSessionPromise) {
-        if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
-          $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-          CURRENT_AUDIO = null;
-          CURRENT_AUDIO_BUTTON = null;
-        }
-        finishVoiceModeTtsSession();
-        armTtsListenCooldown();
-        return;
-      }
-      nativeVoiceTtsOnSessionEnded = function () {
-        if (!isStopped && CURRENT_AUDIO_BUTTON === button) {
-          $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-          CURRENT_AUDIO = null;
-          CURRENT_AUDIO_BUTTON = null;
-        }
-        finishVoiceModeTtsSession();
-        armTtsListenCooldown();
-      };
-      closeNativeVoiceTtsSession().catch(function () {
-        if (nativeVoiceTtsOnSessionEnded) {
-          var cb = nativeVoiceTtsOnSessionEnded;
-          nativeVoiceTtsOnSessionEnded = null;
-          cb();
-        }
-      });
-    }
-
-    function scheduleNativeTtsFetch(text) {
-      nativeTtsPendingFetches++;
-      nativeTtsFetchChain = nativeTtsFetchChain.then(function () {
-        if (isStopped) return;
-        return fetchVoiceRetry('/tts', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: text })
-        })
-        .then(function (r) {
-          return r.json();
-        })
-        .then(function (data) {
-          if (isStopped) return;
-          return enqueueNativeVoiceTts(data.token);
-        });
-      }).catch(function (err) {
-        console.error('Native voice TTS error:', err);
-      }).finally(function () {
-        nativeTtsPendingFetches--;
-        if (!isStopped) {
-          maybeFinishNativeTtsSession();
-        }
-      });
-    }
-
-    function playNext() {
-      if (isStopped) return;
-      if (sentenceQueue.length === 0) discoverSentences();
-
-      if (useNativeVoiceTtsPlayback()) {
-        while (sentenceQueue.length > 0) {
-          const text = sentenceQueue.shift().trim();
-          if (text) scheduleNativeTtsFetch(text);
-        }
-        maybeFinishNativeTtsSession();
-        if (sentenceQueue.length === 0) {
-          const currentRawText = $messageElement.find('.ai-message-text').text().trim();
-          const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
-          if (stillGenerating) {
-            setTimeout(playNext, 200);
-          }
-        }
-        return;
-      }
-
-      if (sentenceQueue.length === 0) {
-        const currentRawText = $messageElement.find('.ai-message-text').text().trim();
-        const stillGenerating = currentRawText === 'Thinking...' || (currentAbortController !== null);
-        if (!stillGenerating) {
-          const remaining = getPendingText();
-          if (remaining.trim()) {
-            sentenceQueue.push(remaining);
-            processedText += remaining;
-          } else {
-            // All done
-            if (CURRENT_AUDIO_BUTTON === button) {
-              $(button).removeClass('playing').prop('disabled', false).html('<i class="bi bi-play-fill"></i>');
-              CURRENT_AUDIO = null; CURRENT_AUDIO_BUTTON = null;
-            }
-            finishVoiceModeTtsSession();
-            armTtsListenCooldown();
-            return;
-          }
-        } else {
-          setTimeout(playNext, 200);
-          return;
-        }
-      }
-
-      if (sentenceQueue.length > 0) {
-        const text = sentenceQueue.shift().trim();
-        if (!text) { setTimeout(playNext, 10); return; }
-
-        isFetching = true;
-
-        fetchVoiceRetry('/tts', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: text })
-        })
-        .then(r => {
-          return r.json();
-        })
-        .then(function (data) {
-          if (isStopped) return;
-          audioEl = new Audio('/tts_stream/' + data.token);
-          audioEl.onplay = function () {
-            onVoiceModeTtsStarted();
-          };
-          audioEl.onended = function () {
-            onVoiceModeTtsEnded();
-            if (!isStopped) { isFetching = false; playNext(); }
-          };
-          audioEl.onerror = function () {
-            onVoiceModeTtsEnded();
-            console.error('Voice mode audio playback error');
-            isFetching = false;
-            if (!isStopped) setTimeout(playNext, 500);
-          };
-          audioEl.play().catch(function (e) {
-            onVoiceModeTtsEnded();
-            console.error('Audio play failed:', e);
-            isFetching = false;
-            if (!isStopped) setTimeout(playNext, 500);
-          });
-        })
-        .catch(err => {
-          console.error('Voice mode TTS error:', err);
-          isFetching = false;
-          if (!isStopped) setTimeout(playNext, 500);
-        });
-      }
-    }
-
-    CURRENT_AUDIO = {
-      stop: function () {
-        isStopped = true;
-        nativeTtsCloseRequested = true;
-        nativeTtsFetchChain = Promise.resolve();
-        finishVoiceModeTtsSession();
-        tearDownNativeVoiceTtsSession();
-        nativeVoiceTtsOnSessionEnded = null;
-        if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
-          window.NativeVoiceTts.stop().catch(function () {});
-        }
-        if (audioEl) { audioEl.pause(); audioEl.src = ''; audioEl = null; }
-      }
-    };
-    CURRENT_AUDIO_BUTTON = button;
-    $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
-    if (options.sentences && options.sentences.length) {
-      for (let si = 0; si < options.sentences.length; si++) {
-        const st = options.sentences[si];
-        if (st && String(st).trim()) sentenceQueue.push(String(st));
-      }
-      // Already queued from the click point; only discover text that arrives after this snapshot.
-      processedText = getMessageTtsText($messageElement) || '';
-    }
-    playNext();
-  };
 
   // Initialize prompt/memory for guests
   if (!window.APP_DATA.loggedIn) {

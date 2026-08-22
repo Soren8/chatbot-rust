@@ -691,6 +691,45 @@ fn native_vad_keeps_leading_audio_and_longer_end_silence() {
     );
 }
 
+/// Voice-mode TTS on mobile must be the same playTTS / HTML Audio path as
+/// the play button. A second NativeVoiceTts enqueue pipeline is what broke
+/// playback while the button (voice mode off) still worked.
+#[test]
+fn voice_mode_tts_uses_same_html_audio_path_as_play_button() {
+    let chat_js = include_str!("../../static/chat.js");
+
+    assert!(
+        function_contains(chat_js, "playTTSVoiceMode", "playTTS")
+            && !function_contains(chat_js, "playTTSVoiceMode", "enqueueNativeVoiceTts")
+            && !function_contains(chat_js, "playTTSVoiceMode", "useNativeVoiceTtsPlayback")
+            && !function_contains(chat_js, "playTTSVoiceMode", "new Audio("),
+        "playTTSVoiceMode must call playTTS, not a separate native/HTML queue"
+    );
+    assert!(
+        function_contains(chat_js, "playTTS", "playOneTtsUtterance")
+            || (function_contains(chat_js, "playTTS", "playFixedSentenceList")
+                && function_contains(chat_js, "playTTS", "playMessageBodyTts")
+                && function_contains(chat_js, "playOneTtsUtterance", "getDesktopTtsAudio")),
+        "the only clip player is playOneTtsUtterance on the shared HTMLAudioElement"
+    );
+    assert!(
+        !chat_js.contains("function useNativeVoiceTtsPlayback")
+            && !chat_js.contains("function enqueueNativeVoiceTts")
+            && !chat_js.contains("function scheduleNativeTtsFetch"),
+        "do not keep a second native enqueue path beside playTTS"
+    );
+    assert!(
+        function_contains(chat_js, "playOneTtsUtterance", "getDesktopTtsAudio")
+            && function_contains(chat_js, "playOneTtsUtterance", "/tts_stream/"),
+        "shared clip play is POST /tts then HTML Audio GET /tts_stream"
+    );
+    assert!(
+        chat_js.contains("primeDesktopTtsAudioFromGesture")
+            && function_contains_near(chat_js, "$voiceModeBtn.on('click'", "primeDesktopTtsAudioFromGesture"),
+        "voice-mode tap must prime the shared Audio element (same slot as the play button)"
+    );
+}
+
 /// Native TTS streams PCM, but reliability comes first on spotty links:
 /// preroll before the first sample, retry a failed GET, and do not kill
 /// the whole session when one sentence drops.
@@ -724,9 +763,8 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
     assert!(
         chat_js.contains("function fetchVoiceRetry")
             && function_contains(chat_js, "handleSpeechEnd", "fetchVoiceRetry")
-            && function_contains(chat_js, "scheduleNativeTtsFetch", "fetchVoiceRetry")
-            && function_contains(chat_js, "playNext", "fetchVoiceRetry"),
-        "STT and TTS fetches must retry transient failures on desktop and native"
+            && function_contains(chat_js, "playOneTtsUtterance", "fetchVoiceRetry"),
+        "STT and TTS fetches must retry transient failures on desktop and mobile"
     );
     assert!(
         tts.contains("playUrlToTrackOnce")
@@ -788,8 +826,9 @@ fn voice_mode_gui_stop_halts_tts_on_desktop_and_mobile() {
         "voice-mode play must forward sentence options; dropping them plays the whole response"
     );
     assert!(
-        function_contains(chat_js, "playTTSVoiceMode", "options.sentences"),
-        "voice-mode TTS must honor a clicked sentence list instead of always starting at the top"
+        function_contains(chat_js, "playTTSVoiceMode", "playTTS")
+            && function_contains(chat_js, "playTTS", "options.sentences"),
+        "voice-mode TTS must honor a clicked sentence list via playTTS"
     );
 }
 
