@@ -638,6 +638,28 @@ fn native_vad_keeps_leading_audio_and_longer_end_silence() {
     );
 }
 
+/// Native TTS must start playing as PCM arrives. Buffering the whole WAV
+/// first adds a full WAN RTT of silence before the first sample.
+#[test]
+fn native_voice_tts_streams_wav_instead_of_buffering_the_clip() {
+    let tts = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    assert!(
+        tts.contains("streamWavToTrack")
+            && tts.contains("getInputStream")
+            && tts.contains("writePcmBlocking")
+            && tts.contains("flushDecodedPcm"),
+        "native TTS must parse /tts_stream incrementally and write PCM as it arrives"
+    );
+    assert!(
+        !tts.contains("downloadUrl")
+            && !tts.contains("readAllBytes")
+            && !tts.contains("downloaded fully"),
+        "do not buffer the whole WAV before AudioTrack write"
+    );
+}
+
 /// Desktop and mobile share one TTS stop. The play icon, message click, Stop
 /// button, barge-in, and disabling voice mode must all halt playback — not
 /// only bump the desktop HTMLAudio session.

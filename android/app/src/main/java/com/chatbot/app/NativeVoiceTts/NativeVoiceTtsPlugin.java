@@ -20,7 +20,6 @@ import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -32,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Communication usage matches speakerphone capture so hardware AEC has a playback reference.
  * Routing is held for the whole voice-mode session by {@code NativeMic.enterVoiceRoute};
  * this plugin does not change {@link android.media.AudioManager} mode or the communication device.
- * Each URL is downloaded fully and parsed before PCM is written (matches desktop decodeAudioData).
+ * Each {@code /tts_stream} URL is parsed incrementally and PCM is written as it arrives.
  */
 @CapacitorPlugin(name = "NativeVoiceTts")
 public class NativeVoiceTtsPlugin extends Plugin {
@@ -158,28 +157,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
     }
 
-    private static final class WavPcm {
-        final int sampleRate;
-        final byte[] pcm;
-
-        WavPcm(int sampleRate, byte[] pcm) {
-            this.sampleRate = sampleRate;
-            this.pcm = pcm;
-        }
-    }
-
     private void playUrlToTrack(String urlStr) throws IOException {
-        byte[] wavBytes = downloadUrl(urlStr);
-        WavPcm wav = extractPcmFromWav(wavBytes);
-        if (wav.pcm.length < 2) {
-            throw new IOException("empty PCM payload");
-        }
-        AudioTrack track = ensureTrackPlaying(wav.sampleRate);
-        writePcmBlocking(track, wav.pcm);
-        Log.d(TAG, "played pcm bytes=" + wav.pcm.length + " rate=" + wav.sampleRate);
-    }
-
-    private byte[] downloadUrl(String urlStr) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(120000);
@@ -190,74 +168,169 @@ public class NativeVoiceTtsPlugin extends Plugin {
             throw new IOException("HTTP " + code);
         }
         try (InputStream is = conn.getInputStream()) {
-            return readAllBytes(is);
+            streamWavToTrack(is);
         } finally {
             conn.disconnect();
         }
     }
 
-    private byte[] readAllBytes(InputStream is) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
+    private void streamWavToTrack(InputStream is) throws IOException {
+        WavStreamDecoder decoder = new WavStreamDecoder();
         byte[] buf = new byte[8192];
         int total = 0;
         int n;
         while ((n = is.read(buf)) != -1) {
+            if (stopRequested.get()) {
+                return;
+            }
             total += n;
             if (total > MAX_WAV_BYTES) {
                 throw new IOException("WAV response too large");
             }
-            out.write(buf, 0, n);
+            decoder.feed(buf, n);
+            flushDecodedPcm(decoder);
         }
-        return out.toByteArray();
+        decoder.finish();
+        flushDecodedPcm(decoder);
+        if (!decoder.sawDataChunk()) {
+            throw new IOException("WAV missing data chunk");
+        }
+        Log.d(TAG, "played pcm bytes=" + decoder.pcmBytes() + " rate=" + decoder.sampleRate());
     }
 
-    private WavPcm extractPcmFromWav(byte[] data) throws IOException {
-        if (data.length < 44) {
-            throw new IOException("WAV too short");
+    private void flushDecodedPcm(WavStreamDecoder decoder) throws IOException {
+        byte[] pcm = decoder.takePcm();
+        if (pcm.length < 2) {
+            return;
         }
-        if (data[0] != 'R' || data[1] != 'I' || data[2] != 'F' || data[3] != 'F'
-                || data[8] != 'W' || data[9] != 'A' || data[10] != 'V' || data[11] != 'E') {
-            throw new IOException("not a WAV file");
+        AudioTrack track = ensureTrackPlaying(decoder.sampleRate());
+        writePcmBlocking(track, pcm);
+    }
+
+    private static final class WavStreamDecoder {
+        private final ByteArrayOutputStream header = new ByteArrayOutputStream(64);
+        private final ByteArrayOutputStream pcm = new ByteArrayOutputStream(8192);
+        private int sampleRate = DEFAULT_SAMPLE_RATE;
+        private boolean headerDone;
+        private boolean sawData;
+        private int dataRemaining = -1;
+        private byte odd;
+        private boolean hasOdd;
+        private int pcmBytes;
+
+        int sampleRate() {
+            return sampleRate;
         }
 
-        int sampleRate = DEFAULT_SAMPLE_RATE;
-        int pos = 12;
-        while (pos + 8 <= data.length) {
-            String chunkId = new String(data, pos, 4, StandardCharsets.US_ASCII);
-            int chunkSize = ByteBuffer.wrap(data, pos + 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
-            int chunkDataStart = pos + 8;
-            if (chunkDataStart > data.length) {
-                break;
+        boolean sawDataChunk() {
+            return sawData;
+        }
+
+        int pcmBytes() {
+            return pcmBytes;
+        }
+
+        void feed(byte[] src, int len) throws IOException {
+            if (!headerDone) {
+                header.write(src, 0, len);
+                byte[] acc = header.toByteArray();
+                int dataAt = findDataChunk(acc);
+                if (dataAt < 0) {
+                    return;
+                }
+                headerDone = true;
+                if (dataAt < acc.length) {
+                    acceptPcm(acc, dataAt, acc.length - dataAt);
+                }
+                return;
             }
-
-            if ("fmt ".equals(chunkId)) {
-                if (chunkSize >= 8 && chunkDataStart + 8 <= data.length) {
-                    sampleRate = ByteBuffer.wrap(data, chunkDataStart + 4, 4)
-                            .order(ByteOrder.LITTLE_ENDIAN).getInt();
-                }
-            } else if ("data".equals(chunkId)) {
-                int pcmStart = chunkDataStart;
-                int pcmLen;
-                if (chunkSize <= 0 || chunkSize == Integer.MAX_VALUE) {
-                    pcmLen = data.length - pcmStart;
-                } else {
-                    pcmLen = Math.min(chunkSize, data.length - pcmStart);
-                }
-                if (pcmLen < 2 || (pcmLen & 1) != 0) {
-                    pcmLen &= ~1;
-                }
-                if (pcmLen < 2) {
-                    throw new IOException("invalid PCM length");
-                }
-                if (sampleRate < 8000 || sampleRate > 48000) {
-                    sampleRate = DEFAULT_SAMPLE_RATE;
-                }
-                return new WavPcm(sampleRate, Arrays.copyOfRange(data, pcmStart, pcmStart + pcmLen));
-            }
-
-            pos = chunkDataStart + chunkSize + (chunkSize & 1);
+            acceptPcm(src, 0, len);
         }
-        throw new IOException("WAV missing data chunk");
+
+        void finish() {
+            // drop a trailing odd byte; 16-bit PCM must be even
+        }
+
+        byte[] takePcm() {
+            byte[] out = pcm.toByteArray();
+            pcm.reset();
+            return out;
+        }
+
+        private int findDataChunk(byte[] data) throws IOException {
+            if (data.length < 12) {
+                return -1;
+            }
+            if (data[0] != 'R' || data[1] != 'I' || data[2] != 'F' || data[3] != 'F'
+                    || data[8] != 'W' || data[9] != 'A' || data[10] != 'V' || data[11] != 'E') {
+                throw new IOException("not a WAV file");
+            }
+            int pos = 12;
+            while (pos + 8 <= data.length) {
+                String chunkId = new String(data, pos, 4, StandardCharsets.US_ASCII);
+                int chunkSize = ByteBuffer.wrap(data, pos + 4, 4)
+                        .order(ByteOrder.LITTLE_ENDIAN).getInt();
+                int chunkDataStart = pos + 8;
+                if ("fmt ".equals(chunkId)) {
+                    if (chunkSize >= 8 && chunkDataStart + 8 <= data.length) {
+                        int rate = ByteBuffer.wrap(data, chunkDataStart + 4, 4)
+                                .order(ByteOrder.LITTLE_ENDIAN).getInt();
+                        if (rate >= 8000 && rate <= 48000) {
+                            sampleRate = rate;
+                        }
+                    }
+                } else if ("data".equals(chunkId)) {
+                    sawData = true;
+                    if (chunkSize > 0 && chunkSize != Integer.MAX_VALUE) {
+                        dataRemaining = chunkSize;
+                    }
+                    return chunkDataStart;
+                }
+                if (chunkSize < 0) {
+                    throw new IOException("invalid WAV chunk");
+                }
+                int next = chunkDataStart + chunkSize + (chunkSize & 1);
+                if (next > data.length) {
+                    return -1;
+                }
+                pos = next;
+            }
+            return -1;
+        }
+
+        private void acceptPcm(byte[] src, int off, int len) {
+            if (len <= 0) {
+                return;
+            }
+            int remain = len;
+            int pos = off;
+            if (dataRemaining >= 0) {
+                remain = Math.min(remain, dataRemaining);
+                dataRemaining -= remain;
+            }
+            if (hasOdd) {
+                if (remain <= 0) {
+                    return;
+                }
+                pcm.write(odd);
+                pcm.write(src[pos]);
+                pcmBytes += 2;
+                pos++;
+                remain--;
+                hasOdd = false;
+            }
+            int even = remain & ~1;
+            if (even > 0) {
+                pcm.write(src, pos, even);
+                pcmBytes += even;
+                pos += even;
+                remain -= even;
+            }
+            if (remain == 1) {
+                odd = src[pos];
+                hasOdd = true;
+            }
+        }
     }
 
     private void writePcmBlocking(AudioTrack track, byte[] pcm) throws IOException {
