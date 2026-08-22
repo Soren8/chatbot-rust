@@ -42,12 +42,14 @@ import java.nio.ByteOrder;
 @CapacitorPlugin(
     name = "NativeMic",
     permissions = {
-        @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO })
+        @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO }),
+        @Permission(alias = "notifications", strings = { Manifest.permission.POST_NOTIFICATIONS })
     }
 )
 public class NativeMicPlugin extends Plugin {
     private static final String TAG = "NativeMicPlugin";
     private static final String MIC_ALIAS = "microphone";
+    private static final String NOTIF_ALIAS = "notifications";
 
     public NativeMicPlugin() {
         Log.d(TAG, "NativeMicPlugin constructor called");
@@ -237,6 +239,22 @@ public class NativeMicPlugin extends Plugin {
     /** Speakerphone routing for Capacitor voice mode. Idempotent; only the voice-mode button should call this. */
     @PluginMethod
     public void enterVoiceRoute(PluginCall call) {
+        if (shouldRequestNotificationPermission()) {
+            FileLogger.log(TAG, "enterVoiceRoute: prompting POST_NOTIFICATIONS");
+            requestPermissionForAlias(NOTIF_ALIAS, call, "onNotificationPermissionForVoiceRoute");
+            return;
+        }
+        completeEnterVoiceRoute(call);
+    }
+
+    @PermissionCallback
+    private void onNotificationPermissionForVoiceRoute(PluginCall call) {
+        FileLogger.log(TAG, "onNotificationPermissionForVoiceRoute granted="
+                + hasNotificationPermission());
+        completeEnterVoiceRoute(call);
+    }
+
+    private void completeEnterVoiceRoute(PluginCall call) {
         boolean bluetooth = voiceAudioBackend.hasBluetoothAudio();
         boolean applied = voiceAudioRoute.enter(voiceAudioBackend);
         boolean keepAwake = voiceSessionKeepAwake.enter(keepAwakeBackend);
@@ -612,6 +630,24 @@ public class NativeMicPlugin extends Plugin {
             return true;
         }
         return ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean shouldRequestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return false;
+        }
+        if (hasNotificationPermission()) {
+            return false;
+        }
+        return getPermissionState(NOTIF_ALIAS) != PermissionState.DENIED;
+    }
+
+    private boolean hasNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return true;
+        }
+        return ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED;
     }
 

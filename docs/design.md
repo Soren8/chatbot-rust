@@ -109,7 +109,7 @@ This document captures the current architecture of the project and the potential
 - **Mobile Frontends**
   - [x] Capacitor Android shell — wrap existing web UI in native Android app (server-pull WebView)
   - [x] Native microphone plugin — bypass browser audio restrictions on mobile
-  - [x] Screen-off voice — microphone FGS + lock-screen media Stop (no unlock)
+  - [x] Screen-off voice — microphone FGS + lock-screen Stop (POST_NOTIFICATIONS, no unlock)
   - [ ] Android Auto integration — **partial**: `CarAppService` / `VoiceScreen` implemented and usable on DHU/emulator; still open for production: replace `HostValidator.ALLOW_ALL_HOSTS_VALIDATOR`, Play-trusted install for real head units, production host allowlist. See [mobile-apps.md](mobile-apps.md).
   - [ ] iOS support via Capacitor (same codebase, low priority)
   - See [mobile-apps.md](mobile-apps.md) for full plan and AA distribution constraints.

@@ -6,18 +6,17 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
-import android.media.session.MediaSession;
 import android.os.Build;
 
 import com.chatbot.app.R;
 
 /**
- * Ongoing lock-screen media notification for a live voice-mode session.
+ * Ongoing lock-screen notification for a live voice-mode session.
  *
- * A bare FGS chip is hidden on the keyguard. Attach a {@link MediaSession}
- * so Android shows the compact media bar (title + Stop) after the user wakes
- * the screen, without unlocking. Stop is a broadcast — do not launch an
- * Activity for it.
+ * Android 13+ will not put this on the keyguard without {@code POST_NOTIFICATIONS}.
+ * Do not attach a {@link android.media.session.MediaSession}: SystemUI treats that
+ * as Now Playing and drops the shade/lock-screen row. Stop is a broadcast — do
+ * not launch an Activity for it.
  */
 public final class VoiceModeNotification {
     public static final String ACTION_STOP = "com.chatbot.app.STOP_VOICE_MODE";
@@ -27,21 +26,16 @@ public final class VoiceModeNotification {
     private VoiceModeNotification() {}
 
     @SuppressWarnings("deprecation")
-    public static Notification build(Context context, MediaSession session) {
+    public static Notification build(Context context) {
         ensureChannel(context);
         Notification.Action stopAction = new Notification.Action.Builder(
-                android.R.drawable.ic_media_pause,
+                android.R.drawable.ic_menu_close_clear_cancel,
                 context.getString(R.string.voice_mode_notification_stop),
                 stopBroadcast(context))
                 .build();
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(context, CHANNEL_ID)
                 : new Notification.Builder(context);
-        Notification.MediaStyle style = new Notification.MediaStyle()
-                .setShowActionsInCompactView(0);
-        if (session != null) {
-            style.setMediaSession(session.getSessionToken());
-        }
         builder.setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setContentTitle(context.getString(R.string.voice_mode_notification_title))
                 .setContentText(context.getString(R.string.voice_mode_notification_text))
@@ -49,9 +43,9 @@ public final class VoiceModeNotification {
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
-                .setCategory(Notification.CATEGORY_TRANSPORT)
+                .setCategory(Notification.CATEGORY_SERVICE)
                 .addAction(stopAction)
-                .setStyle(style);
+                .setStyle(new Notification.MediaStyle().setShowActionsInCompactView(0));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
         }
@@ -85,6 +79,8 @@ public final class VoiceModeNotification {
                 context.getString(R.string.voice_mode_notification_channel),
                 NotificationManager.IMPORTANCE_HIGH);
         channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        channel.setSound(null, null);
+        channel.enableVibration(false);
         channel.setShowBadge(false);
         manager.createNotificationChannel(channel);
     }

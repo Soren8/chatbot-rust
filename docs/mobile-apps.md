@@ -82,7 +82,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    - WebView caching disabled for development
 
 3. Configure `AndroidManifest.xml`:
-    - `RECORD_AUDIO`, `INTERNET`, `WAKE_LOCK`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE` permissions
+    - `RECORD_AUDIO`, `POST_NOTIFICATIONS`, `INTERNET`, `WAKE_LOCK`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE` permissions
    - `android:exported="true"` for intent filters
 
 4. Build and verify shell app loads and connects to running server.
@@ -100,7 +100,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    - Exposes `window.NativeMic.start()` / `stop()` / `isRecording()` / `enterVoiceRoute()` / `exitVoiceRoute()` to web layer
     - Handheld voice mode holds `MODE_IN_COMMUNICATION` + built-in speaker (`setCommunicationDevice` on API 31+, `setSpeakerphoneOn` fallback) for the **whole session**. Do not enter/exit that route per TTS clip — that is what flipped Bluetooth HFP/SCO.
     - The same session holds `FLAG_KEEP_SCREEN_ON` (`VoiceSessionKeepAwake` via `enterVoiceRoute` / `exitVoiceRoute`) so auto screen sleep cannot pause the WebView VAD/STT/TTS loop. `chat.js` also requests a Screen Wake Lock (HTTPS / browser).
-    - Power-button / pocket lock starts `VoiceModeForegroundService` (microphone|mediaPlayback FGS + `PARTIAL_WAKE_LOCK` + playing `MediaSession`) from the same `enterVoiceRoute` / `exitVoiceRoute` pair. MainActivity keeps the WebView resumed (`resumeTimers`, `RENDERER_PRIORITY_IMPORTANT`) while that session is active. The notification is a `VISIBILITY_PUBLIC` / `IMPORTANCE_HIGH` media card so the keyguard shows title + **Stop** after the user wakes the screen, without unlocking. Stop is a broadcast (and `MediaSession` pause/stop). Do not use an Activity pending intent for Stop.
+    - Power-button / pocket lock starts `VoiceModeForegroundService` (microphone FGS + `PARTIAL_WAKE_LOCK`) from the same `enterVoiceRoute` / `exitVoiceRoute` pair. `enterVoiceRoute` requests `POST_NOTIFICATIONS` on API 33+ so the FGS notice can appear in the shade and on a lit keyguard (Android 13+ hides FGS chips without that permission; Task Manager still shows the service). MainActivity keeps the WebView resumed (`resumeTimers`, `RENDERER_PRIORITY_IMPORTANT`) while that session is active. The notification is `VISIBILITY_PUBLIC` / `IMPORTANCE_HIGH` with compact **Stop**. Stop is a broadcast. Do not use an Activity pending intent for Stop, and do not attach a `MediaSession` (SystemUI moves that to Now Playing and drops sessions with no `USAGE_MEDIA` playback).
 
 2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path

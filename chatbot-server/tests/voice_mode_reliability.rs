@@ -314,16 +314,27 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     assert!(
         manifest.contains("FOREGROUND_SERVICE_MICROPHONE")
             && manifest.contains("VoiceModeForegroundService")
-            && manifest.contains("foregroundServiceType=\"microphone|mediaPlayback\"")
+            && manifest.contains("foregroundServiceType=\"microphone\"")
+            && !manifest.contains("mediaPlayback")
             && manifest.contains("VoiceModeStopReceiver")
             && manifest.contains("android:exported=\"false\""),
         "manifest must declare an unexported microphone FGS and Stop receiver"
     );
     assert!(
-        manifest.contains("FOREGROUND_SERVICE_MEDIA_PLAYBACK")
-            && manifest.contains("microphone|mediaPlayback")
-            && service.contains("FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK"),
-        "lock-screen media card needs microphone|mediaPlayback plus an active MediaSession"
+        manifest.contains("POST_NOTIFICATIONS"),
+        "Android 13+ hides FGS notices from the shade and keyguard without POST_NOTIFICATIONS"
+    );
+    assert!(
+        !service.contains("MediaSession")
+            && !service.contains("FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK")
+            && !notification.contains("setMediaSession"),
+        "a fake playing MediaSession is stolen into Now Playing and dropped; lock-screen Stop is a normal public notification"
+    );
+    assert!(
+        plugin.contains("POST_NOTIFICATIONS")
+            && plugin.contains("requestPermissionForAlias")
+            && plugin.contains("TIRAMISU"),
+        "enterVoiceRoute must prompt POST_NOTIFICATIONS on API 33+ before posting the FGS notice"
     );
 
     assert!(
@@ -353,20 +364,11 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && notification.contains("setOngoing(true)")
             && notification.contains("ACTION_STOP")
             && notification.contains("setShowActionsInCompactView")
-            && notification.contains("setMediaSession")
             && notification.contains("IMPORTANCE_HIGH")
-            && notification.contains("CATEGORY_TRANSPORT")
             && notification.contains("voice_mode_lock")
             && notification.contains("getBroadcast")
             && !notification.contains("getActivity"),
-        "lock-screen Stop must be a public HIGH media notification, not a hidden service chip"
-    );
-    assert!(
-        service.contains("MediaSession")
-            && service.contains("STATE_PLAYING")
-            && service.contains("ACTION_STOP")
-            && service.contains("setActive(true)"),
-        "MediaSession must be playing so the keyguard shows the media bar without unlocking"
+        "lock-screen Stop must be a public HIGH ongoing notice with a broadcast action"
     );
     assert!(
         receiver.contains("requestStop") || receiver.contains("stopFromNotification"),
