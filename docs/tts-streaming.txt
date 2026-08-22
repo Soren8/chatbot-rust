@@ -42,4 +42,4 @@ This approach allows us to use `fetch` with `decodeAudioData` (which works best 
 2.  **Frontend:** Iteratively `POST`s each sentence to get a token.
 3.  **Frontend:** Fetches audio for the token via `GET`.
 4.  **Backend:** Fetches audio from upstream, strips headers, applies fades, prepends a new valid WAV header, and streams it.
-5.  **Frontend:** Plays `GET /tts_stream/{token}` as bytes arrive (same pre-sign + stream on desktop and native). Desktop uses HTML `Audio`. Capacitor uses `AudioTrack` only because WebView HTML audio cannot drive speakerphone AEC.
+5.  **Frontend:** Plays `GET /tts_stream/{token}` as bytes arrive (same pre-sign + stream on desktop and native). Desktop uses HTML `Audio`. Capacitor uses `AudioTrack` only because WebView HTML audio cannot drive speakerphone AEC. Native prerolls ~400 ms of PCM before the first sample (jitter buffer) and retries a failed GET; one dropped sentence must not abort the queue. `POST /tts` and `POST /stt` retry transient failures. A failed `/tts_stream` generation puts the token back so the GET can be retried. Reliability outranks first-byte latency.

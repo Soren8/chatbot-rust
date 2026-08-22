@@ -107,7 +107,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
    - 300 ms PCM pre-roll. Record from speech-like start (~120 ms, Silero `onSpeechStart`). Barge-in only after **real speech** (`REAL_SPEECH_MS` 600 + voiced windows; desktop Silero `minSpeechMs` stays 400). A cough or short "hey" does not stop TTS; confirmed speech stops it immediately, not at end-of-speech.
    - **1500 ms** end-of-speech silence (short mid-sentence pauses do not split); **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
    - One `stopAllTtsPlayback` path for play/stop, message click, Send/Stop, barge-in, and disabling voice mode (desktop HTML audio + native `AudioTrack`)
-    - Same `/tts` then `/tts_stream/{token}` as desktop. `NativeVoiceTtsPlugin` plays that GET into `AudioTrack` + `USAGE_VOICE_COMMUNICATION` (WebView HTML audio cannot give AEC a speakerphone reference). Stream PCM as it arrives; do not buffer the clip.
+    - Same `/tts` then `/tts_stream/{token}` as desktop. `NativeVoiceTtsPlugin` plays that GET into `AudioTrack` + `USAGE_VOICE_COMMUNICATION` (WebView HTML audio cannot give AEC a speakerphone reference). Stream PCM with a ~400 ms preroll; retry a failed GET; do not abort the queue on one dropped clip. STT/TTS HTTP retries on transient errors. Reliability outranks first-byte latency.
 
 3. Desktop/browser still uses Silero VAD (`static/deps/vad/`) with `getUserMedia` when not on Capacitor.
 

@@ -553,6 +553,23 @@ async fn kokoro_tts_returns_error_when_service_fails() {
     let payload: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json body");
     assert_eq!(payload["error"], "voice service unavailable");
 
+    let retry_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream retry");
+    assert_ne!(
+        retry_response.status(),
+        StatusCode::NOT_FOUND,
+        "failed generation must not burn the TTS token"
+    );
+
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");
 }

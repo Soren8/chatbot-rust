@@ -194,7 +194,16 @@ pub async fn handle_tts_stream(
         })?
     };
 
-let config = config::app_config();
+    let result = synthesize_tts_stream(cleaned.clone()).await;
+    if result.is_err() {
+        let mut map = PENDING_TTS.write().expect("tts lock");
+        map.insert(token, cleaned);
+    }
+    result
+}
+
+async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpError> {
+    let config = config::app_config();
     debug!(provider = %config.tts_provider, "handling /tts_stream request");
     if config.tts_provider == "qwen" {
         return handle_qwen_tts(cleaned, &config).await;

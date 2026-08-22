@@ -39,6 +39,9 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private static final int DEFAULT_SAMPLE_RATE = 24000;
     private static final int QUEUE_POLL_MS = 100;
     private static final int MAX_WAV_BYTES = 8 * 1024 * 1024;
+    /** Jitter buffer before the first sample. Reliability over first-byte latency. */
+    private static final int PREROLL_MS = 400;
+    private static final int STREAM_ATTEMPTS = 2;
 
     private final BlockingQueue<String> urlQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean sessionActive = new AtomicBoolean(false);
@@ -136,7 +139,11 @@ public class NativeVoiceTtsPlugin extends Plugin {
             try {
                 String url = urlQueue.poll(QUEUE_POLL_MS, TimeUnit.MILLISECONDS);
                 if (url != null) {
-                    playUrlToTrack(url);
+                    try {
+                        playUrlToTrack(url);
+                    } catch (Exception e) {
+                        Log.e(TAG, "clip failed; continuing queue", e);
+                    }
                     continue;
                 }
                 if (endOfQueueMarked.get() && urlQueue.isEmpty()) {
@@ -149,15 +156,29 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 Thread.currentThread().interrupt();
                 return;
             } catch (Exception e) {
-                Log.e(TAG, "playback error", e);
-                notifyError(e.getMessage() != null ? e.getMessage() : "playback failed");
-                stopPlaybackInternal(false);
-                return;
+                Log.e(TAG, "playback loop error; continuing", e);
             }
         }
     }
 
     private void playUrlToTrack(String urlStr) throws IOException {
+        IOException last = null;
+        for (int attempt = 0; attempt < STREAM_ATTEMPTS; attempt++) {
+            if (stopRequested.get()) {
+                return;
+            }
+            try {
+                playUrlToTrackOnce(urlStr);
+                return;
+            } catch (IOException e) {
+                last = e;
+                Log.e(TAG, "playUrlToTrack attempt " + attempt + " failed", e);
+            }
+        }
+        throw last != null ? last : new IOException("playback failed");
+    }
+
+    private void playUrlToTrackOnce(String urlStr) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(120000);
@@ -174,36 +195,74 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
     }
 
+    private static int prerollBytes(int sampleRate) {
+        int rate = sampleRate > 0 ? sampleRate : DEFAULT_SAMPLE_RATE;
+        return Math.max(2, rate * 2 * PREROLL_MS / 1000);
+    }
+
     private void streamWavToTrack(InputStream is) throws IOException {
         WavStreamDecoder decoder = new WavStreamDecoder();
+        ByteArrayOutputStream preroll = new ByteArrayOutputStream();
+        boolean started = false;
         byte[] buf = new byte[8192];
         int total = 0;
         int n;
-        while ((n = is.read(buf)) != -1) {
-            if (stopRequested.get()) {
-                return;
+        try {
+            while ((n = is.read(buf)) != -1) {
+                if (stopRequested.get()) {
+                    return;
+                }
+                total += n;
+                if (total > MAX_WAV_BYTES) {
+                    throw new IOException("WAV response too large");
+                }
+                decoder.feed(buf, n);
+                started = flushDecodedPcm(decoder, preroll, started);
             }
-            total += n;
-            if (total > MAX_WAV_BYTES) {
-                throw new IOException("WAV response too large");
+        } catch (IOException e) {
+            if (started || preroll.size() >= 2) {
+                Log.e(TAG, "stream truncated after preroll; playing what we have", e);
+            } else {
+                throw e;
             }
-            decoder.feed(buf, n);
-            flushDecodedPcm(decoder);
         }
         decoder.finish();
-        flushDecodedPcm(decoder);
-        if (!decoder.sawDataChunk()) {
+        started = flushDecodedPcm(decoder, preroll, started);
+        if (!started && preroll.size() >= 2) {
+            writePcmToTrack(decoder.sampleRate(), preroll.toByteArray());
+            started = true;
+        }
+        if (!decoder.sawDataChunk() && !started) {
             throw new IOException("WAV missing data chunk");
         }
         Log.d(TAG, "played pcm bytes=" + decoder.pcmBytes() + " rate=" + decoder.sampleRate());
     }
 
-    private void flushDecodedPcm(WavStreamDecoder decoder) throws IOException {
+    private boolean flushDecodedPcm(
+            WavStreamDecoder decoder, ByteArrayOutputStream preroll, boolean started)
+            throws IOException {
         byte[] pcm = decoder.takePcm();
         if (pcm.length < 2) {
+            return started;
+        }
+        if (started) {
+            writePcmToTrack(decoder.sampleRate(), pcm);
+            return true;
+        }
+        preroll.write(pcm);
+        if (preroll.size() >= prerollBytes(decoder.sampleRate())) {
+            writePcmToTrack(decoder.sampleRate(), preroll.toByteArray());
+            preroll.reset();
+            return true;
+        }
+        return false;
+    }
+
+    private void writePcmToTrack(int sampleRate, byte[] pcm) throws IOException {
+        if (pcm == null || pcm.length < 2) {
             return;
         }
-        AudioTrack track = ensureTrackPlaying(decoder.sampleRate());
+        AudioTrack track = ensureTrackPlaying(sampleRate);
         writePcmBlocking(track, pcm);
     }
 

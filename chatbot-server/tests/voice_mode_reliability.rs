@@ -683,8 +683,9 @@ fn native_vad_keeps_leading_audio_and_longer_end_silence() {
     );
 }
 
-/// Native TTS must start playing as PCM arrives. Buffering the whole WAV
-/// first adds a full WAN RTT of silence before the first sample.
+/// Native TTS streams PCM, but reliability comes first on spotty links:
+/// preroll before the first sample, retry a failed GET, and do not kill
+/// the whole session when one sentence drops.
 #[test]
 fn native_voice_tts_streams_wav_instead_of_buffering_the_clip() {
     let tts = include_str!(
@@ -694,8 +695,9 @@ fn native_voice_tts_streams_wav_instead_of_buffering_the_clip() {
         tts.contains("streamWavToTrack")
             && tts.contains("getInputStream")
             && tts.contains("writePcmBlocking")
-            && tts.contains("flushDecodedPcm"),
-        "native TTS must parse /tts_stream incrementally and write PCM as it arrives"
+            && tts.contains("PREROLL_MS")
+            && tts.contains("playUrlToTrackOnce"),
+        "native TTS must stream with a preroll jitter buffer"
     );
     assert!(
         !tts.contains("downloadUrl")
@@ -703,6 +705,31 @@ fn native_voice_tts_streams_wav_instead_of_buffering_the_clip() {
             && !tts.contains("downloaded fully"),
         "do not buffer the whole WAV before AudioTrack write"
     );
+}
+
+#[test]
+fn voice_http_retries_stt_and_tts_on_spotty_links() {
+    let chat_js = include_str!("../../static/chat.js");
+    let tts = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    assert!(
+        chat_js.contains("function fetchVoiceRetry")
+            && function_contains(chat_js, "handleSpeechEnd", "fetchVoiceRetry")
+            && function_contains(chat_js, "scheduleNativeTtsFetch", "fetchVoiceRetry")
+            && function_contains(chat_js, "playNext", "fetchVoiceRetry"),
+        "STT and TTS fetches must retry transient failures on desktop and native"
+    );
+    assert!(
+        tts.contains("playUrlToTrackOnce")
+            && !function_contains_approx_worker_kills_session(tts),
+        "one dropped TTS clip must not abort the rest of the queue"
+    );
+}
+
+fn function_contains_approx_worker_kills_session(tts: &str) -> bool {
+    function_contains(tts, "workerLoop", "stopPlaybackInternal(false)")
+        && function_contains(tts, "workerLoop", "notifyError")
 }
 
 /// Desktop and mobile share one TTS stop. The play icon, message click, Stop

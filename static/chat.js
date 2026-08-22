@@ -215,6 +215,55 @@ function historyThumbUrl(pairIndex, imageIndex) {
   return historyImageUrl(pairIndex, imageIndex) + '?size=thumb';
 }
 
+function sleepMs(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+function isRetryableVoiceStatus(status) {
+  return status === 408 || status === 429 || status === 502 || status === 503 || status === 504
+    || status >= 500;
+}
+
+function fetchVoiceRetry(url, buildOptions, attempts) {
+  attempts = attempts || 3;
+  function attempt(n) {
+    var options = typeof buildOptions === 'function' ? buildOptions() : (buildOptions || {});
+    var userSignal = options.signal;
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function () { controller.abort(); }, 60000);
+    var onUserAbort = function () { controller.abort(); };
+    if (userSignal) {
+      if (userSignal.aborted) {
+        clearTimeout(timeoutId);
+        var aborted = new Error('aborted');
+        aborted.name = 'AbortError';
+        return Promise.reject(aborted);
+      }
+      userSignal.addEventListener('abort', onUserAbort);
+    }
+    var opts = Object.assign({}, options, { signal: controller.signal });
+    return fetch(url, opts).then(function (res) {
+      if (res.ok) return res;
+      if (res.status === 401) {
+        window.location.href = '/login';
+        throw new Error('Session expired');
+      }
+      if (n > 1 && isRetryableVoiceStatus(res.status)) {
+        return sleepMs(400 * Math.pow(2, attempts - n)).then(function () { return attempt(n - 1); });
+      }
+      throw new Error('request failed (' + res.status + ')');
+    }).catch(function (err) {
+      if (err && (err.name === 'AbortError' || err.message === 'Session expired')) throw err;
+      if (n <= 1) throw err;
+      return sleepMs(400 * Math.pow(2, attempts - n)).then(function () { return attempt(n - 1); });
+    }).finally(function () {
+      clearTimeout(timeoutId);
+      if (userSignal) userSignal.removeEventListener('abort', onUserAbort);
+    });
+  }
+  return attempt(attempts);
+}
+
 function withCsrf(headers) {
   var result = headers ? Object.assign({}, headers) : {};
   if (window.CSRF_TOKEN) {
@@ -1982,7 +2031,7 @@ function playOneTtsUtterance(sessionId, text) {
   if (!cleaned) return Promise.resolve(true);
 
   const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
-  return fetch('/tts', {
+  return fetchVoiceRetry('/tts', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ text: cleaned }),
@@ -1990,8 +2039,6 @@ function playOneTtsUtterance(sessionId, text) {
   })
   .then(function (r) {
     if (!desktopTtsIsLive(sessionId)) return null;
-    if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-    if (!r.ok) throw new Error('TTS request failed');
     return r.json();
   })
   .then(function (data) {
@@ -3590,18 +3637,15 @@ $(document).ready(function() {
           if (_nativeMicPcmChunks.length === 0) return;
           const pcm16 = NativeAudio.mergePcm16Chunks(_nativeMicPcmChunks);
           const wavBlob = NativeAudio.pcm16ToWavBlob(pcm16);
-          const formData = new FormData();
-          formData.append('audio', wavBlob, 'recording.wav');
 
           _nativeMicPcmChunks = [];
 
-          fetch('/stt', {
-            method: 'POST',
-            headers: withCsrf({}),
-            body: formData,
+          fetchVoiceRetry('/stt', function () {
+            const retryForm = new FormData();
+            retryForm.append('audio', wavBlob, 'recording.wav');
+            return { method: 'POST', headers: withCsrf({}), body: retryForm };
           })
             .then(function (res) {
-              if (!res.ok) throw new Error('STT request failed (' + res.status + ')');
               return res.json();
             })
             .then(function (data) {
@@ -3659,16 +3703,13 @@ $(document).ready(function() {
           $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');
 
           const blob = new Blob(_audioChunks, { type: _mediaRecorder.mimeType || 'audio/webm' });
-          const formData = new FormData();
-          formData.append('audio', blob, 'recording.webm');
 
-          fetch('/stt', {
-            method: 'POST',
-            headers: withCsrf({}),
-            body: formData,
+          fetchVoiceRetry('/stt', function () {
+            const retryForm = new FormData();
+            retryForm.append('audio', blob, 'recording.webm');
+            return { method: 'POST', headers: withCsrf({}), body: retryForm };
           })
             .then(function (res) {
-              if (!res.ok) throw new Error('STT request failed (' + res.status + ')');
               return res.json();
             })
             .then(function (data) {
@@ -4533,15 +4574,11 @@ $(document).ready(function() {
       } else {
         return;
       }
-      const formData = new FormData();
-      formData.append('audio', wavBlob, 'recording.wav');
-
-      const res = await fetch('/stt', {
-        method: 'POST',
-        headers: withCsrf({}),
-        body: formData
+      const res = await fetchVoiceRetry('/stt', function () {
+        const retryForm = new FormData();
+        retryForm.append('audio', wavBlob, 'recording.wav');
+        return { method: 'POST', headers: withCsrf({}), body: retryForm };
       });
-      if (!res.ok) throw new Error('STT request failed (' + res.status + ')');
       const data = await res.json();
       const text = (data.text || '').trim();
 
@@ -4688,26 +4725,17 @@ $(document).ready(function() {
       nativeTtsPendingFetches++;
       nativeTtsFetchChain = nativeTtsFetchChain.then(function () {
         if (isStopped) return;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(function () { controller.abort(); }, 30000);
-        return fetch('/tts', {
+        return fetchVoiceRetry('/tts', {
           method: 'POST',
           headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: text }),
-          signal: controller.signal
+          body: JSON.stringify({ text: text })
         })
         .then(function (r) {
-          clearTimeout(timeoutId);
-          if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-          if (!r.ok) throw new Error('TTS request failed');
           return r.json();
         })
         .then(function (data) {
           if (isStopped) return;
           return enqueueNativeVoiceTts(data.token);
-        })
-        .finally(function () {
-          clearTimeout(timeoutId);
         });
       }).catch(function (err) {
         console.error('Native voice TTS error:', err);
@@ -4768,19 +4796,13 @@ $(document).ready(function() {
         if (!text) { setTimeout(playNext, 10); return; }
 
         isFetching = true;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-        fetch('/tts', {
+        fetchVoiceRetry('/tts', {
           method: 'POST',
           headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: text }),
-          signal: controller.signal
+          body: JSON.stringify({ text: text })
         })
         .then(r => {
-          clearTimeout(timeoutId);
-          if (r.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-          if (!r.ok) throw new Error('TTS request failed');
           return r.json();
         })
         .then(function (data) {
