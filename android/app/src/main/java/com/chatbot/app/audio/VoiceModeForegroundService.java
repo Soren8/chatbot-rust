@@ -12,7 +12,7 @@ import com.chatbot.app.util.FileLogger;
 
 /**
  * Microphone foreground service for handheld voice mode with the screen off.
- * Posts an ongoing public notification so the keyguard can show Stop.
+ * Posts an ongoing CallStyle banner so the keyguard can show Stop.
  */
 public class VoiceModeForegroundService extends Service {
     public static final String ACTION_START = "com.chatbot.app.START_VOICE_MODE";

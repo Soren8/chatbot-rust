@@ -325,10 +325,18 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
         "Android 13+ hides FGS notices from the shade and keyguard without POST_NOTIFICATIONS"
     );
     assert!(
-        !service.contains("MediaSession")
+        !manifest.contains("mediaPlayback")
             && !service.contains("FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK")
+            && !service.contains("MediaSession")
             && !notification.contains("setMediaSession"),
-        "a fake playing MediaSession is stolen into Now Playing and dropped; lock-screen Stop is a normal public notification"
+        "fake MediaSession is stolen into the media player and dropped on GrapheneOS/AOSP without real USAGE_MEDIA"
+    );
+    assert!(
+        notification.contains("CallStyle")
+            && notification.contains("forOngoingCall")
+            && notification.contains("CATEGORY_CALL")
+            && notification.contains("voice_mode_call"),
+        "lock-screen bar is CallStyle hangup (Stop), not the media player"
     );
     assert!(
         plugin.contains("POST_NOTIFICATIONS")
@@ -363,9 +371,8 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
         notification.contains("VISIBILITY_PUBLIC")
             && notification.contains("setOngoing(true)")
             && notification.contains("ACTION_STOP")
-            && notification.contains("setShowActionsInCompactView")
             && notification.contains("IMPORTANCE_HIGH")
-            && notification.contains("voice_mode_lock")
+            && notification.contains("voice_mode_call")
             && notification.contains("getBroadcast")
             && !notification.contains("getActivity"),
         "lock-screen Stop must be a public HIGH ongoing notice with a broadcast action"
