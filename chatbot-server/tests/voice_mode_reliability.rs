@@ -314,15 +314,16 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     assert!(
         manifest.contains("FOREGROUND_SERVICE_MICROPHONE")
             && manifest.contains("VoiceModeForegroundService")
-            && manifest.contains("foregroundServiceType=\"microphone\"")
+            && manifest.contains("foregroundServiceType=\"microphone|mediaPlayback\"")
             && manifest.contains("VoiceModeStopReceiver")
             && manifest.contains("android:exported=\"false\""),
         "manifest must declare an unexported microphone FGS and Stop receiver"
     );
     assert!(
-        !manifest.contains("FOREGROUND_SERVICE_MEDIA_PLAYBACK")
-            && !service.contains("MEDIA_PLAYBACK"),
-        "do not add mediaPlayback FGS type (API 35+ wants a MediaSession; mic is always on)"
+        manifest.contains("FOREGROUND_SERVICE_MEDIA_PLAYBACK")
+            && manifest.contains("microphone|mediaPlayback")
+            && service.contains("FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK"),
+        "lock-screen media card needs microphone|mediaPlayback plus an active MediaSession"
     );
 
     assert!(
@@ -352,9 +353,20 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && notification.contains("setOngoing(true)")
             && notification.contains("ACTION_STOP")
             && notification.contains("setShowActionsInCompactView")
+            && notification.contains("setMediaSession")
+            && notification.contains("IMPORTANCE_HIGH")
+            && notification.contains("CATEGORY_TRANSPORT")
+            && notification.contains("voice_mode_lock")
             && notification.contains("getBroadcast")
             && !notification.contains("getActivity"),
-        "lock-screen Stop must be an ongoing public broadcast action, not an Activity"
+        "lock-screen Stop must be a public HIGH media notification, not a hidden service chip"
+    );
+    assert!(
+        service.contains("MediaSession")
+            && service.contains("STATE_PLAYING")
+            && service.contains("ACTION_STOP")
+            && service.contains("setActive(true)"),
+        "MediaSession must be playing so the keyguard shows the media bar without unlocking"
     );
     assert!(
         receiver.contains("requestStop") || receiver.contains("stopFromNotification"),
