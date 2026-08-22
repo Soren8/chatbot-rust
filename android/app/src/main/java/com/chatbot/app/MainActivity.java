@@ -61,5 +61,8 @@ public class MainActivity extends BridgeActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
+        if (getBridge() != null) {
+            getBridge().eval("void 0", null);
+        }
     }
 }

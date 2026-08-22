@@ -84,6 +84,7 @@ public class NativeMicPlugin extends Plugin {
         FileLogger.log(TAG, "NativeMicPlugin.load()");
         audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
         VoiceModeNativeHooks.setHandler(this::stopFromNotification);
+        VoiceModeNativeHooks.setKeepAliveHandler(this::keepVoiceWebViewRunning);
     }
 
     @PluginMethod
@@ -660,6 +661,7 @@ public class NativeMicPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         VoiceModeNativeHooks.setHandler(null);
+        VoiceModeNativeHooks.setKeepAliveHandler(null);
         stopRecording();
         voiceAudioRoute.exit(voiceAudioBackend);
         voiceSessionKeepAwake.exit(keepAwakeBackend);

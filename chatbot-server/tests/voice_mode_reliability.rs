@@ -285,8 +285,10 @@ fn voice_mode_holds_screen_awake_for_the_session() {
 }
 
 /// Power-button lock backgrounds the Activity. Voice mode must keep the
-/// microphone + JS loop alive with a microphone FGS, and expose a lock-screen
-/// Stop that does not require unlocking (broadcast, not an Activity).
+/// microphone + JS loop alive with a microphone FGS, periodically re-resume
+/// the WebView (Chromium freezes a hidden renderer after a few minutes), and
+/// expose a lock-screen Stop that does not require unlocking (broadcast, not
+/// an Activity).
 #[test]
 fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     let session = include_str!(
@@ -306,6 +308,9 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     );
     let plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+    let hooks = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeNativeHooks.java"
     );
     let activity = include_str!("../../android/app/src/main/java/com/chatbot/app/MainActivity.java");
     let manifest = include_str!("../../android/app/src/main/AndroidManifest.xml");
@@ -395,6 +400,14 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && activity.contains("onPause")
             && activity.contains("VoiceModeForegroundSession.get().isActive()"),
         "screen-off must keep the WebView JS loop running while the FGS is held"
+    );
+    assert!(
+        service.contains("postDelayed")
+            && service.contains("keepWebViewAlive")
+            && hooks.contains("keepWebViewAlive")
+            && plugin.contains("setKeepAliveHandler")
+            && (activity.contains("getBridge().eval") || plugin.contains("getBridge().eval")),
+        "FGS must periodically re-resume the WebView; one-shot onPause freezes after a few minutes"
     );
 
     assert!(

@@ -5,7 +5,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 
 import com.chatbot.app.util.FileLogger;
@@ -18,8 +20,18 @@ public class VoiceModeForegroundService extends Service {
     public static final String ACTION_START = "com.chatbot.app.START_VOICE_MODE";
     private static final String TAG = "VoiceModeFgs";
     private static final int FGS_TYPE = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+    /** Chromium freezes a background WebView after a few minutes; re-resume before that. */
+    private static final long KEEP_ALIVE_INTERVAL_MS = 15_000;
 
     private PowerManager.WakeLock cpuWakeLock;
+    private final Handler keepAliveHandler = new Handler(Looper.getMainLooper());
+    private final Runnable keepAliveTick = new Runnable() {
+        @Override
+        public void run() {
+            VoiceModeNativeHooks.keepWebViewAlive();
+            keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS);
+        }
+    };
 
     public static void start(Context context) {
         Context app = context.getApplicationContext();
@@ -41,6 +53,7 @@ public class VoiceModeForegroundService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         promoteToForeground();
         acquireCpuWakeLock();
+        startKeepAlive();
         FileLogger.log(TAG, "onStartCommand action="
                 + (intent != null ? intent.getAction() : "null"));
         return START_STICKY;
@@ -48,6 +61,7 @@ public class VoiceModeForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        stopKeepAlive();
         releaseCpuWakeLock();
         FileLogger.log(TAG, "onDestroy");
         super.onDestroy();
@@ -89,5 +103,14 @@ public class VoiceModeForegroundService extends Service {
             cpuWakeLock.release();
         }
         cpuWakeLock = null;
+    }
+
+    private void startKeepAlive() {
+        keepAliveHandler.removeCallbacks(keepAliveTick);
+        keepAliveHandler.post(keepAliveTick);
+    }
+
+    private void stopKeepAlive() {
+        keepAliveHandler.removeCallbacks(keepAliveTick);
     }
 }
