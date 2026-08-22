@@ -8,6 +8,7 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.os.Build;
 import android.util.Log;
+import android.webkit.CookieManager;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -30,8 +31,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs, USAGE_VOICE_COMMUNICATION.
- * Communication usage matches speakerphone capture so hardware AEC has a playback reference.
+ * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs, USAGE_MEDIA.
+ * CallStyle microphone FGS swallows USAGE_VOICE_COMMUNICATION playback (HTML Audio
+ * still works because it is USAGE_MEDIA). Capture stays VOICE_COMMUNICATION.
  * Routing is held for the whole voice-mode session by {@code NativeMic.enterVoiceRoute};
  * this plugin does not change {@link android.media.AudioManager} mode or the communication device.
  * Each {@code /tts_stream} URL is parsed incrementally and PCM is written as it arrives.
@@ -186,7 +188,12 @@ public class NativeVoiceTtsPlugin extends Plugin {
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(120000);
         conn.setRequestMethod("GET");
+        String cookie = CookieManager.getInstance().getCookie(urlStr);
+        if (cookie != null && !cookie.isEmpty()) {
+            conn.setRequestProperty("Cookie", cookie);
+        }
         int code = conn.getResponseCode();
+        Log.d(TAG, "GET " + urlStr + " code=" + code);
         if (code < 200 || code >= 300) {
             conn.disconnect();
             throw new IOException("HTTP " + code);
@@ -426,13 +433,13 @@ public class NativeVoiceTtsPlugin extends Plugin {
         if (am == null) {
             return;
         }
-        int max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
+        int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
         if (max > 0) {
-            am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, max, 0);
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, max, 0);
         }
         AudioFocusRequest req = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build())
                 .build();
@@ -458,8 +465,9 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
         trackSampleRate = sampleRate;
         AudioAttributes attrs = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .setLegacyStreamType(AudioManager.STREAM_MUSIC)
                 .build();
         AudioFormat format = new AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)

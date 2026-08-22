@@ -216,8 +216,9 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
         "API 31+ must route to TYPE_BUILTIN_SPEAKER via setCommunicationDevice"
     );
     assert!(
-        tts.contains("USAGE_VOICE_COMMUNICATION"),
-        "TTS must play as USAGE_VOICE_COMMUNICATION so hardware AEC has a reference"
+        tts.contains("USAGE_MEDIA")
+            && !native_tts_uses_voice_communication_playback(tts),
+        "CallStyle microphone FGS swallows USAGE_VOICE_COMMUNICATION playback; TTS must use USAGE_MEDIA like HTML Audio"
     );
     assert!(
         chat_js.contains("enterVoiceRoute") && chat_js.contains("exitVoiceRoute"),
@@ -230,10 +231,10 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
     );
     assert!(
         tts.contains("requestAudioFocus")
-            && tts.contains("STREAM_VOICE_CALL")
+            && tts.contains("STREAM_MUSIC")
             && plugin.contains("reclaimAudioFocus")
             && plugin.contains("AUDIOFOCUS_LOSS"),
-        "voice-mode TTS must reclaim audio focus after the battery dialog or another app steals it"
+        "voice-mode TTS must reclaim media focus and unmute STREAM_MUSIC before play"
     );
     assert!(
         manifest.contains("MODIFY_AUDIO_SETTINGS"),
@@ -832,4 +833,8 @@ fn function_body<'a>(src: &'a str, fn_name: &str) -> Option<&'a str> {
 
 fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
     function_body(src, fn_name).is_some_and(|body| body.contains(needle))
+}
+
+fn native_tts_uses_voice_communication_playback(tts: &str) -> bool {
+    tts.contains("setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)")
 }
