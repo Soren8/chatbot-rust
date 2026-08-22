@@ -40,6 +40,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Important Notes
 
+- **IMPORTANT:** Desktop and mobile (Capacitor) must work as similarly as possible. Diverge only when a Capacitor/WebView/OS limitation makes the shared path impossible. Do not invent a second architecture, playback pipeline, or API shape for native.
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Always validate provider configurations before committing
 - Never add cache busting mechanisms (e.g., query parameters on script tags) unless the user explicitly asks for it. Assume the user knows how to clear their cache.
