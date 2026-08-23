@@ -49,22 +49,23 @@ public class MainActivity extends BridgeActivity {
         if (!VoiceModeForegroundSession.get().isActive()) {
             return;
         }
-        if (getBridge() == null) {
-            return;
-        }
-        WebView webView = getBridge().getWebView();
-        if (webView == null) {
-            return;
-        }
-        webView.onResume();
-        webView.resumeTimers();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
-        }
-        if (getBridge() != null) {
-            getBridge().getApp().fireStatusChange(true);
-            getBridge().onResume();
-            getBridge().eval("void 0", null);
-        }
+        runOnUiThread(() -> {
+            if (!VoiceModeForegroundSession.get().isActive()
+                    || isFinishing()
+                    || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed())
+                    || getBridge() == null) {
+                return;
+            }
+            WebView webView = getBridge().getWebView();
+            if (webView == null) {
+                return;
+            }
+            webView.onResume();
+            webView.resumeTimers();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+            }
+            webView.evaluateJavascript("void 0", null);
+        });
     }
 }

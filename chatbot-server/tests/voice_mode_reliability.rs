@@ -409,6 +409,18 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && activity.contains("VoiceModeForegroundSession.get().isActive()"),
         "screen-off must keep the WebView JS loop running while the FGS is held"
     );
+    let pause_body = java_method_body(activity, "public void onPause()")
+        .expect("MainActivity.onPause() must be declared");
+    let super_pause = pause_body
+        .find("super.onPause()")
+        .expect("onPause must preserve the normal Activity lifecycle");
+    let keep_after_pause = pause_body
+        .find("keepVoiceWebViewRunning()")
+        .expect("onPause must refresh the active voice-mode WebView");
+    assert!(
+        super_pause < keep_after_pause,
+        "voice mode must preserve BridgeActivity.onPause lifecycle ordering"
+    );
     assert!(
         service.contains("postDelayed")
             && service.contains("keepWebViewAlive")
@@ -426,9 +438,11 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     assert!(
         service.contains("requestNetwork")
             && service.contains("NET_CAPABILITY_INTERNET")
-            && activity.contains("fireStatusChange(true)")
-            && activity.contains("getBridge().onResume()"),
-        "hold a network request and re-resume the Capacitor bridge so Doze cannot drop STT/chat/TTS"
+            && activity.contains("webView.onResume()")
+            && activity.contains("webView.resumeTimers()")
+            && !activity.contains("getBridge().onResume()")
+            && !activity.contains("fireStatusChange(true)"),
+        "hold a network request and resume only the WebView without re-entering Capacitor lifecycle"
     );
 
     assert!(
@@ -872,6 +886,26 @@ fn function_body<'a>(src: &'a str, fn_name: &str) -> Option<&'a str> {
 
 fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
     function_body(src, fn_name).is_some_and(|body| body.contains(needle))
+}
+
+fn java_method_body<'a>(src: &'a str, signature: &str) -> Option<&'a str> {
+    let start = src.find(signature)?;
+    let body = &src[start..];
+    let open = body.find('{')?;
+    let mut depth = 0i32;
+    for (i, ch) in body[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[open..=open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn native_tts_uses_voice_communication_playback(tts: &str) -> bool {
