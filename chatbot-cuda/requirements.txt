@@ -1,12 +1,5 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.3
-# PyPI metadata still pins transformers==4.57.3 (huggingface_hub<1). Installed --no-deps in the Dockerfile.
-qwen-tts==0.1.1
-transformers==5.15.1
-accelerate==1.12.0
-einops==0.8.2
-onnxruntime==1.29.0
-sox==1.5.0
 nemo_toolkit[asr]==3.0.0
 kokoro==0.9.4
 misaki[en]==0.9.4

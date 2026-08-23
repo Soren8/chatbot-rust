@@ -17,12 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-# qwen-tts 0.1.1 declares transformers==4.57.3 (huggingface_hub<1). The package
-# needs transformers 5.x for hub 1.x; install it after the resolved pins.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    grep -v '^qwen-tts==' requirements.txt > /tmp/requirements.pip.txt && \
-    python3 -m pip install --break-system-packages -r /tmp/requirements.pip.txt && \
-    python3 -m pip install --break-system-packages --no-deps "$(grep '^qwen-tts==' requirements.txt)"
+    python3 -m pip install --break-system-packages -r requirements.txt
 
 # misaki[en] (Kokoro's G2P engine) requires spaCy's en_core_web_sm model.
 # Bake it into the image so it's available offline at runtime.
