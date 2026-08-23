@@ -2276,6 +2276,11 @@ window.playTTS = function playTTS(button, options) {
 }
 
 window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
+  if (window.voiceModeActive && window.nativeVoiceTtsAvailable
+      && typeof window.playNativeVoiceModeTts === 'function') {
+    window.playNativeVoiceModeTts(button, options);
+    return;
+  }
   window.playTTS(button, options);
 };
 
@@ -3806,7 +3811,7 @@ $(document).ready(function() {
     if (window.voiceModeActive) {
       stopVoiceMode();
     } else {
-      primeDesktopTtsAudioFromGesture();
+      if (!isMobile) primeDesktopTtsAudioFromGesture();
       startVoiceMode();
     }
   });
@@ -4107,6 +4112,188 @@ $(document).ready(function() {
 
   window.notifyVoiceModeTtsStarted = onVoiceModeTtsStarted;
   window.notifyVoiceModeTtsEnded = onVoiceModeTtsEnded;
+
+  let nativeVoiceTtsSessionListener = null;
+  let nativeVoiceTtsSessionPromise = null;
+  let nativeVoiceTtsGeneration = 0;
+
+  function nativeVoiceTtsStreamUrl(token) {
+    return window.location.origin + '/tts_stream/' + encodeURIComponent(token);
+  }
+
+  function invalidateNativeVoiceTts() {
+    nativeVoiceTtsGeneration += 1;
+    if (nativeVoiceTtsSessionListener) {
+      try { nativeVoiceTtsSessionListener.remove(); } catch (e) { /* ignore */ }
+      nativeVoiceTtsSessionListener = null;
+    }
+    nativeVoiceTtsSessionPromise = null;
+  }
+
+  function finishNativeVoiceTts(generation, button) {
+    if (generation !== nativeVoiceTtsGeneration) return;
+    onVoiceModeTtsEnded();
+    voiceModeTtsSessionActive = false;
+    voiceModeTtsPlaying = false;
+    if (CURRENT_AUDIO && CURRENT_AUDIO.nativeGeneration === generation) {
+      CURRENT_AUDIO = null;
+      CURRENT_AUDIO_BUTTON = null;
+      resetPlayButtonUi(button);
+      clearMessageTtsPlayingUi();
+    }
+    if (nativeVoiceTtsSessionListener) {
+      try { nativeVoiceTtsSessionListener.remove(); } catch (e) { /* ignore */ }
+      nativeVoiceTtsSessionListener = null;
+    }
+    nativeVoiceTtsSessionPromise = null;
+    armTtsListenCooldown();
+    syncSendButtonState();
+  }
+
+  function playNativeVoiceModeTts(button, options) {
+    options = options || {};
+    if (!window.NativeVoiceTts || !window.nativeVoiceTtsAvailable) {
+      window.playTTS(button, options);
+      return;
+    }
+    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
+      stopAllTtsPlayback();
+      return;
+    }
+    if (CURRENT_AUDIO) stopAllTtsPlayback();
+
+    invalidateNativeVoiceTts();
+    window.NativeVoiceTts.stop().catch(function () {});
+    stopCurrentDesktopTts();
+
+    const generation = nativeVoiceTtsGeneration;
+    const $messageElement = $(button).closest('.message');
+    let stopped = false;
+    let processedText = '';
+    let sentenceQueue = [];
+    let endRequested = false;
+
+    voiceModeTtsSessionActive = true;
+    voiceModeTtsPlaying = false;
+    CURRENT_AUDIO_BUTTON = button;
+    CURRENT_AUDIO = {
+      nativeGeneration: generation,
+      stop: function () {
+        stopped = true;
+        invalidateNativeVoiceTts();
+        voiceModeTtsSessionActive = false;
+        voiceModeTtsPlaying = false;
+        window.NativeVoiceTts.stop().catch(function () {});
+      }
+    };
+    $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
+    $messageElement.addClass('tts-is-playing');
+    $messageElement.find('.ai-message-text').addClass('tts-is-playing');
+    syncSendButtonState();
+
+    function live() {
+      return !stopped && generation === nativeVoiceTtsGeneration && window.voiceModeActive;
+    }
+
+    function isStillGenerating() {
+      const raw = $messageElement.find('.ai-message-text').text().trim();
+      return raw === 'Thinking...' || currentAbortController !== null;
+    }
+
+    function discoverSentences() {
+      if (!live()) return;
+      const fullText = getMessageTtsText($messageElement);
+      if (!fullText || fullText.length <= processedText.length) return;
+      const pending = fullText.substring(processedText.length);
+      const parts = splitSentences(pending);
+      let advancedTo = 0;
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        if (!sentenceEndsWithTerminator(part.text) && isStillGenerating()) break;
+        sentenceQueue.push(part.text);
+        advancedTo = part.end;
+      }
+      if (advancedTo > 0) processedText += pending.substring(0, advancedTo);
+    }
+
+    function ensureSession() {
+      if (nativeVoiceTtsSessionPromise) return nativeVoiceTtsSessionPromise;
+      nativeVoiceTtsSessionPromise = window.NativeVoiceTts.beginSession().then(function () {
+        if (!live()) return;
+        nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
+          if (!data || generation !== nativeVoiceTtsGeneration) return;
+          if (data.type === 'started') {
+            onVoiceModeTtsStarted();
+          } else if (data.type === 'ended') {
+            finishNativeVoiceTts(generation, button);
+          } else if (data.type === 'error') {
+            console.error('Native voice TTS error:', data.message);
+          }
+        });
+      });
+      return nativeVoiceTtsSessionPromise;
+    }
+
+    function markEndOfQueue() {
+      if (!live() || endRequested) return;
+      endRequested = true;
+      ensureSession().then(function () {
+        if (live()) return window.NativeVoiceTts.markEndOfQueue();
+      }).catch(function (err) {
+        if (live()) {
+          console.error('Native voice TTS session failed:', err);
+          finishNativeVoiceTts(generation, button);
+        }
+      });
+    }
+
+    function pump() {
+      if (!live()) return;
+      discoverSentences();
+      if (sentenceQueue.length > 0) {
+        const text = String(sentenceQueue.shift() || '').trim();
+        if (!text) { pump(); return; }
+        ensureSession().then(function () {
+          if (!live()) return;
+          return fetchVoiceRetry('/tts', {
+            method: 'POST',
+            headers: withCsrf({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ text: text })
+          });
+        }).then(function (response) {
+          if (!live() || !response) return;
+          return response.json();
+        }).then(function (data) {
+          if (!live() || !data || !data.token) return;
+          return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(data.token));
+        }).catch(function (err) {
+          if (live()) console.error('Native voice TTS sentence failed; continuing:', err);
+        }).then(pump);
+        return;
+      }
+      if (isStillGenerating()) {
+        setTimeout(pump, 200);
+        return;
+      }
+      const remaining = getMessageTtsText($messageElement).substring(processedText.length).trim();
+      if (remaining) {
+        sentenceQueue.push(remaining);
+        processedText += getMessageTtsText($messageElement).substring(processedText.length);
+        pump();
+        return;
+      }
+      markEndOfQueue();
+    }
+
+    if (options.sentences && options.sentences.length) {
+      options.sentences.forEach(function (sentence) {
+        if (sentence && String(sentence).trim()) sentenceQueue.push(String(sentence));
+      });
+      processedText = getMessageTtsText($messageElement) || '';
+    }
+    pump();
+  }
+  window.playNativeVoiceModeTts = playNativeVoiceModeTts;
 
   const VOICE_MODE_WANTED_KEY = 'chatbotVoiceModeWanted';
   let voiceScreenWakeLock = null;
