@@ -409,6 +409,16 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && activity.contains("VoiceModeForegroundSession.get().isActive()"),
         "screen-off must keep the WebView JS loop running while the FGS is held"
     );
+    assert!(
+        activity.contains("dispatchWindowVisibilityChanged")
+            && activity.contains("View.VISIBLE"),
+        "voice mode must disable hidden-WebView throttling after the Activity backgrounds"
+    );
+    assert!(
+        activity.contains("CapConfig.loadDefault")
+            && activity.contains("setUseLegacyBridge(true)"),
+        "Capacitor must use its legacy bridge because Vanadium throttles WebMessage callbacks in background"
+    );
     let pause_body = java_method_body(activity, "public void onPause()")
         .expect("MainActivity.onPause() must be declared");
     let super_pause = pause_body
