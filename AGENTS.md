@@ -10,13 +10,15 @@ Always the compose `tests` service. Do not run `cargo test` on the host or agent
 docker compose run --rm tests
 ```
 
+If that run reports **any** failure — including tests that look unrelated to the current change — **stop and ask the user what to do**. Do not ignore them, skip them, filter cargo to a subset, treat them as pre-existing noise, commit, or declare the task done. Wait for an explicit instruction (fix now, bisect, continue anyway, etc.).
+
 First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`, locked in `Cargo.lock`). Do not install Node/npm for this, and do not add hand-rolled brace scanners.
 
 Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Build & Run Commands
 
-- Tests: `docker compose run --rm tests`
+- Tests: `docker compose run --rm tests` (full suite; **any** failure → stop and ask, including “unrelated”)
 - Do not run `cargo test` / app binaries outside that container
 - Allowed compose from the sandbox: **`tests` only**. It injects its own env and does not need workspace `.env`.
 - Do **not** `docker compose up`, `build`, or recreate **`webserver`** or **`voice-service`**. Ask the **user** to rebuild/restart those on the host when a live deploy is needed.
