@@ -1404,10 +1404,13 @@ function startDeferredThumbs(root, newestFirst) {
   for (var i = 0; i < list.length; i++) {
     var url = list[i].getAttribute('data-pending-src');
     list[i].removeAttribute('data-pending-src');
+    // DOM attribute text is a js/xss-through-dom source; only assign a
+    // reconstructed data:image URL or same-origin /history_image/... path.
+    var safeUrl = sanitizeLightboxSrc(url);
     if (newestFirst && i === 0) {
       list[i].setAttribute('fetchpriority', 'high');
     }
-    if (url) list[i].setAttribute('src', url);
+    if (safeUrl) list[i].setAttribute('src', safeUrl);
   }
 }
 
@@ -1533,10 +1536,21 @@ function sanitizeLightboxSrc(src) {
   try {
     const u = new URL(String(src), window.location.href);
     if (u.origin !== window.location.origin) return null;
-    if (!/^\/history_image\/[A-Za-z0-9._~-]+\/[0-9]+\/[0-9]+\/[0-9]+$/.test(u.pathname)) {
+    const m = /^\/history_image\/([A-Za-z0-9._~-]+)\/([0-9]+)\/([0-9]+)\/([0-9]+)$/.exec(u.pathname);
+    if (!m) return null;
+    // Reconstruct from character-class-filtered captures so DOM-sourced
+    // pathname/search never flow into HTML attribute sinks (CodeQL js/xss-through-dom).
+    const setId = m[1].replace(/[^A-Za-z0-9._~-]/g, '');
+    const version = m[2].replace(/[^0-9]/g, '');
+    const pairIndex = m[3].replace(/[^0-9]/g, '');
+    const imgIdx = m[4].replace(/[^0-9]/g, '');
+    if (!setId || setId !== m[1] || version !== m[2] || pairIndex !== m[3] || imgIdx !== m[4]) {
       return null;
     }
-    return u.pathname + u.search;
+    const path = '/history_image/' + setId + '/' + version + '/' + pairIndex + '/' + imgIdx;
+    if (!u.search) return path;
+    if (u.search === '?size=thumb') return path + '?size=thumb';
+    return null;
   } catch (e) {
     return null;
   }

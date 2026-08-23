@@ -168,6 +168,47 @@ fn format_ai_message_is_top_level_for_history_paging() {
     );
 }
 
+/// CodeQL js/xss-through-dom: getAttribute('data-pending-src') is DOM text and
+/// must not flow into img src. Reconstruct via sanitizeLightboxSrc first.
+#[test]
+fn deferred_thumbs_resanitize_dom_src() {
+    let chat_js = include_str!("../../static/chat.js");
+    let start = chat_js
+        .find("function startDeferredThumbs(")
+        .expect("startDeferredThumbs helper");
+    let next = chat_js[start + 1..]
+        .find("\nfunction ")
+        .map(|i| start + 1 + i)
+        .expect("function after startDeferredThumbs");
+    let body = &chat_js[start..next];
+    assert!(
+        body.contains("sanitizeLightboxSrc("),
+        "data-pending-src is DOM text; must reconstruct via sanitizeLightboxSrc before img src"
+    );
+    assert!(
+        !body.contains("setAttribute('src', url)"),
+        "must not assign unsanitized getAttribute('data-pending-src') to img src"
+    );
+
+    let sanitize = chat_js
+        .find("function sanitizeLightboxSrc(")
+        .expect("sanitizeLightboxSrc helper");
+    let sanitize_next = chat_js[sanitize + 1..]
+        .find("\nfunction ")
+        .map(|i| sanitize + 1 + i)
+        .expect("function after sanitizeLightboxSrc");
+    let sanitize_body = &chat_js[sanitize..sanitize_next];
+    assert!(
+        !sanitize_body.contains("u.pathname + u.search"),
+        "sanitizeLightboxSrc must reconstruct history_image URLs, not pass through URL components"
+    );
+    assert!(
+        sanitize_body.contains(".replace(/[^A-Za-z0-9._~-]/g, '')")
+            && sanitize_body.contains("?size=thumb"),
+        "history_image path segments must be character-class-filtered; thumb query is a literal"
+    );
+}
+
 /// Regression: AI message body supports speak-from-sentence (hover highlight +
 /// click speaks that exact DOM sentence list; restartable HTMLAudio playback).
 #[test]
