@@ -4,7 +4,6 @@
 # then launches uvicorn.  Subsequent starts skip downloading entirely.
 set -euo pipefail
 
-QWEN_MODEL_ID="${TTS_MODEL_ID:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}"
 STT_MODEL="${STT_MODEL_ID:-nvidia/parakeet-tdt-0.6b-v2}"
 
 # Read tts_provider and voice_gpu_device from .config.yml (same source of truth as the Rust webserver).
@@ -14,11 +13,11 @@ try:
     import yaml
     with open("/app/.config.yml") as f:
         cfg = yaml.safe_load(f) or {}
-    provider = cfg.get("tts_provider", "qwen").lower()
+    provider = cfg.get("tts_provider", "kokoro").lower()
     gpu = str(cfg.get("voice_gpu_device", 0))
 except Exception as e:
     print(f"Error reading config: {e}", file=sys.stderr)
-    provider = "qwen"
+    provider = "kokoro"
     gpu = "0"
 print(f"{provider} {gpu}")
 PYEOF
@@ -36,14 +35,6 @@ import os
 from huggingface_hub import snapshot_download
 snapshot_download("hexgrad/Kokoro-82M", cache_dir=os.environ.get("HF_HOME", "/app/model_cache"))
 print("[start] Kokoro model cache ready.", flush=True)
-PYEOF
-else
-    echo "[start] ensuring Qwen TTS model cached: ${QWEN_MODEL_ID}"
-    python3 - <<PYEOF
-import os
-from huggingface_hub import snapshot_download
-snapshot_download("${QWEN_MODEL_ID}", cache_dir=os.environ.get("HF_HOME", "/app/model_cache"))
-print("[start] TTS model cache ready.", flush=True)
 PYEOF
 fi
 

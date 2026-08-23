@@ -78,17 +78,6 @@ struct FishSpeechRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct QwenTtsRequest {
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    voice: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    voice_ref_audio: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    voice_ref_text: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
 struct KokoroTtsRequest {
     text: String,
     voice: String,
@@ -205,9 +194,6 @@ pub async fn handle_tts_stream(
 async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpError> {
     let config = config::app_config();
     debug!(provider = %config.tts_provider, "handling /tts_stream request");
-    if config.tts_provider == "qwen" {
-        return handle_qwen_tts(cleaned, &config).await;
-    }
     if config.tts_provider == "kokoro" {
         return handle_kokoro_tts(cleaned, &config).await;
     }
@@ -367,61 +353,6 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
     })?;
 
     build_audio_response(bytes.to_vec())
-}
-
-async fn handle_qwen_tts(
-    text: String,
-    config: &config::AppConfig,
-) -> Result<Response<Body>, HttpError> {
-    let base = config.voice_service_base_url.trim_end_matches('/');
-    let url = format!("{base}/v1/tts");
-
-    let voice = config.tts_voice.clone().unwrap_or_else(|| "Ryan".to_string());
-    let request = QwenTtsRequest {
-        text,
-        voice: Some(voice),
-        voice_ref_audio: None,
-        voice_ref_text: None,
-    };
-
-    debug!(url = %url, "sending request to Qwen TTS voice service");
-
-    let response = HTTP_CLIENT
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach Qwen TTS voice service");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
-        })?;
-
-    let sample_rate: u32 = response
-        .headers()
-        .get("X-Sample-Rate")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(24_000);
-
-    let status = response.status();
-    let mut bytes = response
-        .bytes()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to read Qwen TTS response body");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
-        })?
-        .to_vec();
-
-    if !status.is_success() {
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "Qwen TTS voice service returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
-    }
-
-    apply_pcm_fade(&mut bytes, sample_rate);
-    let wav_bytes = pcm_to_wav(&bytes, sample_rate);
-    build_audio_response(wav_bytes)
 }
 
 async fn handle_kokoro_tts(

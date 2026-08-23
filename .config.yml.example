@@ -5,9 +5,8 @@ vars:
   LOCAL_PORT: 11434
 
 # TTS / Voice configuration
-tts_provider: "kokoro"  # Options: kokoro, qwen, fish
+tts_provider: "kokoro"  # Options: kokoro, fish
 tts_voice: "bf_emma"   # Voice for Kokoro. Other options: af_heart, af_bella, am_adam, bm_george
-# tts_voice: "Ryan"     # Voice preset for Qwen3-TTS (qwen provider)
 stt_enabled: true
 # Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
 # Default is anyone — suitable for LAN / local-models deploys. Use authenticated or

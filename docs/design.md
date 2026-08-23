@@ -114,14 +114,13 @@ This document captures the current architecture of the project and the potential
   - [ ] iOS support via Capacitor (same codebase, low priority)
   - See [mobile-apps.md](mobile-apps.md) for full plan and AA distribution constraints.
 
-- **Voice Mode** — Default TTS provider is `kokoro`; select Qwen3-TTS with `tts_provider: "qwen"` in `.config.yml`.
+- **Voice Mode** — Default TTS provider is `kokoro`.
   - [x] Silero VAD voice activity detection on **desktop/browser** (`static/deps/vad/`, `chat.js`).
   - [x] Native mobile VAD — record from speech-like start; barge-in on real speech (`REAL_SPEECH_MS`) in `NativeMicUtteranceVAD` (no Silero in WebView). Dual invariant: cough/"hey" must not stop TTS; sustained speech must, at confirm. See [mobile-apps.md](mobile-apps.md#tts-barge-in-dual-invariant-do-not-oscillate). Android Auto `VoiceScreen` stays RMS.
   - [ ] Whisper Large v3 turbo.
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml`. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.
   - [ ] Fish Speech S2 — natively supports low TTFA streaming; evaluate for production use (code path exists; not production default).
-  - [ ] Qwen3-TTS — **partial**: vertically integrated into `chatbot-cuda` (`tts_provider: "qwen"`, CustomVoice model, `tts_voice` default "Ryan"). Not complete as a low-TTFA streaming peer to Kokoro: official package synthesizes the full waveform before return (no streaming API); community streaming forks need audit, or treat Fish Speech S2 as the streaming alternative.
   - [x] Parakeet STT — NVIDIA Parakeet TDT 0.6B v2 for speech-to-text, vertically integrated into `chatbot-cuda` voice-service.
   - **Webserver TTS surface (not a public API product):** browsers and native clients use only `POST /tts` (CSRF + deploy-time access policy) then `GET /tts_stream/{token}` for playback. There is no unauthenticated `/api/tts*` on the webserver; the GPU voice-service HTTP API is for the webserver to call as a backend client only. Gate who may use TTS with `tts_access` in `.config.yml` (or `TTS_ACCESS`): `anyone` (default, guests OK — good for LAN/local models), `authenticated` (logged-in only), or `premium` (premium tier only).
 

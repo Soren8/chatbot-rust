@@ -558,7 +558,7 @@ fn parse_yaml_config_contents(contents: &str) -> RawConfig {
 
 const ALLOWED_PROVIDER_TYPES: &[&str] = &["openai", "xai", "stub"];
 const ALLOWED_PROVIDER_TIERS: &[&str] = &["free", "premium"];
-const ALLOWED_TTS_PROVIDERS: &[&str] = &["kokoro", "qwen", "fish"];
+const ALLOWED_TTS_PROVIDERS: &[&str] = &["kokoro", "fish"];
 
 fn validate_tts_provider(value: &str) {
     let normalized = value.trim().to_lowercase();
