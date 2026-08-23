@@ -384,9 +384,11 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
                 }
                 Err(err) => {
                     error!(?err, "error while reading provider stream");
+                    // Do not persist partial/error-tainted assistant text.
+                    guard.mark_provider_error();
                     let msg = format!("\n[Error] {err}\n");
-                    guard.push_chunk(&msg);
                     yield Bytes::from(msg.into_bytes());
+                    guard.complete_without_persist();
                     break;
                 }
             }
