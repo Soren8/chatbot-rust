@@ -1072,6 +1072,9 @@ function formatAiMessage(text) {
 }
 
 // Scroll helpers for the chat content container
+let chatScrollGeneration = 0;
+let lastChatScrollTop = null;
+
 function isAtBottom() {
   const container = document.getElementById('chat-content');
   if (!container) return false;
@@ -1081,27 +1084,28 @@ function isAtBottom() {
 }
 
 function shouldStickChatToBottom() {
-  if (typeof __autoScroll !== 'undefined') return __autoScroll;
-  if (window.voiceModeActive) return true;
   return isAtBottom();
 }
 
 function scrollToBottom() {
   const container = document.getElementById('chat-content');
   if (!container) return;
+  const generation = chatScrollGeneration;
   // Direct scrollTop: scrollTo({ behavior: 'instant' }) can no-op or stop short
   // in Android WebView. Pin again after layout so markdown/images settle.
-  const pin = function () {
+  const pin = function (force) {
+    if (!force && generation !== chatScrollGeneration) return;
     container.scrollTop = container.scrollHeight;
+    lastChatScrollTop = container.scrollTop;
   };
-  pin();
+  pin(true);
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(function () {
-      pin();
-      requestAnimationFrame(pin);
+      pin(false);
+      requestAnimationFrame(function () { pin(false); });
     });
   } else {
-    setTimeout(pin, 0);
+    setTimeout(function () { pin(false); }, 0);
   }
 }
 
@@ -2786,6 +2790,10 @@ $(document).ready(function() {
   const $scrollToBottomBtn = $('#scroll-to-bottom');
 
   $chatContent.on('scroll', function() {
+    if (lastChatScrollTop !== null && this.scrollTop < lastChatScrollTop) {
+      chatScrollGeneration++;
+    }
+    lastChatScrollTop = this.scrollTop;
     if (isAtBottom()) {
       $scrollToBottomBtn.fadeOut(200);
     } else if ($scrollToBottomBtn.is(':hidden')) {

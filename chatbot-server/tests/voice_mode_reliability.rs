@@ -583,6 +583,27 @@ fn voice_send_scrolls_chat_to_bottom() {
     );
 }
 
+/// A pin queued by one stream chunk must not undo a later upward user scroll.
+/// Voice mode follows the same rule as ordinary chat scrolling.
+#[test]
+fn sticky_scrollback_yields_to_upward_user_scroll() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        function_contains(chat_js, "scrollToBottom", "chatScrollGeneration")
+            && function_contains(chat_js, "scrollToBottom", "generation !== chatScrollGeneration"),
+        "deferred bottom pins must be cancelled by a later user scroll"
+    );
+    assert!(
+        chat_js.contains("this.scrollTop < lastChatScrollTop"),
+        "the chat scroll handler must record upward user scrolls"
+    );
+    assert!(
+        function_contains(chat_js, "shouldStickChatToBottom", "return isAtBottom()")
+            && !function_contains(chat_js, "shouldStickChatToBottom", "window.voiceModeActive) return true"),
+        "voice mode must respect the same sticky scrollback state"
+    );
+}
+
 /// Record from speech-like start (Silero onSpeechStart). Stop TTS only when
 /// real speech is confirmed (onSpeechRealStart / REAL_SPEECH_MS), immediately
 /// at that point — not on cough/"hey", not when the utterance ends.
