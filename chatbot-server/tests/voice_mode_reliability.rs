@@ -400,6 +400,16 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && plugin.contains("stopVoiceMode"),
         "notification Stop must ask JS to stopVoiceMode and tear down native audio"
     );
+    assert!(
+        plugin.contains("recordingGeneration")
+            && plugin.contains("generation != recordingGeneration.get()"),
+        "queued native PCM from before notification Stop must be discarded"
+    );
+    assert!(
+        chat_js.contains("!self.isRecording || !window.voiceModeActive")
+            && chat_js.contains("voiceModeSessionGeneration"),
+        "queued PCM and in-flight STT must not create input after notification Stop"
+    );
 
     assert!(
         activity.contains("keepVoiceWebViewRunning")

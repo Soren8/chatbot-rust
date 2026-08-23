@@ -42,6 +42,7 @@ import com.getcapacitor.annotation.PermissionCallback;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.concurrent.atomic.AtomicLong;
 
 @CapacitorPlugin(
     name = "NativeMic",
@@ -66,12 +67,14 @@ public class NativeMicPlugin extends Plugin {
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
 
     private AudioRecord audioRecord = null;
-    private boolean isRecording = false;
+    private volatile boolean isRecording = false;
     private Thread recordingThread = null;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private AudioManager audioManager = null;
     private AudioFocusRequest audioFocusRequest = null;
     private boolean hasAudioFocus = false;
+    /** Drops PCM callbacks queued before notification Stop or a recorder restart. */
+    private final AtomicLong recordingGeneration = new AtomicLong(0);
     private final VoiceAudioRoute voiceAudioRoute = new VoiceAudioRoute();
     private final VoiceAudioRoute.Backend voiceAudioBackend = new AudioManagerBackend();
     private final VoiceSessionKeepAwake voiceSessionKeepAwake = new VoiceSessionKeepAwake();
@@ -196,6 +199,7 @@ public class NativeMicPlugin extends Plugin {
                     + " routeActive=" + voiceAudioRoute.isActive());
             enableAudioEffects(audioRecord.getAudioSessionId());
 
+            long generation = recordingGeneration.incrementAndGet();
             audioRecord.startRecording();
             isRecording = true;
 
@@ -215,13 +219,13 @@ public class NativeMicPlugin extends Plugin {
                         chunkFill += toCopy;
                         offset += toCopy;
                         if (chunkFill == CHUNK_SAMPLES) {
-                            notifyAudioData(shortArrayToByteArray(chunkBuffer, CHUNK_SAMPLES));
+                            notifyAudioData(shortArrayToByteArray(chunkBuffer, CHUNK_SAMPLES), generation);
                             chunkFill = 0;
                         }
                     }
                 }
                 if (chunkFill > 0) {
-                    notifyAudioData(shortArrayToByteArray(chunkBuffer, chunkFill));
+                    notifyAudioData(shortArrayToByteArray(chunkBuffer, chunkFill), generation);
                 }
             });
             recordingThread.start();
@@ -724,6 +728,7 @@ public class NativeMicPlugin extends Plugin {
     }
 
     private void stopRecording() {
+        recordingGeneration.incrementAndGet();
         isRecording = false;
         if (recordingThread != null) {
             try {
@@ -766,8 +771,11 @@ public class NativeMicPlugin extends Plugin {
         return bytes;
     }
 
-    private void notifyAudioData(byte[] pcmData) {
+    private void notifyAudioData(byte[] pcmData, long generation) {
         mainHandler.post(() -> {
+            if (!isRecording || generation != recordingGeneration.get()) {
+                return;
+            }
             JSObject ret = new JSObject();
             ret.put("type", "audioData");
             ret.put("data", android.util.Base64.encodeToString(pcmData, android.util.Base64.NO_WRAP));
