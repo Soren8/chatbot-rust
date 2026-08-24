@@ -368,7 +368,7 @@ dependencies = [
  "once_cell",
  "oxc_allocator 0.146.0",
  "oxc_parser",
- "oxc_span",
+ "oxc_span 0.146.0",
  "pbkdf2",
  "pulldown-cmark",
  "rand 0.10.2",
@@ -453,6 +453,19 @@ dependencies = [
  "rustversion",
  "ryu",
  "static_assertions",
+]
+
+[[package]]
+name = "compact_str"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "static_assertions",
+ "zmij",
 ]
 
 [[package]]
@@ -1548,10 +1561,10 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "oxc_allocator 0.36.0",
- "oxc_ast_macros",
- "oxc_estree",
+ "oxc_ast_macros 0.36.0",
+ "oxc_estree 0.36.0",
  "oxc_regular_expression",
- "oxc_span",
+ "oxc_span 0.36.0",
  "oxc_syntax",
 ]
 
@@ -1564,6 +1577,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
+]
+
+[[package]]
+name = "oxc_ast_macros"
+version = "0.146.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d715e3c300c95b1d797b05526567161fd86fcac2ac68235101c61b736f216cde"
+dependencies = [
+ "phf 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -1589,6 +1614,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fa45c638ccfd88b5c26147b0a98e1e8dd49542327dda94445b940ef91920d6a"
 
 [[package]]
+name = "oxc_estree"
+version = "0.146.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc7af86a59b7aeb2845ffea2cc21ae259053865b175e9ac936a7d72f2744abe5"
+
+[[package]]
 name = "oxc_index"
 version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1610,7 +1641,7 @@ dependencies = [
  "oxc_ast",
  "oxc_diagnostics",
  "oxc_regular_expression",
- "oxc_span",
+ "oxc_span 0.36.0",
  "oxc_syntax",
  "rustc-hash",
  "seq-macro",
@@ -1623,11 +1654,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1bd0d5b1b943173378a5f61d6a4c49edc7e8c9157241e9bbba54594d7449b4c"
 dependencies = [
  "oxc_allocator 0.36.0",
- "oxc_ast_macros",
+ "oxc_ast_macros 0.36.0",
  "oxc_diagnostics",
- "oxc_estree",
- "oxc_span",
- "phf",
+ "oxc_estree 0.36.0",
+ "oxc_span 0.36.0",
+ "phf 0.11.3",
  "rustc-hash",
  "unicode-id-start",
 ]
@@ -1638,11 +1669,36 @@ version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7b5d7caf8a20611f34c5c9ebdf232b6b42498e5424d02ef1e2dffe31553b49f"
 dependencies = [
- "compact_str",
+ "compact_str 0.8.2",
  "oxc-miette",
  "oxc_allocator 0.36.0",
- "oxc_ast_macros",
- "oxc_estree",
+ "oxc_ast_macros 0.36.0",
+ "oxc_estree 0.36.0",
+]
+
+[[package]]
+name = "oxc_span"
+version = "0.146.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c355ae1fa3e865c28cb8a85735ecafd1bb6340a5b880c638d127c1f2d61a98a5"
+dependencies = [
+ "compact_str 0.10.0",
+ "oxc_allocator 0.146.0",
+ "oxc_ast_macros 0.146.0",
+ "oxc_estree 0.146.0",
+ "oxc_str",
+]
+
+[[package]]
+name = "oxc_str"
+version = "0.146.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ba45ef9efa8296e647aa37b2b21936cb520953031edc1ef6352281bbea22faa"
+dependencies = [
+ "compact_str 0.10.0",
+ "hashbrown 0.17.1",
+ "oxc_allocator 0.146.0",
+ "oxc_estree 0.146.0",
 ]
 
 [[package]]
@@ -1656,11 +1712,11 @@ dependencies = [
  "dashmap",
  "nonmax",
  "oxc_allocator 0.36.0",
- "oxc_ast_macros",
- "oxc_estree",
+ "oxc_ast_macros 0.36.0",
+ "oxc_estree 0.36.0",
  "oxc_index",
- "oxc_span",
- "phf",
+ "oxc_span 0.36.0",
+ "phf 0.11.3",
  "rustc-hash",
  "unicode-id-start",
 ]
@@ -1701,7 +1757,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
 dependencies = [
  "phf_macros",
- "phf_shared",
+ "phf_shared 0.11.3",
+]
+
+[[package]]
+name = "phf"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
+dependencies = [
+ "phf_shared 0.14.0",
+ "serde",
 ]
 
 [[package]]
@@ -1710,7 +1776,7 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.11.3",
  "rand 0.8.7",
 ]
 
@@ -1721,7 +1787,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
 dependencies = [
  "phf_generator",
- "phf_shared",
+ "phf_shared 0.11.3",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -1732,6 +1798,15 @@ name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+dependencies = [
+ "siphasher",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
  "siphasher",
 ]
