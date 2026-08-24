@@ -1,5 +1,5 @@
 fastapi==0.141.1
-uvicorn[standard]==0.52.3
+uvicorn[standard]==0.52.4
 nemo_toolkit[asr]==3.0.0
 kokoro==0.9.4
 misaki[en]==0.9.4
