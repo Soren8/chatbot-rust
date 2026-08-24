@@ -695,6 +695,55 @@ function decodeHTMLEntities(str) {
     .replace(/&amp;/g, '&');
 }
 
+// Copy text to the clipboard in any context. The async Clipboard API is only
+// available on secure origins (HTTPS / localhost / file:// in some browsers);
+// on plain HTTP the property is undefined and the call throws synchronously,
+// which a Promise .catch() does not catch. Fall back to a hidden textarea
+// + document.execCommand('copy'), which still works in insecure contexts.
+function copyToClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function' && window.isSecureContext) {
+    try {
+      return navigator.clipboard.writeText(text);
+    } catch (e) {
+      return fallbackCopy(text, e);
+    }
+  }
+  return fallbackCopy(text, null);
+
+  function fallbackCopy(value, asyncErr) {
+    return new Promise(function (resolve, reject) {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '0';
+      ta.style.opacity = '0';
+      ta.style.pointerEvents = 'none';
+      document.body.appendChild(ta);
+      const sel = document.getSelection();
+      const previousRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+      ta.focus();
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch (e) {
+        if (asyncErr) reject(asyncErr);
+        else reject(e);
+        if (ta.parentNode) ta.parentNode.removeChild(ta);
+        if (previousRange && sel) { sel.removeAllRanges(); sel.addRange(previousRange); }
+        return;
+      }
+      if (ta.parentNode) ta.parentNode.removeChild(ta);
+      if (previousRange && sel) { sel.removeAllRanges(); sel.addRange(previousRange); }
+      if (ok) resolve();
+      else if (asyncErr) reject(asyncErr);
+      else reject(new Error('execCommand("copy") returned false'));
+    });
+  }
+}
+
 // Accept only data:image/*;base64,... URLs for <img src>.
 // Reconstructs from character-class-filtered parts so DOM-sourced strings never
 // flow into HTML attribute sinks (CodeQL js/xss-through-dom).
@@ -3152,16 +3201,23 @@ $(document).ready(function() {
     const $btn = $(this);
     const $container = $btn.closest('.code-block-container');
     const code = $container.find('pre code').text();
+    const originalHtml = $btn.html();
 
-    navigator.clipboard.writeText(code).then(() => {
-      const originalHtml = $btn.html();
+    copyToClipboard(code).then(function() {
       $btn.addClass('copied').html('<i class="bi bi-check2"></i>');
-      setTimeout(() => {
-        $btn.removeClass('copied').html(originalHtml);
+      setTimeout(function() {
+        if ($btn.is(':visible')) {
+          $btn.removeClass('copied').html(originalHtml);
+        }
       }, 2000);
-    }).catch(err => {
+    }).catch(function(err) {
       console.error('Failed to copy code:', err);
-      alert('Failed to copy code to clipboard');
+      $btn.addClass('copy-failed').html('<i class="bi bi-x-lg"></i>').attr('title', 'Copy failed — select and copy manually');
+      setTimeout(function() {
+        if ($btn.is(':visible')) {
+          $btn.removeClass('copy-failed').html(originalHtml).attr('title', 'Copy to clipboard');
+        }
+      }, 2000);
     });
   });
 

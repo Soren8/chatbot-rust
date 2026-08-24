@@ -395,3 +395,54 @@ fn function_body<'a>(src: &'a str, fn_name: &str) -> Option<&'a str> {
     }
     None
 }
+
+/// Regression: the code block copy button used to call
+/// `navigator.clipboard.writeText` directly. On insecure origins (plain HTTP,
+/// sandboxed iframes) `navigator.clipboard` is undefined, so the call threw
+/// synchronously and `.catch()` never ran — the click appeared to do nothing.
+/// The handler must now go through a helper that falls back to
+/// `document.execCommand('copy')` so the button works in any context and the
+/// failure path stays visible (no modal alert).
+#[test]
+fn code_block_copy_works_in_insecure_contexts() {
+    let chat_js = include_str!("../../static/chat.js");
+    let style_css = include_str!("../../static/style.css");
+
+    let handler = ai_message_text_click_handler_region(
+        chat_js,
+        "$(document).on('click', '.copy-code-button'",
+        "// Load sets for logged-in users (wait for encryption key from login storage first)",
+    )
+    .expect("copy-code-button click handler");
+    assert!(
+        handler.contains("copyToClipboard("),
+        "copy-code-button handler must call the copyToClipboard helper, not navigator.clipboard.writeText directly; got: {handler}"
+    );
+    assert!(
+        !handler.contains("navigator.clipboard.writeText"),
+        "copy-code-button handler must not call navigator.clipboard.writeText directly; got: {handler}"
+    );
+
+    let helper = function_body(chat_js, "copyToClipboard").expect("copyToClipboard helper");
+    assert!(
+        helper.contains("navigator.clipboard")
+            && helper.contains("document.execCommand('copy')"),
+        "copyToClipboard must use navigator.clipboard when available and fall back to document.execCommand('copy') otherwise; got: {helper}"
+    );
+
+    assert!(
+        style_css.contains(".copy-code-button.copy-failed"),
+        ".copy-code-button.copy-failed rule must exist so the failure state is visible"
+    );
+}
+
+fn ai_message_text_click_handler_region<'a>(
+    src: &'a str,
+    start_marker: &str,
+    end_marker: &str,
+) -> Option<&'a str> {
+    let start = src.find(start_marker)?;
+    let rest = &src[start..];
+    let end = rest.find(end_marker)?;
+    Some(&rest[..end])
+}
