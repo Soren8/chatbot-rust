@@ -9,7 +9,7 @@ fn assert_script_parses(name: &str, source: &str) {
     let allocator = Allocator::default();
     let source_type = SourceType::default().with_module(false).with_jsx(false);
     let ret = Parser::new(&allocator, source, source_type).parse();
-    let errors: Vec<String> = ret.errors.iter().map(ToString::to_string).collect();
+    let errors: Vec<String> = ret.diagnostics.errors().map(ToString::to_string).collect();
     assert!(
         errors.is_empty(),
         "{name} failed to parse ({} error(s)):\n{}",
