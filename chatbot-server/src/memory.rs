@@ -88,12 +88,6 @@ pub async fn handle_update_memory(
     };
 
     let memory_text = payload.memory.unwrap_or_default();
-    if memory_text.trim().is_empty() {
-        return build_json_response(
-            StatusCode::BAD_REQUEST,
-            json!({"error": "Memory content is required"}),
-        );
-    }
 
     let set_name = history::normalise_set_name(payload.set_name.as_deref())
         .map_err(|e| map_name_err(e))?;

@@ -1,4 +1,7 @@
-use std::{env, fs};
+use std::{
+    env, fs,
+    sync::{Mutex, OnceLock},
+};
 
 use axum::{
     body::{to_bytes, Body},
@@ -17,8 +20,17 @@ static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
 });
 
+/// Tests in this file mutate global env vars (`HOST_DATA_DIR`, `SECRET_KEY`,
+/// `OPENAI_API_KEY`) and rely on a shared user store on disk, so they must
+/// run serially.
+fn test_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 #[tokio::test]
 async fn memory_and_prompt_endpoints_round_trip() {
+    let _guard = test_mutex().lock().unwrap();
     common::init_tracing();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
@@ -339,4 +351,107 @@ async fn memory_and_prompt_endpoints_round_trip() {
     assert!(!history_file.exists(), "old history file should NOT exist");
     let redb = workspace.path().join("history").join("redb");
     assert!(redb.exists(), "redb history store should exist after authenticated ops");
+}
+
+#[tokio::test]
+async fn memory_can_be_cleared_with_empty_string() {
+    let _guard = test_mutex().lock().unwrap();
+    common::init_tracing();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let home_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /");
+
+    assert_eq!(home_response.status(), StatusCode::OK);
+    let session_cookie = home_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(common::extract_cookie)
+        .expect("initial session cookie");
+
+    let home_body = to_bytes(home_response.into_body(), 512 * 1024)
+        .await
+        .expect("home body");
+    let home_html = std::str::from_utf8(&home_body).expect("home utf8");
+    let csrf_token = CSRF_META_RE
+        .captures(home_html)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+        .expect("csrf token meta");
+
+    // Seed memory with content (guest path; bypasses HistoryService::global()).
+    let seed_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/update_memory")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "memory": "something to remember",
+                        "set_name": "default",
+                    }))
+                    .expect("seed payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /update_memory seed");
+    assert_eq!(seed_response.status(), StatusCode::OK);
+
+    // Clearing memory with an empty string must succeed (not 400).
+    let clear_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/update_memory")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "memory": "",
+                        "set_name": "default",
+                    }))
+                    .expect("clear payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /update_memory clear");
+    assert_eq!(
+        clear_response.status(),
+        StatusCode::OK,
+        "empty memory should be a valid save (clearing memory)"
+    );
+    let clear_body = to_bytes(clear_response.into_body(), 128 * 1024)
+        .await
+        .expect("clear body");
+    let clear_json: serde_json::Value = serde_json::from_slice(&clear_body).expect("clear json");
+    assert_eq!(
+        clear_json.get("status"),
+        Some(&serde_json::Value::String("success".into()))
+    );
+    assert_eq!(
+        clear_json.get("storage"),
+        Some(&serde_json::Value::String("session".into()))
+    );
 }

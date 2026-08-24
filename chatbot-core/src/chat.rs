@@ -204,14 +204,13 @@ pub fn prepare_chat_messages(
     }
 
     let mut messages = Vec::new();
-    messages.push(ChatMessage::system(system_prompt));
-
+    let mut system_content = String::with_capacity(system_prompt.len() + memory_text.len() + 16);
+    system_content.push_str(&system_prompt);
     if !memory_text.trim().is_empty() {
-        messages.push(ChatMessage::system(format!(
-            "Memory:\n{}",
-            memory_snippet(&memory_text)
-        )));
+        system_content.push_str("\n\nMemory:\n");
+        system_content.push_str(&memory_snippet(&memory_text));
     }
+    messages.push(ChatMessage::system(system_content));
 
     for (user, assistant) in truncated_history.iter() {
         messages.push(ChatMessage::user(user.clone()));
@@ -378,15 +377,45 @@ mod tests {
         let context = mock_context(history, "Remember this.");
         let prepared = prepare_chat_messages(&context, "How are you?");
 
-        assert_eq!(prepared.messages.len(), 5);
-        assert!(matches!(prepared.messages[0].role, ChatMessageRole::System));
-        assert!(prepared.messages[1].content.starts_with("Memory:"));
-        assert!(matches!(prepared.messages[2].role, ChatMessageRole::User));
+        // Local LLMs (Ollama / LM Studio / llama.cpp) reject or mis-handle
+        // multiple system messages, so the system prompt and memory must be
+        // merged into a single system message. With memory set the result is:
+        //   [0] system (system_prompt + memory)
+        //   [1] user (history)
+        //   [2] assistant (history)
+        //   [3] user (new message)
+        assert_eq!(prepared.messages.len(), 4);
+        let system_count = prepared
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, ChatMessageRole::System))
+            .count();
+        assert_eq!(system_count, 1, "must send exactly one system message");
+        let system = &prepared.messages[0];
+        assert!(matches!(system.role, ChatMessageRole::System));
+        assert!(system.content.contains("You are helpful."));
+        assert!(system.content.contains("Remember this."));
+        assert!(matches!(prepared.messages[1].role, ChatMessageRole::User));
         assert!(matches!(
-            prepared.messages[3].role,
+            prepared.messages[2].role,
             ChatMessageRole::Assistant
         ));
         assert_eq!(prepared.messages.last().unwrap().content, "How are you?");
+    }
+
+    #[test]
+    fn prepare_chat_messages_emits_single_system_message_with_no_memory() {
+        let history = vec![("Hello".into(), "Hi".into())];
+        let context = mock_context(history, "");
+        let prepared = prepare_chat_messages(&context, "How are you?");
+
+        let system_count = prepared
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, ChatMessageRole::System))
+            .count();
+        assert_eq!(system_count, 1, "must send exactly one system message");
+        assert_eq!(prepared.messages[0].content, "You are helpful.");
     }
 
     #[test]
