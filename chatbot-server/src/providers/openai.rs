@@ -1,4 +1,4 @@
-use std::{pin::Pin, time::Duration};
+use std::{collections::BTreeMap, pin::Pin, time::Duration};
 
 use anyhow::{Context, Result};
 use async_stream::try_stream;
@@ -18,7 +18,7 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
-pub enum ToolCallResponse {
+pub enum ToolStreamChunk {
     Content(String),
     ToolCalls(Vec<ToolCall>),
 }
@@ -123,6 +123,7 @@ mod payload {
     }
 }
 
+#[derive(Clone)]
 pub struct OpenAiProvider {
     client: Client,
     base_url: String,
@@ -290,18 +291,41 @@ impl OpenAiProvider {
         Ok(Box::pin(stream))
     }
 
-    pub async fn call_with_tools(
+    pub fn stream_chat_with_tools(
         &self,
-        messages: &[ChatMessagePayload],
+        messages: Vec<ChatMessagePayload>,
         tools: &[Value],
-    ) -> Result<ToolCallResponse> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ToolStreamChunk>> + Send + 'static>>> {
         if let Ok(query) = std::env::var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY") {
             if !query.is_empty() {
-                return Ok(ToolCallResponse::ToolCalls(vec![ToolCall {
-                    name: "brave_web_search".to_string(),
-                    arguments: serde_json::json!({ "query": query }),
-                }]));
+                let stream = tokio_stream::iter(vec![Ok(ToolStreamChunk::ToolCalls(vec![
+                    ToolCall {
+                        name: "brave_web_search".to_string(),
+                        arguments: serde_json::json!({ "query": query }),
+                    },
+                ]))]);
+                return Ok(Box::pin(stream));
             }
+        }
+
+        if let Some(ref chunks) = self.test_chunks {
+            let chunks = chunks.clone();
+            let delay_ms: u64 = std::env::var("CHATBOT_TEST_OPENAI_CHUNK_DELAY_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let stream = async_stream::try_stream! {
+                for chunk in chunks {
+                    if delay_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    }
+                    if chunk == "__STREAM_ERROR__" {
+                        Err(anyhow::anyhow!("injected test stream error"))?;
+                    }
+                    yield ToolStreamChunk::Content(chunk);
+                }
+            };
+            return Ok(Box::pin(stream));
         }
 
         let api_key = self
@@ -321,8 +345,8 @@ impl OpenAiProvider {
 
         let payload = ChatCompletionRequest {
             model: self.model.clone(),
-            messages: messages.to_vec(),
-            stream: false,
+            messages,
+            stream: true,
             temperature: 0.7,
             provider,
             tools: Some(tools.to_vec()),
@@ -331,53 +355,120 @@ impl OpenAiProvider {
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
-        let response: Value = self
-            .client
-            .post(url)
-            .bearer_auth(api_key)
-            .json(&payload)
-            .send()
-            .await
-            .context("failed to send tool call request")?
-            .error_for_status()
-            .context("tool call request returned error status")?
-            .json()
-            .await
-            .context("failed to parse tool call response")?;
+        let client = self.client.clone();
+        let stream = try_stream! {
+            let response = client
+                .post(url)
+                .bearer_auth(api_key)
+                .json(&payload)
+                .send()
+                .await
+                .context("failed to send tool-aware OpenAI request")?
+                .error_for_status()
+                .context("tool-aware OpenAI request returned error status")?;
 
-        let message = &response["choices"][0]["message"];
+            let mut buffer = String::new();
+            let mut body_stream = response.bytes_stream();
+            let mut currently_thinking = false;
+            let mut has_sent_any_content = false;
+            let mut is_implicit_model = false;
+            let mut tool_call_builders: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
 
-        if let Some(raw_tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
-            if !raw_tool_calls.is_empty() {
-                let calls = raw_tool_calls
-                    .iter()
-                    .filter_map(|tc| {
-                        let name = tc["function"]["name"].as_str()?.to_string();
-                        let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                        let arguments =
-                            serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                        Some(ToolCall { name, arguments })
-                    })
-                    .collect::<Vec<_>>();
+            while let Some(chunk) = body_stream.next().await {
+                let bytes = chunk.context("OpenAI tool-aware stream read error")?;
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
 
-                if !calls.is_empty() {
-                    return Ok(ToolCallResponse::ToolCalls(calls));
+                let outcome = extract_sse_payloads(
+                    &mut buffer,
+                    &mut currently_thinking,
+                    &mut has_sent_any_content,
+                    &mut is_implicit_model,
+                )?;
+                for chunk in outcome.chunks {
+                    yield ToolStreamChunk::Content(chunk);
+                }
+                collect_tool_call_deltas(&mut tool_call_builders, outcome.tool_call_deltas);
+
+                if outcome.done {
+                    if currently_thinking {
+                        yield ToolStreamChunk::Content("</think>".to_string());
+                    }
+                    let tool_calls = finish_tool_calls(tool_call_builders);
+                    if !tool_calls.is_empty() {
+                        yield ToolStreamChunk::ToolCalls(tool_calls);
+                    }
+                    return;
                 }
             }
-        }
 
-        let content = message
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            if !buffer.is_empty() {
+                buffer.push('\n');
+                let outcome = extract_sse_payloads(
+                    &mut buffer,
+                    &mut currently_thinking,
+                    &mut has_sent_any_content,
+                    &mut is_implicit_model,
+                )?;
+                for chunk in outcome.chunks {
+                    yield ToolStreamChunk::Content(chunk);
+                }
+                collect_tool_call_deltas(&mut tool_call_builders, outcome.tool_call_deltas);
+            }
+            if currently_thinking {
+                yield ToolStreamChunk::Content("</think>".to_string());
+            }
+            let tool_calls = finish_tool_calls(tool_call_builders);
+            if !tool_calls.is_empty() {
+                yield ToolStreamChunk::ToolCalls(tool_calls);
+            }
+        };
 
-        Ok(ToolCallResponse::Content(content))
+        Ok(Box::pin(stream))
     }
+}
+
+struct ToolCallBuilder {
+    name: String,
+    arguments: String,
+}
+
+struct ToolCallDelta {
+    index: usize,
+    name: Option<String>,
+    arguments: String,
+}
+
+fn collect_tool_call_deltas(
+    builders: &mut BTreeMap<usize, ToolCallBuilder>,
+    deltas: Vec<ToolCallDelta>,
+) {
+    for delta in deltas {
+        let builder = builders.entry(delta.index).or_insert_with(|| ToolCallBuilder {
+            name: String::new(),
+            arguments: String::new(),
+        });
+        if let Some(name) = delta.name {
+            builder.name.push_str(&name);
+        }
+        builder.arguments.push_str(&delta.arguments);
+    }
+}
+
+fn finish_tool_calls(builders: BTreeMap<usize, ToolCallBuilder>) -> Vec<ToolCall> {
+    builders
+        .into_values()
+        .filter(|builder| !builder.name.is_empty())
+        .map(|builder| ToolCall {
+            name: builder.name,
+            arguments: serde_json::from_str(&builder.arguments)
+                .unwrap_or_else(|_| serde_json::json!({})),
+        })
+        .collect()
 }
 
 struct ExtractionOutcome {
     chunks: Vec<String>,
+    tool_call_deltas: Vec<ToolCallDelta>,
     done: bool,
 }
 
@@ -388,6 +479,7 @@ fn extract_sse_payloads(
     is_implicit_model: &mut bool,
 ) -> Result<ExtractionOutcome> {
     let mut chunks = Vec::new();
+    let mut tool_call_deltas = Vec::new();
     let mut done = false;
 
     loop {
@@ -431,6 +523,30 @@ fn extract_sse_payloads(
                 .and_then(|choice| choice.get("delta"));
 
             if let Some(delta) = delta {
+                if let Some(raw_tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                    for raw_tool_call in raw_tool_calls {
+                        let index = raw_tool_call
+                            .get("index")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0) as usize;
+                        let function = raw_tool_call.get("function");
+                        let name = function
+                            .and_then(|function| function.get("name"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        let arguments = function
+                            .and_then(|function| function.get("arguments"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        tool_call_deltas.push(ToolCallDelta {
+                            index,
+                            name,
+                            arguments,
+                        });
+                    }
+                }
+
                 let reasoning_field = delta.get("reasoning_content").or_else(|| delta.get("reasoning"));
                 let content_field = delta.get("content");
                 
@@ -477,12 +593,56 @@ fn extract_sse_payloads(
         }
     }
 
-    Ok(ExtractionOutcome { chunks, done })
+    Ok(ExtractionOutcome {
+        chunks,
+        tool_call_deltas,
+        done,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
+
+    fn test_provider(test_chunks: Vec<String>) -> OpenAiProvider {
+        OpenAiProvider::new(&ProviderConfig {
+            provider_name: "test".to_string(),
+            provider_type: "openai".to_string(),
+            tier: None,
+            model_name: "test-model".to_string(),
+            context_size: Some(4096),
+            base_url: "https://example.test/v1".to_string(),
+            api_key: None,
+            allowed_providers: vec![],
+            request_timeout: Some(1.0),
+            test_chunks: Some(test_chunks),
+            search: false,
+            xai_search: true,
+            xai_zdr: false,
+        })
+        .expect("test provider")
+    }
+
+    #[tokio::test]
+    async fn tool_aware_stream_passes_through_direct_content() {
+        let provider = test_provider(vec!["first".to_string(), " second".to_string()]);
+        let mut stream = provider
+            .stream_chat_with_tools(vec![], &[])
+            .expect("tool-aware stream");
+        let mut content = String::new();
+
+        while let Some(event) = stream.next().await {
+            match event.expect("stream event") {
+                ToolStreamChunk::Content(chunk) => content.push_str(&chunk),
+                ToolStreamChunk::ToolCalls(_) => {
+                    panic!("direct response unexpectedly called a tool")
+                }
+            }
+        }
+
+        assert_eq!(content, "first second");
+    }
 
     #[test]
     fn test_openai_extract_sse_payloads_with_both_reasoning_and_content() {
@@ -522,6 +682,45 @@ mod tests {
         let combined = outcome.chunks.join("");
         assert!(combined.contains("final thought"), "Should contain reasoning");
         assert!(combined.contains("Hello"), "Should contain content but got: {}", combined);
+    }
+
+    #[test]
+    fn test_openai_extract_sse_payloads_collects_tool_call_deltas() {
+        let mut buffer = String::new();
+        let mut currently_thinking = false;
+        let mut has_sent_any_content = false;
+        let mut is_implicit_model = false;
+        let json = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "name": "brave_web_search",
+                            "arguments": r#"{"query":"weather"#
+                        }
+                    }]
+                }
+            }]
+        });
+
+        buffer.push_str(&format!("data: {}\n\n", json));
+        let outcome = extract_sse_payloads(
+            &mut buffer,
+            &mut currently_thinking,
+            &mut has_sent_any_content,
+            &mut is_implicit_model,
+        )
+        .expect("tool call delta");
+
+        assert!(outcome.chunks.is_empty());
+        assert_eq!(outcome.tool_call_deltas.len(), 1);
+        assert_eq!(outcome.tool_call_deltas[0].index, 0);
+        assert_eq!(
+            outcome.tool_call_deltas[0].name.as_deref(),
+            Some("brave_web_search")
+        );
+        assert_eq!(outcome.tool_call_deltas[0].arguments, "{\"query\":\"weather");
     }
 
     #[test]

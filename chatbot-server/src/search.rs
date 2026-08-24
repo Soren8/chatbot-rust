@@ -1,6 +1,7 @@
 use std::pin::Pin;
 
 use anyhow::Result;
+use async_stream::try_stream;
 use futures_util::Stream;
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -8,7 +9,7 @@ use tracing::{debug, warn};
 
 use crate::brave::BraveClient;
 use crate::providers::openai::messages::ChatMessagePayload;
-use crate::providers::openai::{OpenAiProvider, ToolCallResponse};
+use crate::providers::openai::{OpenAiProvider, ToolStreamChunk};
 
 const MAX_SEARCH_RESULT_LEN: usize = 8_000;
 
@@ -18,63 +19,95 @@ pub async fn search_augmented_stream(
     brave: &BraveClient,
     tools: &[Value],
 ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
-    match provider.call_with_tools(&messages, tools).await {
-        Ok(ToolCallResponse::ToolCalls(tool_calls)) => {
-            let mut prefix_chunks: Vec<String> = Vec::new();
-            let mut augmented = messages.clone();
-            let mut any_results = false;
+    let mut initial_stream = provider.stream_chat_with_tools(messages.clone(), tools)?;
+    let mut fallback_stream = provider.stream_chat(messages.clone())?;
+    let final_provider = provider.clone();
+    let brave = brave.clone();
 
-            for tc in &tool_calls {
-                if tc.name == "brave_web_search" {
-                    let query = tc
-                        .arguments
-                        .get("query")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+    let stream = try_stream! {
+        let mut sent_content = false;
+        let mut tool_calls = None;
 
-                    prefix_chunks
-                        .push(format!("<think>Searching for: {}...</think>", query));
-                    debug!(query = %query, "executing brave_web_search");
-
-                    let result = brave.search(query).await.unwrap_or_else(|e| {
-                        warn!(?e, "Brave Search request failed");
-                        format!("Search failed: {e}")
-                    });
-
-                    let truncated = if result.len() > MAX_SEARCH_RESULT_LEN {
-                        format!("{}...[truncated]", &result[..MAX_SEARCH_RESULT_LEN])
+        while let Some(event) = initial_stream.next().await {
+            match event {
+                Ok(ToolStreamChunk::Content(chunk)) => {
+                    sent_content = true;
+                    yield chunk;
+                }
+                Ok(ToolStreamChunk::ToolCalls(calls)) => {
+                    tool_calls = Some(calls);
+                    break;
+                }
+                Err(err) => {
+                    if sent_content {
+                        Err(err)?;
                     } else {
-                        result
-                    };
-
-                    // Inject results as a user message — universally compatible with all
-                    // models, unlike the OpenAI tool-role format which many local models
-                    // don't handle correctly and causes them to loop on tool calls.
-                    augmented.push(ChatMessagePayload::user(format!(
-                        "[Web search results for \"{}\"]\n\n{}",
-                        query, truncated
-                    )));
-                    any_results = true;
+                        warn!(?err, "tool-aware stream failed; falling back to regular streaming");
+                        while let Some(chunk) = fallback_stream.next().await {
+                            yield chunk?;
+                        }
+                        return;
+                    }
                 }
             }
+        }
 
-            if any_results {
-                prefix_chunks.push("<think>Search complete.</think>".to_string());
+        let Some(tool_calls) = tool_calls else {
+            return;
+        };
+
+        let mut prefix_chunks = Vec::new();
+        let mut augmented = messages;
+        let mut any_results = false;
+
+        for tool_call in tool_calls {
+            if tool_call.name != "brave_web_search" {
+                continue;
             }
 
-            let final_stream = provider.stream_chat(augmented)?;
-            let prefix_stream =
-                tokio_stream::iter(prefix_chunks.into_iter().map(Ok::<String, anyhow::Error>));
-            let combined = prefix_stream.chain(final_stream);
-            Ok(Box::pin(combined))
+            let query = tool_call
+                .arguments
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+
+            prefix_chunks.push(format!("<think>Searching for: {}...</think>", query));
+            debug!(query = %query, "executing brave_web_search");
+
+            let result = brave.search(query).await.unwrap_or_else(|e| {
+                warn!(?e, "Brave Search request failed");
+                format!("Search failed: {e}")
+            });
+
+            let truncated = if result.len() > MAX_SEARCH_RESULT_LEN {
+                format!("{}...[truncated]", &result[..MAX_SEARCH_RESULT_LEN])
+            } else {
+                result
+            };
+
+            // Inject results as a user message — universally compatible with all
+            // models, unlike the OpenAI tool-role format which many local models
+            // don't handle correctly and causes them to loop on tool calls.
+            augmented.push(ChatMessagePayload::user(format!(
+                "[Web search results for \"{}\"]\n\n{}",
+                query, truncated
+            )));
+            any_results = true;
         }
-        Ok(ToolCallResponse::Content(_text)) => {
-            debug!("model returned content directly (no tool calls), using stream_chat to preserve thinking");
-            provider.stream_chat(messages)
+
+        if any_results {
+            prefix_chunks.push("<think>Search complete.</think>".to_string());
         }
-        Err(err) => {
-            warn!(?err, "call_with_tools failed; falling back to regular streaming");
-            provider.stream_chat(messages)
+
+        for chunk in prefix_chunks {
+            yield chunk;
         }
-    }
+
+        let mut final_stream = final_provider.stream_chat(augmented)?;
+        while let Some(chunk) = final_stream.next().await {
+            yield chunk?;
+        }
+    };
+
+    Ok(Box::pin(stream))
 }

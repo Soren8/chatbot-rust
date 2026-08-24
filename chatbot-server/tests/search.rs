@@ -156,6 +156,29 @@ async fn search_emits_think_tags_and_final_answer() {
 }
 
 #[tokio::test]
+async fn search_streams_direct_answer_without_tool_call() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    let body = chat_with_search(
+        Some("test-brave-key"),
+        None,
+        None,
+        &["Direct answer while search is enabled."],
+    )
+    .await;
+
+    assert!(
+        !body.contains("<think>Searching"),
+        "direct answer should not emit search status, got: {body}"
+    );
+    assert!(
+        body.contains("Direct answer while search is enabled."),
+        "expected direct stream content, got: {body}"
+    );
+}
+
+#[tokio::test]
 async fn search_falls_back_to_streaming_when_brave_not_configured() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();

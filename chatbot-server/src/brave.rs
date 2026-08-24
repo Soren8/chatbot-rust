@@ -27,6 +27,7 @@ fn http_client() -> &'static Client {
     HTTP_CLIENT.get_or_init(Client::new)
 }
 
+#[derive(Clone)]
 pub struct BraveClient {
     api_key: String,
 }
