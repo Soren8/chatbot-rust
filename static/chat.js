@@ -1823,6 +1823,11 @@ function sentenceEndsWithTerminator(sentenceText) {
   return /(?:\.{1,}|[!?…])["'”’)\]]*$/.test(s);
 }
 
+/** True if `ch` is an ASCII digit (0-9). */
+function isAsciiDigit(ch) {
+  return ch >= '0' && ch <= '9';
+}
+
 /**
  * Split plain text into sentences. Single algorithm used for:
  * - hover highlight bounds
@@ -1831,6 +1836,9 @@ function sentenceEndsWithTerminator(sentenceText) {
  * Do NOT sanitize before splitting (sanitize changes boundaries / can drop the first sentence).
  *
  * Ellipsis "..." / ".." / "…." is ONE terminator — never three empty "." sentences.
+ *
+ * Decimal/version dots like "4.6", "3.14", "1.2.3" are NOT sentence terminators
+ * (a period between two digits is a number separator, not end-of-sentence).
  *
  * @returns {{start:number, end:number, text:string}[]}
  */
@@ -1849,6 +1857,14 @@ function splitSentences(text) {
       const c = text.charAt(end);
       if (c === '.' || c === '!' || c === '?' || c === '\u2026' /* … */) {
         if (c === '.') {
+          // Decimal/version dot: digit on BOTH sides → not a terminator.
+          // "4.6", "3.14", "1.2.3" stay inside one sentence so TTS does not pause.
+          const prev = end > 0 ? text.charAt(end - 1) : '';
+          const next = end + 1 < n ? text.charAt(end + 1) : '';
+          if (isAsciiDigit(prev) && isAsciiDigit(next)) {
+            end++;
+            continue;
+          }
           // Consume the whole run: "..." is one terminator, not three sentences.
           while (end < n && text.charAt(end) === '.') end++;
         } else if (c === '\u2026') {
@@ -2162,6 +2178,8 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
   let consumedLen = 0;
   let queue = [];
   let running = false;
+  let observer = null;
+  let pollTimer = null;
 
   function isStillGenerating() {
     const currentRawText = $messageElement.find('.ai-message-text').text().trim();
@@ -2183,15 +2201,42 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     }
   }
 
+  // React to streaming text updates immediately. Polling still runs as a
+  // safety net in case MutationObserver is unavailable or misses an update
+  // (e.g. the LLM was idle and emitted a long buffer in one chunk).
+  function onTextChanged() {
+    if (!desktopTtsIsLive(sessionId)) {
+      teardownObserver();
+      return;
+    }
+    discoverAbsolute();
+    if (!running && queue.length) pump();
+  }
+
+  function teardownObserver() {
+    if (observer) {
+      try { observer.disconnect(); } catch (e) { /* ignore */ }
+      observer = null;
+    }
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
   function finishIfIdle() {
-    if (!desktopTtsIsLive(sessionId)) return;
+    if (!desktopTtsIsLive(sessionId)) {
+      teardownObserver();
+      return;
+    }
     if (running || queue.length) return;
     if (isStillGenerating()) {
-      setTimeout(function () {
+      pollTimer = setTimeout(function () {
+        pollTimer = null;
         if (!desktopTtsIsLive(sessionId)) return;
         discoverAbsolute();
         pump();
-      }, 120);
+      }, 60);
       return;
     }
     discoverAbsolute();
@@ -2199,6 +2244,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
       pump();
       return;
     }
+    teardownObserver();
     completeDesktopTtsPlayback(button);
   }
 
@@ -2213,13 +2259,26 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     const next = queue.shift();
     playOneTtsUtterance(sessionId, next).then(function (ok) {
       running = false;
-      if (!desktopTtsIsLive(sessionId)) return;
+      if (!desktopTtsIsLive(sessionId)) {
+        teardownObserver();
+        return;
+      }
       if (!ok) {
         stopCurrentDesktopTts();
         return;
       }
       pump();
     });
+  }
+
+  // Hook into the visible text node so we can start TTS on the first sentence
+  // the moment it lands, without waiting for the 60 ms poll cycle. This is
+  // the main latency win since the web-search/tool-calling flow added the
+  // extra search + second LLM hop.
+  const textEl = $messageElement.find('.ai-message-text')[0];
+  if (textEl && typeof MutationObserver === 'function') {
+    observer = new MutationObserver(onTextChanged);
+    observer.observe(textEl, { childList: true, subtree: true, characterData: true });
   }
 
   pump();
@@ -4258,32 +4317,68 @@ $(document).ready(function() {
       });
     }
 
+    // Wake the pump on streaming text updates so we don't wait out the 80 ms
+    // poll cycle between an LLM finishing a sentence and TTS starting.
+    function onTextChanged() {
+      if (!live()) {
+        teardownObserver();
+        return;
+      }
+      discoverSentences();
+      if (sentenceQueue.length > 0 && !pumpInFlight) {
+        pump();
+      }
+    }
+
+    function teardownObserver() {
+      if (observer) {
+        try { observer.disconnect(); } catch (e) { /* ignore */ }
+        observer = null;
+      }
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    let observer = null;
+    let pollTimer = null;
+    let pumpInFlight = false;
+
     function pump() {
       if (!live()) return;
+      if (pumpInFlight) return;
       discoverSentences();
       if (sentenceQueue.length > 0) {
         const text = String(sentenceQueue.shift() || '').trim();
         if (!text) { pump(); return; }
+        pumpInFlight = true;
         ensureSession().then(function () {
-          if (!live()) return;
+          if (!live()) return null;
           return fetchVoiceRetry('/tts', {
             method: 'POST',
             headers: withCsrf({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ text: text })
           });
         }).then(function (response) {
-          if (!live() || !response) return;
+          if (!live() || !response) return null;
           return response.json();
         }).then(function (data) {
-          if (!live() || !data || !data.token) return;
+          if (!live() || !data || !data.token) return null;
           return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(data.token));
         }).catch(function (err) {
           if (live()) console.error('Native voice TTS sentence failed; continuing:', err);
-        }).then(pump);
+        }).then(function () {
+          pumpInFlight = false;
+          pump();
+        });
         return;
       }
       if (isStillGenerating()) {
-        setTimeout(pump, 200);
+        pollTimer = setTimeout(function () {
+          pollTimer = null;
+          pump();
+        }, 80);
         return;
       }
       const remaining = getMessageTtsText($messageElement).substring(processedText.length).trim();
@@ -4293,6 +4388,7 @@ $(document).ready(function() {
         pump();
         return;
       }
+      teardownObserver();
       markEndOfQueue();
     }
 
@@ -4302,6 +4398,17 @@ $(document).ready(function() {
       });
       processedText = getMessageTtsText($messageElement) || '';
     }
+
+    // React immediately to streaming text updates so TTS starts on the first
+    // complete sentence without waiting out the 80 ms poll cycle. Important
+    // for the web-search/tool-calling path: the final answer only begins
+    // streaming after the search + second LLM hop completes.
+    const textEl = $messageElement.find('.ai-message-text')[0];
+    if (textEl && typeof MutationObserver === 'function') {
+      observer = new MutationObserver(onTextChanged);
+      observer.observe(textEl, { childList: true, subtree: true, characterData: true });
+    }
+
     pump();
   }
   window.playNativeVoiceModeTts = playNativeVoiceModeTts;

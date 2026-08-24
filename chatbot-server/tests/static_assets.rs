@@ -320,3 +320,78 @@ fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
     }
     false
 }
+
+/// Version numbers like "4.6" must NOT be split as two sentences. Otherwise
+/// TTS pauses between "4" and "6" — the whole reason this regression exists.
+#[test]
+fn split_sentences_keeps_version_numbers_together() {
+    let chat_js = include_str!("../../static/chat.js");
+
+    assert!(
+        chat_js.contains("function isAsciiDigit"),
+        "isAsciiDigit helper is required for the digit-digit period rule"
+    );
+    let body = function_body(chat_js, "splitSentences").expect("splitSentences body");
+    assert!(
+        body.contains("isAsciiDigit")
+            && body.contains("Decimal/version dot")
+            && body.contains("continue;"),
+        "splitSentences must skip a '.' when both sides are digits (decimals / versions); got: {body}"
+    );
+}
+
+/// Streaming TTS must react to new visible text quickly. After the web-search /
+/// tool-calling change the final answer only streams once the search + second
+/// LLM hop completes — a 120 ms poll cycle on top of that felt high latency.
+/// We now wake the pump from a MutationObserver and shrink the polling fallback.
+#[test]
+fn streaming_tts_reacts_to_text_updates_immediately() {
+    let chat_js = include_str!("../../static/chat.js");
+
+    let desktop_body = function_body(chat_js, "playMessageBodyTts")
+        .expect("playMessageBodyTts body");
+    assert!(
+        desktop_body.contains("MutationObserver"),
+        "playMessageBodyTts must use MutationObserver to react to streaming text"
+    );
+    assert!(
+        desktop_body.contains("disconnect()"),
+        "playMessageBodyTts must disconnect the observer when the session ends"
+    );
+    assert!(
+        !desktop_body.contains(", 120)"),
+        "playMessageBodyTts polling interval should no longer be 120 ms; got: {desktop_body}"
+    );
+
+    let native_body = function_body(chat_js, "playNativeVoiceModeTts")
+        .expect("playNativeVoiceModeTts body");
+    assert!(
+        native_body.contains("MutationObserver"),
+        "playNativeVoiceModeTts must use MutationObserver to react to streaming text"
+    );
+    assert!(
+        !native_body.contains(", 200)"),
+        "playNativeVoiceModeTts polling interval should no longer be 200 ms; got: {native_body}"
+    );
+}
+
+fn function_body<'a>(src: &'a str, fn_name: &str) -> Option<&'a str> {
+    let header = format!("function {fn_name}(");
+    let start = src.find(&header)?;
+    let body = &src[start..];
+    let open = body.find('{')?;
+    let mut depth = 0i32;
+    for (i, ch) in body[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[open..=open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
