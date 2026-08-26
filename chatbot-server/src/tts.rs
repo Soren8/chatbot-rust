@@ -51,6 +51,24 @@ static CITATION_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\[?\[(\d+)\]\]?").expect("valid citation regex")
 });
 
+// ~100 / ≈100 -> "about 100"
+static APPROX_NUMBER_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[~≈][ \t]*(\d[\d,]*)").expect("valid approx number regex"));
+
+// Tight-coupled magnitude suffixes: 10k / 2.5M / 2B / 4bn -> thousand/million/billion
+static MAGNITUDE_SUFFIX_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(\d[\d,]*(?:\.\d+)?)(bn|b|m|k)\b").expect("valid magnitude suffix regex")
+});
+
+// Dotted numbers read wrong by TTS (3.6 sounds like a sentence end): spell as words
+static DECIMAL_NUMBER_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\d[\d,]*(?:\.\d+)+\b").expect("valid decimal number regex"));
+
+// Standalone two-digit integers read smoother as words ("fifty eight"). The
+// token grab includes comma groups so 25,000 is never split mid-number.
+static INTEGER_TOKEN_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b(\d+(?:,\d+)*)\b").expect("valid integer token regex"));
+
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         .timeout(Duration::from_secs(30))
@@ -542,6 +560,105 @@ async fn handle_kokoro_tts(
     build_audio_response(wav_bytes)
 }
 
+const DIGIT_WORDS: [&str; 10] = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+];
+const TEEN_WORDS: [&str; 10] = [
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+    "eighteen", "nineteen",
+];
+const TENS_WORDS: [&str; 10] = [
+    "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+];
+
+/// Spells an integer 0..=999 as English words ("205" -> "two hundred five").
+fn small_integer_to_words(n: u32) -> String {
+    match n {
+        0..=9 => DIGIT_WORDS[n as usize].to_string(),
+        10..=19 => TEEN_WORDS[(n - 10) as usize].to_string(),
+        20..=99 => {
+            let ones = n % 10;
+            let tens = format!("{}", TENS_WORDS[(n / 10) as usize]);
+            if ones == 0 {
+                tens
+            } else {
+                format!("{tens} {}", DIGIT_WORDS[ones as usize])
+            }
+        }
+        _ => {
+            let hundreds = format!("{} hundred", DIGIT_WORDS[(n / 100) as usize]);
+            let rest = n % 100;
+            if rest == 0 {
+                hundreds
+            } else {
+                format!("{hundreds} {}", small_integer_to_words(rest))
+            }
+        }
+    }
+}
+
+/// Spells a standalone two-digit integer ("58" -> "fifty eight"); leaves
+/// everything else alone.
+fn two_digit_number_to_words(raw: &str) -> Option<String> {
+    let n: u32 = raw.parse().ok()?;
+    if !(10..=99).contains(&n) {
+        return None;
+    }
+    Some(small_integer_to_words(n))
+}
+
+fn expand_speech_numbers(input: &str) -> String {
+    let with_about = APPROX_NUMBER_REGEX.replace_all(input, "about $1");
+
+    let with_magnitudes = MAGNITUDE_SUFFIX_REGEX
+        .replace_all(&with_about, |caps: &regex::Captures| {
+            let number = caps[1].replace(',', "");
+            let suffix = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            // Lowercase tight "m" is ambiguous (meters/miles/minutes vs
+            // million): keep the letter, just spell the number as words.
+            if suffix == "m" {
+                let spoken = match number.parse::<u32>() {
+                    Ok(n) if n <= 999 => small_integer_to_words(n),
+                    _ => number.clone(),
+                };
+                return format!("{spoken} m");
+            }
+            let spoken = match suffix.to_ascii_lowercase().as_str() {
+                "k" => "thousand",
+                "m" => "million",
+                "b" | "bn" => "billion",
+                _ => return caps[0].to_string(),
+            };
+            format!("{number} {spoken}")
+        })
+        .into_owned();
+
+    let expanded = DECIMAL_NUMBER_REGEX
+        .replace_all(&with_magnitudes, |caps: &regex::Captures| {
+            caps[0]
+                .split('.')
+                .map(|part| {
+                    part.chars()
+                        .filter(|c| c.is_ascii_digit())
+                        .map(|d| DIGIT_WORDS[d.to_digit(10).unwrap() as usize])
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>()
+                .join(" point ")
+        })
+        .into_owned();
+
+    let expanded = INTEGER_TOKEN_REGEX
+        .replace_all(&expanded, |caps: &regex::Captures| {
+            two_digit_number_to_words(&caps[1]).unwrap_or_else(|| caps[1].to_string())
+        })
+        .into_owned();
+
+    debug!(expanded_preview = ?expanded.get(..100.min(expanded.len())), "expand_speech_numbers: result");
+    expanded
+}
+
 fn sanitize_text(input: &str) -> String {
     debug!(input_len = input.len(), input_preview = ?input.get(..100.min(input.len())), "sanitize_text: starting");
     
@@ -578,9 +695,13 @@ fn sanitize_text(input: &str) -> String {
     
     // Strip citation markers like [1], [[2]] that survive markdown parsing
     let no_citations = CITATION_REGEX.replace_all(&cleaned, "");
-    
+
+    // Expand numeric patterns TTS garbles: ~N approximations, k/m/b magnitude
+    // suffixes, and dotted numbers like 3.6 ("three point six")
+    let expanded = expand_speech_numbers(&no_citations);
+
     // Collapse multiple spaces into one
-    let collapsed = no_citations.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = expanded.split_whitespace().collect::<Vec<_>>().join(" ");
     
     let result = collapsed.trim().to_string();
     debug!(result_preview = ?result.get(..100.min(result.len())), "sanitize_text: final result");
@@ -690,6 +811,92 @@ mod tests {
         assert!(!result.contains("**"), "bold markers should be stripped but result is: {}", result);
         assert!(!result.contains("*italic*"), "italic markers should be stripped but result is: {}", result);
         assert_eq!(result, "This is bold and italic text.");
+    }
+
+    #[test]
+    fn test_sanitize_text_expands_version_numbers() {
+        let input = "We upgraded to version 3.6 last week.";
+        let result = sanitize_text(input);
+        assert!(
+            result.contains("three point six"),
+            "version 3.6 should be spoken as 'three point six' but result is: {}",
+            result
+        );
+        assert!(!result.contains("3.6"), "raw version number should be gone but result is: {}", result);
+        assert!(result.trim_end().ends_with('.'), "sentence-ending period must be preserved but result is: {}", result);
+    }
+
+    #[test]
+    fn test_sanitize_text_expands_multi_part_versions() {
+        let input = "The app now runs on Kotlin 1.2.3.";
+        let result = sanitize_text(input);
+        assert_eq!(result, "The app now runs on Kotlin one point two point three.");
+    }
+
+    #[test]
+    fn test_sanitize_text_expands_two_digit_integers_only() {
+        let input = "There are 200 cats, 7 birds, and 42 dogs here.";
+        let result = sanitize_text(input);
+        assert_eq!(result, "There are 200 cats, 7 birds, and forty two dogs here.");
+    }
+
+    #[test]
+    fn test_sanitize_text_spells_teens_and_tens() {
+        let input = "It took 13 days: 30 hours and 90 minutes in total.";
+        let result = sanitize_text(input);
+        assert_eq!(result, "It took thirteen days: thirty hours and ninety minutes in total.");
+    }
+
+    #[test]
+    fn test_sanitize_text_keeps_lowercase_m_ambiguous() {
+        let input = "He ran 200m today and swam 1500m yesterday.";
+        let result = sanitize_text(input);
+        assert!(
+            result.contains("two hundred m"),
+            "tight lowercase m should keep the letter with spelled words but result is: {}",
+            result
+        );
+        assert!(!result.contains("million"), "ambiguous m must not expand to million but result is: {}", result);
+    }
+
+    #[test]
+    fn test_sanitize_text_leaves_words_without_digits_alone() {
+        let input = "This is a plain sentence with no numbers at all.";
+        let result = sanitize_text(input);
+        assert_eq!(result, "This is a plain sentence with no numbers at all.");
+    }
+
+    #[test]
+    fn test_sanitize_text_expands_approximation_marker() {
+        let input = "The cluster handles ~58m requests per day.";
+        let result = sanitize_text(input);
+        assert!(
+            result.contains("about fifty eight m requests"),
+            "~58m should become 'about fifty eight m' but result is: {}",
+            result
+        );
+        assert!(!result.contains("~"), "tilde should be expanded but result is: {}", result);
+    }
+
+    #[test]
+    fn test_sanitize_text_expands_magnitude_suffixes() {
+        let result = sanitize_text("The video got 10k views and the fund raised 2B dollars.");
+        assert!(result.contains("ten thousand views"), "k suffix should expand but result is: {}", result);
+        assert!(result.contains("2 billion dollars"), "B suffix should expand but result is: {}", result);
+    }
+
+    #[test]
+    fn test_sanitize_text_expands_decimal_with_magnitude_suffix() {
+        let result = sanitize_text("It reached 2.5M users.");
+        assert_eq!(result, "It reached two point five million users.");
+    }
+
+    #[test]
+    fn test_sanitize_text_does_not_expand_units_like_ms_or_km() {
+        let input = "The lap took 45 seconds and the run was 5km long with 30ms latency noted.";
+        let result = sanitize_text(input);
+        assert!(result.contains("5km"), "km must not be mis-expanded but result is: {}", result);
+        assert!(result.contains("30ms"), "ms must not be mis-expanded but result is: {}", result);
     }
 
     #[test]
