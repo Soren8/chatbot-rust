@@ -97,6 +97,34 @@ fn native_mic_restart_stops_the_owned_recorder_before_joining() {
 }
 
 #[test]
+fn native_vad_stop_does_not_stop_a_newer_bridge() {
+    let chat_js = include_str!("../../static/chat.js");
+    let stop_start = chat_js
+        .find("NativeMicUtteranceVAD.prototype.stop")
+        .expect("NativeMicUtteranceVAD.stop must be declared");
+    let stop_body = &chat_js[stop_start..];
+    let stop_end = stop_body
+        .find("NativeMicUtteranceVAD.prototype.reinitialize")
+        .unwrap_or(stop_body.len());
+    let stop_body = &stop_body[..stop_end];
+    let owner_check = stop_body
+        .find("nativeMicBridge === this")
+        .expect("native VAD stop must check bridge ownership");
+    let native_stop = stop_body
+        .find("window.NativeMic.stop()")
+        .expect("native VAD stop must stop the recorder");
+    assert!(
+        owner_check < native_stop,
+        "a stale bridge must not stop the recorder owned by a newer bridge"
+    );
+    assert!(
+        stop_body.contains("nativeMicStopPromise")
+            && stop_body.contains("nativeMicStopPromise === stopPromise"),
+        "a replacement bridge must wait for an in-flight native stop to finish"
+    );
+}
+
+#[test]
 fn voice_mode_survives_capacitor_reload_without_a_second_tap() {
     let chat_js = include_str!("../../static/chat.js");
     assert!(
@@ -814,6 +842,48 @@ fn android_voice_mode_tts_uses_native_playback_and_desktop_keeps_html_audio() {
     );
 }
 
+#[test]
+fn native_tts_checks_liveness_before_starting_a_replaced_session() {
+    let chat_js = include_str!("../../static/chat.js");
+    let ensure_session = function_body(chat_js, "ensureSession")
+        .expect("native TTS ensureSession must be declared");
+    let liveness_check = ensure_session
+        .find("if (!live()) return null;")
+        .expect("native TTS startup must stop when its generation is stale");
+    let begin_session = ensure_session
+        .find("NativeVoiceTts.beginSession")
+        .expect("native TTS must begin a native session");
+    assert!(
+        liveness_check < begin_session,
+        "a stale promise must not call beginSession after playback was stopped"
+    );
+}
+
+#[test]
+fn voice_mode_retry_honors_an_explicit_stop() {
+    let chat_js = include_str!("../../static/chat.js");
+    let start_body = function_body(chat_js, "startVoiceMode")
+        .expect("startVoiceMode must be declared");
+    let retry_timer = start_body
+        .find("setTimeout(function () {")
+        .expect("failed voice-mode starts must schedule a retry");
+    let retry_body = &start_body[retry_timer..];
+    let generation_check = retry_body
+        .find("sessionGeneration !== voiceModeSessionGeneration")
+        .expect("retry must check the current voice-mode generation");
+    let retry_start = retry_body
+        .find("startVoiceMode(attempt + 1)")
+        .expect("retry must start voice mode again");
+    assert!(
+        generation_check < retry_start,
+        "an explicit stop must invalidate a delayed voice-mode retry"
+    );
+    assert!(
+        retry_body[..retry_start].contains("!voiceModeWanted()"),
+        "retry must not restore voice mode after the user turns it off"
+    );
+}
+
 /// Native TTS streams PCM, but reliability comes first on spotty links:
 /// preroll before the first sample, retry a failed GET, and do not kill
 /// the whole session when one sentence drops.
@@ -860,13 +930,41 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
         "one dropped TTS clip must not abort the rest of the queue"
     );
     assert!(
-        tts.contains("activeConnection") && tts.contains("activeConnection.disconnect()"),
+        tts.contains("activeConnection")
+            && tts.contains("connectionLock")
+            && tts.contains("connection.disconnect()"),
         "stopping voice mode must interrupt an in-flight native TTS HTTP read"
     );
     assert!(
         chat_js.contains("voiceTtsAbortController")
             && function_contains(chat_js, "playNativeVoiceModeTts", "signal: ttsSignal"),
         "stopping native TTS must abort an in-flight token request instead of leaking a token"
+    );
+    assert!(
+        chat_js.contains("function cancelNativeTtsToken")
+            && function_contains(chat_js, "playNativeVoiceModeTts", "cancelNativeTtsToken"),
+        "a token returned just before stop must be explicitly released"
+    );
+    assert!(
+        function_contains(chat_js, "playNativeVoiceModeTts", "X-TTS-Token")
+            && function_contains(chat_js, "playNativeVoiceModeTts", "responseToken"),
+        "native TTS must cancel a token even if abort prevents JSON body parsing"
+    );
+    let native_tts_start = java_method_body(tts, "private void playUrlToTrackOnce(")
+        .expect("NativeVoiceTts.playUrlToTrackOnce must be declared");
+    let active_connection = native_tts_start
+        .find("activeConnection = conn")
+        .expect("native TTS must publish its active connection");
+    let generation_check = native_tts_start[active_connection..]
+        .find("if (!isGenerationActive(generation))")
+        .map(|offset| active_connection + offset)
+        .expect("native TTS must re-check generation after publishing the connection");
+    let response_code = native_tts_start
+        .find("conn.getResponseCode()")
+        .expect("native TTS must open the HTTP response");
+    assert!(
+        active_connection < generation_check && generation_check < response_code,
+        "stop must be able to cancel a connection created just before a session replacement"
     );
 }
 

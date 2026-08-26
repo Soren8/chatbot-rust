@@ -60,6 +60,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private volatile Thread workerThread;
     private volatile AudioTrack audioTrack;
     private volatile HttpURLConnection activeConnection;
+    private final Object connectionLock = new Object();
     private volatile int trackSampleRate = DEFAULT_SAMPLE_RATE;
     private static volatile NativeVoiceTtsPlugin instance;
 
@@ -199,11 +200,20 @@ public class NativeVoiceTtsPlugin extends Plugin {
 
     private void playUrlToTrackOnce(String urlStr, long generation) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-        activeConnection = conn;
+        synchronized (connectionLock) {
+            if (!isGenerationActive(generation)) {
+                conn.disconnect();
+                return;
+            }
+            activeConnection = conn;
+        }
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(120000);
         conn.setRequestMethod("GET");
         try {
+            if (!isGenerationActive(generation)) {
+                return;
+            }
             String cookie = CookieManager.getInstance().getCookie(urlStr);
             if (cookie != null && !cookie.isEmpty()) {
                 conn.setRequestProperty("Cookie", cookie);
@@ -217,8 +227,10 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 streamWavToTrack(is, generation);
             }
         } finally {
-            if (activeConnection == conn) {
-                activeConnection = null;
+            synchronized (connectionLock) {
+                if (activeConnection == conn) {
+                    activeConnection = null;
+                }
             }
             conn.disconnect();
         }
@@ -551,8 +563,12 @@ public class NativeVoiceTtsPlugin extends Plugin {
         endOfQueueMarked.set(false);
         urlQueue.clear();
 
-        if (activeConnection != null) {
-            activeConnection.disconnect();
+        HttpURLConnection connection;
+        synchronized (connectionLock) {
+            connection = activeConnection;
+        }
+        if (connection != null) {
+            connection.disconnect();
         }
 
         AudioTrack track = audioTrack;

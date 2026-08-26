@@ -3926,6 +3926,7 @@ $(document).ready(function() {
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
   // Native mic bridge for Voice Mode on Android
   let nativeMicBridge = null;
+  let nativeMicStopPromise = null;
 
   const hasNativeMicVoice = window.nativeMicAvailable && isMobile && typeof vad !== 'undefined';
   if ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof vad !== 'undefined') || hasNativeMicVoice) {
@@ -4166,17 +4167,48 @@ $(document).ready(function() {
       this._resetSpeechCounters();
       this.chunkCount = 0;
 
+      if (nativeMicBridge !== this) {
+        throw new Error('native VAD start superseded');
+      }
+      if (nativeMicStopPromise) {
+        await nativeMicStopPromise;
+      }
+      if (nativeMicBridge !== this) {
+        throw new Error('native VAD start superseded');
+      }
       await ensureNativeMicPermission();
+      if (nativeMicBridge !== this) {
+        throw new Error('native VAD start superseded');
+      }
       try {
         await window.NativeMic.start();
       } catch (first) {
         const firstMsg = first && first.message ? first.message : String(first);
         if (/permission/i.test(firstMsg)) throw first;
         nativeLog('VAD', 'NativeMic.start retry after: ' + firstMsg);
-        try { await window.NativeMic.stop(); } catch (e) { /* ignore */ }
+        if (nativeMicBridge !== this) {
+          throw new Error('native VAD start superseded');
+        }
+        const retryStopPromise = Promise.resolve().then(function () {
+          return window.NativeMic.stop();
+        });
+        nativeMicStopPromise = retryStopPromise;
+        try {
+          await retryStopPromise;
+        } finally {
+          if (nativeMicStopPromise === retryStopPromise) {
+            nativeMicStopPromise = null;
+          }
+        }
+        if (nativeMicBridge !== this) {
+          throw new Error('native VAD start superseded');
+        }
         await window.NativeMic.start();
       }
 
+      if (nativeMicBridge !== this) {
+        throw new Error('native VAD start superseded');
+      }
       this.nativeListener = window.NativeMic.addListener('nativeMicData', function (data) {
         if (!self.isRecording || !window.voiceModeActive) return;
         if (!data || !data.data) return;
@@ -4206,7 +4238,19 @@ $(document).ready(function() {
       this.preRollBuffer.clear();
       this.utteranceChunks = [];
       this.startGateChunks = [];
-      await window.NativeMic.stop();
+      if (nativeMicBridge === this) {
+        const stopPromise = Promise.resolve().then(function () {
+          return window.NativeMic.stop();
+        });
+        nativeMicStopPromise = stopPromise;
+        try {
+          await stopPromise;
+        } finally {
+          if (nativeMicStopPromise === stopPromise) {
+            nativeMicStopPromise = null;
+          }
+        }
+      }
     } catch (err) {
       console.error('Error stopping Voice Mode native VAD:', err);
     }
@@ -4246,6 +4290,15 @@ $(document).ready(function() {
 
   function nativeVoiceTtsStreamUrl(token) {
     return window.location.origin + '/tts_stream/' + encodeURIComponent(token);
+  }
+
+  function cancelNativeTtsToken(token) {
+    if (!token) return Promise.resolve();
+    return fetch('/tts_stream/' + encodeURIComponent(token), {
+      method: 'DELETE',
+      headers: withCsrf({}),
+      keepalive: true
+    }).catch(function () {});
   }
 
   function invalidateNativeVoiceTts() {
@@ -4297,6 +4350,7 @@ $(document).ready(function() {
     const voiceTtsAbortController = new AbortController();
     const ttsSignal = voiceTtsAbortController.signal;
     const $messageElement = $(button).closest('.message');
+    const pendingNativeTtsTokens = new Set();
     let stopped = false;
     let processedText = '';
     let sentenceQueue = [];
@@ -4309,6 +4363,10 @@ $(document).ready(function() {
       nativeGeneration: generation,
       stop: function () {
         stopped = true;
+        pendingNativeTtsTokens.forEach(function (token) {
+          cancelNativeTtsToken(token);
+        });
+        pendingNativeTtsTokens.clear();
         try { voiceTtsAbortController.abort(); } catch (e) { /* ignore */ }
         invalidateNativeVoiceTts();
         voiceModeTtsSessionActive = false;
@@ -4349,6 +4407,7 @@ $(document).ready(function() {
     function ensureSession() {
       if (nativeVoiceTtsSessionPromise) return nativeVoiceTtsSessionPromise;
       nativeVoiceTtsSessionPromise = nativeVoiceTtsStopPromise.then(function () {
+        if (!live()) return null;
         return window.NativeVoiceTts.beginSession();
       }).then(function () {
         if (!live()) return;
@@ -4424,16 +4483,45 @@ $(document).ready(function() {
             signal: ttsSignal
           });
         }).then(function (response) {
-          if (!live() || !response) return null;
-          return response.json();
+          if (!response) return null;
+          const responseToken = response.headers && response.headers.get('X-TTS-Token');
+          if (responseToken) {
+            const token = String(responseToken);
+            pendingNativeTtsTokens.add(token);
+            if (!live()) {
+              pendingNativeTtsTokens.delete(token);
+              cancelNativeTtsToken(token);
+              return null;
+            }
+          }
+          return response.json().catch(function (err) {
+            if (responseToken) return { token: String(responseToken) };
+            throw err;
+          });
         }).then(function (data) {
-          if (!live() || !data || !data.token) return null;
-          return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(data.token));
+          if (!data || !data.token) return null;
+          const token = String(data.token);
+          pendingNativeTtsTokens.add(token);
+          if (!live()) {
+            pendingNativeTtsTokens.delete(token);
+            cancelNativeTtsToken(token);
+            return null;
+          }
+          return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(token)).catch(function (err) {
+            pendingNativeTtsTokens.delete(token);
+            cancelNativeTtsToken(token);
+            throw err;
+          });
         }).catch(function (err) {
-          if (live()) console.error('Native voice TTS sentence failed; continuing:', err);
+          if (live() && err && /request failed \(429\)/.test(err.message || '')) {
+            sentenceQueue.unshift(text);
+            setTimeout(function () { pump(); }, 400);
+          } else if (live()) {
+            console.error('Native voice TTS sentence failed; continuing:', err);
+          }
         }).then(function () {
           pumpInFlight = false;
-          pump();
+          if (live()) pump();
         });
         return;
       }
@@ -4540,8 +4628,9 @@ $(document).ready(function() {
 
       if (useNativeMicVAD) {
         if (nativeMicBridge) {
-          try { await nativeMicBridge.stop(); } catch (e) { /* ignore */ }
-          nativeMicBridge = null;
+          const previousBridge = nativeMicBridge;
+          try { await previousBridge.stop(); } catch (e) { /* ignore */ }
+          if (nativeMicBridge === previousBridge) nativeMicBridge = null;
         }
         if (window._recoverNativeVoice && attempt > 0) {
           await window._recoverNativeVoice();
@@ -4571,7 +4660,7 @@ $(document).ready(function() {
       }
 
       if (sessionGeneration !== voiceModeSessionGeneration || !voiceModeWanted()) {
-        if (startingNativeBridge) {
+        if (startingNativeBridge && nativeMicBridge === startingNativeBridge) {
           try { await startingNativeBridge.stop(); } catch (e) { /* ignore */ }
           if (nativeMicBridge === startingNativeBridge) nativeMicBridge = null;
         }
@@ -4625,19 +4714,23 @@ $(document).ready(function() {
       }
       if (startingNativeBridge && nativeMicBridge === startingNativeBridge) {
         try { await startingNativeBridge.stop(); } catch (e) { /* ignore */ }
-        nativeMicBridge = null;
+        if (nativeMicBridge === startingNativeBridge) nativeMicBridge = null;
       }
       if (sessionGeneration !== voiceModeSessionGeneration) return;
       window.voiceModeActive = false;
       $voiceModeBtn.removeClass('active');
       $micBtn.prop('disabled', false);
       if (nativeMicBridge) {
-        try { nativeMicBridge.stop(); } catch (e) { /* ignore */ }
-        nativeMicBridge = null;
+        const failedBridge = nativeMicBridge;
+        try { failedBridge.stop(); } catch (e) { /* ignore */ }
+        if (nativeMicBridge === failedBridge) nativeMicBridge = null;
       }
       const permissionDenied = /permission/i.test(msg);
       if (!permissionDenied && attempt < 5 && voiceModeWanted()) {
-        setTimeout(function () { startVoiceMode(attempt + 1); }, 400 * (attempt + 1));
+        setTimeout(function () {
+          if (sessionGeneration !== voiceModeSessionGeneration || !voiceModeWanted()) return;
+          startVoiceMode(attempt + 1);
+        }, 400 * (attempt + 1));
         return;
       }
       persistVoiceModeWanted(false);
@@ -4763,8 +4856,9 @@ $(document).ready(function() {
     window.voiceModeActive = false;
     stopAllTtsPlayback();
     if (nativeMicBridge) {
-      nativeMicBridge.stop();
-      nativeMicBridge = null;
+      const bridge = nativeMicBridge;
+      bridge.stop();
+      if (nativeMicBridge === bridge) nativeMicBridge = null;
     }
     if (voiceModeVAD) {
       voiceModeVAD.pause();
@@ -4798,8 +4892,9 @@ $(document).ready(function() {
     }
     stopAllTtsPlayback();
     if (nativeMicBridge) {
-      nativeMicBridge.stop();
-      nativeMicBridge = null;
+      const bridge = nativeMicBridge;
+      bridge.stop();
+      if (nativeMicBridge === bridge) nativeMicBridge = null;
     }
     if (voiceModeVAD) {
       try { voiceModeVAD.pause(); } catch (e) { /* ignore */ }

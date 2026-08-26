@@ -54,6 +54,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Measure test coverage and target critical modules (session manager, providers, chat flow) with explicit coverage goals.
   - [x] Spin up the app in test mode for end-to-end route testing (signup/login, JSON APIs).
   - [x] Establish mocking and external-service stubbing best practices for LLM providers and authentication flows.
+  - [ ] Add full Android emulator integration tests for the Capacitor app, including native microphone/TTS, permissions, WebView lifecycle, screen-off/reload recovery, and server-pull voice flows.
 
 ### Lower Priority Improvements
 

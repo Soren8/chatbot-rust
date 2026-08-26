@@ -63,6 +63,7 @@ struct PendingTts {
     audio: Option<Vec<u8>>,
     created_at: Instant,
     replay_count: u8,
+    generating: bool,
 }
 
 static PENDING_TTS: Lazy<RwLock<HashMap<String, PendingTts>>> =
@@ -167,7 +168,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
     
-    {
+    let inserted = {
         let mut map = PENDING_TTS.write().expect("tts lock");
         insert_pending_tts(
             &mut map,
@@ -177,8 +178,15 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
                 audio: None,
                 created_at: Instant::now(),
                 replay_count: 0,
+                generating: false,
             },
-        );
+        )
+    };
+    if !inserted {
+        return Err(api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "TTS queue is full; retry later",
+        ));
     }
 
     // Return the token as JSON
@@ -189,6 +197,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
+        .header("X-TTS-Token", token.as_str())
         .body(Body::from(body))
         .map_err(|err| map_response_build_err(err, "tts::post::token_response"))
 }
@@ -199,30 +208,27 @@ pub async fn handle_tts_stream(
     let (cleaned, cached_audio, created_at) = {
         let mut map = PENDING_TTS.write().expect("tts lock");
         prune_pending_tts(&mut map);
-        let cached_audio = map.get(&token).and_then(|pending| pending.audio.clone());
-        if let Some(audio) = cached_audio {
-            let created_at = map
-                .get(&token)
-                .map(|pending| pending.created_at)
-                .expect("cached TTS entry");
-            let replay_count = map
-                .get(&token)
-                .map(|pending| pending.replay_count)
-                .unwrap_or(MAX_TTS_REPLAYS);
-            if replay_count >= MAX_TTS_REPLAYS {
+        let pending = map.get_mut(&token).ok_or_else(|| {
+            debug!(token = %token, "invalid or expired TTS token");
+            api_error(StatusCode::NOT_FOUND, "Invalid or expired token")
+        })?;
+        let created_at = pending.created_at;
+        if let Some(audio) = pending.audio.clone() {
+            if pending.replay_count >= MAX_TTS_REPLAYS {
                 map.remove(&token);
                 return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
             }
-            if let Some(pending) = map.get_mut(&token) {
-                pending.replay_count += 1;
-            }
+            pending.replay_count += 1;
             (String::new(), Some(audio), created_at)
         } else {
-            let pending = map.remove(&token).ok_or_else(|| {
-                debug!(token = %token, "invalid or expired TTS token");
-                api_error(StatusCode::NOT_FOUND, "Invalid or expired token")
-            })?;
-            (pending.text, None, pending.created_at)
+            if pending.generating {
+                return Err(api_error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "TTS generation already in progress",
+                ));
+            }
+            pending.generating = true;
+            (pending.text.clone(), None, created_at)
         }
     };
 
@@ -239,65 +245,87 @@ pub async fn handle_tts_stream(
                 Err(err) => {
                     let mapped = map_body_read_err(err, "tts::stream::cache");
                     let mut map = PENDING_TTS.write().expect("tts lock");
-                    insert_pending_tts(
-                        &mut map,
-                        token,
-                        PendingTts {
-                            text: cleaned,
-                            audio: None,
-                            created_at,
-                            replay_count: 0,
-                        },
-                    );
+                    if let Some(pending) = map.get_mut(&token) {
+                        pending.generating = false;
+                    }
                     return Err(mapped);
                 }
             };
             let mut map = PENDING_TTS.write().expect("tts lock");
-            insert_pending_tts(
-                &mut map,
-                token,
-                PendingTts {
-                    text: String::new(),
-                    audio: Some(audio.clone()),
-                    created_at,
-                    replay_count: 0,
-                },
-            );
+            if let Some(pending) = map.get_mut(&token) {
+                pending.text.clear();
+                pending.audio = Some(audio.clone());
+                pending.replay_count = 0;
+                pending.generating = false;
+            }
             Ok(Response::from_parts(parts, Body::from(audio)))
         }
         Err(err) => {
             let mut map = PENDING_TTS.write().expect("tts lock");
-            insert_pending_tts(
-                &mut map,
-                token,
-                PendingTts {
-                    text: cleaned,
-                    audio: None,
-                    created_at,
-                    replay_count: 0,
-                },
-            );
+            if let Some(pending) = map.get_mut(&token) {
+                pending.generating = false;
+            }
             Err(err)
         }
     }
+}
+
+pub async fn handle_tts_cancel(
+    Path(token): Path<String>,
+    request: Request<Body>,
+) -> Result<Response<Body>, HttpError> {
+    if request.method() != Method::DELETE {
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only DELETE allowed"));
+    }
+
+    let (parts, _body) = request.into_parts();
+    let cookie_header = parts
+        .headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_owned());
+    let csrf_token = parts
+        .headers
+        .get("X-CSRF-Token")
+        .and_then(|value| value.to_str().ok());
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "tts::cancel::csrf"))?;
+    if !csrf_valid {
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
+    }
+
+    let mut map = PENDING_TTS.write().expect("tts lock");
+    map.remove(&token);
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::empty())
+        .map_err(|err| map_response_build_err(err, "tts::cancel"))?)
 }
 
 fn prune_pending_tts(map: &mut HashMap<String, PendingTts>) {
     map.retain(|_, pending| pending.created_at.elapsed() <= TTS_TOKEN_TTL);
 }
 
-fn insert_pending_tts(map: &mut HashMap<String, PendingTts>, token: String, pending: PendingTts) {
+fn insert_pending_tts(
+    map: &mut HashMap<String, PendingTts>,
+    token: String,
+    pending: PendingTts,
+) -> bool {
     prune_pending_tts(map);
     if !map.contains_key(&token) && map.len() >= MAX_PENDING_TTS {
-        if let Some(oldest) = map
+        let oldest_cached = map
             .iter()
+            .filter(|(_, pending)| pending.audio.is_some() && !pending.generating)
             .min_by_key(|(_, pending)| pending.created_at)
-            .map(|(token, _)| token.clone())
-        {
+            .map(|(token, _)| token.clone());
+        if let Some(oldest) = oldest_cached {
             map.remove(&oldest);
+        } else {
+            return false;
         }
     }
     map.insert(token, pending);
+    true
 }
 
 async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpError> {
@@ -662,6 +690,52 @@ mod tests {
         assert!(!result.contains("**"), "bold markers should be stripped but result is: {}", result);
         assert!(!result.contains("*italic*"), "italic markers should be stripped but result is: {}", result);
         assert_eq!(result, "This is bold and italic text.");
+    }
+
+    #[test]
+    fn pending_tts_capacity_does_not_evict_oldest_pending_entry() {
+        let mut map = HashMap::new();
+        for index in 0..MAX_PENDING_TTS {
+            let token = format!("token-{index}");
+            map.insert(
+                token,
+                PendingTts {
+                    text: "queued".to_string(),
+                    audio: None,
+                    created_at: Instant::now(),
+                    replay_count: 0,
+                    generating: false,
+                },
+            );
+        }
+        let oldest = map
+            .iter()
+            .min_by_key(|(_, pending)| pending.created_at)
+            .map(|(token, _)| token.clone())
+            .expect("full map has an oldest entry");
+
+        let inserted = insert_pending_tts(
+            &mut map,
+            "new-token".to_string(),
+            PendingTts {
+                text: "new".to_string(),
+                audio: None,
+                created_at: Instant::now(),
+                replay_count: 0,
+                generating: false,
+            },
+        );
+
+        assert_eq!(map.len(), MAX_PENDING_TTS);
+        assert!(!inserted);
+        assert!(
+            map.contains_key(&oldest),
+            "a queued token must not be silently evicted when the cap is full"
+        );
+        assert!(
+            !map.contains_key("new-token"),
+            "a new token must be rejected when no safe cache entry can be evicted"
+        );
     }
 }
 

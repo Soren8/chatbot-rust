@@ -409,6 +409,10 @@ async fn kokoro_tts_returns_wav_audio_and_allows_retry_after_transport_failure()
             .and_then(|value| value.to_str().ok()),
         Some("application/json"),
     );
+    assert!(
+        tts_response.headers().get("X-TTS-Token").is_some(),
+        "token response must expose the token before its body can be aborted"
+    );
 
     let body_bytes = axum::body::to_bytes(tts_response.into_body(), 256 * 1024)
         .await
@@ -475,6 +479,61 @@ async fn kokoro_tts_returns_wav_audio_and_allows_retry_after_transport_failure()
         .await
         .expect("read retry wav body");
     assert_eq!(retry_wav, wav_bytes, "retry should reuse the generated clip");
+
+    let cancel_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tts")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::COOKIE, &cookie_value)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": "cancel me"})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /tts cancellation token response");
+    assert_eq!(cancel_response.status(), StatusCode::OK);
+    let cancel_body = axum::body::to_bytes(cancel_response.into_body(), 256 * 1024)
+        .await
+        .expect("read cancellation token body");
+    let cancel_data: Value = serde_json::from_slice(&cancel_body)
+        .expect("valid cancellation token body");
+    let cancel_token = cancel_data["token"]
+        .as_str()
+        .expect("cancellation token present")
+        .to_string();
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/tts_stream/{cancel_token}"))
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::COOKIE, &cookie_value)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("DELETE /tts_stream cancellation response");
+    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+    let canceled_stream = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{cancel_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET canceled /tts_stream response");
+    assert_eq!(canceled_stream.status(), StatusCode::NOT_FOUND);
 
     let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("kokoro payload captured");

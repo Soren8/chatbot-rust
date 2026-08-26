@@ -34,7 +34,8 @@ The generated WAV is retained for two bounded retries after the first successful
 generation. This lets native playback recover from a truncated HTTP response
 without re-synthesizing or silently losing a sentence. Audio responses are
 marked `Cache-Control: no-store`; tokens still expire and are removed after the
-retry budget is exhausted.
+retry budget is exhausted. Native clients cancel tokens they receive but do not
+enqueue through `DELETE /tts_stream/{token}` (CSRF-protected).
 
 This approach allows us to use `fetch` with `decodeAudioData` (which works best with complete files/segments) on a per-sentence basis, combining the low latency of streaming with the reliability of native browser decoding.
 
