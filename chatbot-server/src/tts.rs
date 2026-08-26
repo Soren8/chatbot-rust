@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     body::{self, Body},
@@ -26,6 +26,10 @@ use crate::http_error::{
 };
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
+const MAX_TTS_AUDIO_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PENDING_TTS: usize = 32;
+const TTS_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_TTS_REPLAYS: u8 = 2;
 const SAMPLE_RATE_HZ: u32 = 25_200;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
@@ -54,7 +58,15 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .expect("http client")
 });
 
-static PENDING_TTS: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
+struct PendingTts {
+    text: String,
+    audio: Option<Vec<u8>>,
+    created_at: Instant,
+    replay_count: u8,
+}
+
+static PENDING_TTS: Lazy<RwLock<HashMap<String, PendingTts>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 #[derive(Debug, Deserialize)]
 struct ApiTtsRequest {
@@ -157,7 +169,16 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     
     {
         let mut map = PENDING_TTS.write().expect("tts lock");
-        map.insert(token.clone(), cleaned);
+        insert_pending_tts(
+            &mut map,
+            token.clone(),
+            PendingTts {
+                text: cleaned,
+                audio: None,
+                created_at: Instant::now(),
+                replay_count: 0,
+            },
+        );
     }
 
     // Return the token as JSON
@@ -175,20 +196,108 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
 pub async fn handle_tts_stream(
     Path(token): Path<String>,
 ) -> Result<Response<Body>, HttpError> {
-    let cleaned = {
+    let (cleaned, cached_audio, created_at) = {
         let mut map = PENDING_TTS.write().expect("tts lock");
-        map.remove(&token).ok_or_else(|| {
-            debug!(token = %token, "invalid or expired TTS token");
-            api_error(StatusCode::NOT_FOUND, "Invalid or expired token")
-        })?
+        prune_pending_tts(&mut map);
+        let cached_audio = map.get(&token).and_then(|pending| pending.audio.clone());
+        if let Some(audio) = cached_audio {
+            let created_at = map
+                .get(&token)
+                .map(|pending| pending.created_at)
+                .expect("cached TTS entry");
+            let replay_count = map
+                .get(&token)
+                .map(|pending| pending.replay_count)
+                .unwrap_or(MAX_TTS_REPLAYS);
+            if replay_count >= MAX_TTS_REPLAYS {
+                map.remove(&token);
+                return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
+            }
+            if let Some(pending) = map.get_mut(&token) {
+                pending.replay_count += 1;
+            }
+            (String::new(), Some(audio), created_at)
+        } else {
+            let pending = map.remove(&token).ok_or_else(|| {
+                debug!(token = %token, "invalid or expired TTS token");
+                api_error(StatusCode::NOT_FOUND, "Invalid or expired token")
+            })?;
+            (pending.text, None, pending.created_at)
+        }
     };
 
-    let result = synthesize_tts_stream(cleaned.clone()).await;
-    if result.is_err() {
-        let mut map = PENDING_TTS.write().expect("tts lock");
-        map.insert(token, cleaned);
+    if let Some(audio) = cached_audio {
+        return build_audio_response(audio);
     }
-    result
+
+    let result = synthesize_tts_stream(cleaned.clone()).await;
+    match result {
+        Ok(response) => {
+            let (parts, body) = response.into_parts();
+            let audio = match body::to_bytes(body, MAX_TTS_AUDIO_BYTES).await {
+                Ok(bytes) => bytes.to_vec(),
+                Err(err) => {
+                    let mapped = map_body_read_err(err, "tts::stream::cache");
+                    let mut map = PENDING_TTS.write().expect("tts lock");
+                    insert_pending_tts(
+                        &mut map,
+                        token,
+                        PendingTts {
+                            text: cleaned,
+                            audio: None,
+                            created_at,
+                            replay_count: 0,
+                        },
+                    );
+                    return Err(mapped);
+                }
+            };
+            let mut map = PENDING_TTS.write().expect("tts lock");
+            insert_pending_tts(
+                &mut map,
+                token,
+                PendingTts {
+                    text: String::new(),
+                    audio: Some(audio.clone()),
+                    created_at,
+                    replay_count: 0,
+                },
+            );
+            Ok(Response::from_parts(parts, Body::from(audio)))
+        }
+        Err(err) => {
+            let mut map = PENDING_TTS.write().expect("tts lock");
+            insert_pending_tts(
+                &mut map,
+                token,
+                PendingTts {
+                    text: cleaned,
+                    audio: None,
+                    created_at,
+                    replay_count: 0,
+                },
+            );
+            Err(err)
+        }
+    }
+}
+
+fn prune_pending_tts(map: &mut HashMap<String, PendingTts>) {
+    map.retain(|_, pending| pending.created_at.elapsed() <= TTS_TOKEN_TTL);
+}
+
+fn insert_pending_tts(map: &mut HashMap<String, PendingTts>, token: String, pending: PendingTts) {
+    prune_pending_tts(map);
+    if !map.contains_key(&token) && map.len() >= MAX_PENDING_TTS {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, pending)| pending.created_at)
+            .map(|(token, _)| token.clone())
+        {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(token, pending);
 }
 
 async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpError> {
@@ -609,6 +718,7 @@ fn build_audio_response(bytes: Vec<u8>) -> Result<Response<Body>, HttpError> {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "audio/wav")
         .header(header::CONTENT_DISPOSITION, "inline; filename=tts.wav")
+        .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from(bytes))
         .map_err(|err| map_response_build_err(err, "tts::audio_response"))
 }

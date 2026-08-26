@@ -3918,6 +3918,7 @@ $(document).ready(function() {
   let voiceModeStream = null;
   let vadSttInProgress = false;
   let voiceModeSessionGeneration = 0;
+  let voiceSttAbortController = null;
   // High-confidence Silero frames (~32 ms each) before desktop barge-in.
   let bargeInFrames = 0;
   const BARGE_IN_FRAMES_DESKTOP = 4;
@@ -3988,7 +3989,7 @@ $(document).ready(function() {
 
   /** Phase 1: start capture on speech-like energy. Does not stop TTS. */
   NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
-    if (this.inSpeech) return;
+    if (this.inSpeech) return false;
     if (NativeAudio.pcm16IsSpeechLike(pcm16, rms)) {
       this.startGateChunks.push(pcm16.slice());
       this.speechAboveCount++;
@@ -3996,6 +3997,7 @@ $(document).ready(function() {
       if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
         nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
         this._beginUtterance(skipPreRoll);
+        return true;
       }
     } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
       this.nonSpeechLikeCount++;
@@ -4008,6 +4010,7 @@ $(document).ready(function() {
       this.nonSpeechLikeCount = 0;
       this.startGateChunks = [];
     }
+    return false;
   };
 
   /** Phase 2: stop TTS now if real speech is confirmed. Not called from _endUtterance. */
@@ -4038,9 +4041,6 @@ $(document).ready(function() {
       this.speechActiveMs += frameMs;
       this.speechLikeMs += frameMs;
       this._noteVoicedFrame(copy, frameMs);
-    } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
-      this.silenceMs = 0;
-      this.speechActiveMs += frameMs;
     } else {
       this.silenceMs += frameMs;
       this.voicedWindow = [];
@@ -4065,8 +4065,8 @@ $(document).ready(function() {
     // During TTS: record from speech-like start (Silero onSpeechStart). Barge-in
     // only after real speech (REAL_SPEECH_MS + voicing), not on cough/"hey".
     if (voiceModeTtsSessionActive || voiceModeTtsPlaying) {
-      this._maybeStartUtterance(copy, rms, true);
-      if (this.inSpeech) {
+      const started = this._maybeStartUtterance(copy, rms, true);
+      if (this.inSpeech && !started) {
         this._accumulateUtterance(copy, rms, frameMs);
       }
       if (this.chunkCount % 50 === 0) {
@@ -4081,8 +4081,8 @@ $(document).ready(function() {
       return;
     }
 
-    this._maybeStartUtterance(copy, rms, false);
-    if (this.inSpeech) {
+    const started = this._maybeStartUtterance(copy, rms, false);
+    if (this.inSpeech && !started) {
       this._accumulateUtterance(copy, rms, frameMs);
     }
 
@@ -4101,6 +4101,7 @@ $(document).ready(function() {
     this._resetSpeechCounters();
     this.utteranceStartedAt = Date.now();
     lastVoiceUtteranceStartedAt = this.utteranceStartedAt;
+    this.speechActiveMs = startChunks.length * 20;
     this.speechLikeMs = startChunks.length * 20;
     this.voicedMs = NativeAudio.pcm16VoicedMsFromChunks(startChunks, 20);
     this.voicedWindow = startChunks.slice(-NativeAudio.SPEECH_VOICED_WINDOW_FRAMES);
@@ -4289,10 +4290,12 @@ $(document).ready(function() {
     if (CURRENT_AUDIO) stopAllTtsPlayback();
 
     invalidateNativeVoiceTts();
-    window.NativeVoiceTts.stop().catch(function () {});
+    const nativeVoiceTtsStopPromise = window.NativeVoiceTts.stop().catch(function () {});
     stopCurrentDesktopTts();
 
     const generation = nativeVoiceTtsGeneration;
+    const voiceTtsAbortController = new AbortController();
+    const ttsSignal = voiceTtsAbortController.signal;
     const $messageElement = $(button).closest('.message');
     let stopped = false;
     let processedText = '';
@@ -4306,6 +4309,7 @@ $(document).ready(function() {
       nativeGeneration: generation,
       stop: function () {
         stopped = true;
+        try { voiceTtsAbortController.abort(); } catch (e) { /* ignore */ }
         invalidateNativeVoiceTts();
         voiceModeTtsSessionActive = false;
         voiceModeTtsPlaying = false;
@@ -4344,7 +4348,9 @@ $(document).ready(function() {
 
     function ensureSession() {
       if (nativeVoiceTtsSessionPromise) return nativeVoiceTtsSessionPromise;
-      nativeVoiceTtsSessionPromise = window.NativeVoiceTts.beginSession().then(function () {
+      nativeVoiceTtsSessionPromise = nativeVoiceTtsStopPromise.then(function () {
+        return window.NativeVoiceTts.beginSession();
+      }).then(function () {
         if (!live()) return;
         nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
           if (!data || generation !== nativeVoiceTtsGeneration) return;
@@ -4414,7 +4420,8 @@ $(document).ready(function() {
           return fetchVoiceRetry('/tts', {
             method: 'POST',
             headers: withCsrf({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ text: text })
+            body: JSON.stringify({ text: text }),
+            signal: ttsSignal
           });
         }).then(function (response) {
           if (!live() || !response) return null;
@@ -4518,8 +4525,16 @@ $(document).ready(function() {
   async function startVoiceMode(attempt) {
     attempt = attempt || 0;
     const sessionGeneration = ++voiceModeSessionGeneration;
+    if (voiceSttAbortController) {
+      try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
+    }
+    const sttAbortController = new AbortController();
+    voiceSttAbortController = sttAbortController;
+    vadSttInProgress = false;
     persistVoiceModeWanted(true);
     let startingNativeBridge = null;
+    let candidateStream = null;
+    let candidateVAD = null;
     try {
       const useNativeMicVAD = window.nativeMicAvailable && isMobile;
 
@@ -4542,7 +4557,7 @@ $(document).ready(function() {
         await startingNativeBridge.start();
       } else {
         // Use browser getUserMedia on desktop
-        voiceModeStream = await navigator.mediaDevices.getUserMedia({
+        candidateStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
@@ -4551,14 +4566,23 @@ $(document).ready(function() {
           }
         });
 
-        voiceModeVAD = await createVAD(voiceModeStream);
-        await voiceModeVAD.start();
+        candidateVAD = await createVAD(candidateStream);
+        await candidateVAD.start();
       }
 
       if (sessionGeneration !== voiceModeSessionGeneration || !voiceModeWanted()) {
         if (startingNativeBridge) {
           try { await startingNativeBridge.stop(); } catch (e) { /* ignore */ }
           if (nativeMicBridge === startingNativeBridge) nativeMicBridge = null;
+        }
+        if (candidateVAD) {
+          try { candidateVAD.pause(); } catch (e) { /* ignore */ }
+          try { candidateVAD.destroy(); } catch (e) { /* ignore */ }
+          candidateVAD = null;
+        }
+        if (candidateStream) {
+          candidateStream.getTracks().forEach(function (track) { track.stop(); });
+          candidateStream = null;
         }
         if (sessionGeneration === voiceModeSessionGeneration) {
           if (voiceModeVAD) {
@@ -4577,6 +4601,14 @@ $(document).ready(function() {
         return;
       }
 
+      if (candidateVAD) {
+        voiceModeVAD = candidateVAD;
+        candidateVAD = null;
+      }
+      if (candidateStream) {
+        voiceModeStream = candidateStream;
+        candidateStream = null;
+      }
       window.voiceModeActive = true;
       $voiceModeBtn.addClass('active');
       $micBtn.prop('disabled', true);
@@ -4584,6 +4616,18 @@ $(document).ready(function() {
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       nativeLog('VAD', 'startVoiceMode failed attempt=' + attempt + ' ' + msg);
+      if (candidateVAD) {
+        try { candidateVAD.pause(); } catch (e) { /* ignore */ }
+        try { candidateVAD.destroy(); } catch (e) { /* ignore */ }
+      }
+      if (candidateStream) {
+        candidateStream.getTracks().forEach(function (track) { track.stop(); });
+      }
+      if (startingNativeBridge && nativeMicBridge === startingNativeBridge) {
+        try { await startingNativeBridge.stop(); } catch (e) { /* ignore */ }
+        nativeMicBridge = null;
+      }
+      if (sessionGeneration !== voiceModeSessionGeneration) return;
       window.voiceModeActive = false;
       $voiceModeBtn.removeClass('active');
       $micBtn.prop('disabled', false);
@@ -4712,6 +4756,10 @@ $(document).ready(function() {
 
   function stopVoiceMode() {
     voiceModeSessionGeneration += 1;
+    if (voiceSttAbortController) {
+      try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
+      voiceSttAbortController = null;
+    }
     window.voiceModeActive = false;
     stopAllTtsPlayback();
     if (nativeMicBridge) {
@@ -4744,6 +4792,10 @@ $(document).ready(function() {
   function pauseVoiceModeForPhoneCall() {
     if (!window.voiceModeActive && !voiceModeWanted()) return;
     voiceModeSessionGeneration += 1;
+    if (voiceSttAbortController) {
+      try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
+      voiceSttAbortController = null;
+    }
     stopAllTtsPlayback();
     if (nativeMicBridge) {
       nativeMicBridge.stop();
@@ -4915,6 +4967,7 @@ $(document).ready(function() {
     if (vadSttInProgress) return;
     if (!window.voiceModeActive) return;
     const sessionGeneration = voiceModeSessionGeneration;
+    const sttSignal = voiceSttAbortController ? voiceSttAbortController.signal : undefined;
     vadSttInProgress = true;
     const prevSpeechEndedAt = lastVoiceSpeechEndedAt;
     const utteranceStartedAt = (nativeMicBridge && nativeMicBridge.utteranceStartedAt)
@@ -4943,7 +4996,12 @@ $(document).ready(function() {
       const res = await fetchVoiceRetry('/stt', function () {
         const retryForm = new FormData();
         retryForm.append('audio', wavBlob, 'recording.wav');
-        return { method: 'POST', headers: withCsrf({}), body: retryForm };
+        return {
+          method: 'POST',
+          headers: withCsrf({}),
+          body: retryForm,
+          signal: sttSignal
+        };
       });
       if (!window.voiceModeActive || sessionGeneration !== voiceModeSessionGeneration) return;
       const data = await res.json();
@@ -4959,8 +5017,10 @@ $(document).ready(function() {
     } catch (err) {
       nativeLog('VAD', 'STT failed: ' + (err && err.message ? err.message : err));
     } finally {
-      vadSttInProgress = false;
-      if (window.voiceModeActive) {
+      if (sessionGeneration === voiceModeSessionGeneration) {
+        vadSttInProgress = false;
+      }
+      if (window.voiceModeActive && sessionGeneration === voiceModeSessionGeneration) {
         await reinitializeVAD();
       }
       if (window.voiceModeActive

@@ -92,6 +92,7 @@ struct SpeechLikeThresholds {
     voiced_window_frames: usize,
     real_speech_ms: u32,
     real_speech_voiced_ms: u32,
+    end_silence_ms: u32,
 }
 
 fn load_thresholds() -> SpeechLikeThresholds {
@@ -118,6 +119,14 @@ fn load_thresholds() -> SpeechLikeThresholds {
             as u32,
         real_speech_voiced_ms: parse_js_int_const(src, "REAL_SPEECH_VOICED_MS")
             .expect("REAL_SPEECH_VOICED_MS") as u32,
+        end_silence_ms: parse_js_int_const(src, "SPEECH_END_SILENCE_MS")
+            .expect("SPEECH_END_SILENCE_MS") as u32,
+    }
+}
+
+impl SpeechLikeThresholds {
+    fn end_silence_frames(&self) -> usize {
+        (self.end_silence_ms / 20) as usize + 1
     }
 }
 
@@ -354,6 +363,7 @@ fn real_speech_detected(speech_like_ms: u32, voiced_ms: u32, t: &SpeechLikeThres
 struct NativeVadSim {
     tts: bool,
     in_speech: bool,
+    ended: bool,
     speech_above: usize,
     non_speech_like: usize,
     start_gate: Vec<Vec<i16>>,
@@ -369,6 +379,7 @@ impl NativeVadSim {
         Self {
             tts,
             in_speech: false,
+            ended: false,
             speech_above: 0,
             non_speech_like: 0,
             start_gate: Vec::new(),
@@ -449,27 +460,64 @@ impl NativeVadSim {
         }
     }
 
-    fn accumulate(&mut self, frame: &[i16], rms: f64, t: &SpeechLikeThresholds) {
+    fn accumulate(&mut self, frame: &[i16], _rms: f64, t: &SpeechLikeThresholds) {
         if classify(frame, t) {
             self.silence_ms = 0;
             self.speech_like_ms += 20;
             self.note_voiced_frame(frame, t, 20);
-        } else if rms > t.rms {
-            self.silence_ms = 0;
         } else {
             self.silence_ms += 20;
             self.voiced_window.clear();
+            if self.silence_ms >= t.end_silence_ms {
+                self.ended = true;
+                self.in_speech = false;
+            }
         }
         self.maybe_barge_in(t);
     }
 
     fn feed(&mut self, frame: &[i16], t: &SpeechLikeThresholds) {
+        if self.ended {
+            return;
+        }
         let rms = pcm16_rms(frame);
         self.maybe_start(frame, rms, t);
         if self.in_speech {
             self.accumulate(frame, rms, t);
         }
     }
+}
+
+#[test]
+fn high_energy_non_speech_after_utterance_still_reaches_end_of_speech() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        !chat_js.contains(
+            "} else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {\n      this.silenceMs = 0;"
+        ),
+        "high-RMS non-speech must not reset end-of-speech or count as active speech"
+    );
+    let t = load_thresholds();
+    const SR: f64 = 16_000.0;
+    const FRAME: usize = 320;
+
+    let speech = noisy_vowel(200.0, 1200, FRAME * 12, SR, 0.35);
+    let hiss = sine_frame(4000.0, 4000, FRAME, SR);
+    let mut vad = NativeVadSim::new(false);
+
+    for frame in speech.chunks(FRAME) {
+        vad.feed(frame, &t);
+    }
+    assert!(vad.in_speech, "speech fixture must start an utterance");
+
+    for _ in 0..t.end_silence_frames() {
+        vad.feed(&hiss, &t);
+    }
+
+    assert!(
+        vad.ended,
+        "sustained high-RMS hiss must not keep silence at zero forever"
+    );
 }
 
 /// Both sides in this function: fail if coughs barge in OR if noisy sustained

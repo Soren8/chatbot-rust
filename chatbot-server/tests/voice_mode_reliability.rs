@@ -72,6 +72,31 @@ fn native_mic_start_reuses_or_restarts_instead_of_rejecting_already_recording() 
 }
 
 #[test]
+fn native_mic_restart_stops_the_owned_recorder_before_joining() {
+    let plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+    let stop_body = java_method_body(plugin, "private void stopRecording()")
+        .expect("NativeMic.stopRecording() must be declared");
+    let stop_recorder = stop_body
+        .find("recording.stop()")
+        .expect("stop must interrupt the recorder read");
+    let join_thread = stop_body
+        .find("worker.join")
+        .expect("stop must wait for the recording thread");
+    assert!(
+        stop_recorder < join_thread,
+        "AudioRecord.stop() must happen before join so a blocked read cannot outlive a restart"
+    );
+    assert!(
+        plugin.contains("final AudioRecord recording")
+            && plugin.contains("recording.read(")
+            && plugin.contains("audioRecord == recording"),
+        "the capture worker must own one recorder instance and never read a replacement session"
+    );
+}
+
+#[test]
 fn voice_mode_survives_capacitor_reload_without_a_second_tap() {
     let chat_js = include_str!("../../static/chat.js");
     assert!(
@@ -766,6 +791,14 @@ fn android_voice_mode_tts_uses_native_playback_and_desktop_keeps_html_audio() {
         "native voice mode must keep one ordered native session for all sentences"
     );
     assert!(
+        function_contains(
+            chat_js,
+            "playNativeVoiceModeTts",
+            "nativeVoiceTtsStopPromise"
+        ),
+        "a new native TTS session must await teardown of the previous worker"
+    );
+    assert!(
         function_contains(chat_js, "playTTS", "playMessageBodyTts")
             && function_contains(chat_js, "playOneTtsUtterance", "getDesktopTtsAudio"),
         "desktop playTTS must remain on the shared HTMLAudioElement"
@@ -825,6 +858,15 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
         tts.contains("playUrlToTrackOnce")
             && !function_contains_approx_worker_kills_session(tts),
         "one dropped TTS clip must not abort the rest of the queue"
+    );
+    assert!(
+        tts.contains("activeConnection") && tts.contains("activeConnection.disconnect()"),
+        "stopping voice mode must interrupt an in-flight native TTS HTTP read"
+    );
+    assert!(
+        chat_js.contains("voiceTtsAbortController")
+            && function_contains(chat_js, "playNativeVoiceModeTts", "signal: ttsSignal"),
+        "stopping native TTS must abort an in-flight token request instead of leaking a token"
     );
 }
 

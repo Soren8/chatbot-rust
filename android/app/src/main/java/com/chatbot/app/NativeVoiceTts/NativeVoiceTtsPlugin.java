@@ -46,7 +46,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private static final int MAX_WAV_BYTES = 8 * 1024 * 1024;
     /** Jitter buffer before the first sample. Reliability over first-byte latency. */
     private static final int PREROLL_MS = 400;
-    private static final int STREAM_ATTEMPTS = 2;
+    private static final int STREAM_ATTEMPTS = 3;
 
     private final BlockingQueue<String> urlQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean sessionActive = new AtomicBoolean(false);
@@ -59,6 +59,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
 
     private volatile Thread workerThread;
     private volatile AudioTrack audioTrack;
+    private volatile HttpURLConnection activeConnection;
     private volatile int trackSampleRate = DEFAULT_SAMPLE_RATE;
     private static volatile NativeVoiceTtsPlugin instance;
 
@@ -198,22 +199,27 @@ public class NativeVoiceTtsPlugin extends Plugin {
 
     private void playUrlToTrackOnce(String urlStr, long generation) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+        activeConnection = conn;
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(120000);
         conn.setRequestMethod("GET");
-        String cookie = CookieManager.getInstance().getCookie(urlStr);
-        if (cookie != null && !cookie.isEmpty()) {
-            conn.setRequestProperty("Cookie", cookie);
-        }
-        int code = conn.getResponseCode();
-        Log.d(TAG, "GET " + urlStr + " code=" + code);
-        if (code < 200 || code >= 300) {
-            conn.disconnect();
-            throw new IOException("HTTP " + code);
-        }
-        try (InputStream is = conn.getInputStream()) {
-            streamWavToTrack(is, generation);
+        try {
+            String cookie = CookieManager.getInstance().getCookie(urlStr);
+            if (cookie != null && !cookie.isEmpty()) {
+                conn.setRequestProperty("Cookie", cookie);
+            }
+            int code = conn.getResponseCode();
+            Log.d(TAG, "GET " + urlStr + " code=" + code);
+            if (code < 200 || code >= 300) {
+                throw new IOException("HTTP " + code);
+            }
+            try (InputStream is = conn.getInputStream()) {
+                streamWavToTrack(is, generation);
+            }
         } finally {
+            if (activeConnection == conn) {
+                activeConnection = null;
+            }
             conn.disconnect();
         }
     }
@@ -544,6 +550,10 @@ public class NativeVoiceTtsPlugin extends Plugin {
         sessionActive.set(false);
         endOfQueueMarked.set(false);
         urlQueue.clear();
+
+        if (activeConnection != null) {
+            activeConnection.disconnect();
+        }
 
         AudioTrack track = audioTrack;
         if (track != null) {

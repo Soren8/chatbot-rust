@@ -66,7 +66,7 @@ public class NativeMicPlugin extends Plugin {
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
 
-    private AudioRecord audioRecord = null;
+    private volatile AudioRecord audioRecord = null;
     private volatile boolean isRecording = false;
     private Thread recordingThread = null;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -178,7 +178,7 @@ public class NativeMicPlugin extends Plugin {
         try {
             Log.d(TAG, "Creating AudioRecord...");
             // VOICE_COMMUNICATION: speakerphone/VoIP uplink with hardware AEC/AGC.
-            audioRecord = new AudioRecord.Builder()
+            final AudioRecord recording = new AudioRecord.Builder()
                 .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 .setAudioFormat(new AudioFormat.Builder()
                     .setEncoding(AUDIO_FORMAT)
@@ -187,28 +187,29 @@ public class NativeMicPlugin extends Plugin {
                     .build())
                 .setBufferSizeInBytes(bufferSize * 4)
                 .build();
+            audioRecord = recording;
 
-            if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+            if (recording.getState() != AudioRecord.STATE_INITIALIZED) {
                 call.reject("AudioRecord failed to initialize");
-                audioRecord.release();
+                recording.release();
                 audioRecord = null;
                 return;
             }
 
-            FileLogger.log(TAG, "AudioRecord source=" + audioRecord.getAudioSource()
+            FileLogger.log(TAG, "AudioRecord source=" + recording.getAudioSource()
                     + " routeActive=" + voiceAudioRoute.isActive());
-            enableAudioEffects(audioRecord.getAudioSessionId());
+            enableAudioEffects(recording.getAudioSessionId());
 
             long generation = recordingGeneration.incrementAndGet();
-            audioRecord.startRecording();
+            recording.startRecording();
             isRecording = true;
 
             recordingThread = new Thread(() -> {
                 short[] readBuffer = new short[bufferSize];
                 short[] chunkBuffer = new short[CHUNK_SAMPLES];
                 int chunkFill = 0;
-                while (isRecording && audioRecord != null) {
-                    int read = audioRecord.read(readBuffer, 0, bufferSize);
+                while (isRecording && audioRecord == recording) {
+                    int read = recording.read(readBuffer, 0, bufferSize);
                     if (read <= 0) {
                         continue;
                     }
@@ -730,21 +731,31 @@ public class NativeMicPlugin extends Plugin {
     private void stopRecording() {
         recordingGeneration.incrementAndGet();
         isRecording = false;
-        if (recordingThread != null) {
+        AudioRecord recording = audioRecord;
+        if (recording != null) {
             try {
-                recordingThread.join(500);
+                if (recording.getState() == AudioRecord.STATE_INITIALIZED) {
+                    // Interrupt a blocking read before waiting for the worker.
+                    recording.stop();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        Thread worker = recordingThread;
+        if (worker != null) {
+            try {
+                worker.join(500);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            recordingThread = null;
+            if (recordingThread == worker) {
+                recordingThread = null;
+            }
         }
-        if (audioRecord != null) {
+        if (recording != null && audioRecord == recording) {
             try {
-                if (audioRecord.getState() == AudioRecord.STATE_INITIALIZED) {
-                    audioRecord.stop();
-                }
                 releaseAudioEffects();
-                audioRecord.release();
+                recording.release();
             } catch (Exception e) {
                 // ignore
             }

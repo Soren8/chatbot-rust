@@ -27,8 +27,14 @@ Enable low-latency, real-time text-to-speech (TTS) streaming for the "Kokoro" an
 
 **Resolution: The "Pre-sign" Pattern**
 We implemented a two-step architecture:
-1.  **Submission (`POST /tts`):** The frontend submits the text and CSRF token. The server caches the request and returns a temporary, single-use **token**.
+1.  **Submission (`POST /tts`):** The frontend submits the text and CSRF token. The server caches the request and returns a temporary **token**. Pending entries are capped and expire after ten minutes.
 2.  **Streaming (`GET /tts_stream/{token}`):** The frontend uses the token to fetch the audio via a standard `GET` request.
+
+The generated WAV is retained for two bounded retries after the first successful
+generation. This lets native playback recover from a truncated HTTP response
+without re-synthesizing or silently losing a sentence. Audio responses are
+marked `Cache-Control: no-store`; tokens still expire and are removed after the
+retry budget is exhausted.
 
 This approach allows us to use `fetch` with `decodeAudioData` (which works best with complete files/segments) on a per-sentence basis, combining the low latency of streaming with the reliability of native browser decoding.
 
@@ -42,4 +48,4 @@ This approach allows us to use `fetch` with `decodeAudioData` (which works best 
 2.  **Frontend:** Iteratively `POST`s each sentence to get a token.
 3.  **Frontend:** Fetches audio for the token via `GET`.
 4.  **Backend:** Fetches audio from upstream, strips headers, applies fades, prepends a new valid WAV header, and streams it.
-5. **Frontend:** Plays `GET /tts_stream/{token}` as bytes arrive via the shared `playTTS` / `playOneTtsUtterance` HTML `Audio` path on desktop and mobile (including voice mode). Voice-mode tap primes that element so autoplay after `/chat` is allowed. Do not add a second native AudioTrack queue for voice mode. `POST /tts` and `POST /stt` retry transient failures. A failed `/tts_stream` generation puts the token back so the GET can be retried. Reliability outranks first-byte latency.
+5. **Frontend:** Desktop plays `GET /tts_stream/{token}` through the shared `playTTS` / `playOneTtsUtterance` HTML `Audio` path. Android voice mode uses the ordered `NativeVoiceTts` `AudioTrack` queue so playback survives screen lock; it streams WAV data incrementally with a short preroll and retries interrupted GETs. Voice-mode tap primes the desktop element when needed. `POST /tts` and `POST /stt` retry transient failures. A failed `/tts_stream` generation puts the token back, and a successful clip is retained for bounded transport retries. Reliability outranks first-byte latency.

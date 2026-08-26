@@ -185,7 +185,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
    - STT that starts within **2s** of the last speech end **amends** the last user turn and regenerates (retry 429). After that window, stop generation/TTS (`[Stopped]`) and send a **new** `/chat`
 
-4. **Voice-mode TTS** — desktop uses the same `playTTS` HTML `Audio` path as the play button (`playOneTtsUtterance`). Android uses the ordered `NativeVoiceTtsPlugin` `AudioTrack` queue so playback survives screen lock and WebView suspension. Both paths use the pre-signed `/tts_stream` URL. Do not change `AudioManager` mode from TTS; `NativeMic.enterVoiceRoute` owns that for the session.
+4. **Voice-mode TTS** — desktop uses the same `playTTS` HTML `Audio` path as the play button (`playOneTtsUtterance`). Android uses the ordered `NativeVoiceTtsPlugin` `AudioTrack` queue so playback survives screen lock and WebView suspension. Both paths use the pre-signed `/tts_stream` URL; the server retains a generated clip for a short, bounded retry window so a truncated mobile download does not skip a sentence. Do not change `AudioManager` mode from TTS; `NativeMic.enterVoiceRoute` owns that for the session.
 
 5. **Desktop/browser**: Silero VAD remains. Barge-in uses `onSpeechRealStart` and high-confidence `onFrameProcessed` (`isSpeech > 0.85` for ~128 ms), not first-frame `onSpeechStart`. `redemptionMs` is 1500 (same end-silence as native). After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 

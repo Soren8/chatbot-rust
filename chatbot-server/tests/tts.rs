@@ -336,7 +336,7 @@ async fn spawn_voice_stub(router: Router) -> (SocketAddr, oneshot::Sender<()>, J
 // --- Kokoro (default voice-service provider) ---
 
 #[tokio::test]
-async fn kokoro_tts_returns_wav_audio() {
+async fn kokoro_tts_returns_wav_audio_and_allows_retry_after_transport_failure() {
     common::init_tracing();
     let _lock = tts_test_lock();
 
@@ -436,6 +436,13 @@ async fn kokoro_tts_returns_wav_audio() {
             .and_then(|value| value.to_str().ok()),
         Some("audio/wav"),
     );
+    assert_eq!(
+        stream_response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store"),
+    );
 
     let disposition = stream_response
         .headers()
@@ -448,6 +455,26 @@ async fn kokoro_tts_returns_wav_audio() {
         .await
         .expect("read wav body");
     assert!(!wav_bytes.is_empty(), "wav body should not be empty");
+
+    // NativeVoiceTts retries the same GET when a spotty link truncates an
+    // otherwise successful response. The token must remain replayable for a
+    // bounded retry window instead of turning the sentence into a silent gap.
+    let retry_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream retry response");
+    assert_eq!(retry_response.status(), StatusCode::OK);
+    let retry_wav = axum::body::to_bytes(retry_response.into_body(), 512 * 1024)
+        .await
+        .expect("read retry wav body");
+    assert_eq!(retry_wav, wav_bytes, "retry should reuse the generated clip");
 
     let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("kokoro payload captured");
