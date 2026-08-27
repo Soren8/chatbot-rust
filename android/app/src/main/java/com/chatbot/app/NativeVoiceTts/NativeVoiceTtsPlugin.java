@@ -47,6 +47,8 @@ public class NativeVoiceTtsPlugin extends Plugin {
     /** Jitter buffer before the first sample. Reliability over first-byte latency. */
     private static final int PREROLL_MS = 400;
     private static final int STREAM_ATTEMPTS = 3;
+    /** Backoff before each clip GET retry: a blipping link fails back-to-back attempts. */
+    private static final int CLIP_RETRY_BACKOFF_MS = 700;
 
     private final BlockingQueue<String> urlQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean sessionActive = new AtomicBoolean(false);
@@ -185,6 +187,19 @@ public class NativeVoiceTtsPlugin extends Plugin {
         for (int attempt = 0; attempt < STREAM_ATTEMPTS; attempt++) {
             if (!isGenerationActive(generation)) {
                 return;
+            }
+            if (attempt > 0) {
+                // Wait out a brief connectivity blip (cell handoff, tunnel
+                // reconnect) instead of burning all attempts back-to-back.
+                try {
+                    Thread.sleep((long) CLIP_RETRY_BACKOFF_MS * attempt);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw last != null ? last : new IOException("playback interrupted");
+                }
+                if (!isGenerationActive(generation)) {
+                    return;
+                }
             }
             try {
                 playUrlToTrackOnce(urlStr, generation);
@@ -557,9 +572,13 @@ public class NativeVoiceTtsPlugin extends Plugin {
     }
 
     private void stopPlaybackInternal(boolean notifyStopped) {
+        // Capture before teardown: an idle stop must not emit 'ended'. The
+        // event dispatch is async, so a stale 'ended' from this stop can land
+        // on the listener of a session begun right after it (cold app start
+        // after a relaunch) and kill that session at birth.
+        boolean wasActive = sessionActive.getAndSet(false);
         playbackGeneration.incrementAndGet();
         stopRequested.set(true);
-        sessionActive.set(false);
         endOfQueueMarked.set(false);
         urlQueue.clear();
 
@@ -597,7 +616,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
         playbackStartedNotified.set(false);
         bytesWritten.set(0);
 
-        if (notifyStopped) {
+        if (notifyStopped && wasActive) {
             notifySessionEnded();
         }
     }

@@ -968,6 +968,118 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
     );
 }
 
+/// A spotty link must not turn sentences into silent gaps. The sentence pump
+/// used to requeue only HTTP 429; a failed token fetch (network error, stall
+/// timeout, 5xx) dropped the sentence for good and later sentences kept
+/// playing — the reported "TTS sentences kept getting skipped".
+#[test]
+fn native_voice_tts_requeues_sentences_on_transient_failures() {
+    let chat_js = include_str!("../../static/chat.js");
+    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
+        .expect("playNativeVoiceModeTts must be declared");
+    let pump_start = native_tts
+        .find("function pump(")
+        .expect("native TTS pump must be declared");
+    let pump = &native_tts[pump_start..];
+
+    assert!(
+        pump.contains("isRetryableVoiceStatus"),
+        "the native sentence pump must reuse the shared retryable-status helper"
+    );
+    assert!(
+        !pump.contains("\\(429\\)"),
+        "requeue must not be 429-only; network errors and 5xx must also requeue the sentence"
+    );
+    let retries = parse_js_int_const(chat_js, "MAX_TTS_SENTENCE_RETRIES")
+        .expect("MAX_TTS_SENTENCE_RETRIES must be declared in chat.js");
+    assert!(
+        (2..=5).contains(&retries),
+        "sentence requeue must be bounded (MAX_TTS_SENTENCE_RETRIES={retries}) so a dead link cannot churn forever"
+    );
+    assert!(
+        pump.contains("retryScheduled"),
+        "a requeued sentence must wait out its backoff; the trailing pump() must not re-post it immediately"
+    );
+    assert!(
+        pump.contains("Session expired"),
+        "a 401 redirect must not be requeued"
+    );
+}
+
+/// fetchVoiceRetry's own 60s stall timeout and a user stop both surface as
+/// AbortError. A stalled spotty-link request must retry; a user stop must not.
+#[test]
+fn voice_http_retry_retries_stalled_requests_not_user_aborts() {
+    let chat_js = include_str!("../../static/chat.js");
+    let retry =
+        function_body(chat_js, "fetchVoiceRetry").expect("fetchVoiceRetry must be declared");
+    assert!(
+        retry.contains("userAborted"),
+        "the retry loop must distinguish its own stall timeout from a user abort"
+    );
+    assert!(
+        retry.contains("err.name === 'AbortError' && userAborted"),
+        "only a user abort may rethrow AbortError without retrying"
+    );
+    assert!(
+        !retry.contains("(err.name === 'AbortError' || err.message === 'Session expired')"),
+        "the old catch conflated the stall timeout with a user stop and never retried stalls"
+    );
+}
+
+/// The native worker retries a failed clip GET, but back-to-back retries on a
+/// blipping link (cell handoff, tunnel reconnect) all die together and the
+/// sentence is lost while later clips keep playing.
+#[test]
+fn native_tts_clip_retries_wait_out_the_blip() {
+    let tts = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    let body = java_method_body(tts, "private void playUrlToTrack(String urlStr")
+        .expect("playUrlToTrack must be declared");
+    assert!(
+        body.contains("CLIP_RETRY_BACKOFF_MS"),
+        "clip GET retries must back off so a brief connectivity blip does not exhaust all attempts"
+    );
+    let sleep = body.find("Thread.sleep").expect("backoff must actually sleep");
+    assert!(
+        body[sleep..].contains("isGenerationActive"),
+        "a stop during backoff must abort the retry immediately"
+    );
+}
+
+/// A fresh native session begins with a teardown stop(); that stop used to
+/// emit playbackState 'ended' unconditionally. The event dispatch is async, so
+/// after a cold app start (kill + clear storage + relaunch) it landed on the
+/// NEW session's listener and finishNativeVoiceTts killed the session at
+/// birth — TTS stayed silent until the next message.
+#[test]
+fn native_tts_stop_does_not_emit_ended_without_an_active_session() {
+    let tts = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    let stop = java_method_body(tts, "private void stopPlaybackInternal(")
+        .expect("stopPlaybackInternal must be declared");
+    let was_active = stop
+        .find("boolean wasActive = sessionActive.getAndSet(false)")
+        .expect("stop must capture whether a session was actually active");
+    let notify = stop
+        .find("notifySessionEnded()")
+        .expect("stop must keep the ended notification for real sessions");
+    assert!(
+        stop[..notify].contains("notifyStopped && wasActive"),
+        "an idle stop must not emit 'ended'; the stale event kills the session begun right after it"
+    );
+    assert!(
+        was_active < notify,
+        "active state must be captured before teardown"
+    );
+    assert!(
+        tts.contains("sessionActive.set(true)"),
+        "beginSession/play must still mark the session active"
+    );
+}
+
 fn function_contains_approx_worker_kills_session(tts: &str) -> bool {
     function_contains(tts, "workerLoop", "stopPlaybackInternal(false)")
         && function_contains(tts, "workerLoop", "notifyError")

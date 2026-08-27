@@ -231,7 +231,11 @@ function fetchVoiceRetry(url, buildOptions, attempts) {
     var userSignal = options.signal;
     var controller = new AbortController();
     var timeoutId = setTimeout(function () { controller.abort(); }, 60000);
-    var onUserAbort = function () { controller.abort(); };
+    var userAborted = false;
+    var onUserAbort = function () {
+      userAborted = true;
+      controller.abort();
+    };
     if (userSignal) {
       if (userSignal.aborted) {
         clearTimeout(timeoutId);
@@ -253,7 +257,8 @@ function fetchVoiceRetry(url, buildOptions, attempts) {
       }
       throw new Error('request failed (' + res.status + ')');
     }).catch(function (err) {
-      if (err && (err.name === 'AbortError' || err.message === 'Session expired')) throw err;
+      if (err && err.message === 'Session expired') throw err;
+      if (err && err.name === 'AbortError' && userAborted) throw err;
       if (n <= 1) throw err;
       return sleepMs(400 * Math.pow(2, attempts - n)).then(function () { return attempt(n - 1); });
     }).finally(function () {
@@ -1175,6 +1180,8 @@ let voiceModeTtsPlaying = false;
 /** Do not start utterances until this timestamp (ms) — lets AEC settle after TTS. */
 let voiceModeListenCooldownUntil = 0;
 const TTS_LISTEN_COOLDOWN_MS = 400;
+/** Bounded requeue attempts for a native TTS sentence on a spotty link. */
+const MAX_TTS_SENTENCE_RETRIES = 3;
 
 function armTtsListenCooldown() {
   voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
@@ -4355,6 +4362,8 @@ $(document).ready(function() {
     let processedText = '';
     let sentenceQueue = [];
     let endRequested = false;
+    let sentenceRetries = 0;
+    let retryScheduled = false;
 
     voiceModeTtsSessionActive = true;
     voiceModeTtsPlaying = false;
@@ -4500,6 +4509,7 @@ $(document).ready(function() {
           });
         }).then(function (data) {
           if (!data || !data.token) return null;
+          sentenceRetries = 0;
           const token = String(data.token);
           pendingNativeTtsTokens.add(token);
           if (!live()) {
@@ -4510,18 +4520,34 @@ $(document).ready(function() {
           return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(token)).catch(function (err) {
             pendingNativeTtsTokens.delete(token);
             cancelNativeTtsToken(token);
+            // Drop the cached session so the retry begins a fresh native
+            // session instead of failing every subsequent enqueue too.
+            nativeVoiceTtsSessionPromise = null;
             throw err;
           });
         }).catch(function (err) {
-          if (live() && err && /request failed \(429\)/.test(err.message || '')) {
+          if (!live() || !err) return;
+          if (err.message === 'Session expired') return;
+          const statusMatch = /request failed \((\d+)\)/.exec(err.message || '');
+          const status = statusMatch ? Number(statusMatch[1]) : 0;
+          // On a spotty link a dropped sentence is a silent gap: requeue any
+          // transient failure (network error, stall timeout, 429/5xx), not
+          // only 429. Bounded so a dead link cannot churn forever.
+          if ((status === 0 || isRetryableVoiceStatus(status)) && sentenceRetries < MAX_TTS_SENTENCE_RETRIES) {
+            sentenceRetries += 1;
             sentenceQueue.unshift(text);
-            setTimeout(function () { pump(); }, 400);
-          } else if (live()) {
-            console.error('Native voice TTS sentence failed; continuing:', err);
+            retryScheduled = true;
+            setTimeout(function () {
+              retryScheduled = false;
+              pump();
+            }, 400 * sentenceRetries);
+          } else {
+            sentenceRetries = 0;
+            console.error('Native voice TTS sentence failed; skipping after retries:', err);
           }
         }).then(function () {
           pumpInFlight = false;
-          if (live()) pump();
+          if (live() && !retryScheduled) pump();
         });
         return;
       }
