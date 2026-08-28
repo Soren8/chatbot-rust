@@ -1182,6 +1182,10 @@ let voiceModeListenCooldownUntil = 0;
 const TTS_LISTEN_COOLDOWN_MS = 400;
 /** Bounded requeue attempts for a native TTS sentence on a spotty link. */
 const MAX_TTS_SENTENCE_RETRIES = 3;
+/** Total attempts to fetch one clip from /tts_stream (within the server's replay budget). */
+const MAX_TTS_CLIP_ATTEMPTS = 2;
+/** Backoff between clip GET retries; grows with the attempt number. */
+const TTS_CLIP_RETRY_BACKOFF_MS = 400;
 
 function armTtsListenCooldown() {
   voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
@@ -2166,6 +2170,8 @@ function playOneTtsUtterance(sessionId, text) {
         return;
       }
       let settled = false;
+      let clipAttempt = 0;
+      const clipUrl = '/tts_stream/' + encodeURIComponent(data.token);
       const finish = function (ok) {
         if (settled) return;
         settled = true;
@@ -2179,23 +2185,51 @@ function playOneTtsUtterance(sessionId, text) {
         }
         resolve(!!ok && desktopTtsIsLive(sessionId));
       };
-      audio.onended = function () { finish(true); };
-      audio.onerror = function () { finish(false); };
-      // Always assign a fresh absolute URL; prior load() cleared the element.
-      audio.src = '/tts_stream/' + encodeURIComponent(data.token);
-      if (window.voiceModeActive) {
-        voiceModeTtsPlaying = true;
-        if (typeof window.notifyVoiceModeTtsStarted === 'function') {
-          window.notifyVoiceModeTtsStarted();
+      // A dropped clip GET fires the media element's error event (browsers do
+      // not retry media requests). The server retains a generated WAV for
+      // bounded replays and re-arms a failed generation, so retry the same
+      // token with backoff before failing the sentence. An autoplay-blocked
+      // play() (NotAllowedError) is not transient and stays fatal.
+      const startClip = function () {
+        if (settled) return;
+        clipAttempt += 1;
+        const myAttempt = clipAttempt;
+        let attemptFailed = false;
+        const failAttempt = function (err) {
+          if (settled || attemptFailed || myAttempt !== clipAttempt) return;
+          attemptFailed = true;
+          if (err && err.name === 'NotAllowedError') {
+            console.error('TTS audio.play() failed:', err);
+            finish(false);
+            return;
+          }
+          if (clipAttempt >= MAX_TTS_CLIP_ATTEMPTS || !desktopTtsIsLive(sessionId)) {
+            finish(false);
+            return;
+          }
+          setTimeout(function () {
+            if (settled || !desktopTtsIsLive(sessionId)) return;
+            startClip();
+          }, TTS_CLIP_RETRY_BACKOFF_MS * clipAttempt);
+        };
+        audio.onended = function () { finish(true); };
+        audio.onerror = function () { failAttempt(null); };
+        // Always assign a fresh absolute URL; prior load() cleared the element.
+        audio.src = clipUrl;
+        if (window.voiceModeActive) {
+          voiceModeTtsPlaying = true;
+          if (typeof window.notifyVoiceModeTtsStarted === 'function') {
+            window.notifyVoiceModeTtsStarted();
+          }
         }
-      }
-      const playPromise = audio.play();
-      if (playPromise && typeof playPromise.then === 'function') {
-        playPromise.catch(function (err) {
-          console.error('TTS audio.play() failed:', err);
-          finish(false);
-        });
-      }
+        const playPromise = audio.play();
+        if (playPromise && typeof playPromise.then === 'function') {
+          playPromise.catch(function (err) {
+            failAttempt(err);
+          });
+        }
+      };
+      startClip();
     });
   })
   .catch(function (err) {
@@ -2236,6 +2270,8 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
   let running = false;
   let observer = null;
   let pollTimer = null;
+  let sentenceRetries = 0;
+  let retryScheduled = false;
 
   function isStillGenerating() {
     const currentRawText = $messageElement.find('.ai-message-text').text().trim();
@@ -2305,7 +2341,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
   }
 
   function pump() {
-    if (!desktopTtsIsLive(sessionId) || running) return;
+    if (!desktopTtsIsLive(sessionId) || running || retryScheduled) return;
     discoverAbsolute();
     if (!queue.length) {
       finishIfIdle();
@@ -2320,9 +2356,26 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
         return;
       }
       if (!ok) {
-        stopCurrentDesktopTts();
+        // Transient failure (token fetch, clip GET, playback): requeue with
+        // backoff like the native sentence pump so a spotty link delays the
+        // sentence instead of ending speech after the last good one. Bounded
+        // so a dead sentence cannot churn forever; after that, skip it.
+        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES) {
+          sentenceRetries += 1;
+          queue.unshift(next);
+          retryScheduled = true;
+          setTimeout(function () {
+            retryScheduled = false;
+            pump();
+          }, 400 * sentenceRetries);
+          return;
+        }
+        sentenceRetries = 0;
+        console.error('Desktop TTS sentence failed; skipping after retries');
+        pump();
         return;
       }
+      sentenceRetries = 0;
       pump();
     });
   }

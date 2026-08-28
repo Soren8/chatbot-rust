@@ -1006,6 +1006,63 @@ fn native_voice_tts_requeues_sentences_on_transient_failures() {
     );
 }
 
+/// The desktop HTML-audio sentence pump used to treat any sentence failure as
+/// session-fatal (`stopCurrentDesktopTts`), so one dropped clip GET, failed
+/// token fetch, or late `play()` rejection ended speech at the last good
+/// sentence — the reported "desktop TTS stops after the first sentence".
+/// The native pump already requeues transient failures; the desktop pump must
+/// do the same (bounded), plus a bounded same-token clip retry (the server
+/// retains a generated WAV for MAX_TTS_REPLAYS replays and re-arms a failed
+/// generation), while an autoplay-blocked play() stays fatal.
+#[test]
+fn desktop_tts_requeues_sentences_on_transient_failures() {
+    let chat_js = include_str!("../../static/chat.js");
+    let body = function_body(chat_js, "playMessageBodyTts")
+        .expect("playMessageBodyTts must be declared");
+    let pump_start = body
+        .find("function pump(")
+        .expect("playMessageBodyTts must contain a sentence pump");
+    let pump = &body[pump_start..];
+
+    assert!(
+        !pump.contains("stopCurrentDesktopTts"),
+        "a transient sentence failure must not kill the whole desktop session"
+    );
+    assert!(
+        pump.contains("queue.unshift("),
+        "a failed desktop sentence must be requeued, not dropped"
+    );
+    assert!(
+        pump.contains("MAX_TTS_SENTENCE_RETRIES"),
+        "desktop sentence requeue must be bounded like the native pump"
+    );
+    assert!(
+        pump.contains("retryScheduled"),
+        "a requeued desktop sentence must wait out its backoff; stream callbacks must not re-post it immediately"
+    );
+
+    let utterance = function_body(chat_js, "playOneTtsUtterance")
+        .expect("playOneTtsUtterance must be declared");
+    assert!(
+        utterance.contains("MAX_TTS_CLIP_ATTEMPTS"),
+        "a failed clip GET must retry the same token before failing the sentence"
+    );
+    assert!(
+        utterance.contains("NotAllowedError"),
+        "an autoplay-blocked play() must stay fatal; only transport failures may retry"
+    );
+    let attempts = parse_js_int_const(chat_js, "MAX_TTS_CLIP_ATTEMPTS")
+        .expect("MAX_TTS_CLIP_ATTEMPTS must be declared in chat.js");
+    assert!(
+        (2..=3).contains(&attempts),
+        "clip GET retries must be bounded (MAX_TTS_CLIP_ATTEMPTS={attempts}) within the server replay budget"
+    );
+    assert!(
+        chat_js.contains("TTS_CLIP_RETRY_BACKOFF_MS"),
+        "clip GET retries must back off so a brief blip does not exhaust the budget"
+    );
+}
+
 /// fetchVoiceRetry's own 60s stall timeout and a user stop both surface as
 /// AbortError. A stalled spotty-link request must retry; a user stop must not.
 #[test]
