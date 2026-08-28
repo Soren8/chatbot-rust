@@ -76,6 +76,10 @@ ENV CARGO_TARGET_DIR=/app/.cargo/target
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS prod
 ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
+# Minimum config schema version this image requires; read by the deploy
+# side (iac) via `docker image inspect` to gate config/image ordering.
+ARG CONFIG_VERSION=1
+LABEL chat.config_version=${CONFIG_VERSION}
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 

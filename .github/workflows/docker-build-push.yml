@@ -2,8 +2,7 @@ name: Build and push Docker image
 
 on:
   push:
-    branches: [ "main" ]
-    tags: [ '*' ]
+  pull_request:
   release:
     types: [ published ]
   workflow_dispatch:
@@ -16,8 +15,27 @@ env:
   IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/chatbot
 
 jobs:
+  tests:
+    name: Tests (compose suite)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Run tests via docker compose
+        run: |
+          mkdir -p temp/.cargo/registry temp/.cargo/git temp/.cargo/target temp/test-logs
+          COMPOSE_PROFILES=test docker compose up --build --exit-code-from tests tests
+
+  # Publishes only after the full test suite passes (needs: tests), so an
+  # image existing on Docker Hub implies its commit is green.
   build:
     name: Build and push (linux/amd64)
+    needs: tests
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
     steps:
@@ -29,6 +47,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Read config schema version
+        id: cfgver
+        run: echo "CONFIG_VERSION=$(cat .config-version)" >> "$GITHUB_OUTPUT"
 
       - name: Get short SHA
         id: vars
@@ -77,6 +99,7 @@ jobs:
           push: true
           build-args: |
             RUST_BUILD_PROFILE=release
+            CONFIG_VERSION=${{ steps.cfgver.outputs.CONFIG_VERSION }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

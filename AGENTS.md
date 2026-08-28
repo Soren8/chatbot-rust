@@ -25,6 +25,12 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 `static/` and templates are **copied into the image at build time** (hermetic Docker). UI/asset changes do not show on a running phone or browser until the user rebuilds/restarts **webserver on the host**. Agents should note that in the handoff, not run compose themselves.
 
+## CI/CD
+
+- `.github/workflows/docker-build-push.yml` runs the same compose test suite, then builds and publishes the image only if tests pass (`needs: tests`). An image existing on Docker Hub implies a green commit.
+- `.config-version` (repo root) is the minimum config schema version the app requires; the image carries it as the `chat.config_version` label, and the deploy side (iac) gates image deploys on it. Bump it in any PR that makes the app need new config keys. See `iac/docs/cicd.md`.
+- Config parsing tolerates unknown keys at runtime (forward-compatible config deploys); typo protection lives in the `config_example_has_no_unknown_keys` test, which fails on unknown keys in `.config.yml.example`.
+
 ## Code Style Guidelines
 
 - **Imports**: Standard library first, then third-party, then local modules

@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub struct ProviderConfig {
     #[serde(alias = "name")]
     pub provider_name: String,
@@ -203,7 +203,7 @@ pub fn reset() {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 struct RawConfig {
     #[serde(default)]
     llms: Vec<ProviderConfig>,
@@ -1095,8 +1095,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unknown field")]
-    fn refuses_unknown_top_level_field() {
+    fn ignores_unknown_top_level_field() {
         let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
@@ -1106,7 +1105,11 @@ mod tests {
         let _cwd_guard = CwdGuard::change_to(dir.path());
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         reset();
-        let _ = app_config();
+        let config = app_config();
+        // Unknown top-level keys are tolerated at runtime (forward-compatible
+        // config); `llms: []` still triggers the fallback provider.
+        assert_eq!(config.default_provider().provider_name, "default");
+        reset();
     }
 
     #[test]
@@ -1279,8 +1282,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unknown field")]
-    fn refuses_unknown_provider_field() {
+    fn ignores_unknown_provider_field() {
         let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(
@@ -1290,7 +1292,34 @@ mod tests {
         let _cwd_guard = CwdGuard::change_to(dir.path());
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         reset();
-        let _ = app_config();
+        let config = app_config();
+        // Unknown provider entry keys are tolerated at runtime; the rest of
+        // the entry still parses.
+        assert_eq!(config.default_provider().provider_name, "p");
+        reset();
+    }
+
+    #[test]
+    fn config_example_has_no_unknown_keys() {
+        // Strictness lives in CI, not at runtime: the shipped example must
+        // parse without any ignored (unknown) keys so typos in the schema
+        // are caught here instead of silently degrading on a live server.
+        let value: Value =
+            serde_yaml::from_str(&config_yml_example_contents()).expect("parse example YAML");
+        let user_vars = extract_user_vars(&value);
+        let replaced = replace_vars(value, &user_vars);
+
+        let mut unknown = Vec::new();
+        let config: RawConfig = serde_ignored::deserialize(replaced, |path| {
+            unknown.push(path.to_string());
+        })
+        .expect("deserialize example config");
+
+        assert!(
+            unknown.is_empty(),
+            ".config.yml.example contains unknown keys (fix the example or extend RawConfig): {unknown:?}"
+        );
+        assert!(!config.llms.is_empty());
     }
 
     #[test]
