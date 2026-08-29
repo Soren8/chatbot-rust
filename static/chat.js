@@ -3766,6 +3766,12 @@ $(document).ready(function() {
               const playBtn = $targetElement.find('.play-button').prop('disabled', false);
               if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
+            const errText = err && err.message ? err.message : String(err);
+            if (buffer) {
+              if (state === 'thinking') appendThinking(buffer); else appendVisible(buffer);
+              buffer = '';
+            }
+            appendVisible('\n[Error] Stream interrupted: ' + errText);
             finishChatRequest(seq);
           });
         }

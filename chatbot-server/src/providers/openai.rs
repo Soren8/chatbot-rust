@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use async_stream::try_stream;
 use futures_util::Stream;
 use futures_util::StreamExt;
-use reqwest::Client;
+use reqwest::{Client, Response};
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, error};
 
 use chatbot_core::config::ProviderConfig;
 
@@ -179,7 +179,7 @@ impl OpenAiProvider {
                 // Special token for tests: emit a stream error instead of a text chunk.
                 let stream = tokio_stream::iter(chunks.into_iter().map(|chunk| {
                     if chunk == "__STREAM_ERROR__" {
-                        Err(anyhow::anyhow!("injected test stream error"))
+                        Err(anyhow::anyhow!("injected test stream error").context("provider stream failed"))
                     } else {
                         Ok(chunk)
                     }
@@ -190,7 +190,7 @@ impl OpenAiProvider {
                 for chunk in chunks {
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     if chunk == "__STREAM_ERROR__" {
-                        yield Err(anyhow::anyhow!("injected test stream error"));
+                        yield Err(anyhow::anyhow!("injected test stream error").context("provider stream failed"));
                     } else {
                         yield Ok(chunk);
                     }
@@ -238,9 +238,8 @@ impl OpenAiProvider {
                 .json(&payload)
                 .send()
                 .await
-                .context("failed to send OpenAI request")?
-                .error_for_status()
-                .context("OpenAI returned error status")?;
+                .context("failed to send OpenAI request")?;
+            let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
             let mut body_stream = response.bytes_stream();
@@ -320,7 +319,7 @@ impl OpenAiProvider {
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     }
                     if chunk == "__STREAM_ERROR__" {
-                        Err(anyhow::anyhow!("injected test stream error"))?;
+                        Err(anyhow::anyhow!("injected test stream error").context("provider stream failed"))?;
                     }
                     yield ToolStreamChunk::Content(chunk);
                 }
@@ -363,9 +362,8 @@ impl OpenAiProvider {
                 .json(&payload)
                 .send()
                 .await
-                .context("failed to send tool-aware OpenAI request")?
-                .error_for_status()
-                .context("tool-aware OpenAI request returned error status")?;
+                .context("failed to send tool-aware OpenAI request")?;
+            let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
             let mut body_stream = response.bytes_stream();
@@ -472,6 +470,37 @@ struct ExtractionOutcome {
     done: bool,
 }
 
+const PROVIDER_ERROR_BODY_MAX_CHARS: usize = 512;
+
+fn truncate_for_error(body: &str) -> String {
+    if body.chars().count() <= PROVIDER_ERROR_BODY_MAX_CHARS {
+        return body.to_string();
+    }
+    let mut truncated: String = body.chars().take(PROVIDER_ERROR_BODY_MAX_CHARS).collect();
+    truncated.push('…');
+    truncated
+}
+
+/// Surface HTTP error statuses with the provider's error body instead of
+/// discarding it via `error_for_status` (quota/auth/model errors live there).
+async fn check_openai_response(response: Response) -> Result<Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    error!(
+        status = ?status,
+        body_preview = %body.chars().take(200).collect::<String>(),
+        "OpenAI error response"
+    );
+    Err(anyhow::anyhow!(
+        "OpenAI returned error: {} - {}",
+        status,
+        truncate_for_error(&body)
+    ))
+}
+
 fn extract_sse_payloads(
     buffer: &mut String,
     currently_thinking: &mut bool,
@@ -502,6 +531,13 @@ fn extract_sse_payloads(
 
             let value: Value =
                 serde_json::from_str(data).context("failed to decode OpenAI stream chunk")?;
+
+            // In-band error events (e.g. OpenRouter mid-stream failures) carry no
+            // "choices"; without this check the stream would end silently and look
+            // like a successful empty response.
+            if let Some(err_val) = value.get("error").filter(|v| !v.is_null()) {
+                return Err(anyhow::anyhow!("OpenAI stream error event: {err_val}"));
+            }
 
             let model_response = value.get("model").and_then(Value::as_str).unwrap_or("");
             if !*is_implicit_model
@@ -751,5 +787,108 @@ mod tests {
         // Desired behavior: "<think>thought 1 thought 2"
         assert_eq!(combined.matches("<think>").count(), 1, "Should have coalesced thinking blocks. Got: {}", combined);
         assert!(!combined.contains("</think>"), "Should not have closed thinking block prematurely. Got: {}", combined);
+    }
+
+    #[test]
+    fn extract_sse_payloads_surfaces_in_band_error_events() {
+        let mut buffer = String::from(
+            "data: {\"error\": {\"message\": \"Provider is overloaded\", \"code\": 502}}\n\n",
+        );
+        let mut currently_thinking = false;
+        let mut has_sent_any_content = false;
+        let mut is_implicit_model = false;
+
+        let outcome = extract_sse_payloads(
+            &mut buffer,
+            &mut currently_thinking,
+            &mut has_sent_any_content,
+            &mut is_implicit_model,
+        );
+
+        let err = match outcome {
+            Err(err) => err,
+            Ok(outcome) => panic!(
+                "in-band SSE error event must surface as an error, got chunks: {:?}",
+                outcome.chunks
+            ),
+        };
+        assert!(
+            err.to_string().contains("Provider is overloaded"),
+            "error must include the provider's error payload, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn extract_sse_payloads_tolerates_null_error_fields() {
+        let mut buffer = String::from("data: {\"error\": null, \"choices\": [{\"delta\": {\"content\": \"ok\"}}]}\n\n");
+        let mut currently_thinking = false;
+        let mut has_sent_any_content = false;
+        let mut is_implicit_model = false;
+
+        let outcome = extract_sse_payloads(
+            &mut buffer,
+            &mut currently_thinking,
+            &mut has_sent_any_content,
+            &mut is_implicit_model,
+        )
+        .expect("null error field must not be treated as an error");
+
+        assert_eq!(outcome.chunks.join(""), "ok");
+    }
+
+    #[tokio::test]
+    async fn stream_chat_includes_status_and_body_on_http_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock listener");
+        let addr = listener.local_addr().expect("mock addr");
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    axum::Json(serde_json::json!({
+                        "error": { "message": "Rate limit exceeded, quota reached" }
+                    })),
+                )
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock server");
+        });
+
+        let provider = OpenAiProvider::new(&ProviderConfig {
+            provider_name: "test".to_string(),
+            provider_type: "openai".to_string(),
+            tier: None,
+            model_name: "test-model".to_string(),
+            context_size: Some(4096),
+            base_url: format!("http://{addr}/v1"),
+            api_key: None,
+            allowed_providers: vec![],
+            request_timeout: Some(5.0),
+            test_chunks: None,
+            search: false,
+            xai_search: true,
+            xai_zdr: false,
+        })
+        .expect("provider");
+
+        let stream = provider
+            .stream_chat(vec![ChatMessagePayload::user("hello".to_string())])
+            .expect("stream setup");
+        let mut stream = stream;
+
+        let first = stream.next().await.expect("stream item");
+        let err = first.expect_err("HTTP error status must surface as a stream error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("429"),
+            "error must include the HTTP status, got: {message}"
+        );
+        assert!(
+            message.contains("Rate limit exceeded, quota reached"),
+            "error must include the provider error body, got: {message}"
+        );
     }
 }

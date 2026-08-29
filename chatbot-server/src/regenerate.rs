@@ -203,7 +203,7 @@ pub async fn handle_regenerate(
                     &session_context,
                     Some(context.set_name.as_str()),
                     payload.message.as_str(),
-                    "provider setup failed",
+                    &format!("provider setup failed: {err:#}"),
                     encryption_key.as_ref(),
                     insertion_index,
                 );
@@ -218,7 +218,7 @@ pub async fn handle_regenerate(
                     &session_context,
                     Some(context.set_name.as_str()),
                     payload.message.as_str(),
-                    "provider setup failed",
+                    &format!("provider setup failed: {err:#}"),
                     encryption_key.as_ref(),
                     insertion_index,
                 );
@@ -291,7 +291,7 @@ pub async fn handle_regenerate(
                         &session_context,
                         Some(set_name.as_str()),
                         user_message.as_str(),
-                        "provider request failed",
+                        &format!("provider request failed: {err:#}"),
                         encryption_key.as_ref(),
                         insertion_index,
                     );
@@ -333,7 +333,7 @@ pub async fn handle_regenerate(
                         &session_context,
                         Some(set_name.as_str()),
                         user_message.as_str(),
-                        "provider request failed",
+                        &format!("provider request failed: {err:#}"),
                         encryption_key.as_ref(),
                         insertion_index,
                     );
@@ -379,7 +379,9 @@ pub async fn handle_regenerate(
                     error!(?err, "error while reading provider stream (regenerate)");
                     // Do not persist partial/error-tainted assistant text.
                     guard.mark_provider_error();
-                    let msg = format!("\n[Error] {err}\n");
+                    // `{err:#}` renders the whole anyhow chain so the client sees
+                    // the underlying cause, not just the outermost context.
+                    let msg = format!("\n[Error] {err:#}\n");
                     yield Bytes::from(msg.into_bytes());
                     guard.complete_without_persist();
                     break;
