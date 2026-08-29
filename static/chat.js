@@ -352,6 +352,30 @@ function noteSetVersionFromResponse(data) {
   applySetVersion(version, data.set_id, { allowRewind: true });
 }
 
+/** Sync version from an authoritative READ response (load_set / history_pair).
+ *  Advance-only: a concurrent write may make the read snapshot stale-low, and
+ *  we must never rewind below a version the client already observed. */
+function noteSetVersionFromRead(data) {
+  if (!data) return;
+  var version = data.version != null ? data.version : data.current_version;
+  applySetVersion(version, data.set_id);
+}
+
+/** Extract a human-readable message from an error-response body. */
+function apiErrorText(text, fallback) {
+  var raw = String(text || '').trim();
+  if (!raw) return fallback || 'Request failed';
+  try {
+    var data = JSON.parse(raw);
+    var msg = data && (data.message || data.error);
+    if (msg) {
+      if (data.error === 'version_conflict') return 'Chat state changed elsewhere; syncing and retrying.';
+      return String(msg);
+    }
+  } catch (e) { /* not JSON — show raw text */ }
+  return raw.length > 300 ? raw.slice(0, 300) + '…' : raw;
+}
+
 /** After chat/regenerate persist, CAS version advances by one. Update immediately
  *  so delete/reset don't race the async loadSets() refresh. */
 function noteLocalVersionBumpAfterPersist() {
@@ -468,6 +492,35 @@ function parseJsonOrEmpty(response) {
     if (!t) return {};
     try { return JSON.parse(t); } catch (e) { return { error: t }; }
   });
+}
+
+/** POST /reset_chat with self-healing: on 409 version_conflict, adopt the
+ *  authoritative version from the body and retry once with a fresh payload. */
+function submitResetChat(isRetry) {
+  return fetch('/reset_chat', {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(activeSetPayload({}))
+  })
+    .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
+    .then(result => {
+      if (result.data && result.data.error === 'version_conflict') {
+        noteSetVersionFromResponse(result.data);
+        if (!isRetry) return submitResetChat(true);
+        appendMessage('The chat was updated elsewhere while resetting. Please try again.', 'error-message');
+        return;
+      }
+      if (result.ok && result.data && result.data.status === 'success') {
+        noteSetVersionFromResponse(result.data);
+        $('#chat-content').empty();
+        resetHistoryWindow();
+        appendMessage('Chat history has been reset for set ' + (result.data.set_name || '') + '.', 'system-message');
+        return;
+      }
+      const errMsg = (result.data && (result.data.message || result.data.error)) || 'Failed to reset chat';
+      appendMessage(errMsg, 'error-message');
+    })
+    .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
 }
 
 function preloadEncryptionKey() {
@@ -1416,6 +1469,9 @@ function fetchHistoryPair(pairIndex, extra) {
     }
     if (!r.ok) throw new Error('Failed to load message');
     return r.json();
+  }).then(function(data) {
+    noteSetVersionFromRead(data);
+    return data;
   });
 }
 
@@ -1555,6 +1611,7 @@ function loadOlderMessages() {
     return r.json();
   }).then(function(data) {
     if (gen !== HISTORY_SET_GEN) return;
+    noteSetVersionFromRead(data);
     applyHistoryPage(data, 'prepend');
   }).catch(function(err) {
     console.error('Failed to load older messages:', err);
@@ -2492,7 +2549,8 @@ window.regenerateMessage = function regenerateMessage(button) {
   window.performRegeneration($aiMessageElement[0], userText, pairIndex);
 };
 
-window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex) {
+window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex, opts) {
+  opts = opts || {};
   const $target = $(aiMessageElement);
   $target.removeAttr('data-original');
   replaceChildrenNative($target[0], buildAiStreamChildren());
@@ -2519,7 +2577,21 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
   })
   .then(response => {
     if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
-    if (!response.ok) throw new Error('Network response was not ok');
+    if (!response.ok) {
+      return response.text().then(t => {
+        let errData = null;
+        try { errData = t ? JSON.parse(t) : null; } catch (e) { errData = null; }
+        if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq)) {
+          // Adopt the authoritative version and replay the regeneration once.
+          noteSetVersionFromResponse(errData);
+          if (!opts.versionRetried) {
+            return window.performRegeneration(aiMessageElement, userText, pairIndex, { versionRetried: true });
+          }
+          throw new Error('Chat state changed elsewhere; please try again.');
+        }
+        throw new Error(apiErrorText(t, 'Network response was not ok'));
+      });
+    }
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     const $msgText = $target.find('.ai-message-text');
@@ -3353,9 +3425,16 @@ $(document).ready(function() {
       const $opt = $(this).find('option:selected');
       const setId = $(this).val();
       const setName = $opt.attr('data-name') || setId;
+      // Rewind-safe sync: a genuine set switch adopts the new set's version;
+      // same-set refreshes never rewind below a version we already observed.
+      const rawVersion = $opt.attr('data-version');
+      if (rawVersion != null && rawVersion !== '') {
+        applySetVersion(rawVersion, setId);
+      } else {
+        window.APP_DATA.setVersion = null;
+      }
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
-      window.APP_DATA.setVersion = $opt.attr('data-version') || null;
       HISTORY_SET_GEN += 1;
       var loadGen = HISTORY_SET_GEN;
       savePreferences();
@@ -3435,35 +3514,43 @@ $(document).ready(function() {
       }
       const newName = prompt('Enter new name for set:', oldName);
       if (newName && newName !== oldName) {
-        fetch('/rename_set', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            set_id: setId,
-            old_name: oldName,
-            new_name: newName,
-            expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
-          })
-        })
-        .then(r => r.json())
-        .then(data => {
-          if (data.status === 'success') {
-            window.APP_DATA.lastSet = newName;
-            window.APP_DATA.lastSetId = data.set_id || setId;
-            if (data.version != null) window.APP_DATA.setVersion = data.version;
-            loadSets(false).then(() => {
-              $('#set-selector').val(window.APP_DATA.lastSetId);
-              appendMessage('Renamed set to: ' + newName, 'system-message');
-            });
-          } else {
-            appendMessage(data.error || 'Failed to rename set', 'error-message');
-          }
-        })
-        .catch(err => {
-          appendMessage(err && err.message ? err.message : String(err), 'error-message');
-        });
+        submitRenameSet(setId, oldName, newName, false);
       }
     });
+
+    function submitRenameSet(setId, oldName, newName, isRetry) {
+      fetch('/rename_set', {
+        method: 'POST',
+        headers: withCsrf({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          set_id: setId,
+          old_name: oldName,
+          new_name: newName,
+          expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
+        })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'success') {
+          window.APP_DATA.lastSet = newName;
+          window.APP_DATA.lastSetId = data.set_id || setId;
+          noteSetVersionFromResponse(data);
+          loadSets(false).then(() => {
+            $('#set-selector').val(window.APP_DATA.lastSetId);
+            appendMessage('Renamed set to: ' + newName, 'system-message');
+          });
+        } else if (data.error === 'version_conflict') {
+          noteSetVersionFromResponse(data);
+          if (!isRetry) return submitRenameSet(setId, oldName, newName, true);
+          appendMessage('The chat was updated elsewhere. Please try renaming again.', 'error-message');
+        } else {
+          appendMessage(data.error || 'Failed to rename set', 'error-message');
+        }
+      })
+      .catch(err => {
+        appendMessage(err && err.message ? err.message : String(err), 'error-message');
+      });
+    }
 
     $('#delete-set').on('click', function() {
       const $opt = $('#set-selector option:selected');
@@ -3471,22 +3558,34 @@ $(document).ready(function() {
       const setName = $opt.attr('data-name') || setId;
       if (setName === 'default') { appendMessage('Cannot delete default set', 'error-message'); return; }
       if (confirm('Are you sure you want to delete set: ' + setName + '?')) {
-        fetch('/delete_set', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            set_id: setId,
-            set_name: setName,
-            expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
-          })
-        })
-          .then(r => r.json())
-          .then(data => {
-            if (data.status === 'success') { loadSets(); appendMessage('Deleted set: ' + setName, 'system-message'); }
-            else { appendMessage(data.error || 'Failed to delete set', 'error-message'); }
-          });
+        submitDeleteSet(setId, setName, false);
       }
     });
+
+    function submitDeleteSet(setId, setName, isRetry) {
+      fetch('/delete_set', {
+        method: 'POST',
+        headers: withCsrf({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          set_id: setId,
+          set_name: setName,
+          expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
+        })
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'success') { loadSets(); appendMessage('Deleted set: ' + setName, 'system-message'); }
+          else if (data.error === 'version_conflict') {
+            noteSetVersionFromResponse(data);
+            if (!isRetry) return submitDeleteSet(setId, setName, true);
+            appendMessage('The chat was updated elsewhere. Please try deleting again.', 'error-message');
+          }
+          else { appendMessage(data.error || 'Failed to delete set', 'error-message'); }
+        })
+        .catch(err => {
+          appendMessage(err && err.message ? err.message : String(err), 'error-message');
+        });
+    }
   }
 
   function activeSetName() {
@@ -3495,10 +3594,8 @@ $(document).ready(function() {
   }
 
   // Save buttons
-  $('#save-system-prompt').on('click', function() {
-    const sysPromptText = $('#user-system-prompt').val();
-    const setName = activeSetName();
-    fetch('/update_system_prompt', {
+  function saveSystemPromptNow(sysPromptText, isRetry) {
+    return fetch('/update_system_prompt', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(activeSetPayload({
@@ -3513,17 +3610,19 @@ $(document).ready(function() {
           appendMessage('System prompt saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
-          return handleVersionConflict(null, data);
+          // Sync the authoritative version and retry once — e.g. a chat turn
+          // finalized (or a prompt updated from another tab) since page load.
+          noteSetVersionFromResponse(data);
+          if (!isRetry) return saveSystemPromptNow(sysPromptText, true);
+          appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
         else appendMessage(data.error || 'Failed to save system prompt.', 'error-message');
       })
       .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
-  });
+  }
 
-  $('#save-memory').on('click', function() {
-    const memText = $('#user-memory').val();
-    const setName = activeSetName();
-    fetch('/update_memory', {
+  function saveMemoryNow(memText, isRetry) {
+    return fetch('/update_memory', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(activeSetPayload({
@@ -3538,11 +3637,21 @@ $(document).ready(function() {
           appendMessage('Memory saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
-          return handleVersionConflict(null, data);
+          noteSetVersionFromResponse(data);
+          if (!isRetry) return saveMemoryNow(memText, true);
+          appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
         else appendMessage(data.error || 'Failed to save memory.', 'error-message');
       })
       .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+  }
+
+  $('#save-system-prompt').on('click', function() {
+    saveSystemPromptNow($('#user-system-prompt').val(), false);
+  });
+
+  $('#save-memory').on('click', function() {
+    saveMemoryNow($('#user-memory').val(), false);
   });
 
   function sendMessage(opts) {
@@ -3562,8 +3671,9 @@ $(document).ready(function() {
     // appendMessage parses that tag into a preview <img> (same path as load_set).
     // Do not pre-build HTML with <img> here — textContent extraction would strip it and
     // leave no [IMAGE:...] tag to reconstruct, so the image only appeared after reload.
+    // reuseLastUser retries already carry the composed text — do not append twice.
     let fullMessage = message;
-    if (pendingImageData) {
+    if (pendingImageData && !opts.reuseLastUser) {
       fullMessage = message + '\n[IMAGE:' + pendingImageData + ']';
     }
 
@@ -3602,7 +3712,27 @@ $(document).ready(function() {
     })
       .then(response => {
         if (response.status === 401) throw new Error(SESSION_EXPIRED_SEND_MSG);
-        if (!response.ok) return response.text().then(t => { throw new Error(t || 'Network response was not ok'); });
+        if (!response.ok) {
+          return response.text().then(t => {
+            let errData = null;
+            try { errData = t ? JSON.parse(t) : null; } catch (e) { errData = null; }
+            if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq)) {
+              // Server rejected our stale version (e.g. the system prompt was
+              // updated, or a turn finalized, elsewhere mid-flight). Adopt the
+              // authoritative version and replay this turn once.
+              noteSetVersionFromResponse(errData);
+              if (!opts.versionRetried) {
+                return sendMessage({
+                  reuseLastUser: true,
+                  message: fullMessage,
+                  versionRetried: true
+                });
+              }
+              throw new Error('Chat state changed elsewhere; please try again.');
+            }
+            throw new Error(apiErrorText(t, 'Network response was not ok'));
+          });
+        }
         $userInputElement.val('');
         if (pendingImagePreview) {
           pendingImagePreview.remove();
@@ -3820,23 +3950,7 @@ $(document).ready(function() {
   $('#reset-chat').on('click', function() {
     const setName = typeof activeSetName === 'function' ? activeSetName() : 'default';
     if (confirm(`Are you sure you want to reset the chat history for set: ${setName}?`)) {
-      fetch('/reset_chat', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify(activeSetPayload({})) })
-        .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
-        .then(result => {
-          if (result.data && result.data.error === 'version_conflict') {
-            return handleVersionConflict(null, result.data);
-          }
-          if (result.ok && result.data && result.data.status === 'success') {
-            noteSetVersionFromResponse(result.data);
-            $('#chat-content').empty();
-            resetHistoryWindow();
-            appendMessage('Chat history has been reset for set ' + (result.data.set_name || '') + '.', 'system-message');
-            return;
-          }
-          const errMsg = (result.data && (result.data.message || result.data.error)) || 'Failed to reset chat';
-          appendMessage(errMsg, 'error-message');
-        })
-        .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+      submitResetChat(false);
     }
   });
 
