@@ -39,6 +39,8 @@ enqueue through `DELETE /tts_stream/{token}` (CSRF-protected).
 
 This approach allows us to use `fetch` with `decodeAudioData` (which works best with complete files/segments) on a per-sentence basis, combining the low latency of streaming with the reliability of native browser decoding.
 
+Payloads that sanitize to nothing (markdown rules like `---`, marker-only chunks, raw HTML, entities) stream a short silent WAV instead of failing: a 500 there is deterministic, so client retries cannot fix it — they only burn the retry budget and delay the next sentence. Silent tokens never reach the TTS backend, and the empty case is logged at warn level with a text preview.
+
 ### 4. Latency
 **Issue:** Initial attempts included artificial delays (100ms-300ms) to buffer data against network jitter.
 **Resolution:** With the robust `AudioContext` scheduling, these artificial delays were removed. The scheduler detects if the "next start time" is in the past (i.e., we are buffering) and plays the audio immediately, ensuring the lowest possible latency.

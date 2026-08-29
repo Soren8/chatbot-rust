@@ -76,6 +76,15 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .expect("http client")
 });
 
+/// ~0.1 s of silence as a valid WAV. Served for payloads that sanitize to
+/// nothing (e.g. a trailing `---` rule, marker-only chunks, raw HTML): a 500
+/// there is deterministic, so the client retry storm cannot fix it — the
+/// sentence must become a brief silence instead of a failure.
+static SILENT_WAV: Lazy<Vec<u8>> = Lazy::new(|| {
+    let silent_samples = (SAMPLE_RATE_HZ as usize) / 10;
+    pcm_to_wav(&vec![0_u8; silent_samples * 2], SAMPLE_RATE_HZ)
+});
+
 struct PendingTts {
     text: String,
     audio: Option<Vec<u8>>,
@@ -177,9 +186,16 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
 
     let cleaned = sanitize_text(&raw_text);
     if cleaned.is_empty() {
-        debug!("sanitized /tts payload resulted in empty text");
-        return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
+        tracing::warn!(
+            raw_text_preview = ?raw_text.get(..100.min(raw_text.len())),
+            "sanitized /tts payload is empty; streaming silence instead of failing the sentence"
+        );
     }
+    let (entry_text, entry_audio) = if cleaned.is_empty() {
+        (String::new(), Some(SILENT_WAV.clone()))
+    } else {
+        (cleaned, None)
+    };
 
     // Generate a temporary token and store the cleaned text
     let mut token_bytes = [0u8; 16];
@@ -192,8 +208,8 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
             &mut map,
             token.clone(),
             PendingTts {
-                text: cleaned,
-                audio: None,
+                text: entry_text,
+                audio: entry_audio,
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
@@ -897,6 +913,33 @@ mod tests {
         let result = sanitize_text(input);
         assert!(result.contains("5km"), "km must not be mis-expanded but result is: {}", result);
         assert!(result.contains("30ms"), "ms must not be mis-expanded but result is: {}", result);
+    }
+
+    /// Sentence chunks that are pure markdown structure (rules, empty headings,
+    /// blockquote markers, HTML, entities) sanitize to nothing. The handler
+    /// must treat these as silence, not as a 500 the client cannot fix.
+    #[test]
+    fn test_sanitize_text_empties_for_marker_only_chunks() {
+        for input in ["---", "***", "___", "#", ">", "<!-- note -->", "&nbsp;"] {
+            assert!(
+                sanitize_text(input).is_empty(),
+                "{input:?} should sanitize to empty"
+            );
+        }
+        // Normal sentences must never sanitize to empty (the silence fallback
+        // must not swallow speakable text).
+        for input in [
+            "Hello.",
+            "- a list item.",
+            "## A heading.",
+            "> a quote.",
+            "Section divider follows.\n\n---\n\nNext section.",
+        ] {
+            assert!(
+                !sanitize_text(input).is_empty(),
+                "{input:?} must survive sanitization as speakable text"
+            );
+        }
     }
 
     #[test]

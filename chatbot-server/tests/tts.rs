@@ -661,69 +661,88 @@ async fn kokoro_tts_returns_error_when_service_fails() {
 }
 
 #[tokio::test]
-async fn kokoro_tts_rejects_empty_text() {
+async fn empty_after_sanitize_streams_silence_instead_of_failing_the_sentence() {
     common::init_tracing();
     let _lock = tts_test_lock();
 
-    let _workspace = begin_kokoro_workspace("127.0.0.1", 65535);
+    // A 500 here was deterministic (marker-only sentences sanitize to empty),
+    // so the client retry storm could never fix it and each such sentence
+    // burned 9 POST /tts requests plus backoff before being skipped. The
+    // handler must return a token that streams a short silent WAV and must
+    // not call the voice-service backend at all.
+    let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
+    let pcm = Arc::new(vec![0_u8; 100]);
+    let router = kokoro_voice_router(captured.clone(), pcm);
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = begin_kokoro_workspace(&addr.ip().to_string(), addr.port());
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
+    let (cookie, csrf) = guest_session(&app).await;
 
-    let home_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / response");
+    for text in ["    ", "---", "***"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/tts")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("X-CSRF-Token", &csrf)
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({ "text": text })).expect("payload bytes"),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .expect("POST /tts response");
 
-    let set_cookie = home_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .expect("session cookie present")
-        .to_owned();
+        assert_eq!(response.status(), StatusCode::OK, "text {text:?} must not 500");
+        let body_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("read token body");
+        let data: Value = serde_json::from_slice(&body_bytes).expect("valid json token");
+        let token = data["token"].as_str().expect("token field present");
 
-    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
-        .await
-        .expect("read home body");
-    let body_text = std::str::from_utf8(&body_bytes).expect("home utf8");
-    let csrf_token = META_TOKEN_RE
-        .captures(body_text)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
-        .expect("csrf token in page");
+        let stream_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/tts_stream/{token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("GET /tts_stream response");
 
-    let cookie_value = common::extract_cookie(&set_cookie);
+        assert_eq!(stream_response.status(), StatusCode::OK);
+        assert_eq!(
+            stream_response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("audio/wav"),
+        );
+        let wav_bytes = axum::body::to_bytes(stream_response.into_body(), 512 * 1024)
+            .await
+            .expect("read silent wav body");
+        assert!(wav_bytes.len() > 44, "silent clip must be a valid WAV");
+        assert_eq!(&wav_bytes[0..4], b"RIFF", "silent clip must be a WAV");
+        assert!(
+            wav_bytes[44..].iter().all(|&b| b == 0),
+            "clip content must be silence"
+        );
+    }
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/tts")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("X-CSRF-Token", &csrf_token)
-                .header(header::COOKIE, &cookie_value)
-                .body(Body::from(
-                    serde_json::to_vec(&json!({"text": "    "})).expect("payload bytes"),
-                ))
-                .unwrap(),
-        )
-        .await
-        .expect("POST /tts response");
+    assert!(
+        captured.lock().await.is_empty(),
+        "silent sentences must never reach the voice-service backend"
+    );
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-    let body_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
-        .await
-        .expect("read error body");
-    let payload: Value = serde_json::from_slice(&body_bytes).expect("json body");
-    assert_eq!(payload["error"], "TTS generation failed");
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
 }
 
 #[tokio::test]
