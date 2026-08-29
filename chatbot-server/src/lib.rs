@@ -74,6 +74,30 @@ async fn set_cross_origin_isolation_headers(
     response
 }
 
+/// Guarantee: every 5xx response that reaches a client is logged at ERROR
+/// level with request context. Handler-level helpers (`log_and_api_error`,
+/// `map_*_err`, `api_error`) log the underlying cause; this catches any 5xx
+/// built without such a log (direct Response builders, `build_response`
+/// ServiceResponses, future handlers). Mounted as the outermost layer so it
+/// observes the final status of every route, including nested services.
+async fn log_server_error_responses(
+    request: axum::extract::Request<Body>,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).await;
+    if response.status().is_server_error() {
+        error!(
+            status = response.status().as_u16(),
+            method = %method,
+            path = %path,
+            "5xx response returned to client"
+        );
+    }
+    response
+}
+
 pub fn build_router(static_root: PathBuf) -> Router {
     let rate_limited = Router::new()
         .route(
@@ -124,6 +148,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(preferences::handle_update_preferences),
         )
         .merge(rate_limited)
+        .layer(middleware::from_fn(log_server_error_responses))
 }
 
 pub fn resolve_static_root() -> PathBuf {

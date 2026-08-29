@@ -1001,6 +1001,139 @@ async fn kokoro_strips_markdown_formatting() {
 
 // --- Fish Speech (deprecated provider) ---
 
+/// Log-capturing writer for asserting the router's 5xx catch-all fires.
+#[derive(Clone)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut guard = self.0.lock().unwrap_or_else(|err| err.into_inner());
+        guard.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = LogCapture;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Every 5xx response that reaches a client must surface an ERROR-level log
+/// with request context (status, method, path) — the silent-TTS incident had
+/// deterministic 500s that left no trace in server logs. The router mounts
+/// `log_server_error_responses` as its outermost layer, so this asserts the
+/// guarantee end-to-end on a real 502 path. `#[tokio::test]` is
+/// current-thread, so the router and a thread-local `set_default` subscriber
+/// share a thread and the capture stays isolated from parallel tests.
+#[tokio::test]
+async fn http_5xx_responses_log_error_level_with_request_context() {
+    let _lock = tts_test_lock();
+
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR)
+        .with_ansi(false)
+        .with_writer(LogCapture(captured.clone()))
+        .finish();
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    let router = kokoro_error_router();
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = begin_kokoro_workspace(&addr.ip().to_string(), addr.port());
+
+    let app = build_router(resolve_static_root());
+    let (cookie, csrf) = guest_session(&app).await;
+
+    let ok_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / response");
+    assert_eq!(ok_response.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(ok_response.into_body(), 256 * 1024).await;
+
+    {
+        let logs = captured.lock().unwrap_or_else(|err| err.into_inner());
+        assert!(
+            logs.is_empty(),
+            "a successful request must emit no error logs: {}",
+            String::from_utf8_lossy(&logs)
+        );
+    }
+
+    let tts_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tts")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf)
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": "Failure case"})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /tts response");
+    assert_eq!(tts_response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(tts_response.into_body(), 64 * 1024)
+        .await
+        .expect("read token body");
+    let token = serde_json::from_slice::<Value>(&body).unwrap()["token"]
+        .as_str()
+        .expect("token present")
+        .to_owned();
+
+    let stream_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream response");
+    assert_eq!(stream_response.status(), StatusCode::BAD_GATEWAY);
+    let _ = axum::body::to_bytes(stream_response.into_body(), 64 * 1024).await;
+
+    let logs = captured.lock().unwrap_or_else(|err| err.into_inner());
+    let text = String::from_utf8_lossy(&logs);
+    assert!(
+        text.contains("5xx response returned to client"),
+        "a 5xx response must emit a catch-all error log, got: {text}"
+    );
+    assert!(text.contains("status=502"), "log must carry the status: {text}");
+    assert!(text.contains("method=GET"), "log must carry the method: {text}");
+    assert!(
+        text.contains(&format!("path=/tts_stream/{token}")),
+        "log must carry the request path: {text}"
+    );
+    assert_eq!(
+        text.matches("5xx response returned to client").count(),
+        1,
+        "exactly one catch-all line per 5xx request: {text}"
+    );
+    drop(logs);
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}
+
 #[tokio::test]
 async fn fish_tts_via_presign_generates_wav_audio() {
     common::init_tracing();
