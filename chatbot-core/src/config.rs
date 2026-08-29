@@ -29,6 +29,14 @@ pub struct ProviderConfig {
     pub allowed_providers: Vec<String>,
     #[serde(default)]
     pub request_timeout: Option<f64>,
+    /// Extra attempts after an upstream `429 Too Many Requests`. Defaults to 1;
+    /// 0 disables retrying.
+    #[serde(default)]
+    pub rate_limit_retries: Option<u32>,
+    /// Upper bound (seconds) a single rate-limit retry may wait, capping any
+    /// upstream `Retry-After` hint. Defaults to 5.
+    #[serde(default)]
+    pub rate_limit_max_wait_secs: Option<f64>,
     #[serde(default)]
     pub test_chunks: Option<Vec<String>>,
     #[serde(default)]
@@ -555,9 +563,13 @@ fn parse_yaml_config_contents(contents: &str) -> RawConfig {
         }
     }
 }
-
 const ALLOWED_PROVIDER_TYPES: &[&str] = &["openai", "xai", "stub"];
+
 const ALLOWED_PROVIDER_TIERS: &[&str] = &["free", "premium"];
+
+/// Upper bound for the per-provider `rate_limit_retries` key; guards against a
+/// pathological config hammering an upstream that is already rejecting us.
+const MAX_PROVIDER_RATE_LIMIT_RETRIES: u32 = 10;
 const ALLOWED_TTS_PROVIDERS: &[&str] = &["kokoro", "fish"];
 
 fn validate_tts_provider(value: &str) {
@@ -612,6 +624,18 @@ fn validate_raw_config(config: &RawConfig) {
         if let Some(timeout) = provider.request_timeout {
             if timeout <= 0.0 || !timeout.is_finite() {
                 panic!("llms[{idx}].request_timeout must be a positive finite number");
+            }
+        }
+        if let Some(retries) = provider.rate_limit_retries {
+            if retries > MAX_PROVIDER_RATE_LIMIT_RETRIES {
+                panic!(
+                    "llms[{idx}].rate_limit_retries must be at most {MAX_PROVIDER_RATE_LIMIT_RETRIES}"
+                );
+            }
+        }
+        if let Some(wait) = provider.rate_limit_max_wait_secs {
+            if wait <= 0.0 || !wait.is_finite() {
+                panic!("llms[{idx}].rate_limit_max_wait_secs must be a positive finite number");
             }
         }
     }
@@ -789,6 +813,8 @@ fn fallback_provider() -> ProviderConfig {
         api_key: None,
         allowed_providers: Vec::new(),
         request_timeout: None,
+        rate_limit_retries: None,
+        rate_limit_max_wait_secs: None,
         test_chunks: None,
         search: false,
         xai_search: true,

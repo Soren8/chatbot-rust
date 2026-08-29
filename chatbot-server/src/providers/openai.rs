@@ -6,12 +6,21 @@ use futures_util::Stream;
 use futures_util::StreamExt;
 use reqwest::{Client, Response};
 use serde_json::Value;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use chatbot_core::config::ProviderConfig;
 
 use self::messages::ChatMessagePayload;
 use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};
+
+/// Extra attempts after an upstream `429 Too Many Requests` when the provider
+/// config omits `rate_limit_retries`. OpenRouter and OpenAI-compatible upstreams
+/// have no server-side wait queue; the supported pattern is honoring
+/// `Retry-After` and retrying client-side.
+const DEFAULT_RATE_LIMIT_RETRIES: u32 = 1;
+/// Cap (seconds) on a single rate-limit retry wait, applied to any upstream
+/// `Retry-After` hint, so a chat turn never stalls on a long cooldown.
+const DEFAULT_RATE_LIMIT_MAX_WAIT_SECS: f64 = 5.0;
 
 pub struct ToolCall {
     pub name: String,
@@ -131,6 +140,8 @@ pub struct OpenAiProvider {
     model: String,
     allowed_providers: Vec<String>,
     test_chunks: Option<Vec<String>>,
+    rate_limit_retries: u32,
+    rate_limit_max_wait: Duration,
 }
 
 impl OpenAiProvider {
@@ -161,6 +172,14 @@ impl OpenAiProvider {
             model: config.model_name.clone(),
             allowed_providers: config.allowed_providers.clone(),
             test_chunks,
+            rate_limit_retries: config
+                .rate_limit_retries
+                .unwrap_or(DEFAULT_RATE_LIMIT_RETRIES),
+            rate_limit_max_wait: Duration::from_secs_f64(
+                config
+                    .rate_limit_max_wait_secs
+                    .unwrap_or(DEFAULT_RATE_LIMIT_MAX_WAIT_SECS),
+            ),
         })
     }
 
@@ -230,15 +249,20 @@ impl OpenAiProvider {
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let client = self.client.clone();
+        let rate_limit_retries = self.rate_limit_retries;
+        let rate_limit_max_wait = self.rate_limit_max_wait;
 
         let stream = try_stream! {
-            let response = client
-                .post(url)
-                .bearer_auth(api_key)
-                .json(&payload)
-                .send()
-                .await
-                .context("failed to send OpenAI request")?;
+            let response = send_with_rate_limit_retry(
+                &client,
+                &url,
+                &api_key,
+                &payload,
+                rate_limit_retries,
+                rate_limit_max_wait,
+                "OpenAI request",
+            )
+            .await?;
             let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
@@ -355,14 +379,19 @@ impl OpenAiProvider {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let client = self.client.clone();
+        let rate_limit_retries = self.rate_limit_retries;
+        let rate_limit_max_wait = self.rate_limit_max_wait;
         let stream = try_stream! {
-            let response = client
-                .post(url)
-                .bearer_auth(api_key)
-                .json(&payload)
-                .send()
-                .await
-                .context("failed to send tool-aware OpenAI request")?;
+            let response = send_with_rate_limit_retry(
+                &client,
+                &url,
+                &api_key,
+                &payload,
+                rate_limit_retries,
+                rate_limit_max_wait,
+                "tool-aware OpenAI request",
+            )
+            .await?;
             let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
@@ -479,6 +508,64 @@ fn truncate_for_error(body: &str) -> String {
     let mut truncated: String = body.chars().take(PROVIDER_ERROR_BODY_MAX_CHARS).collect();
     truncated.push('…');
     truncated
+}
+
+/// Send the chat-completions request, retrying `429 Too Many Requests` up to
+/// `retries` extra times. Waits honor the upstream `Retry-After` header when
+/// present, capped at `max_wait`; without it, a short exponential backoff
+/// (1s, 2s, …) applies, capped the same way. Retries only happen before the
+/// stream starts, so no content has been yielded or persisted for the turn.
+async fn send_with_rate_limit_retry(
+    client: &Client,
+    url: &str,
+    api_key: &str,
+    payload: &ChatCompletionRequest,
+    retries: u32,
+    max_wait: Duration,
+    context: &'static str,
+) -> Result<Response> {
+    let mut attempt = 0u32;
+    loop {
+        let response = client
+            .post(url)
+            .bearer_auth(api_key)
+            .json(payload)
+            .send()
+            .await
+            .with_context(|| format!("failed to send {context}"))?;
+
+        if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || attempt >= retries {
+            return Ok(response);
+        }
+
+        let wait = rate_limit_wait(response.headers(), max_wait, attempt);
+        warn!(
+            attempt = attempt + 1,
+            retries,
+            wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+            "{context} rate limited (429); waiting before retry"
+        );
+        tokio::time::sleep(wait).await;
+        attempt += 1;
+    }
+}
+
+/// Pick the wait before a rate-limit retry: `Retry-After` seconds when the
+/// upstream provides a usable hint, otherwise exponential backoff — always
+/// capped at `max_wait`.
+fn rate_limit_wait(
+    headers: &reqwest::header::HeaderMap,
+    max_wait: Duration,
+    attempt: u32,
+) -> Duration {
+    let retry_after = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|secs| secs.is_finite() && *secs >= 0.0)
+        .map(Duration::from_secs_f64);
+    let backoff = Duration::from_secs_f64(2f64.powi(attempt as i32));
+    retry_after.unwrap_or(backoff).min(max_wait)
 }
 
 /// Surface HTTP error statuses with the provider's error body instead of
@@ -652,6 +739,8 @@ mod tests {
             api_key: None,
             allowed_providers: vec![],
             request_timeout: Some(1.0),
+            rate_limit_retries: None,
+            rate_limit_max_wait_secs: None,
             test_chunks: Some(test_chunks),
             search: false,
             xai_search: true,
@@ -842,15 +931,21 @@ mod tests {
             .await
             .expect("bind mock listener");
         let addr = listener.local_addr().expect("mock addr");
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let route_hits = hits.clone();
         let app = axum::Router::new().route(
             "/v1/chat/completions",
-            axum::routing::post(|| async {
-                (
-                    axum::http::StatusCode::TOO_MANY_REQUESTS,
-                    axum::Json(serde_json::json!({
-                        "error": { "message": "Rate limit exceeded, quota reached" }
-                    })),
-                )
+            axum::routing::post(move || {
+                let hits = route_hits.clone();
+                async move {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (
+                        axum::http::StatusCode::TOO_MANY_REQUESTS,
+                        axum::Json(serde_json::json!({
+                            "error": { "message": "Rate limit exceeded, quota reached" }
+                        })),
+                    )
+                }
             }),
         );
         tokio::spawn(async move {
@@ -867,6 +962,9 @@ mod tests {
             api_key: None,
             allowed_providers: vec![],
             request_timeout: Some(5.0),
+            // Retry disabled: this test pins single-attempt error surfacing.
+            rate_limit_retries: Some(0),
+            rate_limit_max_wait_secs: None,
             test_chunks: None,
             search: false,
             xai_search: true,
@@ -889,6 +987,185 @@ mod tests {
         assert!(
             message.contains("Rate limit exceeded, quota reached"),
             "error must include the provider error body, got: {message}"
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "retries disabled must mean exactly one request"
+        );
+    }
+
+    const RETRY_429_TEST_RETRIES: u32 = 2;
+
+    fn retry_test_provider(base_url: String) -> OpenAiProvider {
+        OpenAiProvider::new(&ProviderConfig {
+            provider_name: "test".to_string(),
+            provider_type: "openai".to_string(),
+            tier: None,
+            model_name: "test-model".to_string(),
+            context_size: Some(4096),
+            base_url,
+            api_key: None,
+            allowed_providers: vec![],
+            request_timeout: Some(5.0),
+            rate_limit_retries: Some(RETRY_429_TEST_RETRIES),
+            // Tiny cap keeps the suite fast; Retry-After: 0 needs no wait anyway.
+            rate_limit_max_wait_secs: Some(0.02),
+            test_chunks: None,
+            search: false,
+            xai_search: true,
+            xai_zdr: false,
+        })
+        .expect("retry test provider")
+    }
+
+    fn rate_limited_mock_app(
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        limit: Option<usize>,
+    ) -> axum::Router {
+        use axum::response::IntoResponse;
+        const SSE_OK_BODY: &str =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+        axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move || {
+                let hits = hits.clone();
+                async move {
+                    let hit = hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let limited = match limit {
+                        Some(max) => hit < max,
+                        None => true,
+                    };
+                    if limited {
+                        (
+                            axum::http::StatusCode::TOO_MANY_REQUESTS,
+                            [("retry-after", "0")],
+                            axum::Json(serde_json::json!({
+                                "error": { "message": "Rate limit exceeded" }
+                            })),
+                        )
+                            .into_response()
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            [("content-type", "text/event-stream")],
+                            SSE_OK_BODY,
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        )
+    }
+
+    async fn spawn_rate_limited_mock(limit: Option<usize>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock listener");
+        let addr = listener.local_addr().expect("mock addr");
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = rate_limited_mock_app(hits.clone(), limit);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock server");
+        });
+        (format!("http://{addr}/v1"), hits)
+    }
+
+    #[test]
+    fn rate_limit_wait_honors_retry_after_and_caps_wait() {
+        use std::time::Duration;
+        let mut headers = reqwest::header::HeaderMap::new();
+
+        // No header: exponential backoff 1s, 2s, 4s.
+        headers.clear();
+        assert_eq!(rate_limit_wait(&headers, Duration::from_secs(5), 0), Duration::from_secs(1));
+        assert_eq!(rate_limit_wait(&headers, Duration::from_secs(5), 1), Duration::from_secs(2));
+
+        // Backoff is capped by max_wait.
+        assert_eq!(rate_limit_wait(&headers, Duration::from_millis(200), 3), Duration::from_millis(200));
+
+        // Usable Retry-After wins over backoff; capped when larger than max_wait.
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("0.25"),
+        );
+        assert_eq!(rate_limit_wait(&headers, Duration::from_secs(5), 0), Duration::from_millis(250));
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("120"),
+        );
+        assert_eq!(rate_limit_wait(&headers, Duration::from_secs(5), 0), Duration::from_secs(5));
+
+        // Garbage hint (HTTP-date or junk) falls back to backoff.
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
+        );
+        assert_eq!(rate_limit_wait(&headers, Duration::from_secs(5), 0), Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn stream_chat_retries_429_and_succeeds() {
+        let (base_url, hits) = spawn_rate_limited_mock(Some(1)).await;
+        let provider = retry_test_provider(base_url);
+
+        let mut stream = provider
+            .stream_chat(vec![ChatMessagePayload::user("hello".to_string())])
+            .expect("stream setup");
+
+        let mut content = String::new();
+        while let Some(item) = stream.next().await {
+            content.push_str(&item.expect("stream item must not error after retry"));
+        }
+        assert_eq!(content, "hi");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "retry stops at the first non-429 response: one 429, then success"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_aware_stream_retries_429_and_succeeds() {
+        let (base_url, hits) = spawn_rate_limited_mock(Some(1)).await;
+        let provider = retry_test_provider(base_url);
+
+        let mut stream = provider
+            .stream_chat_with_tools(vec![ChatMessagePayload::user("hello".to_string())], &[])
+            .expect("tool-aware stream setup");
+
+        let mut content = String::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("stream item must not error after retry") {
+                ToolStreamChunk::Content(chunk) => content.push_str(&chunk),
+                ToolStreamChunk::ToolCalls(_) => panic!("unexpected tool call"),
+            }
+        }
+        assert_eq!(content, "hi");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stream_chat_429_retries_are_bounded_then_error_surfaces() {
+        let (base_url, hits) = spawn_rate_limited_mock(None).await;
+        let provider = retry_test_provider(base_url);
+
+        let mut stream = provider
+            .stream_chat(vec![ChatMessagePayload::user("hello".to_string())])
+            .expect("stream setup");
+
+        let first = stream.next().await.expect("stream item");
+        let err = first.expect_err("exhausted retries must surface the 429");
+        let message = format!("{err:#}");
+        assert!(message.contains("429"), "error must keep status, got: {message}");
+        assert!(
+            message.contains("Rate limit exceeded"),
+            "error must keep provider body, got: {message}"
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            RETRY_429_TEST_RETRIES as usize + 1,
+            "initial attempt plus exactly `retries` extra attempts"
         );
     }
 }

@@ -325,6 +325,8 @@ mod tests {
                 api_key: Some("key".into()),
                 allowed_providers: Vec::new(),
                 request_timeout: None,
+                rate_limit_retries: None,
+                rate_limit_max_wait_secs: None,
                 test_chunks: None,
                 search: false,
                 xai_search: true,
