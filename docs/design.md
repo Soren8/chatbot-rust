@@ -32,6 +32,7 @@ This document captures the current architecture of the project and the potential
   - [x] Avoid storing raw passwords in the session; use tokens or derive keys post-login.
   - [x] Ensure password hashing uses a strong KDF with per-user salts.
   - [x] Provider metadata hygiene: the UI now receives only a sanitized model list (`provider_name`, `tier`), preventing accidental leakage of `api_key` or `base_url` values.
+  - [x] Anonymous model choice: guests see the model picker when more than one free-tier model is configured (the guest list is pre-filtered to free tier); the choice is page-local and sent per request, never persisted.
   - [x] Session isolation: anonymous users are assigned stable random guest IDs instead of the remote IP, eliminating cross-user memory leaks behind shared NAT gateways.
   - [x] Encryption key handling: login derives a Fernet key per user; the server stores only an HMAC key verifier (not the key itself). Clients send the key per request via `X-Enc-Key`, wrap it locally (IndexedDB / WebAuthn PRF / native keystore), and the server zeroizes it after each request. Browser use requires a secure context (https or localhost); see README for Tailscale Serve dev setup and [design-privacy.md](design-privacy.md#per-request-encryption-key-model).
   - [x] CSRF protection – every state-changing route validates a per-session token; the token is exposed to forms and Fetch calls, and the client attaches it automatically.

@@ -28,6 +28,18 @@ const TEST_CONFIG: &str = r#"llms:
 default_system_prompt: "Test system prompt"
 "#;
 
+const MULTI_FREE_MODEL_CONFIG: &str = r#"llms:
+  - provider_name: "free-model-a"
+    type: "openai"
+    model_name: "free-a"
+    tier: "free"
+  - provider_name: "free-model-b"
+    type: "openai"
+    model_name: "free-b"
+    tier: "free"
+default_system_prompt: "Test system prompt"
+"#;
+
 fn test_mutex() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -199,5 +211,164 @@ async fn home_route_logged_in_premium_sees_premium_models() {
             .iter()
             .any(|entry| entry.get("tier").and_then(|v| v.as_str()) == Some("premium")),
         "premium view should include premium models",
+    );
+    assert!(
+        body.contains(r#"<select id="modelSelect""#),
+        "logged-in users should see the model picker",
+    );
+}
+
+#[tokio::test]
+async fn home_route_guest_with_multiple_free_models_shows_model_picker() {
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = common::TestWorkspace::with_config(MULTI_FREE_MODEL_CONFIG);
+
+    let app = build_app();
+
+    let response = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .expect("GET /");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 512 * 1024)
+        .await
+        .expect("read body");
+    let body = std::str::from_utf8(&body).expect("utf8 body");
+    assert!(body.contains("data-logged-in=\"false\""));
+    assert!(
+        body.contains(r#"<select id="modelSelect""#),
+        "guest with more than one free model should see the model picker",
+    );
+    assert!(body.contains(r#"value="free-model-a""#));
+    assert!(body.contains(r#"value="free-model-b""#));
+    assert!(
+        !body.contains(r#"id="set-selector""#),
+        "guest should not see set controls",
+    );
+}
+
+#[tokio::test]
+async fn home_route_guest_with_single_free_model_hides_model_picker() {
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+
+    let app = build_app();
+
+    let response = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .expect("GET /");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 512 * 1024)
+        .await
+        .expect("read body");
+    let body = std::str::from_utf8(&body).expect("utf8 body");
+    assert!(body.contains("data-logged-in=\"false\""));
+    assert!(
+        !body.contains(r#"id="modelSelect""#),
+        "guest with a single free model should not see a model picker",
+    );
+}
+
+#[tokio::test]
+async fn home_route_logged_in_free_user_sees_model_picker_with_single_free_model() {
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+
+    let password = "Sup3rS3cret!";
+    let username = "free-user";
+    let hashed = hash(password, DEFAULT_COST).expect("hash password");
+    let payload = json!({
+        username: {
+            "password": hashed,
+            "tier": "free"
+        }
+    });
+    write_users_json(&workspace, &payload);
+
+    let app = build_app();
+
+    let login_get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /login");
+    assert_eq!(login_get.status(), StatusCode::OK);
+    let (login_parts, login_body) = login_get.into_parts();
+    let set_cookie = login_parts
+        .headers
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .expect("session cookie");
+    let body = to_bytes(login_body, 128 * 1024)
+        .await
+        .expect("read login page");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
+        .expect("csrf token");
+
+    let form = format!(
+        "username={}&password={}&csrf_token={}",
+        urlencoding::encode(username),
+        urlencoding::encode(password),
+        urlencoding::encode(&csrf),
+    );
+
+    let login_post = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, common::extract_cookie(&set_cookie))
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+    assert_eq!(login_post.status(), StatusCode::FOUND);
+    let login_cookie = login_post
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .expect("set-cookie after login");
+
+    let home_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, common::extract_cookie(&login_cookie))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / with auth");
+
+    assert_eq!(home_response.status(), StatusCode::OK);
+    let body = to_bytes(home_response.into_body(), 512 * 1024)
+        .await
+        .expect("read home body");
+    let body = std::str::from_utf8(&body).expect("utf8 body");
+    assert!(body.contains("data-logged-in=\"true\""));
+    assert!(
+        body.contains(r#"<select id="modelSelect""#),
+        "logged-in free users should always see the model picker",
+    );
+    assert!(
+        body.contains(r#"value="free-model""#),
+        "logged-in free user should see the free model option",
+    );
+    assert!(
+        !body.contains(r#"value="premium-model""#),
+        "logged-in free user should not see premium options",
     );
 }
