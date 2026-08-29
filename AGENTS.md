@@ -10,6 +10,8 @@ Always the compose `tests` service. Do not run `cargo test` on the host or agent
 docker compose run --rm tests
 ```
 
+The `tests` service caps CPU pressure at half the visible cores (`CARGO_BUILD_JOBS` / `RUST_TEST_THREADS`, min 1); adjust there if needed, not per-invocation.
+
 If that run reports **any** failure — including tests that look unrelated to the current change — **stop and ask the user what to do**. Do not ignore them, skip them, filter cargo to a subset, treat them as pre-existing noise, commit, or declare the task done. Wait for an explicit instruction (fix now, bisect, continue anyway, etc.).
 
 First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`, locked in `Cargo.lock`). Do not install Node/npm for this, and do not add hand-rolled brace scanners.

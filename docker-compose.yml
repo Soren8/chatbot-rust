@@ -92,14 +92,20 @@ services:
       cache_to:
         - type=local,dest=${HOST_PROJECT_DIR:-.}/temp/.docker/tests,mode=max
     working_dir: /app
+    # CPU pressure cap: cargo build jobs and libtest threads default to every
+    # visible core, which can starve anything else on the host. Both are capped
+    # at half the cores the container can see (min 1).
     command: >-
       bash -c '
         set -uo pipefail
+        HALF_CORES=$(( $(nproc) / 2 ))
+        [ "$${HALF_CORES}" -lt 1 ] && HALF_CORES=1
+        export CARGO_BUILD_JOBS=$${HALF_CORES} RUST_TEST_THREADS=$${HALF_CORES}
         LOG_DIR=/var/log/chatbot-tests
         mkdir -p "$${LOG_DIR}"
         LOG_FILE="$${LOG_DIR}/tests-$(date +%Y%m%d-%H%M%S).log"
         exec > >(tee "$${LOG_FILE}") 2>&1
-        echo "[tests] writing logs to $${LOG_FILE}"
+        echo "[tests] nproc=$(nproc) build_jobs=$${CARGO_BUILD_JOBS} test_threads=$${RUST_TEST_THREADS} log=$${LOG_FILE}"
         cargo test --manifest-path /app/Cargo.toml --workspace -- --nocapture
       '
     environment:
