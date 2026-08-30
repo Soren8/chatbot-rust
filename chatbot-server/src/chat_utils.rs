@@ -31,10 +31,11 @@ fn strip_os_error_detail(msg: &str) -> String {
 
 /// Split a provider error into the parts the UI and the browser console need.
 ///
-/// `visible` is one clean sentence: the specific root cause, naming the backend
-/// LLM provider when the cause does not already do so. `detail` is the full
-/// anyhow chain for the browser console (surfaced via the `[ConsoleError]`
-/// stream marker in `chat.js`).
+/// `visible` is one clean sentence: the specific root cause followed by the
+/// backend name, always "backend LLM provider" — provider error causes must be
+/// brand-free (OpenAI/xAI stay in server logs and the console detail only).
+/// `detail` is the full anyhow chain for the browser console (surfaced via the
+/// `[ConsoleError]` stream marker in `chat.js`).
 pub fn provider_error_parts(err: &Error) -> (String, String) {
     let cause = strip_os_error_detail(&err.root_cause().to_string());
     let mut chars = cause.chars();
@@ -42,10 +43,7 @@ pub fn provider_error_parts(err: &Error) -> (String, String) {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => cause,
     };
-    let lower = visible.to_lowercase();
-    if !(lower.contains("openai") || lower.contains("xai") || lower.contains("provider")) {
-        visible.push_str(BACKEND_CAUSE_SUFFIX);
-    }
+    visible.push_str(BACKEND_CAUSE_SUFFIX);
     if !visible.ends_with('.') {
         visible.push('.');
     }
@@ -307,24 +305,23 @@ mod tests {
     #[test]
     fn anonymous_cause_names_the_backend_without_errno_noise() {
         let err = anyhow::Error::from(std::io::Error::from_raw_os_error(111))
-            .context("failed to send OpenAI request");
+            .context("failed to send LLM request");
         let (visible, detail) = provider_error_parts(&err);
         assert_eq!(visible, "Connection refused by backend LLM provider.");
         assert!(
-            detail.contains("failed to send OpenAI request") && detail.contains("os error 111"),
+            detail.contains("failed to send LLM request") && detail.contains("os error 111"),
             "console detail keeps the full diagnostic chain: {detail}"
         );
     }
 
     #[test]
-    fn cause_that_already_names_the_backend_is_kept_verbatim() {
-        let err = anyhow::anyhow!(
-            "OpenAI returned error: 429 Too Many Requests - Rate limit exceeded, quota reached"
-        );
+    fn http_status_cause_also_names_the_backend() {
+        let err =
+            anyhow::anyhow!("HTTP 429 Too Many Requests - Rate limit exceeded, quota reached");
         let (visible, _) = provider_error_parts(&err);
         assert_eq!(
             visible,
-            "OpenAI returned error: 429 Too Many Requests - Rate limit exceeded, quota reached."
+            "HTTP 429 Too Many Requests - Rate limit exceeded, quota reached by backend LLM provider."
         );
     }
 }

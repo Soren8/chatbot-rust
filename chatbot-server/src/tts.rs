@@ -507,7 +507,7 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
         .await
         .map_err(|err| {
             error!(?err, "failed to reach Fish Speech backend");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
         })?;
 
     let status = response.status();
@@ -515,7 +515,7 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
         let bytes = response.bytes().await.unwrap_or_default();
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "Fish Speech backend returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
+        return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
     }
 
     let bytes = response.bytes().await.map_err(|err| {
@@ -545,7 +545,7 @@ async fn handle_kokoro_tts(
         .await
         .map_err(|err| {
             error!(?err, "failed to reach Kokoro TTS voice service");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
         })?;
 
     let sample_rate: u32 = response
@@ -568,7 +568,7 @@ async fn handle_kokoro_tts(
     if !status.is_success() {
         let message = extract_backend_error(status, &bytes);
         error!(?status, message, "Kokoro TTS voice service returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
+        return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
     }
 
     apply_pcm_fade(&mut bytes, sample_rate);
@@ -1004,7 +1004,7 @@ async fn post_backend(
         .await
         .map_err(|err| {
             error!(?err, "failed to reach TTS backend");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend unreachable")
+            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
         })
 }
 
@@ -1065,6 +1065,6 @@ fn extract_backend_error(status: reqwest::StatusCode, body: &[u8]) -> String {
 
     status
         .canonical_reason()
-        .unwrap_or("TTS backend error")
+        .unwrap_or("TTS backend provider error")
         .to_string()
 }

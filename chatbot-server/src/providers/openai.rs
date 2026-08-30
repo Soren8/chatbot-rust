@@ -259,7 +259,7 @@ impl OpenAiProvider {
             let mut attempt = 0u32;
             let response = loop {
                 let response =
-                    send_openai_request(&client, &url, &api_key, &payload, "OpenAI request")
+                    send_openai_request(&client, &url, &api_key, &payload, "LLM request")
                         .await?;
                 if !is_retryable_rate_limit(&response, attempt, rate_limit_retries) {
                     break response;
@@ -284,7 +284,7 @@ impl OpenAiProvider {
             let mut has_sent_any_content = false;
 
             while let Some(chunk) = body_stream.next().await {
-                let bytes = chunk.context("OpenAI stream read error")?;
+                let bytes = chunk.context("LLM stream read error")?;
                 let piece = String::from_utf8_lossy(&bytes);
                 buffer.push_str(&piece);
 
@@ -401,7 +401,7 @@ impl OpenAiProvider {
                     &url,
                     &api_key,
                     &payload,
-                    "tool-aware OpenAI request",
+                    "tool-aware LLM request",
                 )
                 .await?;
                 if !is_retryable_rate_limit(&response, attempt, rate_limit_retries) {
@@ -432,7 +432,7 @@ impl OpenAiProvider {
             let mut tool_call_builders: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
 
             while let Some(chunk) = body_stream.next().await {
-                let bytes = chunk.context("OpenAI tool-aware stream read error")?;
+                let bytes = chunk.context("LLM tool-aware stream read error")?;
                 buffer.push_str(&String::from_utf8_lossy(&bytes));
 
                 let outcome = extract_sse_payloads(
@@ -608,11 +608,7 @@ async fn check_openai_response(response: Response) -> Result<Response> {
         body_preview = %body.chars().take(200).collect::<String>(),
         "OpenAI error response"
     );
-    Err(anyhow::anyhow!(
-        "OpenAI returned error: {} - {}",
-        status,
-        truncate_for_error(&body)
-    ))
+    Err(anyhow::anyhow!("HTTP {} - {}", status, truncate_for_error(&body)))
 }
 
 fn extract_sse_payloads(
@@ -644,13 +640,20 @@ fn extract_sse_payloads(
             }
 
             let value: Value =
-                serde_json::from_str(data).context("failed to decode OpenAI stream chunk")?;
+                serde_json::from_str(data).context("failed to decode LLM stream chunk")?;
 
             // In-band error events (e.g. OpenRouter mid-stream failures) carry no
             // "choices"; without this check the stream would end silently and look
-            // like a successful empty response.
+            // like a successful empty response. The provider's own message is the
+            // cause; `provider_error_parts` names the backend for the UI.
             if let Some(err_val) = value.get("error").filter(|v| !v.is_null()) {
-                return Err(anyhow::anyhow!("OpenAI stream error event: {err_val}"));
+                let message = err_val
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .filter(|m| !m.trim().is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| err_val.to_string());
+                return Err(anyhow::anyhow!(message));
             }
 
             let model_response = value.get("model").and_then(Value::as_str).unwrap_or("");

@@ -152,7 +152,7 @@ impl XaiProvider {
                 .json(&payload)
                 .send()
                 .await
-                .context("failed to send xAI request")?;
+                .context("failed to send LLM request")?;
 
             if expect_zdr {
                 log_zdr_response_header(response.headers());
@@ -163,7 +163,7 @@ impl XaiProvider {
                 let mut body_stream = response.bytes_stream();
 
                 while let Some(chunk) = body_stream.next().await {
-                    let bytes = chunk.context("xAI stream read error")?;
+                    let bytes = chunk.context("LLM stream read error")?;
                     let piece = String::from_utf8_lossy(&bytes);
                     debug!(chunk = %piece, "xAI raw stream chunk");
                     buffer.push_str(&piece);
@@ -182,7 +182,7 @@ impl XaiProvider {
                 let text = response.text().await.unwrap_or_default();
                 debug!(status = ?status, body = %text, "xAI API response payload");
                 error!(status = ?status, body_preview = %text.chars().take(200).collect::<String>(), "xAI error response");
-                Err(anyhow::anyhow!("xAI returned error: {} - {}", status, text))?;
+                Err(anyhow::anyhow!("HTTP {} - {}", status, text))?;
             }
         };
 
@@ -245,7 +245,7 @@ fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
                 break;
             }
 
-            let value: Value = serde_json::from_str(data).context("failed to decode xAI stream chunk")?;
+            let value: Value = serde_json::from_str(data).context("failed to decode LLM stream chunk")?;
 
             // xAI Responses API structure
             if let Some(msg_type) = value.get("type").and_then(Value::as_str) {

@@ -121,19 +121,19 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .await
         .map_err(|err| {
             error!(?err, "failed to reach voice service for STT");
-            api_error(StatusCode::BAD_GATEWAY, "voice service unreachable")
+            api_error(StatusCode::BAD_GATEWAY, "STT backend provider unreachable")
         })?;
 
     let status = response.status();
     let body_bytes = response.bytes().await.map_err(|err| {
         error!(?err, "failed to read voice service STT response");
-        api_error(StatusCode::BAD_GATEWAY, "voice service response error")
+        api_error(StatusCode::BAD_GATEWAY, "STT backend provider error")
     })?;
 
     if !status.is_success() {
         let message = extract_error(status, &body_bytes);
         error!(?status, message, "voice service STT returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, message));
+        return Err(api_error(StatusCode::BAD_GATEWAY, "STT backend provider error"));
     }
 
     // The voice service returns {"text": "..."} — forward it directly
@@ -165,6 +165,6 @@ fn extract_error(status: reqwest::StatusCode, body: &[u8]) -> String {
     }
     status
         .canonical_reason()
-        .unwrap_or("STT backend error")
+        .unwrap_or("STT backend provider error")
         .to_string()
 }

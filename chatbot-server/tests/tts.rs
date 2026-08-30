@@ -298,7 +298,10 @@ fn kokoro_error_router() -> Router {
     Router::new().route(
         "/v1/tts/kokoro",
         post(|Json(_payload): Json<Value>| async move {
-            let body = serde_json::to_vec(&json!({"error": "voice service unavailable"})).unwrap();
+            let body = serde_json::to_vec(&json!({
+                "error": "CUDA error: out of memory during Kokoro inference"
+            }))
+            .unwrap();
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
@@ -637,7 +640,12 @@ async fn kokoro_tts_returns_error_when_service_fails() {
         .await
         .expect("read error body");
     let payload: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json body");
-    assert_eq!(payload["error"], "voice service unavailable");
+    assert_eq!(payload["error"], "TTS backend provider error");
+    let body_text = payload["error"].as_str().expect("error is a string");
+    assert!(
+        !body_text.contains("CUDA"),
+        "raw upstream detail must stay in server logs, not the client body: {body_text}"
+    );
 
     let retry_response = app
         .clone()
@@ -654,6 +662,82 @@ async fn kokoro_tts_returns_error_when_service_fails() {
         retry_response.status(),
         StatusCode::NOT_FOUND,
         "failed generation must not burn the TTS token"
+    );
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}
+
+#[tokio::test]
+async fn fish_tts_returns_clean_error_when_service_fails() {
+    common::init_tracing();
+    let _lock = tts_test_lock();
+
+    let router = Router::new().route(
+        "/v1/tts",
+        post(|| async move {
+            let body =
+                serde_json::to_vec(&json!({"error": "Fish Speech worker crashed: model load failed"}))
+                    .unwrap();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+        }),
+    );
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = begin_fish_workspace(&addr.ip().to_string(), addr.port());
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+    let (cookie, csrf) = guest_session(&app).await;
+
+    let tts_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tts")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf)
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": "Failure case"})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /tts response");
+    assert_eq!(tts_response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(tts_response.into_body(), 128 * 1024)
+        .await
+        .expect("read tts token body");
+    let tts_data: Value = serde_json::from_slice(&body_bytes).expect("valid json token");
+    let token = tts_data["token"].as_str().expect("token field present");
+
+    let stream_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream response");
+    assert_eq!(stream_response.status(), StatusCode::BAD_GATEWAY);
+
+    let body_bytes = axum::body::to_bytes(stream_response.into_body(), 128 * 1024)
+        .await
+        .expect("read error body");
+    let payload: serde_json::Value = serde_json::from_slice(&body_bytes).expect("json body");
+    assert_eq!(payload["error"], "TTS backend provider error");
+    let body_text = payload["error"].as_str().expect("error is a string");
+    assert!(
+        !body_text.contains("Fish Speech"),
+        "raw upstream detail must stay in server logs, not the client body: {body_text}"
     );
 
     shutdown.send(()).ok();
