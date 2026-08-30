@@ -1,3 +1,5 @@
+const OTHER_ACCOUNT = '__other__';
+
 async function deriveKeyWebCrypto(password, saltB64) {
   try {
     const enc = new TextEncoder();
@@ -65,55 +67,6 @@ function truncatedHash(hash) {
   return '···' + hash.slice(-4);
 }
 
-function renderSavedAccounts() {
-  if (!window.EncKey || !window.EncKey.listCachedAccounts) {
-    return;
-  }
-  window.EncKey.listCachedAccounts().then(function (hashes) {
-    if (!hashes.length) {
-      return;
-    }
-    const $container = $('#saved-accounts');
-    const $list = $('#saved-account-list');
-    if (!$container.length || !$list.length) {
-      return;
-    }
-    showResumeButton(true);
-    $list.empty();
-    hashes.forEach(function (hash) {
-      const chip = $('<button>', {
-        type: 'button',
-        class: 'btn btn-sm btn-outline-secondary saved-account-chip',
-        'data-hash': hash,
-        title: 'Cached key slot ' + hash,
-      }).text(truncatedHash(hash));
-      chip.on('click', function () {
-        resumeFromChip(chip);
-      });
-      $list.append(chip);
-    });
-    $container.removeClass('d-none');
-    highlightMatchingAccount();
-  }).catch(function (err) {
-    console.debug('saved account listing failed', err);
-  });
-}
-
-function highlightMatchingAccount() {
-  const username = $('#username').val();
-  if (!username || !window.EncKey || !window.EncKey.accountHash) {
-    $('.saved-account-chip').removeClass('border-success text-success');
-    return;
-  }
-  window.EncKey.accountHash(username).then(function (hash) {
-    $('.saved-account-chip').each(function () {
-      const $chip = $(this);
-      const matches = $chip.attr('data-hash') === hash;
-      $chip.toggleClass('border-success text-success', matches);
-    });
-  }).catch(function () {});
-}
-
 async function refreshCsrfToken(csrfInput) {
   try {
     const resp = await fetch('/login');
@@ -157,60 +110,114 @@ async function attemptRememberLogin() {
   return null;
 }
 
-function showResumeButton(show) {
-  $('#resume-session-wrap').toggleClass('d-none', !show);
+function cachedModeActive() {
+  return (
+    savedAccountSectionVisible() &&
+    $('#saved-account-select').val() !== OTHER_ACCOUNT
+  );
 }
 
-async function resumeFromChip(chip) {
+function savedAccountSectionVisible() {
+  return !$('#saved-account-section').hasClass('d-none');
+}
+
+/// Cached account selected: password/remember-me hidden (resume needs
+/// neither). "Other account…": classic username + password + remember form.
+function applyAccountMode() {
+  const cached = cachedModeActive();
+  $('#username-section').toggleClass('d-none', cached);
+  $('#username').prop('disabled', cached);
+  $('#password-fields').toggleClass('d-none', cached);
+  $('#password').prop('required', !cached);
+}
+
+async function loginCachedAccount() {
   const data = await attemptRememberLogin();
   const csrfInput = $('input[name="csrf_token"]').first();
   if (!data) {
-    showLoginNotice('No saved session available on this device. Sign in below.');
-    showResumeButton(false);
+    showLoginNotice('No saved session is available on this device. Sign in below.');
+    $('#saved-account-select').val(OTHER_ACCOUNT);
+    applyAccountMode();
     return;
   }
-  const savedHash = await window.EncKey.accountHash(data.username);
-  if (savedHash === chip.attr('data-hash')) {
-    window.location.href = '/';
-    return;
-  }
-  // The remembered session belongs to a different account than the chip the
-  // user picked; the restore already rotated the session, so refresh CSRF.
-  showLoginNotice(
-    'The saved session is for account ' + truncatedHash(savedHash) +
-    '. Sign in below to use the account you picked.'
-  );
-  await refreshCsrfToken(csrfInput);
-}
-
-$(function() {
-  renderSavedAccounts();
-  $('#username').on('input', highlightMatchingAccount);
-
-  $('#resume-session').on('click', async function() {
-    const data = await attemptRememberLogin();
-    if (data && window.EncKey.hasCachedAccount(data.username)) {
+  const restoredHash = await window.EncKey.accountHash(data.username);
+  const pickedHash = $('#saved-account-select').val();
+  if (restoredHash === pickedHash) {
+    if (await window.EncKey.hasCachedAccount(data.username)) {
       window.location.href = '/';
       return;
     }
-    if (data) {
-      // No cached key for the remembered account; ask for the password once.
-      $('#username').val(data.username);
-      showLoginNotice(
-        'Signed in as ' + data.username + ', but the encryption key for this ' +
-        'account is not cached on this device. Enter the password once to unlock.'
-      );
-      const csrfInput = $('input[name="csrf_token"]').first();
-      await refreshCsrfToken(csrfInput);
+    // Session restored but the key is not cached on this device: password once.
+    showLoginNotice(
+      'Enter the password once to unlock ' + data.username + ' on this device.'
+    );
+    $('#saved-account-select').val(OTHER_ACCOUNT);
+    $('#username').val(data.username);
+    applyAccountMode();
+    await refreshCsrfToken(csrfInput);
+    return;
+  }
+  if (await window.EncKey.hasCachedAccount(data.username)) {
+    // Remembered session belongs to a different cached account; offer it.
+    $('#saved-account-select').val(restoredHash);
+    showLoginNotice(
+      'The saved session is for ' + truncatedHash(restoredHash) +
+      '. Click Login to continue with it, or pick another account.'
+    );
+  } else {
+    showLoginNotice(
+      'The saved session is for ' + data.username +
+      ', but its key is not cached here. Sign in below.'
+    );
+    $('#saved-account-select').val(OTHER_ACCOUNT);
+    $('#username').val(data.username);
+    applyAccountMode();
+  }
+  await refreshCsrfToken(csrfInput);
+}
+
+function renderSavedAccountSelect() {
+  if (!window.EncKey || !window.EncKey.listCachedAccounts) {
+    return;
+  }
+  window.EncKey.listCachedAccounts().then(function (hashes) {
+    if (!hashes.length) {
+      applyAccountMode();
       return;
     }
-    showLoginNotice('No saved session available on this device. Sign in below.');
-    showResumeButton(false);
+    const $section = $('#saved-account-section');
+    const $select = $('#saved-account-select');
+    if (!$section.length || !$select.length) {
+      return;
+    }
+    $select.empty();
+    hashes.forEach(function (hash) {
+      $select.append($('<option>', { value: hash }).text(truncatedHash(hash)));
+    });
+    $select.append(
+      $('<option>', { value: OTHER_ACCOUNT }).text('Other account…')
+    );
+    $section.removeClass('d-none');
+    applyAccountMode();
+  }).catch(function (err) {
+    console.debug('saved account listing failed', err);
+    applyAccountMode();
   });
+}
+
+$(function() {
+  renderSavedAccountSelect();
+  $('#saved-account-select').on('change', applyAccountMode);
 
   $('form').on('submit', async function(e) {
     e.preventDefault();
     const form = this;
+
+    if (cachedModeActive()) {
+      await loginCachedAccount();
+      return;
+    }
+
     const username = $('#username').val().trim();
     const password = $('#password').val();
 

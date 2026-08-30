@@ -82,6 +82,22 @@
     });
   }
 
+  async function idbGetAllEntries() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const keysReq = store.getAllKeys();
+      const valuesReq = store.getAll();
+      tx.oncomplete = () => {
+        const keys = keysReq.result || [];
+        const values = valuesReq.result || [];
+        resolve(keys.map((key, index) => ({ key, value: values[index] })));
+      };
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async function generateWrapKey() {
     return crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },
@@ -335,10 +351,19 @@
 
   async function listCachedAccounts() {
     try {
-      const keys = await idbGetAllKeys();
-      return keys
-        .filter((key) => typeof key === 'string' && key.startsWith(SLOT_PREFIX))
-        .map((key) => key.slice(SLOT_PREFIX.length));
+      const entries = await idbGetAllEntries();
+      return entries
+        .filter((entry) => (
+          typeof entry.key === 'string' &&
+          entry.key.startsWith(SLOT_PREFIX) &&
+          entry.value
+        ))
+        .map((entry) => ({
+          hash: entry.key.slice(SLOT_PREFIX.length),
+          updatedAt: entry.value.updatedAt || 0,
+        }))
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map((entry) => entry.hash);
     } catch (err) {
       console.debug('enc-key: unable to list cached accounts', err);
       return [];
