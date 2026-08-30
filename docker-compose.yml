@@ -92,24 +92,33 @@ services:
       cache_to:
         - type=local,dest=${HOST_PROJECT_DIR:-.}/temp/.docker/tests,mode=max
     working_dir: /app
-    # CPU pressure cap, two layers:
-    # 1. cpus quota — hard CFS limit (TEST_CPUS override; default 6) bounding every
-    #    process in the container. Needed because a single rustc ignores the cargo
-    #    jobserver and runs LLVM codegen threads on all visible cores.
-    # 2. command caps — CARGO_BUILD_JOBS / RUST_TEST_THREADS at half the visible
-    #    cores (min 1), matching the quota on a 12-core host.
-    cpus: ${TEST_CPUS:-6}
+    # CPU pressure cap, two layers. Budget = half the PHYSICAL cores (SMT
+    # threads excluded; 6P/12T host -> 3).
+    # 1. cpus quota — hard CFS limit in cores' worth of CPU time (TEST_CPUS
+    #    override; default 3), bounding every process in the container. Needed
+    #    because a single rustc ignores the cargo jobserver and runs LLVM
+    #    codegen threads on all visible (logical) cores.
+    # 2. command caps — CARGO_BUILD_JOBS / RUST_TEST_THREADS computed from the
+    #    physical core count (min 1).
+    cpus: ${TEST_CPUS:-3}
     command: >-
       bash -c '
         set -uo pipefail
-        HALF_CORES=$(( $(nproc) / 2 ))
+        if command -v lscpu > /dev/null 2>&1; then
+          PHYS=$(lscpu -p=Core,Socket 2>/dev/null | grep -v "^#" | sort -u | wc -l)
+        else
+          PHYS=$(( $(nproc) / 2 ))
+        fi
+        [ "$${PHYS}" -lt 1 ] && PHYS=$(( $(nproc) / 2 ))
+        [ "$${PHYS}" -lt 1 ] && PHYS=1
+        HALF_CORES=$(( PHYS / 2 ))
         [ "$${HALF_CORES}" -lt 1 ] && HALF_CORES=1
         export CARGO_BUILD_JOBS=$${HALF_CORES} RUST_TEST_THREADS=$${HALF_CORES}
         LOG_DIR=/var/log/chatbot-tests
         mkdir -p "$${LOG_DIR}"
         LOG_FILE="$${LOG_DIR}/tests-$(date +%Y%m%d-%H%M%S).log"
         exec > >(tee "$${LOG_FILE}") 2>&1
-        echo "[tests] nproc=$(nproc) build_jobs=$${CARGO_BUILD_JOBS} test_threads=$${RUST_TEST_THREADS} log=$${LOG_FILE}"
+        echo "[tests] phys_cores=$${PHYS} build_jobs=$${CARGO_BUILD_JOBS} test_threads=$${RUST_TEST_THREADS} log=$${LOG_FILE}"
         cargo test --manifest-path /app/Cargo.toml --workspace -- --nocapture
       '
     environment:
