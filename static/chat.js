@@ -2603,6 +2603,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     let fullVisibleText = '';
     let fullThinkingText = '';
     let wasSearching = false;
+    let wasRateLimited = false;
 
     function appendVisible(content) {
       if (!content) return;
@@ -2614,6 +2615,11 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           if ($target.find('.thinking-content').css('display') === 'none') {
              $toggle.html('<i class="bi bi-caret-right-fill"></i> Search completed.');
           }
+      } else if (wasRateLimited) {
+          const $toggle = $target.find('.toggle-thinking');
+          if ($target.find('.thinking-content').css('display') === 'none') {
+             $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
+          }
       }
       $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
     }
@@ -2623,11 +2629,18 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       $thinkingWrap.show();
       const $toggle = $thinkingWrap.find('.toggle-thinking');
       $toggle.show();
-      
+
       if (!wasSearching && (content.includes('Searching') || content.includes('web search'))) {
           wasSearching = true;
           if ($target.find('.thinking-content').css('display') === 'none') {
              $toggle.html('<i class="bi bi-caret-right-fill"></i> Searching the web...');
+          }
+      }
+
+      if (content.toLowerCase().includes('rate limited')) {
+          wasRateLimited = true;
+          if ($target.find('.thinking-content').css('display') === 'none') {
+             $toggle.html('<i class="bi bi-caret-right-fill"></i> Rate limited — retrying...');
           }
       }
 
@@ -3766,6 +3779,7 @@ $(document).ready(function() {
         let fullVisibleText = '';
         let fullThinkingText = '';
         let wasSearching = false;
+        let wasRateLimited = false;
 
         function appendVisible(content) {
           if (!content) return;
@@ -3777,6 +3791,11 @@ $(document).ready(function() {
               if ($targetElement.find('.thinking-content').css('display') === 'none') {
                  $toggle.html('<i class="bi bi-caret-right-fill"></i> Search completed.');
               }
+          } else if (wasRateLimited) {
+              const $toggle = $targetElement.find('.toggle-thinking');
+              if ($targetElement.find('.thinking-content').css('display') === 'none') {
+                 $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
+              }
           }
           $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
         }
@@ -3786,11 +3805,18 @@ $(document).ready(function() {
           $thinkingContainerWrapper.show();
           const $toggle = $thinkingContainerWrapper.find('.toggle-thinking');
           $toggle.show();
-          
+
           if (!wasSearching && (content.includes('Searching') || content.includes('web search'))) {
               wasSearching = true;
               if ($thinkingContentElement.css('display') === 'none') {
                  $toggle.html('<i class="bi bi-caret-right-fill"></i> Searching the web...');
+              }
+          }
+
+          if (content.toLowerCase().includes('rate limited')) {
+              wasRateLimited = true;
+              if ($thinkingContentElement.css('display') === 'none') {
+                 $toggle.html('<i class="bi bi-caret-right-fill"></i> Rate limited — retrying...');
               }
           }
 
@@ -5365,7 +5391,8 @@ window.toggleThinking = function toggleThinking(button) {
   const $contentDiv = $button.next();
   const text = $contentDiv.text();
   const isSearch = text.includes('Searching') || text.includes('web search') || text.includes('Found source');
-  
+  const isRateLimited = text.toLowerCase().includes('rate limited');
+
   if ($contentDiv.css('display') === 'none') {
     $contentDiv.css('display', 'block');
     const label = isSearch ? 'Hide Search Details' : 'Hide Thinking';
@@ -5375,6 +5402,8 @@ window.toggleThinking = function toggleThinking(button) {
     let label;
     if (isSearch) {
         label = isFinished ? 'Search completed.' : 'Searching the web...';
+    } else if (isRateLimited && !isFinished) {
+        label = 'Rate limited — retrying...';
     } else {
         label = 'Show Thinking';
     }

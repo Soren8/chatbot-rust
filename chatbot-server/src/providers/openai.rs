@@ -256,16 +256,25 @@ impl OpenAiProvider {
         let rate_limit_max_wait = self.rate_limit_max_wait;
 
         let stream = try_stream! {
-            let response = send_with_rate_limit_retry(
-                &client,
-                &url,
-                &api_key,
-                &payload,
-                rate_limit_retries,
-                rate_limit_max_wait,
-                "OpenAI request",
-            )
-            .await?;
+            let mut attempt = 0u32;
+            let response = loop {
+                let response =
+                    send_openai_request(&client, &url, &api_key, &payload, "OpenAI request")
+                        .await?;
+                if !is_retryable_rate_limit(&response, attempt, rate_limit_retries) {
+                    break response;
+                }
+                let wait = rate_limit_wait(response.headers(), rate_limit_max_wait, attempt);
+                warn!(
+                    attempt = attempt + 1,
+                    retries = rate_limit_retries,
+                    wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                    "OpenAI request rate limited (429); waiting before retry"
+                );
+                yield rate_limit_retry_notice(wait, attempt, rate_limit_retries);
+                tokio::time::sleep(wait).await;
+                attempt += 1;
+            };
             let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
@@ -385,16 +394,34 @@ impl OpenAiProvider {
         let rate_limit_retries = self.rate_limit_retries;
         let rate_limit_max_wait = self.rate_limit_max_wait;
         let stream = try_stream! {
-            let response = send_with_rate_limit_retry(
-                &client,
-                &url,
-                &api_key,
-                &payload,
-                rate_limit_retries,
-                rate_limit_max_wait,
-                "tool-aware OpenAI request",
-            )
-            .await?;
+            let mut attempt = 0u32;
+            let response = loop {
+                let response = send_openai_request(
+                    &client,
+                    &url,
+                    &api_key,
+                    &payload,
+                    "tool-aware OpenAI request",
+                )
+                .await?;
+                if !is_retryable_rate_limit(&response, attempt, rate_limit_retries) {
+                    break response;
+                }
+                let wait = rate_limit_wait(response.headers(), rate_limit_max_wait, attempt);
+                warn!(
+                    attempt = attempt + 1,
+                    retries = rate_limit_retries,
+                    wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                    "tool-aware OpenAI request rate limited (429); waiting before retry"
+                );
+                yield ToolStreamChunk::Content(rate_limit_retry_notice(
+                    wait,
+                    attempt,
+                    rate_limit_retries,
+                ));
+                tokio::time::sleep(wait).await;
+                attempt += 1;
+            };
             let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
@@ -513,44 +540,41 @@ fn truncate_for_error(body: &str) -> String {
     truncated
 }
 
-/// Send the chat-completions request, retrying `429 Too Many Requests` up to
-/// `retries` extra times. Waits honor the upstream `Retry-After` header when
-/// present, capped at `max_wait`; without it, a short exponential backoff
-/// (1s, 2s, …) applies, capped the same way. Retries only happen before the
-/// stream starts, so no content has been yielded or persisted for the turn.
-async fn send_with_rate_limit_retry(
+/// Send the chat-completions request once.
+async fn send_openai_request(
     client: &Client,
     url: &str,
     api_key: &str,
     payload: &ChatCompletionRequest,
-    retries: u32,
-    max_wait: Duration,
     context: &'static str,
 ) -> Result<Response> {
-    let mut attempt = 0u32;
-    loop {
-        let response = client
-            .post(url)
-            .bearer_auth(api_key)
-            .json(payload)
-            .send()
-            .await
-            .with_context(|| format!("failed to send {context}"))?;
+    client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(payload)
+        .send()
+        .await
+        .with_context(|| format!("failed to send {context}"))
+}
 
-        if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || attempt >= retries {
-            return Ok(response);
-        }
+/// True when the response is a `429 Too Many Requests` that may still be
+/// retried (`attempt` retries already used of `retries`).
+fn is_retryable_rate_limit(response: &Response, attempt: u32, retries: u32) -> bool {
+    response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < retries
+}
 
-        let wait = rate_limit_wait(response.headers(), max_wait, attempt);
-        warn!(
-            attempt = attempt + 1,
-            retries,
-            wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
-            "{context} rate limited (429); waiting before retry"
-        );
-        tokio::time::sleep(wait).await;
-        attempt += 1;
-    }
+/// Think-wrapped status line streamed to the client before each rate-limit
+/// retry wait. The client surfaces it via the thinking-toggle label
+/// ("Rate limited — retrying...") the same way it surfaces "Searching the
+/// web..."; it persists in the thinking log, never in the answer text.
+fn rate_limit_retry_notice(wait: Duration, attempt: u32, retries: u32) -> String {
+    let secs = (wait.as_secs_f64().ceil() as u64).max(1);
+    format!(
+        "<think>Upstream rate limited — retrying (attempt {}/{}) in {}s.</think>",
+        attempt + 1,
+        retries,
+        secs
+    )
 }
 
 /// Pick the wait before a rate-limit retry: `Retry-After` seconds when the
@@ -1140,11 +1164,17 @@ mod tests {
             .stream_chat(vec![ChatMessagePayload::user("hello".to_string())])
             .expect("stream setup");
 
-        let mut content = String::new();
+        let mut items = Vec::new();
         while let Some(item) = stream.next().await {
-            content.push_str(&item.expect("stream item must not error after retry"));
+            items.push(item.expect("stream item must not error after retry"));
         }
-        assert_eq!(content, "hi");
+        assert_eq!(items.len(), 2, "one retry status chunk, then the answer");
+        assert!(
+            items[0].contains("<think>") && items[0].to_lowercase().contains("rate limited"),
+            "first chunk must be the think-wrapped retry status, got: {}",
+            items[0]
+        );
+        assert_eq!(items[1], "hi");
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
             2,
@@ -1161,14 +1191,20 @@ mod tests {
             .stream_chat_with_tools(vec![ChatMessagePayload::user("hello".to_string())], &[])
             .expect("tool-aware stream setup");
 
-        let mut content = String::new();
+        let mut items = Vec::new();
         while let Some(item) = stream.next().await {
             match item.expect("stream item must not error after retry") {
-                ToolStreamChunk::Content(chunk) => content.push_str(&chunk),
+                ToolStreamChunk::Content(chunk) => items.push(chunk),
                 ToolStreamChunk::ToolCalls(_) => panic!("unexpected tool call"),
             }
         }
-        assert_eq!(content, "hi");
+        assert_eq!(items.len(), 2, "one retry status chunk, then the answer");
+        assert!(
+            items[0].contains("<think>") && items[0].to_lowercase().contains("rate limited"),
+            "first chunk must be the think-wrapped retry status, got: {}",
+            items[0]
+        );
+        assert_eq!(items[1], "hi");
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
@@ -1181,13 +1217,34 @@ mod tests {
             .stream_chat(vec![ChatMessagePayload::user("hello".to_string())])
             .expect("stream setup");
 
-        let first = stream.next().await.expect("stream item");
-        let err = first.expect_err("exhausted retries must surface the 429");
+        let mut statuses = Vec::new();
+        let mut stream_error = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => statuses.push(chunk),
+                Err(err) => {
+                    stream_error = Some(err);
+                    break;
+                }
+            }
+        }
+        let err = stream_error.expect("exhausted retries must surface the 429");
         let message = format!("{err:#}");
         assert!(message.contains("429"), "error must keep status, got: {message}");
         assert!(
             message.contains("Rate limit exceeded"),
             "error must keep provider body, got: {message}"
+        );
+        assert_eq!(
+            statuses.len(),
+            RETRY_429_TEST_RETRIES as usize,
+            "one status chunk per retry wait"
+        );
+        assert!(
+            statuses
+                .iter()
+                .all(|s| s.contains("<think>") && s.to_lowercase().contains("rate limited")),
+            "every status chunk must be think-wrapped, got: {statuses:?}"
         );
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
