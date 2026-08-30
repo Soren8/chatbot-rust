@@ -21,7 +21,10 @@
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <div id="saved-account-section" class="mb-3 d-none">
                                 <label for="saved-account-select" class="form-label">Account:</label>
-                                <select id="saved-account-select" class="form-select bg-dark text-light border-secondary"></select>
+                                <div class="d-flex gap-2 align-items-center">
+                                    <select id="saved-account-select" class="form-select bg-dark text-light border-secondary"></select>
+                                    <button type="button" id="forget-account" class="btn btn-outline-danger flex-shrink-0" title="Remove this account's cached key from this browser">&#10005;</button>
+                                </div>
                             </div>
                             <div id="username-section" class="mb-3">
                                 <label for="username" class="form-label">Username:</label>

@@ -219,6 +219,10 @@
     return SLOT_PREFIX + (await accountHash(name));
   }
 
+  async function slotIdByHash(hash) {
+    return SLOT_PREFIX + String(hash || '').toLowerCase();
+  }
+
   async function removeLegacySlots() {
     await idbDelete(LEGACY_WRAPPED_KEY_ID);
     await idbDelete(LEGACY_MODE_KEY);
@@ -527,6 +531,53 @@
     if (!record || !record.webauthnCredId) {
       throw new Error('No WebAuthn credential registered');
     }
+    return unwrapSlotWithWebAuthn(record);
+  }
+
+  /// Slot-lookup variants keyed directly by the account hash (used by the
+  /// login page, which never knows the username — the server maps hashes).
+  async function getKeyForSlot(hash) {
+    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
+      try {
+        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
+        if (result && result.key) {
+          cachedKey = result.key;
+          return cachedKey;
+        }
+      } catch (err) {
+        console.error('native secure key read failed', err);
+      }
+      return null;
+    }
+    if (!hasWebCrypto() || !isSecureContext()) {
+      return null;
+    }
+    const record = await idbGet(await slotIdByHash(hash));
+    if (!record || record.mode === 'webauthn-prf' || !record.wrapped) {
+      return null;
+    }
+    const wrapKey = await idbGet(WRAP_KEY_ID);
+    if (!wrapKey) {
+      return null;
+    }
+    try {
+      cachedKey = await unwrapDataKey(record.wrapped, wrapKey);
+      return cachedKey;
+    } catch (err) {
+      console.error('enc-key: failed to unwrap stored key', err);
+      return null;
+    }
+  }
+
+  async function unlockWithWebAuthnSlot(hash) {
+    const record = await idbGet(await slotIdByHash(hash));
+    if (!record || !record.webauthnCredId) {
+      throw new Error('No WebAuthn credential registered');
+    }
+    return unwrapSlotWithWebAuthn(record);
+  }
+
+  async function unwrapSlotWithWebAuthn(record) {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     const assertion = await navigator.credentials.get({
       publicKey: {
@@ -566,6 +617,33 @@
     return cachedKey;
   }
 
+  /// Bump a slot's last-used timestamp so account lists stay recency-sorted.
+  async function touchSlot(hash) {
+    try {
+      const key = await slotIdByHash(hash);
+      const record = await idbGet(key);
+      if (record) {
+        record.updatedAt = Date.now();
+        await idbSet(key, record);
+      }
+    } catch (_) {}
+  }
+
+  /// Remove one account's cached credentials from this browser: the key slot
+  /// (and, on native, the single keystore key). The account can still be used
+  /// afterwards, but only via its password.
+  async function removeSlot(hash) {
+    cachedKey = null;
+    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
+      try {
+        await global.NativeBridge.callNativePlugin('NativeSecureKey', 'clearKey', {});
+      } catch (err) {
+        console.debug('native secure key clear failed', err);
+      }
+    }
+    await idbDelete(await slotIdByHash(hash));
+  }
+
   async function getKeyForRequest() {
     return loadWrappedKey();
   }
@@ -594,6 +672,10 @@
     listCachedAccounts,
     hasCachedAccount,
     accountHash,
+    getKeyForSlot,
+    unlockWithWebAuthnSlot,
+    touchSlot,
+    removeSlot,
     supportsWebAuthnPrf,
     isNativeSecureStorage,
     isSecureContext,
