@@ -45,8 +45,8 @@ llms:
     tier: "premium"
     search: true  # Enables Brave Search (requires BRAVE_API_KEY)
     # Upstream 429 "Too Many Requests" retry (defaults shown):
-    # rate_limit_retries: 1          # extra attempts after a 429 (0 disables retrying)
-    # rate_limit_max_wait_secs: 5.0  # cap on honoring the upstream Retry-After hint
+    # rate_limit_retries: 5          # extra attempts after a 429 (0 disables retrying)
+    # rate_limit_max_wait_secs: 30.0 # cap on honoring the upstream Retry-After hint
 
   - provider_name: "Grok (XAI)"
     type: "xai"

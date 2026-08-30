@@ -14,13 +14,16 @@ use self::messages::ChatMessagePayload;
 use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};
 
 /// Extra attempts after an upstream `429 Too Many Requests` when the provider
-/// config omits `rate_limit_retries`. OpenRouter and OpenAI-compatible upstreams
-/// have no server-side wait queue; the supported pattern is honoring
-/// `Retry-After` and retrying client-side.
-const DEFAULT_RATE_LIMIT_RETRIES: u32 = 1;
-/// Cap (seconds) on a single rate-limit retry wait, applied to any upstream
-/// `Retry-After` hint, so a chat turn never stalls on a long cooldown.
-const DEFAULT_RATE_LIMIT_MAX_WAIT_SECS: f64 = 5.0;
+/// config omits `rate_limit_retries`. Providers rarely serve an immediate
+/// retry — the limit window is still closed — so keep backing off
+/// exponentially across several attempts. An impatient user can hit Stop at
+/// any time: the response stream (and with it any pending retry wait) is
+/// dropped on client disconnect.
+const DEFAULT_RATE_LIMIT_RETRIES: u32 = 5;
+/// Cap (seconds) on a single rate-limit retry wait, applied both to the
+/// exponential backoff (1s, 2s, 4s, 8s, 16s — never truncated by this default)
+/// and to any upstream `Retry-After` hint.
+const DEFAULT_RATE_LIMIT_MAX_WAIT_SECS: f64 = 30.0;
 
 pub struct ToolCall {
     pub name: String,
@@ -996,6 +999,30 @@ mod tests {
     }
 
     const RETRY_429_TEST_RETRIES: u32 = 2;
+
+    #[test]
+    fn default_rate_limit_settings_back_off_five_times_with_30s_cap() {
+        let provider = OpenAiProvider::new(&ProviderConfig {
+            provider_name: "test".to_string(),
+            provider_type: "openai".to_string(),
+            tier: None,
+            model_name: "test-model".to_string(),
+            context_size: Some(4096),
+            base_url: "https://example.test/v1".to_string(),
+            api_key: None,
+            allowed_providers: vec![],
+            request_timeout: Some(5.0),
+            rate_limit_retries: None,
+            rate_limit_max_wait_secs: None,
+            test_chunks: None,
+            search: false,
+            xai_search: true,
+            xai_zdr: false,
+        })
+        .expect("provider");
+        assert_eq!(provider.rate_limit_retries, 5);
+        assert_eq!(provider.rate_limit_max_wait, Duration::from_secs(30));
+    }
 
     fn retry_test_provider(base_url: String) -> OpenAiProvider {
         OpenAiProvider::new(&ProviderConfig {
