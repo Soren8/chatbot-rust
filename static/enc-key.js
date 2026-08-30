@@ -213,18 +213,30 @@
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', { key: rawKeyB64 });
       cachedKey = rawKeyB64;
-      const key = await slotKey(username);
-      await idbSet(key, { mode: 'native-keystore', updatedAt: Date.now() });
+      if (username || currentUsername()) {
+        await idbSet(await slotKey(username), { mode: 'native-keystore', updatedAt: Date.now() });
+      }
       await removeLegacySlots();
       return;
     }
     if (!hasWebCrypto() || !isSecureContext()) {
       throw new Error('Encryption key storage requires a secure context (HTTPS) or the native app.');
     }
+    const name = username || currentUsername();
+    if (!name) {
+      // Legacy single-slot storage: the calling page predates per-account
+      // slots (stale cached login.js). Keep the old behaviour so login still
+      // works; the next per-account login migrates the entry.
+      const wrapKey = await ensureWrapKey();
+      const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
+      await idbSet(LEGACY_WRAPPED_KEY_ID, wrapped);
+      await idbSet(LEGACY_MODE_KEY, mode || 'indexeddb');
+      cachedKey = rawKeyB64;
+      return;
+    }
     const wrapKey = await ensureWrapKey();
     const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
-    const key = await slotKey(username);
-    await idbSet(key, {
+    await idbSet(await slotKey(name), {
       wrapped,
       mode: mode || 'indexeddb',
       updatedAt: Date.now(),
@@ -265,14 +277,12 @@
     }
     const name = username || currentUsername();
     if (!name) {
-      console.debug('enc-key: no account in page context for key lookup');
-      return null;
+      return loadLegacyWrappedKey();
     }
     const key = await slotKey(name);
     const record = await idbGet(key);
     if (!record) {
-      console.debug('enc-key: no cached key slot for this account');
-      return null;
+      return loadLegacyWrappedKey();
     }
     if (record.mode === 'webauthn-prf') {
       return cachedKey;
@@ -284,6 +294,38 @@
     }
     try {
       cachedKey = await unwrapDataKey(record.wrapped, wrapKey);
+      return cachedKey;
+    } catch (err) {
+      console.error('enc-key: failed to unwrap stored key', err);
+      return null;
+    }
+  }
+
+  // Pre-per-account storage format (single global slot, no username
+  // attribution). Read only when no slot exists for the requested account.
+  async function loadLegacyWrappedKey() {
+    const mode = await idbGet(LEGACY_MODE_KEY);
+    if (mode === 'session-fallback') {
+      sessionStorage.removeItem('chatbot_enc_key');
+      await removeLegacySlots();
+      console.debug('enc-key: cleared legacy session-fallback storage');
+      return null;
+    }
+    if (mode === 'webauthn-prf') {
+      return cachedKey;
+    }
+    const record = await idbGet(LEGACY_WRAPPED_KEY_ID);
+    if (!record) {
+      console.debug('enc-key: no cached key slot for this account');
+      return null;
+    }
+    const wrapKey = await idbGet(WRAP_KEY_ID);
+    if (!wrapKey) {
+      console.debug('enc-key: wrapping key missing from IndexedDB');
+      return null;
+    }
+    try {
+      cachedKey = await unwrapDataKey(record, wrapKey);
       return cachedKey;
     } catch (err) {
       console.error('enc-key: failed to unwrap stored key', err);

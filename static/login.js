@@ -113,6 +113,22 @@ function highlightMatchingAccount() {
   }).catch(function () {});
 }
 
+async function refreshCsrfToken(csrfInput) {
+  try {
+    const resp = await fetch('/login');
+    if (!resp.ok) {
+      return;
+    }
+    const html = await resp.text();
+    const match = html.match(/name="csrf_token" value="([^"]+)"/);
+    if (match) {
+      csrfInput.val(match[1]);
+    }
+  } catch (err) {
+    console.debug('csrf token refresh failed', err);
+  }
+}
+
 async function tryRememberLogin() {
   if (!window.EncKey || typeof window.EncKey.hasCachedAccount !== 'function') {
     return;
@@ -122,6 +138,16 @@ async function tryRememberLogin() {
     return;
   }
   try {
+    // Only worth restoring when this device has a cached key slot; otherwise
+    // the restored session could not decrypt anything and the password form
+    // below is the real path.
+    let slotCount = 0;
+    if (window.EncKey.listCachedAccounts) {
+      slotCount = (await window.EncKey.listCachedAccounts()).length;
+    }
+    if (!slotCount) {
+      return;
+    }
     const resp = await fetch('/login/remember', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -146,6 +172,9 @@ async function tryRememberLogin() {
       'Signed in as ' + data.username + ', but the encryption key for this ' +
       'account is not cached on this device. Enter the password once to unlock.'
     );
+    // The restore rotated the HTTP session, invalidating the CSRF token this
+    // page was rendered with; pick up the fresh one so the form still works.
+    await refreshCsrfToken(csrfInput);
   } catch (err) {
     console.debug('remember login not available', err);
   }
