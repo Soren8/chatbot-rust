@@ -4,7 +4,7 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{config, session, user_store::UserStore};
+use chatbot_core::{config, remember_store, session, user_store::UserStore};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -24,12 +24,74 @@ struct FrontendModel {
     search: bool,
 }
 
+struct RestoredSession {
+    /// Cookie pair ("session=...") of the freshly minted session.
+    session_cookie: String,
+    /// Full Set-Cookie value for the rotated remember token.
+    remember_set_cookie: String,
+}
+
+/// Silent resume of a remembered session on app entry (`GET /`). After a
+/// server restart the in-memory session store is empty; a valid remember
+/// cookie restores the authenticated session so the user lands logged in.
+/// Only runs for guest sessions — an authenticated visit never rotates the
+/// token. `/login` deliberately does NOT auto-restore: that page is the
+/// account-selection surface.
+fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSession> {
+    let token = remember_store::extract_token(cookie_header)?;
+    if session::session_context(cookie_header)
+        .ok()
+        .and_then(|ctx| ctx.username)
+        .is_some()
+    {
+        return None;
+    }
+
+    let store = remember_store::RememberStore::new().ok()?;
+    match store.resume(Some(&token)) {
+        Ok(remember_store::ResumeOutcome::Authenticated {
+            username,
+            replacement_token,
+        }) => {
+            let finalize = session::finalize_login(cookie_header, &username).ok()?;
+            let session_cookie = finalize
+                .set_cookie
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            if session_cookie.is_empty() {
+                return None;
+            }
+            tracing::info!(username = %username, ip = %ip, "Session restored via remember token on app entry");
+            Some(RestoredSession {
+                session_cookie,
+                remember_set_cookie: remember_store::build_set_cookie(&replacement_token),
+            })
+        }
+        Ok(remember_store::ResumeOutcome::Invalid) => None,
+        Err(err) => {
+            warn!(?err, "remember token auto-restore failed");
+            None
+        }
+    }
+}
+
 pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpError> {
-    let cookie_header = request
-        .headers()
+    let headers = request.headers();
+    let ip = crate::chat_utils::get_ip(headers, request.extensions());
+    let cookie_header = headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
+
+    let mut restored_cookies: Vec<String> = Vec::new();
+    let mut cookie_header = cookie_header;
+    if let Some(restored) = try_auto_restore(cookie_header.as_deref(), &ip) {
+        cookie_header = Some(restored.session_cookie);
+        restored_cookies.push(restored.remember_set_cookie);
+    }
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "home::get"))?;
@@ -70,7 +132,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         )
     })?;
 
-    build_response(html, bootstrap)
+    build_response(html, bootstrap, restored_cookies)
 }
 
 struct UserDetails {
@@ -208,6 +270,7 @@ fn template_env() -> &'static Environment<'static> {
 fn build_response(
     body: String,
     bootstrap: session::HomeBootstrap,
+    restored_cookies: Vec<String>,
 ) -> Result<Response<Body>, HttpError> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
@@ -221,6 +284,14 @@ fn build_response(
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");
+
+    for set_cookie in restored_cookies {
+        if let Ok(value) = HeaderValue::from_str(&set_cookie) {
+            builder = builder.header(header::SET_COOKIE, value);
+        } else {
+            warn!("discarding invalid remember Set-Cookie header");
+        }
+    }
 
     if let Ok(value) = HeaderValue::from_str(&bootstrap.set_cookie) {
         builder = builder.header(header::SET_COOKIE, value);

@@ -78,6 +78,7 @@ function renderSavedAccounts() {
     if (!$container.length || !$list.length) {
       return;
     }
+    showResumeButton(true);
     $list.empty();
     hashes.forEach(function (hash) {
       const chip = $('<button>', {
@@ -87,7 +88,7 @@ function renderSavedAccounts() {
         title: 'Cached key slot ' + hash,
       }).text(truncatedHash(hash));
       chip.on('click', function () {
-        $('#username').trigger('focus');
+        resumeFromChip(chip);
       });
       $list.append(chip);
     });
@@ -129,61 +130,83 @@ async function refreshCsrfToken(csrfInput) {
   }
 }
 
-async function tryRememberLogin() {
-  if (!window.EncKey || typeof window.EncKey.hasCachedAccount !== 'function') {
-    return;
-  }
+/// Attempt the remember-token restore. Returns {username} on success, else
+/// null. A successful restore rotates the session and token server-side, so
+/// callers that stay on the page must refreshCsrfToken() afterwards.
+async function attemptRememberLogin() {
   const csrfInput = $('input[name="csrf_token"]').first();
   if (!csrfInput.length) {
-    return;
+    return null;
   }
   try {
-    // Only worth restoring when this device has a cached key slot; otherwise
-    // the restored session could not decrypt anything and the password form
-    // below is the real path.
-    let slotCount = 0;
-    if (window.EncKey.listCachedAccounts) {
-      slotCount = (await window.EncKey.listCachedAccounts()).length;
-    }
-    if (!slotCount) {
-      return;
-    }
     const resp = await fetch('/login/remember', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'csrf_token=' + encodeURIComponent(csrfInput.val()),
     });
     if (!resp.ok) {
-      return;
+      return null;
     }
     const data = await resp.json();
-    if (!data || !data.username) {
-      return;
+    if (data && data.username) {
+      return data;
     }
-    const hasSlot = await window.EncKey.hasCachedAccount(data.username);
-    if (hasSlot) {
-      window.location.href = '/';
-      return;
-    }
-    // Session restored, but this device has no cached key for the account:
-    // data endpoints would 401, so ask for the password once instead.
-    $('#username').val(data.username);
-    showLoginNotice(
-      'Signed in as ' + data.username + ', but the encryption key for this ' +
-      'account is not cached on this device. Enter the password once to unlock.'
-    );
-    // The restore rotated the HTTP session, invalidating the CSRF token this
-    // page was rendered with; pick up the fresh one so the form still works.
-    await refreshCsrfToken(csrfInput);
   } catch (err) {
     console.debug('remember login not available', err);
   }
+  return null;
+}
+
+function showResumeButton(show) {
+  $('#resume-session-wrap').toggleClass('d-none', !show);
+}
+
+async function resumeFromChip(chip) {
+  const data = await attemptRememberLogin();
+  const csrfInput = $('input[name="csrf_token"]').first();
+  if (!data) {
+    showLoginNotice('No saved session available on this device. Sign in below.');
+    showResumeButton(false);
+    return;
+  }
+  const savedHash = await window.EncKey.accountHash(data.username);
+  if (savedHash === chip.attr('data-hash')) {
+    window.location.href = '/';
+    return;
+  }
+  // The remembered session belongs to a different account than the chip the
+  // user picked; the restore already rotated the session, so refresh CSRF.
+  showLoginNotice(
+    'The saved session is for account ' + truncatedHash(savedHash) +
+    '. Sign in below to use the account you picked.'
+  );
+  await refreshCsrfToken(csrfInput);
 }
 
 $(function() {
   renderSavedAccounts();
   $('#username').on('input', highlightMatchingAccount);
-  tryRememberLogin();
+
+  $('#resume-session').on('click', async function() {
+    const data = await attemptRememberLogin();
+    if (data && window.EncKey.hasCachedAccount(data.username)) {
+      window.location.href = '/';
+      return;
+    }
+    if (data) {
+      // No cached key for the remembered account; ask for the password once.
+      $('#username').val(data.username);
+      showLoginNotice(
+        'Signed in as ' + data.username + ', but the encryption key for this ' +
+        'account is not cached on this device. Enter the password once to unlock.'
+      );
+      const csrfInput = $('input[name="csrf_token"]').first();
+      await refreshCsrfToken(csrfInput);
+      return;
+    }
+    showLoginNotice('No saved session available on this device. Sign in below.');
+    showResumeButton(false);
+  });
 
   $('form').on('submit', async function(e) {
     e.preventDefault();

@@ -45,6 +45,11 @@ struct RememberRecord {
     username: String,
     /// hex(sha256(secret)) — the raw secret never touches disk.
     secret_hash: String,
+    /// hex(sha256(previous secret)) — one-generation grace so concurrent tabs
+    /// presenting the pre-rotation token are rejected without revoking the
+    /// family. Only tokens two or more generations stale revoke.
+    #[serde(default)]
+    prev_secret_hash: Option<String>,
     created: u64,
     expires: u64,
 }
@@ -85,6 +90,7 @@ impl RememberStore {
         let record = RememberRecord {
             username: username.to_string(),
             secret_hash: to_hex(&Sha256::digest(&secret)),
+            prev_secret_hash: None,
             created: unix_now(),
             expires: unix_now() + REMEMBER_MAX_AGE_SECS,
         };
@@ -121,15 +127,27 @@ impl RememberStore {
             }
         };
         let presented = Sha256::digest(&secret);
-        if !constant_time_eq(presented.as_slice(), &stored) {
-            // Replay of a rotated-out secret: assume theft, revoke the family.
-            let _ = fs::remove_file(&path);
+        let matches_current = constant_time_eq(presented.as_slice(), &stored);
+        let matches_previous = record
+            .prev_secret_hash
+            .as_deref()
+            .and_then(hex_to_bytes)
+            .map(|prev| constant_time_eq(presented.as_slice(), &prev))
+            .unwrap_or(false);
+        if !matches_current {
+            if !matches_previous {
+                // Replay of an out-of-rotation secret: assume theft, revoke
+                // the family. The previous generation gets a grace pass so
+                // concurrent tabs don't kill each other's token.
+                let _ = fs::remove_file(&path);
+            }
             return Ok(ResumeOutcome::Invalid);
         }
 
         let replacement_secret = random_bytes(SECRET_BYTES);
         let replacement = RememberRecord {
             username: record.username.clone(),
+            prev_secret_hash: Some(record.secret_hash.clone()),
             secret_hash: to_hex(&Sha256::digest(&replacement_secret)),
             created: unix_now(),
             expires: unix_now() + REMEMBER_MAX_AGE_SECS,
@@ -359,21 +377,45 @@ mod tests {
     }
 
     #[test]
-    fn replay_revokes_whole_family() {
+    fn previous_generation_rejected_without_revocation() {
         with_temp_store(|store, _| {
             let first = store.issue("alice").expect("issue");
             let second = match store.resume(Some(&first)).expect("resume") {
                 ResumeOutcome::Authenticated { replacement_token, .. } => replacement_token,
                 ResumeOutcome::Invalid => panic!("valid token rejected"),
             };
-            // Old secret replayed after rotation: family must be revoked.
+            // Presenting the previous generation (concurrent tab after
+            // rotation) is rejected but must NOT kill the family.
             assert!(matches!(
                 store.resume(Some(&first)).expect("resume"),
                 ResumeOutcome::Invalid
             ));
-            // The current, previously valid token dies with the family.
             assert!(matches!(
                 store.resume(Some(&second)).expect("resume"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn two_generations_old_replay_revokes_family() {
+        with_temp_store(|store, _| {
+            let first = store.issue("alice").expect("issue");
+            let second = match store.resume(Some(&first)).expect("resume") {
+                ResumeOutcome::Authenticated { replacement_token, .. } => replacement_token,
+                ResumeOutcome::Invalid => panic!("valid token rejected"),
+            };
+            let third = match store.resume(Some(&second)).expect("resume") {
+                ResumeOutcome::Authenticated { replacement_token, .. } => replacement_token,
+                ResumeOutcome::Invalid => panic!("valid token rejected"),
+            };
+            // Two generations stale: treated as theft, family revoked.
+            assert!(matches!(
+                store.resume(Some(&first)).expect("resume"),
+                ResumeOutcome::Invalid
+            ));
+            assert!(matches!(
+                store.resume(Some(&third)).expect("resume"),
                 ResumeOutcome::Invalid
             ));
         });

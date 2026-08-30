@@ -301,11 +301,11 @@ async fn remember_login_requires_csrf() {
 }
 
 #[tokio::test]
-async fn remember_replay_after_rotation_revokes_family() {
+async fn remember_previous_generation_rejected_without_revoking() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
-    let username = "replayuser";
+    let username = "graceuser";
     seed_user(username, "Sup3rS3cret!");
 
     let app = build_app();
@@ -318,18 +318,121 @@ async fn remember_replay_after_rotation_revokes_family() {
     let cookies = set_cookie_values(response.headers());
     let second_token = find_cookie_pair(&cookies, "remember").expect("rotated token");
 
-    // Replaying the rotated-out token is treated as theft: the family dies.
+    // Presenting the previous generation (concurrent tab) is rejected...
+    let (_csrf, cookie_header) = fresh_restore_session(&app, &first_token).await;
+    let grace = post_remember_login(&app, &cookie_header, &_csrf, true).await;
+    assert_eq!(grace.status(), StatusCode::UNAUTHORIZED);
+
+    // ...but the family survives: the current token still restores.
+    let (csrf, cookie_header) = fresh_restore_session(&app, &second_token).await;
+    let still_valid = post_remember_login(&app, &cookie_header, &csrf, true).await;
+    assert_eq!(still_valid.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn remember_two_generations_old_replay_revokes_family() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "replayuser";
+    seed_user(username, "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, first_token) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+
+    // Rotate twice so first_token is two generations old.
+    let (csrf, cookie_header) = fresh_restore_session(&app, &first_token).await;
+    let response = post_remember_login(&app, &cookie_header, &csrf, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    let second_token = find_cookie_pair(&cookies, "remember").expect("rotated token");
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &second_token).await;
+    let response = post_remember_login(&app, &cookie_header, &csrf, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    let third_token = find_cookie_pair(&cookies, "remember").expect("rotated token");
+
+    // Two generations stale: treated as theft, the family is revoked.
     let (csrf, cookie_header) = fresh_restore_session(&app, &first_token).await;
     let replay = post_remember_login(&app, &cookie_header, &csrf, true).await;
     assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
 
-    // The current, previously valid token is dead with the family.
-    let (csrf, cookie_header) = fresh_restore_session(&app, &second_token).await;
+    let (csrf, cookie_header) = fresh_restore_session(&app, &third_token).await;
     let after_revoke = post_remember_login(&app, &cookie_header, &csrf, true).await;
     assert_eq!(
         after_revoke.status(),
         StatusCode::UNAUTHORIZED,
         "family revocation must invalidate the rotated token too"
+    );
+}
+
+#[tokio::test]
+async fn home_auto_restores_remembered_session_after_restart() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "homerestore";
+    seed_user(username, "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, remember) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+
+    // Server restart: in-memory sessions are gone. Refreshing the app entry
+    // point with only the remember cookie must land logged in.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &remember)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / with remember cookie");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let cookies = set_cookie_values(response.headers());
+    let new_session = find_cookie_pair(&cookies, "session").expect("session cookie on restored home");
+    let new_remember = find_cookie_pair(&cookies, "remember").expect("rotated remember cookie");
+    assert_ne!(new_remember, remember, "token must rotate on auto-restore");
+
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("read home body");
+    let body_str = std::str::from_utf8(&body).expect("utf8");
+    assert!(
+        body_str.contains("\"loggedIn\": true"),
+        "home must render logged in after auto-restore"
+    );
+    assert!(
+        body_str.contains(username),
+        "home must name the restored user"
+    );
+
+    let context = session::session_context(Some(&new_session)).expect("session after restore");
+    assert_eq!(
+        context.username.as_deref(),
+        Some(username),
+        "auto-restore must authenticate the remembered user"
+    );
+
+    // A follow-up visit must not rotate again (already authenticated).
+    let second_visit = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &new_session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("second GET /");
+    let cookies = set_cookie_values(second_visit.headers());
+    assert!(
+        find_cookie_pair(&cookies, "remember").is_none(),
+        "authenticated home visits must not touch the remember token"
     );
 }
 

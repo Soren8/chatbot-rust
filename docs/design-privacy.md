@@ -109,9 +109,10 @@ Existing users without a verifier get one created on the first authenticated req
 
 - **Session-only.** The token restores the HTTP session; every data endpoint still requires `X-Enc-Key`. A stolen token on another machine has no client key store and decrypts nothing (two-secrets model unchanged).
 - **Hashed at rest.** Token = `family_id(16B) || secret(32B)`; the server persists only `sha256(secret)` per family under `data/remember_tokens/`. A disk leak yields nothing usable.
-- **Rotated single-use.** Every restore rotates the secret. Presenting a rotated-out secret is treated as theft and revokes the entire family — including the currently valid token.
+- **Rotated single-use.** Every restore rotates the secret. The previous generation gets a one-step grace pass (rejected, but the family survives) so concurrent tabs refreshing after a restart don't revoke each other's token; a token two or more generations stale is treated as theft and revokes the entire family — including the currently valid token.
 - **HttpOnly cookie** (`SameSite=Lax; Path=/; Max-Age=2592000`, `Secure` when CSRF is on), so XSS cannot read it. Restore requires the per-session CSRF token (`POST /login/remember`), preventing login-CSRF. Logout revokes the family and clears the cookie.
-- **Silent resume is key-aware.** The client only auto-resumes when it holds a cached key slot for the restored account (slots keyed by unsalted SHA-256 of the username — no account names stored in the browser); otherwise the password form is shown.
+- **Silent resume on app entry.** `GET /` with a guest session plus a valid remember cookie restores the session server-side (rotating the token) so a restart is invisible; the client then unlocks data from its cached key slot. If the device has no cached key slot (site data cleared, cookies survived), the chat page's key gate prompts sign-in. Authenticated visits never touch the token.
+- **`/login` never auto-restores.** It is the account-selection surface: a manual "Continue with saved session" button plus device-local saved-account chips (keyed by unsalted SHA-256 of the username — no account names stored in the browser). Picking a chip resumes when it matches the remembered account; any other account requires its password, since the server must authenticate it.
 
 ## Current Architecture Status
 *As of July 2026*
