@@ -2321,7 +2321,10 @@ function playFixedSentenceList(sessionId, button, sentences) {
  */
 function playMessageBodyTts(sessionId, button, $messageElement) {
   // Absolute character offset into getMessageTtsText(); only sentences with end > consumed
-  // and start >= consumed are enqueued.
+  // are enqueued. sanitizeForTTS can shrink already-consumed text later (a markdown
+  // emphasis/inline-code pair closing after the boundary sentence), so starts may
+  // drift below the boundary; ends only ever move left when sanitize shrinks
+  // completed text, so the end guard alone prevents replaying a sentence.
   let consumedLen = 0;
   let queue = [];
   let running = false;
@@ -2343,7 +2346,6 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     for (let i = 0; i < sentences.length; i++) {
       const s = sentences[i];
       if (s.end <= consumedLen) continue;
-      if (s.start < consumedLen) continue;
       if (!sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
       queue.push(s.text);
       consumedLen = s.end;

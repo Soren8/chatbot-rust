@@ -1063,6 +1063,45 @@ fn desktop_tts_requeues_sentences_on_transient_failures() {
     );
 }
 
+/// Discovery must survive sanitize shrink of already-consumed text. A markdown
+/// emphasis/inline-code pair that opens before a sentence boundary and closes
+/// later (e.g. "**Key point. More detail.**") leaves literal markers while
+/// streaming; the boundary sentence is enqueued including them, then the pair
+/// completes and sanitizeForTTS strips the markers, shifting every later
+/// sentence left of the recorded offset. The desktop discoverAbsolute used to
+/// skip any sentence whose start drifted below the consumed offset
+/// (`s.start < consumedLen`) — the sentence holding the closer, often the last
+/// one, was never enqueued (the reported "sometimes the last TTS sentence
+/// still doesn't play", desktop-only: the native pump tracks a consumed
+/// prefix length and cannot skip). Discovery must be end-based: enqueue
+/// anything with `s.end > consumedLen`; ends only ever move left when sanitize
+/// shrinks completed text, so the end guard alone prevents replaying a
+/// sentence.
+#[test]
+fn desktop_tts_discovery_survives_sanitize_shrink_of_consumed_prefix() {
+    let chat_js = include_str!("../../static/chat.js");
+    let body = function_body(chat_js, "playMessageBodyTts")
+        .expect("playMessageBodyTts must be declared");
+    let discover_start = body
+        .find("function discoverAbsolute(")
+        .expect("playMessageBodyTts must contain discoverAbsolute");
+    let discover = function_body(&body[discover_start..], "discoverAbsolute")
+        .expect("discoverAbsolute must be a complete function");
+
+    assert!(
+        !discover.contains("s.start < consumedLen"),
+        "discoverAbsolute must not skip a sentence whose start drifted below the consumed offset; that permanently drops the last sentence when a markdown pair closes after the boundary was consumed; got: {discover}"
+    );
+    assert!(
+        discover.contains("s.end <= consumedLen"),
+        "discovery must stay replay-guarded by the consumed end boundary; got: {discover}"
+    );
+    assert!(
+        discover.contains("consumedLen = s.end"),
+        "discovery must still advance the consumed boundary on enqueue so nothing replays; got: {discover}"
+    );
+}
+
 /// fetchVoiceRetry's own 60s stall timeout and a user stop both surface as
 /// AbortError. A stalled spotty-link request must retry; a user stop must not.
 #[test]
