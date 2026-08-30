@@ -92,9 +92,13 @@ services:
       cache_to:
         - type=local,dest=${HOST_PROJECT_DIR:-.}/temp/.docker/tests,mode=max
     working_dir: /app
-    # CPU pressure cap: cargo build jobs and libtest threads default to every
-    # visible core, which can starve anything else on the host. Both are capped
-    # at half the cores the container can see (min 1).
+    # CPU pressure cap, two layers:
+    # 1. cpus quota — hard CFS limit (TEST_CPUS override; default 6) bounding every
+    #    process in the container. Needed because a single rustc ignores the cargo
+    #    jobserver and runs LLVM codegen threads on all visible cores.
+    # 2. command caps — CARGO_BUILD_JOBS / RUST_TEST_THREADS at half the visible
+    #    cores (min 1), matching the quota on a 12-core host.
+    cpus: ${TEST_CPUS:-6}
     command: >-
       bash -c '
         set -uo pipefail

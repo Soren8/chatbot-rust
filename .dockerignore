@@ -1,4 +1,9 @@
-# Add these lines
 .env
 .config.yml
 *.example
+# Build context hygiene: never hashed/transferred on image builds. The tests
+# bind-mount temp/ at runtime, and no Dockerfile COPY needs these paths.
+temp/
+.git/
+data/
+target/
