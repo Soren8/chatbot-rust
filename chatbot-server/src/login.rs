@@ -297,6 +297,121 @@ pub async fn handle_login_remember_post(
     }
 }
 
+/// `POST /login/keyauth` — password-free re-login using the client's cached
+/// encryption key. Body: `account_hash` (unsalted SHA-256 hex of the username,
+/// matching the browser key-slot keying) and the usual `csrf_token`; the key
+/// travels in the `X-Enc-Key` header. The server maps the hash back to a
+/// username and verifies the key against the stored HMAC verifier, so only
+/// someone holding the account's data key can restore its session. Creates no
+/// new server-side state and does not touch remember tokens.
+pub async fn handle_login_keyauth_post(
+    request: Request<Body>,
+) -> Result<Response<Body>, HttpError> {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let cookie_header = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_owned());
+
+    let body_bytes = body::to_bytes(body, 16 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "login::keyauth"))?;
+    let form: HashMap<String, String> =
+        from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::keyauth"))?;
+    let csrf_token = form.get("csrf_token").map(|s| s.as_str());
+
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "login::keyauth::csrf"))?;
+    if !csrf_valid {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "Session expired. Sign in again.",
+        ));
+    }
+
+    let Some(account_hash) = form.get("account_hash").map(|s| s.trim().to_lowercase()) else {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "account_hash is required",
+        ));
+    };
+    let Some(enc_key) = headers
+        .get("x-enc-key")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_owned())
+    else {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.",
+        ));
+    };
+
+    let store = UserStore::new().map_err(|err| {
+        map_user_store_err(err, "login::keyauth", "Unable to log in")
+    })?;
+    let Some(username) = store
+        .resolve_username_by_hash(&account_hash)
+        .map_err(|err| map_user_store_err(err, "login::keyauth", "Unable to log in"))?
+    else {
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Unknown saved account."));
+    };
+
+    let verified = store
+        .verify_encryption_key(&username, enc_key.as_bytes())
+        .map_err(|err| map_user_store_err(err, "login::keyauth", "Unable to log in"))?;
+    if !verified {
+        let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+        tracing::info!(username = %username, ip = %ip, "Cached key login failed verification");
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "Invalid encryption key. Sign in with your password.",
+        ));
+    }
+
+    let finalize = session::finalize_login(cookie_header.as_deref(), &username)
+        .map_err(|err| map_session_err(err, "login::keyauth::finalize"))?;
+
+    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+    tracing::info!(username = %username, ip = %ip, "Session restored via cached key");
+
+    let payload = serde_json::to_vec(&json!({
+        "ok": true,
+        "username": username,
+    }))
+    .map_err(|err| {
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "serialisation error",
+            "login::keyauth::body",
+            err,
+        )
+    })?;
+
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+
+    match HeaderValue::from_str(&finalize.set_cookie) {
+        Ok(value) => {
+            builder = builder.header(header::SET_COOKIE, value);
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                "discarding invalid Set-Cookie header from keyauth login"
+            );
+        }
+    }
+
+    builder
+        .body(Body::from(payload))
+        .map_err(|err| map_response_build_err(err, "login::keyauth::response"))
+}
+
 fn invalid_credentials() -> Result<Response<Body>, HttpError> {
     Err(api_error(StatusCode::UNAUTHORIZED, INVALID_CREDENTIALS))
 }

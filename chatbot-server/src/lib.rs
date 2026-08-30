@@ -112,6 +112,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/login/remember",
             post(login::handle_login_remember_post),
         )
+        .route(
+            "/login/keyauth",
+            post(login::handle_login_keyauth_post),
+        )
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))
         .route(
