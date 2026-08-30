@@ -101,6 +101,18 @@ Enrollment flow: login derives the key client-side → server stores key verifie
 
 Existing users without a verifier get one created on the first authenticated request that presents a valid derived key (same key as password login). Until the client sends `X-Enc-Key`, encrypted endpoints return **401** with a clear unlock message.
 
+### Remember tokens (opt-in session persistence)
+
+*Implemented August 2026*
+
+"Remember this computer for 30 days" (login checkbox, default **off**) issues a durable device token so an in-memory session can be restored after a server restart. Security properties:
+
+- **Session-only.** The token restores the HTTP session; every data endpoint still requires `X-Enc-Key`. A stolen token on another machine has no client key store and decrypts nothing (two-secrets model unchanged).
+- **Hashed at rest.** Token = `family_id(16B) || secret(32B)`; the server persists only `sha256(secret)` per family under `data/remember_tokens/`. A disk leak yields nothing usable.
+- **Rotated single-use.** Every restore rotates the secret. Presenting a rotated-out secret is treated as theft and revokes the entire family — including the currently valid token.
+- **HttpOnly cookie** (`SameSite=Lax; Path=/; Max-Age=2592000`, `Secure` when CSRF is on), so XSS cannot read it. Restore requires the per-session CSRF token (`POST /login/remember`), preventing login-CSRF. Logout revokes the family and clears the cookie.
+- **Silent resume is key-aware.** The client only auto-resumes when it holds a cached key slot for the restored account (slots keyed by unsalted SHA-256 of the username — no account names stored in the browser); otherwise the password form is shown.
+
 ## Current Architecture Status
 *As of July 2026*
 

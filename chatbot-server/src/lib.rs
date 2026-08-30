@@ -108,6 +108,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/login",
             get(login::handle_login_get).post(login::handle_login_post),
         )
+        .route(
+            "/login/remember",
+            post(login::handle_login_remember_post),
+        )
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))
         .route(

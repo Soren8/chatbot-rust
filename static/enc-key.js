@@ -5,18 +5,23 @@
   const DB_VERSION = 1;
   const STORE_NAME = 'keys';
   const WRAP_KEY_ID = 'device-wrap';
-  const WRAPPED_KEY_ID = 'wrapped-data-key';
-  const MODE_KEY = 'storage-mode';
-  const WEBAUTHN_CRED_ID = 'webauthn-cred';
+  // Per-account slots are keyed by sha256(username) so no account names are
+  // stored in the browser. One record per account:
+  //   { wrapped: {iv, wrapped}, mode, webauthnCredId, updatedAt }
+  const SLOT_PREFIX = 'acct:';
+  // Pre-multi-account entries; removed once a slotted login overwrites them.
+  const LEGACY_WRAPPED_KEY_ID = 'wrapped-data-key';
+  const LEGACY_MODE_KEY = 'storage-mode';
+  const LEGACY_WEBAUTHN_CRED_ID = 'webauthn-cred';
 
   let cachedKey = null;
 
-  function isSecureContext() {
-    return global.isSecureContext === true;
-  }
-
   function hasWebCrypto() {
     return !!(global.crypto && global.crypto.subtle);
+  }
+
+  function isSecureContext() {
+    return global.isSecureContext === true;
   }
 
   function openDb() {
@@ -66,6 +71,17 @@
     });
   }
 
+  async function idbGetAllKeys() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.getAllKeys();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
   async function generateWrapKey() {
     return crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },
@@ -91,7 +107,12 @@
     }
     if (existing) {
       await idbDelete(WRAP_KEY_ID);
-      await idbDelete(WRAPPED_KEY_ID);
+      const keys = await idbGetAllKeys();
+      for (const key of keys) {
+        if (typeof key === 'string' && key.startsWith(SLOT_PREFIX)) {
+          await idbDelete(key);
+        }
+      }
     }
     const wrapKey = await generateWrapKey();
     await idbSet(WRAP_KEY_ID, wrapKey);
@@ -156,11 +177,45 @@
     return encodeBase64(new Uint8Array(derivedBits));
   }
 
-  async function storeWrappedKey(rawKeyB64, mode) {
+  async function sha256Hex(text) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  async function accountHash(username) {
+    return sha256Hex(String(username || '').trim());
+  }
+
+  function currentUsername() {
+    if (global.APP_DATA && global.APP_DATA.username) {
+      return String(global.APP_DATA.username);
+    }
+    return null;
+  }
+
+  async function slotKey(username) {
+    const name = username || currentUsername();
+    if (!name) {
+      throw new Error('No account selected for key storage');
+    }
+    return SLOT_PREFIX + (await accountHash(name));
+  }
+
+  async function removeLegacySlots() {
+    await idbDelete(LEGACY_WRAPPED_KEY_ID);
+    await idbDelete(LEGACY_MODE_KEY);
+    await idbDelete(LEGACY_WEBAUTHN_CRED_ID);
+  }
+
+  async function storeWrappedKey(rawKeyB64, mode, username) {
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', { key: rawKeyB64 });
       cachedKey = rawKeyB64;
-      await idbSet(MODE_KEY, 'native-keystore');
+      const key = await slotKey(username);
+      await idbSet(key, { mode: 'native-keystore', updatedAt: Date.now() });
+      await removeLegacySlots();
       return;
     }
     if (!hasWebCrypto() || !isSecureContext()) {
@@ -168,55 +223,59 @@
     }
     const wrapKey = await ensureWrapKey();
     const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
-    await idbSet(WRAPPED_KEY_ID, wrapped);
-    await idbSet(MODE_KEY, mode || 'indexeddb');
+    const key = await slotKey(username);
+    await idbSet(key, {
+      wrapped,
+      mode: mode || 'indexeddb',
+      updatedAt: Date.now(),
+    });
     cachedKey = rawKeyB64;
+    await removeLegacySlots();
   }
 
   function isNativeSecureStorage() {
     return !!(global.NativeBridge && global.NativeBridge.isNativePlatform());
   }
 
-  async function verifyStoredKey(expectedB64) {
+  async function verifyStoredKey(expectedB64, username) {
     if (isNativeSecureStorage()) {
       return cachedKey === expectedB64;
     }
     cachedKey = null;
-    const loaded = await loadWrappedKey();
+    const loaded = await loadWrappedKey(username);
     return loaded === expectedB64;
   }
 
-  async function loadWrappedKey() {
+  async function loadWrappedKey(username) {
     if (cachedKey) {
       return cachedKey;
     }
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
         const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
-        if (result && result.key) {
-          cachedKey = result.key;
-          return cachedKey;
-        }
-        console.debug('enc-key: native keystore has no wrapped key yet');
+        cachedKey = result && result.key ? result.key : null;
       } catch (err) {
-        console.error('enc-key: native secure key read failed', err);
-        throw err;
+        console.error('native secure key read failed', err);
+        cachedKey = null;
       }
-    }
-    const mode = await idbGet(MODE_KEY);
-    if (mode === 'session-fallback') {
-      sessionStorage.removeItem('chatbot_enc_key');
-      await idbDelete(MODE_KEY);
-      console.debug('enc-key: cleared legacy session-fallback storage');
-      return null;
-    }
-    if (mode === 'webauthn-prf') {
       return cachedKey;
     }
-    const record = await idbGet(WRAPPED_KEY_ID);
-    if (!record) {
-      console.debug('enc-key: no wrapped key in IndexedDB');
+    if (!hasWebCrypto() || !isSecureContext()) {
       return null;
+    }
+    const name = username || currentUsername();
+    if (!name) {
+      console.debug('enc-key: no account in page context for key lookup');
+      return null;
+    }
+    const key = await slotKey(name);
+    const record = await idbGet(key);
+    if (!record) {
+      console.debug('enc-key: no cached key slot for this account');
+      return null;
+    }
+    if (record.mode === 'webauthn-prf') {
+      return cachedKey;
     }
     const wrapKey = await idbGet(WRAP_KEY_ID);
     if (!wrapKey) {
@@ -224,7 +283,7 @@
       return null;
     }
     try {
-      cachedKey = await unwrapDataKey(record, wrapKey);
+      cachedKey = await unwrapDataKey(record.wrapped, wrapKey);
       return cachedKey;
     } catch (err) {
       console.error('enc-key: failed to unwrap stored key', err);
@@ -232,7 +291,36 @@
     }
   }
 
-  async function clearStoredKey() {
+  async function listCachedAccounts() {
+    try {
+      const keys = await idbGetAllKeys();
+      return keys
+        .filter((key) => typeof key === 'string' && key.startsWith(SLOT_PREFIX))
+        .map((key) => key.slice(SLOT_PREFIX.length));
+    } catch (err) {
+      console.debug('enc-key: unable to list cached accounts', err);
+      return [];
+    }
+  }
+
+  async function hasCachedAccount(username) {
+    if (isNativeSecureStorage()) {
+      try {
+        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
+        return !!(result && result.key);
+      } catch (_) {
+        return false;
+      }
+    }
+    try {
+      const record = await idbGet(await slotKey(username));
+      return !!record;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function clearStoredKey(username) {
     cachedKey = null;
     sessionStorage.removeItem('chatbot_enc_key');
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
@@ -242,9 +330,17 @@
         console.debug('native secure key clear failed', err);
       }
     }
-    await idbDelete(WRAPPED_KEY_ID);
-    await idbDelete(MODE_KEY);
-    await idbDelete(WEBAUTHN_CRED_ID);
+    if (username) {
+      await idbDelete(await slotKey(username));
+      return;
+    }
+    const keys = await idbGetAllKeys();
+    for (const key of keys) {
+      if (typeof key === 'string' && key.startsWith(SLOT_PREFIX)) {
+        await idbDelete(key);
+      }
+    }
+    await removeLegacySlots();
   }
 
   async function unlockWithPassword(username, password) {
@@ -254,7 +350,7 @@
     }
     const data = await resp.json();
     const derived = await deriveKeyFromPassword(password, data.salt);
-    await storeWrappedKey(derived, 'indexeddb');
+    await storeWrappedKey(derived, 'indexeddb', username);
     return derived;
   }
 
@@ -277,7 +373,8 @@
     if (!(await supportsWebAuthnPrf())) {
       throw new Error('WebAuthn PRF is not supported in this browser');
     }
-    const rawKeyB64 = cachedKey || (await loadWrappedKey());
+    const username = currentUsername();
+    const rawKeyB64 = cachedKey || (username ? await loadWrappedKey(username) : null);
     if (!rawKeyB64) {
       throw new Error('Unlock your encryption key before enabling enhanced key cache security');
     }
@@ -332,20 +429,35 @@
       ['encrypt', 'decrypt']
     );
     const wrapped = await wrapDataKey(rawKeyB64, prfKey);
-    await idbSet(WRAPPED_KEY_ID, wrapped);
-    await idbDelete(WRAP_KEY_ID);
-    await idbSet(WEBAUTHN_CRED_ID, {
-      id: credential.id,
-      rawId: Array.from(new Uint8Array(credential.rawId)),
+    const key = await slotKey(username);
+    await idbSet(key, {
+      wrapped,
+      mode: 'webauthn-prf',
+      webauthnCredId: {
+        id: credential.id,
+        rawId: Array.from(new Uint8Array(credential.rawId)),
+      },
+      updatedAt: Date.now(),
     });
-    await idbSet(MODE_KEY, 'webauthn-prf');
+    // The device wrap key is only removable when no other account still relies
+    // on IndexedDB wrapping for its key slot.
+    const slots = await listCachedAccounts();
+    if (slots.length <= 1) {
+      await idbDelete(WRAP_KEY_ID);
+    }
+    await removeLegacySlots();
     cachedKey = rawKeyB64;
     return credential.id;
   }
 
-  async function unlockWithWebAuthn() {
-    const stored = await idbGet(WEBAUTHN_CRED_ID);
-    if (!stored) {
+  async function unlockWithWebAuthn(username) {
+    const name = username || currentUsername();
+    if (!name) {
+      throw new Error('No account selected for WebAuthn unlock');
+    }
+    const key = await slotKey(name);
+    const record = await idbGet(key);
+    if (!record || !record.webauthnCredId) {
       throw new Error('No WebAuthn credential registered');
     }
     const challenge = crypto.getRandomValues(new Uint8Array(32));
@@ -355,7 +467,7 @@
         allowCredentials: [
           {
             type: 'public-key',
-            id: new Uint8Array(stored.rawId),
+            id: new Uint8Array(record.webauthnCredId.rawId),
           },
         ],
         userVerification: 'required',
@@ -380,11 +492,10 @@
       false,
       ['encrypt', 'decrypt']
     );
-    const record = await idbGet(WRAPPED_KEY_ID);
-    if (!record) {
+    if (!record.wrapped) {
       throw new Error('No wrapped encryption key stored');
     }
-    cachedKey = await unwrapDataKey(record, prfKey);
+    cachedKey = await unwrapDataKey(record.wrapped, prfKey);
     return cachedKey;
   }
 
@@ -413,6 +524,9 @@
     getKeyForRequestSync,
     lock,
     clearStoredKey,
+    listCachedAccounts,
+    hasCachedAccount,
+    accountHash,
     supportsWebAuthnPrf,
     isNativeSecureStorage,
     isSecureContext,

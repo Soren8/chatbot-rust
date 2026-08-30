@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use chatbot_core::{
-    config, session,
+    config, remember_store, session,
     user_store::{normalise_username, UserStore},
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -84,6 +84,10 @@ pub async fn handle_login_post(
     let password = form.get("password").map(|s| s.as_str()).unwrap_or("");
     let csrf_token = form.get("csrf_token").map(|s| s.as_str());
     let storage_key = form.get("storage_key").map(|s| s.trim());
+    let remember_me = matches!(
+        form.get("remember_me").map(|s| s.as_str()),
+        Some("on") | Some("true") | Some("1")
+    );
 
     if username_raw.is_empty() || password.is_empty() {
         return invalid_credentials();
@@ -161,9 +165,136 @@ pub async fn handle_login_post(
         }
     }
 
+    if remember_me {
+        match issue_remember_cookie(&username) {
+            Ok(set_cookie) => {
+                if let Ok(value) = HeaderValue::from_str(&set_cookie) {
+                    response = response.header(header::SET_COOKIE, value);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    "failed to persist remember token; continuing login without it"
+                );
+            }
+        }
+    }
+
     response
         .body(Body::empty())
         .map_err(|err| map_response_build_err(err, "login::post::redirect"))
+}
+
+fn issue_remember_cookie(username: &str) -> Result<String, remember_store::RememberError> {
+    let store = remember_store::RememberStore::new()?;
+    let token = store.issue(username)?;
+    Ok(remember_store::build_set_cookie(&token))
+}
+
+/// `POST /login/remember` — restore a session from the durable remember-token
+/// cookie (set by an earlier "Remember this computer" login). Restores the
+/// session only; encrypted data still requires `X-Enc-Key` from the client's
+/// cached key store. CSRF-protected like every other state-changing route.
+pub async fn handle_login_remember_post(
+    request: Request<Body>,
+) -> Result<Response<Body>, HttpError> {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let cookie_header = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_owned());
+
+    let body_bytes = body::to_bytes(body, 16 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "login::remember"))?;
+    let form: HashMap<String, String> =
+        from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::remember"))?;
+    let csrf_token = form.get("csrf_token").map(|s| s.as_str());
+
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "login::remember::csrf"))?;
+    if !csrf_valid {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "Session expired. Sign in again.",
+        ));
+    }
+
+    let presented = remember_store::extract_token(cookie_header.as_deref());
+    let store = remember_store::RememberStore::new().map_err(|err| {
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "remember store error",
+            "login::remember::open",
+            err,
+        )
+    })?;
+
+    match store.resume(presented.as_deref()) {
+        Ok(remember_store::ResumeOutcome::Authenticated {
+            username,
+            replacement_token,
+        }) => {
+            let finalize = session::finalize_login(cookie_header.as_deref(), &username)
+                .map_err(|err| map_session_err(err, "login::remember::finalize"))?;
+
+            let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+            tracing::info!(username = %username, ip = %ip, "Session restored via remember token");
+
+            let payload = serde_json::to_vec(&json!({
+                "ok": true,
+                "username": username,
+            }))
+            .map_err(|err| {
+                log_and_api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "serialisation error",
+                    "login::remember::body",
+                    err,
+                )
+            })?;
+
+            let mut builder = Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+
+            for set_cookie in [
+                finalize.set_cookie,
+                remember_store::build_set_cookie(&replacement_token),
+            ] {
+                match HeaderValue::from_str(&set_cookie) {
+                    Ok(value) => {
+                        builder = builder.header(header::SET_COOKIE, value);
+                    }
+                    Err(err) => {
+                        warn!(
+                            ?err,
+                            "discarding invalid Set-Cookie header from remember login"
+                        );
+                    }
+                }
+            }
+
+            builder
+                .body(Body::from(payload))
+                .map_err(|err| map_response_build_err(err, "login::remember::response"))
+        }
+        Ok(remember_store::ResumeOutcome::Invalid) => Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "Remembered session expired. Sign in again.",
+        )),
+        Err(err) => Err(log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "remember store error",
+            "login::remember::resume",
+            err,
+        )),
+    }
 }
 
 fn invalid_credentials() -> Result<Response<Body>, HttpError> {

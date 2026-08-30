@@ -16,10 +16,14 @@ pub fn spawn_session_purge_task() {
         loop {
             ticker.tick().await;
             let stats = session::purge_expired_sessions();
-            if stats.total_removed() > 0 {
+            let remember_removed = chatbot_core::remember_store::RememberStore::new()
+                .map(|store| store.purge_expired())
+                .unwrap_or(0);
+            if stats.total_removed() > 0 || remember_removed > 0 {
                 info!(
                     http_sessions_removed = stats.http_sessions_removed,
                     chat_sessions_removed = stats.chat_sessions_removed,
+                    remember_tokens_removed = remember_removed,
                     "background session purge completed"
                 );
             }
