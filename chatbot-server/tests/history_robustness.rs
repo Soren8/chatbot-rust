@@ -1585,9 +1585,20 @@ async fn provider_stream_error_chain_reaches_client() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
     let text = String::from_utf8_lossy(&body);
+    // The visible message stays a clean one-liner, not the verbose anyhow chain.
     assert!(
-        text.contains("provider stream failed: injected test stream error"),
-        "client must see the full error chain, got: {text}"
+        text.contains("[Error] Injected test stream error by backend LLM provider."),
+        "client must see a clean error message, got: {text}"
+    );
+    // The full chain still reaches the client, but only via the console marker.
+    assert!(
+        text.contains("[ConsoleError]")
+            && text.contains("provider stream failed: injected test stream error"),
+        "full error chain must reach the client console marker, got: {text}"
+    );
+    assert!(
+        !text.contains("[Error] provider stream failed"),
+        "visible error must stay clean of context-chain detail, got: {text}"
     );
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
 

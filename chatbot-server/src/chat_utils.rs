@@ -8,12 +8,55 @@ use chatbot_core::{
     history::{HistoryError, SetId, SetVersion},
     session,
 };
+use anyhow::Error;
+use regex::Regex;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::http_error::{map_response_build_err, HttpError};
 use tracing::warn;
+
+/// Appended to a root cause that does not already name the backend, so the
+/// message says where the failure came from: "Connection refused by backend
+/// LLM provider."
+const BACKEND_CAUSE_SUFFIX: &str = " by backend LLM provider";
+
+/// OS errno detail ("(os error 111)") never helps a user-facing message.
+fn strip_os_error_detail(msg: &str) -> String {
+    static OS_ERROR_NOISE: OnceLock<Regex> = OnceLock::new();
+    let pattern = OS_ERROR_NOISE.get_or_init(|| Regex::new(r"\s*\(os error \d+\)").unwrap());
+    pattern.replace_all(msg, "").into_owned()
+}
+
+/// Split a provider error into the parts the UI and the browser console need.
+///
+/// `visible` is one clean sentence: the specific root cause, naming the backend
+/// LLM provider when the cause does not already do so. `detail` is the full
+/// anyhow chain for the browser console (surfaced via the `[ConsoleError]`
+/// stream marker in `chat.js`).
+pub fn provider_error_parts(err: &Error) -> (String, String) {
+    let cause = strip_os_error_detail(&err.root_cause().to_string());
+    let mut chars = cause.chars();
+    let mut visible = match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => cause,
+    };
+    let lower = visible.to_lowercase();
+    if !(lower.contains("openai") || lower.contains("xai") || lower.contains("provider")) {
+        visible.push_str(BACKEND_CAUSE_SUFFIX);
+    }
+    if !visible.ends_with('.') {
+        visible.push('.');
+    }
+    let detail = format!("{err:#}").replace('\n', " ");
+    (visible, detail)
+}
+
+/// Marker wrapping the full provider error detail on the SSE stream. `chat.js`
+/// strips this from the visible text and sinks it to `console.error`.
+pub const PROVIDER_ERROR_DETAIL_OPEN: &str = "[ConsoleError]";
+pub const PROVIDER_ERROR_DETAIL_CLOSE: &str = "[/ConsoleError]";
 
 pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
     headers
@@ -254,5 +297,34 @@ pub fn history_conflict_or_err(
             version_conflict_json(set_id, current_version),
         )),
         other => Err(history_error_to_http(other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_error_parts;
+
+    #[test]
+    fn anonymous_cause_names_the_backend_without_errno_noise() {
+        let err = anyhow::Error::from(std::io::Error::from_raw_os_error(111))
+            .context("failed to send OpenAI request");
+        let (visible, detail) = provider_error_parts(&err);
+        assert_eq!(visible, "Connection refused by backend LLM provider.");
+        assert!(
+            detail.contains("failed to send OpenAI request") && detail.contains("os error 111"),
+            "console detail keeps the full diagnostic chain: {detail}"
+        );
+    }
+
+    #[test]
+    fn cause_that_already_names_the_backend_is_kept_verbatim() {
+        let err = anyhow::anyhow!(
+            "OpenAI returned error: 429 Too Many Requests - Rate limit exceeded, quota reached"
+        );
+        let (visible, _) = provider_error_parts(&err);
+        assert_eq!(
+            visible,
+            "OpenAI returned error: 429 Too Many Requests - Rate limit exceeded, quota reached."
+        );
     }
 }

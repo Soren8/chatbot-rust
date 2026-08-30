@@ -3828,6 +3828,17 @@ $(document).ready(function() {
         }
         function processChunk(chunk) {
           buffer += chunk;
+          // Strip the server's full-error detail (sent via [ConsoleError]…[/ConsoleError])
+          // and sink it to the browser console; it must never reach the visible message.
+          let di = buffer.indexOf('[ConsoleError]');
+          while (di !== -1) {
+            const dci = buffer.indexOf('[/ConsoleError]', di);
+            if (dci === -1) break; // wait for the closing marker to arrive
+            const detail = buffer.substring(di + '[ConsoleError]'.length, dci);
+            try { console.error(detail); } catch (e) {}
+            buffer = buffer.substring(0, di) + buffer.substring(dci + '[/ConsoleError]'.length);
+            di = buffer.indexOf('[ConsoleError]');
+          }
           const openTag = '<think>';
           const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
 
@@ -3924,12 +3935,13 @@ $(document).ready(function() {
               const playBtn = $targetElement.find('.play-button').prop('disabled', false);
               if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
+            try { console.error('Stream read failed:', err); } catch (e) {}
             const errText = err && err.message ? err.message : String(err);
             if (buffer) {
               if (state === 'thinking') appendThinking(buffer); else appendVisible(buffer);
               buffer = '';
             }
-            appendVisible('\n[Error] Stream interrupted: ' + errText);
+            appendVisible('\n[Error] The response stream was interrupted.');
             finishChatRequest(seq);
           });
         }
@@ -3937,6 +3949,7 @@ $(document).ready(function() {
       })
       .catch(error => {
         if (!isLiveChatRequest(seq)) return;
+        try { console.error('Chat request failed:', error); } catch (e) {}
         if (error.name === 'AbortError') {
           const $lastAI = $('.ai-message:last-child');
           $lastAI.find('.ai-message-text').append(' [Stopped]');

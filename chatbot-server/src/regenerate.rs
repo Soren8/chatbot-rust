@@ -19,7 +19,8 @@ use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::chat_utils::{
-    error_as_saved_chat_turn, service_error_message, ChatLockGuard, StreamCompletionGuard,
+    error_as_saved_chat_turn, provider_error_parts, service_error_message, ChatLockGuard,
+    StreamCompletionGuard,
 };
 use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
@@ -199,11 +200,12 @@ pub async fn handle_regenerate(
             Err(err) => {
                 error!(?err, "failed to construct OpenAI provider");
                 lock_guard.lock().unwrap().release_if_needed();
+                let (setup_msg, _) = provider_error_parts(&err);
                 return error_as_saved_chat_turn(
                     &session_context,
                     Some(context.set_name.as_str()),
                     payload.message.as_str(),
-                    &format!("provider setup failed: {err:#}"),
+                    &setup_msg,
                     encryption_key.as_ref(),
                     insertion_index,
                 );
@@ -214,11 +216,12 @@ pub async fn handle_regenerate(
             Err(err) => {
                 error!(?err, "failed to construct XAI provider");
                 lock_guard.lock().unwrap().release_if_needed();
+                let (setup_msg, _) = provider_error_parts(&err);
                 return error_as_saved_chat_turn(
                     &session_context,
                     Some(context.set_name.as_str()),
                     payload.message.as_str(),
-                    &format!("provider setup failed: {err:#}"),
+                    &setup_msg,
                     encryption_key.as_ref(),
                     insertion_index,
                 );
@@ -287,11 +290,12 @@ pub async fn handle_regenerate(
                 Err(err) => {
                     error!(?err, "provider stream setup failed");
                     lock_guard.lock().unwrap().release_if_needed();
+                    let (req_msg, _) = provider_error_parts(&err);
                     return error_as_saved_chat_turn(
                         &session_context,
                         Some(set_name.as_str()),
                         user_message.as_str(),
-                        &format!("provider request failed: {err:#}"),
+                        &req_msg,
                         encryption_key.as_ref(),
                         insertion_index,
                     );
@@ -329,11 +333,12 @@ pub async fn handle_regenerate(
                 Err(err) => {
                     error!(?err, "provider stream setup failed");
                     lock_guard.lock().unwrap().release_if_needed();
+                    let (req_msg, _) = provider_error_parts(&err);
                     return error_as_saved_chat_turn(
                         &session_context,
                         Some(set_name.as_str()),
                         user_message.as_str(),
-                        &format!("provider request failed: {err:#}"),
+                        &req_msg,
                         encryption_key.as_ref(),
                         insertion_index,
                     );
@@ -379,9 +384,14 @@ pub async fn handle_regenerate(
                     error!(?err, "error while reading provider stream (regenerate)");
                     // Do not persist partial/error-tainted assistant text.
                     guard.mark_provider_error();
-                    // `{err:#}` renders the whole anyhow chain so the client sees
-                    // the underlying cause, not just the outermost context.
-                    let msg = format!("\n[Error] {err:#}\n");
+                    // Keep the on-screen message short; the full anyhow chain is
+                    // sent via the `[ConsoleError]` marker for the browser console.
+                    let (visible, detail) = provider_error_parts(&err);
+                    let msg = format!(
+                        "\n[Error] {visible}\n{open}{detail}{close}\n",
+                        open = crate::chat_utils::PROVIDER_ERROR_DETAIL_OPEN,
+                        close = crate::chat_utils::PROVIDER_ERROR_DETAIL_CLOSE,
+                    );
                     yield Bytes::from(msg.into_bytes());
                     guard.complete_without_persist();
                     break;
