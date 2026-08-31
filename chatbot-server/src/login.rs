@@ -179,6 +179,15 @@ pub async fn handle_login_post(
                 );
             }
         }
+    } else {
+        // Unchecked "remember this computer": drop any remember token the
+        // device still holds so the choice is a real opt-out.
+        if let Ok(store) = remember_store::RememberStore::new() {
+            store.revoke(remember_store::extract_token(cookie_header.as_deref()).as_deref());
+        }
+        if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+            response = response.header(header::SET_COOKIE, value);
+        }
     }
 
     response
@@ -298,12 +307,12 @@ pub async fn handle_login_remember_post(
 }
 
 /// `POST /login/keyauth` — password-free re-login using the client's cached
-/// encryption key. Body: `account_hash` (unsalted SHA-256 hex of the username,
-/// matching the browser key-slot keying) and the usual `csrf_token`; the key
-/// travels in the `X-Enc-Key` header. The server maps the hash back to a
-/// username and verifies the key against the stored HMAC verifier, so only
-/// someone holding the account's data key can restore its session. Creates no
-/// new server-side state and does not touch remember tokens.
+/// encryption key. Body: `username` (the account picked from the login
+/// page's cached-account dropdown) and the usual `csrf_token`; the key
+/// travels in the `X-Enc-Key` header. The server verifies the key against
+/// the stored HMAC verifier, so only someone holding the account's data key
+/// can restore its session. Creates no new server-side state and does not
+/// touch remember tokens.
 pub async fn handle_login_keyauth_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
@@ -330,11 +339,12 @@ pub async fn handle_login_keyauth_post(
         ));
     }
 
-    let Some(account_hash) = form.get("account_hash").map(|s| s.trim().to_lowercase()) else {
-        return Err(api_error(
-            StatusCode::BAD_REQUEST,
-            "account_hash is required",
-        ));
+    let Some(username_raw) = form.get("username").map(|s| s.trim().to_owned()) else {
+        return Err(api_error(StatusCode::BAD_REQUEST, "username is required"));
+    };
+    let username = match normalise_username(&username_raw) {
+        Ok(value) => value,
+        Err(_) => return Err(api_error(StatusCode::UNAUTHORIZED, "Unknown saved account.")),
     };
     let Some(enc_key) = headers
         .get("x-enc-key")
@@ -350,13 +360,6 @@ pub async fn handle_login_keyauth_post(
     let store = UserStore::new().map_err(|err| {
         map_user_store_err(err, "login::keyauth", "Unable to log in")
     })?;
-    let Some(username) = store
-        .resolve_username_by_hash(&account_hash)
-        .map_err(|err| map_user_store_err(err, "login::keyauth", "Unable to log in"))?
-    else {
-        return Err(api_error(StatusCode::UNAUTHORIZED, "Unknown saved account."));
-    };
-
     let verified = store
         .verify_encryption_key(&username, enc_key.as_bytes())
         .map_err(|err| map_user_store_err(err, "login::keyauth", "Unable to log in"))?;

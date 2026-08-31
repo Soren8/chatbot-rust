@@ -63,20 +63,16 @@ function showLoginNotice(message) {
   }
 }
 
-function truncatedHash(hash) {
-  return '···' + hash.slice(-4);
-}
-
 /// Password-free login for a cached account: prove knowledge of the cached
 /// encryption key against the server's HMAC verifier. Falls back to the
 /// sign-in form when the key cannot be presented (e.g. WebAuthn cancelled).
 async function loginCachedAccount() {
-  const hash = $('#saved-account-select').val();
+  const username = $('#saved-account-select').val();
   const csrfInput = $('input[name="csrf_token"]').first();
   try {
-    let key = await window.EncKey.getKeyForSlot(hash);
-    if (!key && window.EncKey.unlockWithWebAuthnSlot) {
-      key = await window.EncKey.unlockWithWebAuthnSlot(hash);
+    let key = await window.EncKey.getKeyForUsername(username);
+    if (!key && window.EncKey.unlockWithWebAuthnForUser) {
+      key = await window.EncKey.unlockWithWebAuthnForUser(username);
     }
     if (!key) {
       throw new Error('cached key unavailable');
@@ -89,7 +85,7 @@ async function loginCachedAccount() {
       },
       body:
         'csrf_token=' + encodeURIComponent(csrfInput.val()) +
-        '&account_hash=' + encodeURIComponent(hash),
+        '&username=' + encodeURIComponent(username),
     });
     if (!resp.ok) {
       throw new Error('cached key login rejected');
@@ -98,7 +94,7 @@ async function loginCachedAccount() {
     if (!data || !data.username) {
       throw new Error('unexpected keyauth response');
     }
-    window.EncKey.touchSlot(hash);
+    window.EncKey.touchSlot(username);
     window.location.href = '/';
   } catch (err) {
     console.debug('cached key login failed', err);
@@ -151,18 +147,18 @@ function renderSavedAccountSelect() {
   if (!window.EncKey || !window.EncKey.listCachedAccounts) {
     return Promise.resolve();
   }
-  return window.EncKey.listCachedAccounts().then(function (hashes) {
+  return window.EncKey.listCachedAccounts().then(function (usernames) {
     const $section = $('#saved-account-section');
     const $select = $('#saved-account-select');
-    if (!hashes.length || !$section.length || !$select.length) {
+    if (!usernames.length || !$section.length || !$select.length) {
       $section.addClass('d-none');
       $select.empty();
       applyAccountMode();
       return;
     }
     $select.empty();
-    hashes.forEach(function (hash) {
-      $select.append($('<option>', { value: hash }).text(truncatedHash(hash)));
+    usernames.forEach(function (username) {
+      $select.append($('<option>', { value: username }).text(username));
     });
     $select.append(
       $('<option>', { value: OTHER_ACCOUNT }).text('Other account…')
@@ -183,19 +179,19 @@ $(function() {
   // any) may belong to the forgotten account, so revoke it via /logout and
   // pick up a fresh session + CSRF token for any further keyauth attempt.
   $('#forget-account').on('click', async function() {
-    const hash = $('#saved-account-select').val();
-    if (!hash || hash === OTHER_ACCOUNT || !window.EncKey || !window.EncKey.removeSlot) {
+    const username = $('#saved-account-select').val();
+    if (!username || username === OTHER_ACCOUNT || !window.EncKey || !window.EncKey.removeSlot) {
       return;
     }
     if (!window.confirm(
-      'Remove the cached login for ' + truncatedHash(hash) +
+      'Remove the cached login for ' + username +
       ' from this browser? You will need the password to sign in to it again.'
     )) {
       return;
     }
     $(this).prop('disabled', true);
     try {
-      await window.EncKey.removeSlot(hash);
+      await window.EncKey.removeSlot(username);
       try {
         await fetch('/logout', { method: 'GET' });
       } catch (err) {
@@ -206,7 +202,7 @@ $(function() {
       if (!savedAccountSectionVisible()) {
         showLoginNotice('Removed the cached login. Sign in with the username and password.');
       } else {
-        showLoginNotice('Removed the cached login for ' + truncatedHash(hash) + '.');
+        showLoginNotice('Removed the cached login for ' + username + '.');
       }
     } finally {
       $(this).prop('disabled', false);
@@ -265,16 +261,27 @@ $(function() {
       }
 
       if (window.EncKey && window.EncKey.storeFromLogin) {
-        try {
-          await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username);
-          const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
-          if (!ok) {
-            throw new Error('Encryption key did not persist on this device');
+        const rememberChecked = $('#remember_me').is(':checked');
+        if (rememberChecked) {
+          try {
+            await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username);
+            const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
+            if (!ok) {
+              throw new Error('Encryption key did not persist on this device');
+            }
+          } catch (storeErr) {
+            console.error('Failed to store encryption key locally', storeErr);
+            alert('Could not save encryption key on this device. Login cannot continue.');
+            return;
           }
-        } catch (storeErr) {
-          console.error('Failed to store encryption key locally', storeErr);
-          alert('Could not save encryption key on this device. Login cannot continue.');
-          return;
+        } else {
+          // Unchecked "remember": this login must not stay cached — drop any
+          // slot a previous remembered login left for this account.
+          try {
+            await window.EncKey.removeSlot(username);
+          } catch (err) {
+            console.debug('removing cached key failed', err);
+          }
         }
       }
       $('<input>').attr({

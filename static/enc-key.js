@@ -5,9 +5,9 @@
   const DB_VERSION = 1;
   const STORE_NAME = 'keys';
   const WRAP_KEY_ID = 'device-wrap';
-  // Per-account slots are keyed by sha256(username) so no account names are
-  // stored in the browser. One record per account:
-  //   { wrapped: {iv, wrapped}, mode, webauthnCredId, updatedAt }
+  // Per-account slots are keyed by the username so the login page can list
+  // cached accounts (and forget them) by name. Only accounts whose login had
+  // "Remember this computer" checked get a slot.
   const SLOT_PREFIX = 'acct:';
   // Pre-multi-account entries; removed once a slotted login overwrites them.
   const LEGACY_WRAPPED_KEY_ID = 'wrapped-data-key';
@@ -193,110 +193,6 @@
     return encodeBase64(new Uint8Array(derivedBits));
   }
 
-  // Minimal FIPS 180-4 SHA-256 over UTF-8 bytes. WebCrypto (crypto.subtle)
-  // only exists in secure contexts, and the native Capacitor WebView loads
-  // the app over plain HTTP — account-slot hashing must work there too, so
-  // fall back to this when subtle is unavailable. Output is identical.
-  const SHA256_K = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-  ];
-
-  function sha256PureJs(bytes) {
-    const h = new Uint32Array([
-      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-    ]);
-    const blocks = ((bytes.length + 9 + 63) >> 6);
-    const padded = new Uint8Array(blocks << 6);
-    padded.set(bytes);
-    padded[bytes.length] = 0x80;
-    const bitLen = bytes.length * 8;
-    const dv = new DataView(padded.buffer);
-    dv.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000));
-    dv.setUint32(padded.length - 4, bitLen >>> 0);
-
-    const w = new Uint32Array(64);
-    for (let i = 0; i < blocks; i += 1) {
-      const off = i << 6;
-      for (let t = 0; t < 16; t += 1) {
-        w[t] = dv.getUint32(off + (t << 2));
-      }
-      for (let t = 16; t < 64; t += 1) {
-        const x = w[t - 15];
-        const y = w[t - 2];
-        const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
-        const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
-        w[t] = (w[t - 16] + s0 + w[t - 7] + s1) >>> 0;
-      }
-      let a = h[0];
-      let b = h[1];
-      let c = h[2];
-      let d = h[3];
-      let e = h[4];
-      let f = h[5];
-      let g = h[6];
-      let hh = h[7];
-      for (let t = 0; t < 64; t += 1) {
-        const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-        const ch = (e & f) ^ (~e & g);
-        const temp1 = (hh + S1 + ch + SHA256_K[t] + w[t]) >>> 0;
-        const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-        const maj = (a & b) ^ (a & c) ^ (b & c);
-        const temp2 = (S0 + maj) >>> 0;
-        hh = g;
-        g = f;
-        f = e;
-        e = (d + temp1) >>> 0;
-        d = c;
-        c = b;
-        b = a;
-        a = (temp1 + temp2) >>> 0;
-      }
-      h[0] = (h[0] + a) >>> 0;
-      h[1] = (h[1] + b) >>> 0;
-      h[2] = (h[2] + c) >>> 0;
-      h[3] = (h[3] + d) >>> 0;
-      h[4] = (h[4] + e) >>> 0;
-      h[5] = (h[5] + f) >>> 0;
-      h[6] = (h[6] + g) >>> 0;
-      h[7] = (h[7] + hh) >>> 0;
-    }
-    const out = new Uint8Array(32);
-    const odv = new DataView(out.buffer);
-    for (let i = 0; i < 8; i += 1) {
-      odv.setUint32(i << 2, h[i]);
-    }
-    return out;
-  }
-
-  async function sha256Hex(text) {
-    const bytes = new TextEncoder().encode(String(text));
-    let digestBytes;
-    if (hasWebCrypto()) {
-      try {
-        digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-      } catch (_) {
-        digestBytes = sha256PureJs(bytes);
-      }
-    } else {
-      digestBytes = sha256PureJs(bytes);
-    }
-    return Array.from(digestBytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-  }
-
-  async function accountHash(username) {
-    return sha256Hex(String(username || '').trim());
-  }
-
   function currentUsername() {
     if (global.APP_DATA && global.APP_DATA.username) {
       return String(global.APP_DATA.username);
@@ -304,12 +200,12 @@
     return null;
   }
 
-  async function slotKey(username) {
+  function slotKey(username) {
     const name = username || currentUsername();
     if (!name) {
       throw new Error('No account selected for key storage');
     }
-    return SLOT_PREFIX + (await accountHash(name));
+    return SLOT_PREFIX + String(name).trim();
   }
 
   async function slotIdByHash(hash) {
@@ -456,11 +352,14 @@
           entry.value
         ))
         .map((entry) => ({
-          hash: entry.key.slice(SLOT_PREFIX.length),
+          username: entry.key.slice(SLOT_PREFIX.length),
           updatedAt: entry.value.updatedAt || 0,
         }))
+        // Entries from the old hashed-slot scheme are unusable now (the
+        // server no longer maps hashes); hide them.
+        .filter((entry) => !/^[0-9a-f]{64}$/.test(entry.username))
         .sort((a, b) => b.updatedAt - a.updatedAt)
-        .map((entry) => entry.hash);
+        .map((entry) => entry.username);
     } catch (err) {
       console.debug('enc-key: unable to list cached accounts', err);
       return [];
@@ -627,9 +526,9 @@
     return unwrapSlotWithWebAuthn(record);
   }
 
-  /// Slot-lookup variants keyed directly by the account hash (used by the
-  /// login page, which never knows the username — the server maps hashes).
-  async function getKeyForSlot(hash) {
+  // Slot-lookup variants used by the login page, which knows the username
+  // from the account dropdown but has no session yet.
+  async function getKeyForUsername(username) {
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
         const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
@@ -645,7 +544,7 @@
     if (!hasWebCrypto() || !isSecureContext()) {
       return null;
     }
-    const record = await idbGet(await slotIdByHash(hash));
+    const record = await idbGet(slotKey(username));
     if (!record || record.mode === 'webauthn-prf' || !record.wrapped) {
       return null;
     }
@@ -662,8 +561,8 @@
     }
   }
 
-  async function unlockWithWebAuthnSlot(hash) {
-    const record = await idbGet(await slotIdByHash(hash));
+  async function unlockWithWebAuthnForUser(username) {
+    const record = await idbGet(slotKey(username));
     if (!record || !record.webauthnCredId) {
       throw new Error('No WebAuthn credential registered');
     }
@@ -710,10 +609,10 @@
     return cachedKey;
   }
 
-  /// Bump a slot's last-used timestamp so account lists stay recency-sorted.
-  async function touchSlot(hash) {
+  // Bump a slot's last-used timestamp so account lists stay recency-sorted.
+  async function touchSlot(username) {
     try {
-      const key = await slotIdByHash(hash);
+      const key = slotKey(username);
       const record = await idbGet(key);
       if (record) {
         record.updatedAt = Date.now();
@@ -722,10 +621,10 @@
     } catch (_) {}
   }
 
-  /// Remove one account's cached credentials from this browser: the key slot
-  /// (and, on native, the single keystore key). The account can still be used
-  /// afterwards, but only via its password.
-  async function removeSlot(hash) {
+  // Remove one account's cached credentials from this browser: the key slot
+  // (and, on native, the single keystore key). The account can still be used
+  // afterwards, but only via its password.
+  async function removeSlot(username) {
     cachedKey = null;
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
@@ -734,7 +633,7 @@
         console.debug('native secure key clear failed', err);
       }
     }
-    await idbDelete(await slotIdByHash(hash));
+    await idbDelete(slotKey(username));
   }
 
   async function getKeyForRequest() {
@@ -764,9 +663,8 @@
     clearStoredKey,
     listCachedAccounts,
     hasCachedAccount,
-    accountHash,
-    getKeyForSlot,
-    unlockWithWebAuthnSlot,
+    getKeyForUsername,
+    unlockWithWebAuthnForUser,
     touchSlot,
     removeSlot,
     supportsWebAuthnPrf,

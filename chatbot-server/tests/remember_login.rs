@@ -237,10 +237,13 @@ async fn login_without_checkbox_issues_no_remember_cookie() {
     assert_eq!(response.status(), StatusCode::FOUND);
 
     let cookies = set_cookie_values(response.headers());
-    assert!(
-        find_cookie_pair(&cookies, "remember").is_none(),
-        "no remember cookie without the checkbox"
-    );
+    // Unchecked login may only emit the clearing cookie, never a token.
+    for cookie in cookies.iter().filter(|c| c.starts_with("remember=")) {
+        assert!(
+            cookie.contains("Max-Age=0"),
+            "unchecked login must not issue a remember token, got {cookie}"
+        );
+    }
     assert!(find_cookie_pair(&cookies, "session").is_some());
 }
 
@@ -436,17 +439,11 @@ async fn home_auto_restores_remembered_session_after_restart() {
     );
 }
 
-fn account_hash(username: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(username.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 async fn post_keyauth(
     app: &axum::Router,
     cookie_header: &str,
     csrf: &str,
-    hash: &str,
+    username: &str,
     enc_key: Option<&str>,
 ) -> axum::http::Response<Body> {
     let mut builder = Request::builder()
@@ -458,9 +455,9 @@ async fn post_keyauth(
         builder = builder.header("X-Enc-Key", key);
     }
     let body = format!(
-        "csrf_token={}&account_hash={}",
+        "csrf_token={}&username={}",
         urlencoding::encode(csrf),
-        urlencoding::encode(hash)
+        urlencoding::encode(username)
     );
     app.clone()
         .oneshot(builder.body(Body::from(body)).unwrap())
@@ -502,7 +499,7 @@ async fn keyauth_restores_session_without_password() {
     };
 
     let response =
-        post_keyauth(&app, &guest_cookie, &csrf, &account_hash(username), Some(&key_b64)).await;
+        post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let cookies = set_cookie_values(response.headers());
 
@@ -544,16 +541,14 @@ async fn keyauth_rejects_bad_credentials() {
     let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
 
     // Wrong key.
-    let response =
-        post_keyauth(&app, &guest_cookie, &csrf, &account_hash(username), Some("wrong-key")).await;
+    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some("wrong-key")).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // Missing key header.
-    let response = post_keyauth(&app, &guest_cookie, &csrf, &account_hash(username), None).await;
+    let response = post_keyauth(&app, &guest_cookie, &csrf, username, None).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // Unknown account hash.
-    let unknown = "a".repeat(64);
+    // Unknown username.
     let key_b64 = {
         let store = UserStore::new().expect("user store");
         String::from_utf8(
@@ -563,19 +558,12 @@ async fn keyauth_rejects_bad_credentials() {
         )
         .expect("key utf8")
     };
-    let response = post_keyauth(&app, &guest_cookie, &csrf, &unknown, Some(&key_b64)).await;
+    let response = post_keyauth(&app, &guest_cookie, &csrf, "ghost_user", Some(&key_b64)).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // User without a registered verifier cannot key-login.
     seed_user("noverifier", password);
-    let response = post_keyauth(
-        &app,
-        &guest_cookie,
-        &csrf,
-        &account_hash("noverifier"),
-        Some(&key_b64),
-    )
-    .await;
+    let response = post_keyauth(&app, &guest_cookie, &csrf, "noverifier", Some(&key_b64)).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -612,24 +600,75 @@ async fn keyauth_requires_csrf() {
     };
 
     // Empty CSRF value.
-    let response =
-        post_keyauth(&app, &guest_cookie, "", &account_hash(username), Some(&key_b64)).await;
+    let response = post_keyauth(&app, &guest_cookie, "", username, Some(&key_b64)).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // Valid CSRF still works afterwards (no session rotation happened).
-    let response = post_keyauth(
-        &app,
-        &guest_cookie,
-        &csrf,
-        &account_hash(username),
-        Some(&key_b64),
-    )
-    .await;
+    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let cookies = set_cookie_values(response.headers());
     let session = find_cookie_pair(&cookies, "session").expect("session cookie from keyauth");
     let context = session::session_context(Some(&session)).expect("session after keyauth");
     assert_eq!(context.username.as_deref(), Some(username));
+}
+
+#[tokio::test]
+async fn login_without_remember_revokes_existing_token() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "optoutuser";
+    seed_user(username, "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, remember) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+
+    // A later login WITHOUT the checkbox must opt the device out: the old
+    // token is revoked and the cookie cleared.
+    let (csrf, cookies) = get_login_page(&app, Some(&remember)).await;
+    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
+    let response = post_login(
+        &app,
+        &format!("{guest_cookie}; {remember}"),
+        &csrf,
+        username,
+        "Sup3rS3cret!",
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let cookies = set_cookie_values(response.headers());
+    let clear = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("remember="))
+        .expect("unchecked login must clear the remember cookie");
+    assert!(clear.contains("Max-Age=0"));
+
+    // The revoked token no longer auto-restores a session at the app entry.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &remember)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / with revoked remember cookie");
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("read home body");
+    let body_str = std::str::from_utf8(&body).expect("utf8");
+    assert!(
+        body_str.contains("\"loggedIn\": false"),
+        "revoked token must not restore the session"
+    );
+
+    // And the manual restore endpoint rejects it too.
+    let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
+    let restore = post_remember_login(&app, &cookie_header, &csrf, true).await;
+    assert_eq!(restore.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

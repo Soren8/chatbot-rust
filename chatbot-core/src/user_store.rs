@@ -16,7 +16,7 @@ use rand::Rng;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use crate::config;
 
@@ -255,29 +255,6 @@ impl UserStore {
     pub fn has_key_verifier(&self, username: &str) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         Ok(self.key_verifier_path(&normalised).exists())
-    }
-
-    /// Resolve a client-side account reference back to a username. The
-    /// browser keys its per-account key slots by unsalted SHA-256 hex of the
-    /// username (no account names are stored client-side), so the server —
-    /// which knows the usernames — performs the mapping.
-    pub fn resolve_username_by_hash(
-        &self,
-        account_hash: &str,
-    ) -> Result<Option<String>, UserStoreError> {
-        if account_hash.len() != 64 || !account_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Ok(None);
-        }
-        let target = account_hash.to_ascii_lowercase();
-        let users = self.load_users()?;
-        for username in users.keys() {
-            let digest = Sha256::digest(username.as_bytes());
-            let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-            if constant_time_eq(hex.as_bytes(), target.as_bytes()) {
-                return Ok(Some(username.clone()));
-            }
-        }
-        Ok(None)
     }
 
     pub fn get_client_salt(&self, username: &str) -> Result<String, UserStoreError> {
