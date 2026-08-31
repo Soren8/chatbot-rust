@@ -255,6 +255,9 @@ pub async fn handle_login_remember_post(
             let payload = serde_json::to_vec(&json!({
                 "ok": true,
                 "username": username,
+                // Live-session CSRF token so the client can keep using the
+                // page after a silent session restore.
+                "csrf_token": finalize.csrf_token,
             }))
             .map_err(|err| {
                 log_and_api_error(

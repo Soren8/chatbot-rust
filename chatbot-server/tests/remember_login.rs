@@ -271,6 +271,13 @@ async fn remember_login_restores_session_after_restart() {
         .expect("read remember body");
     let body_str = std::str::from_utf8(&body).expect("utf8");
     assert!(body_str.contains(username), "response names the user: {body_str}");
+    let payload: serde_json::Value =
+        serde_json::from_str(body_str).expect("remember response is json");
+    let returned_csrf = payload["csrf_token"]
+        .as_str()
+        .expect("csrf_token in response")
+        .to_owned();
+    assert!(!returned_csrf.is_empty());
 
     let new_session = find_cookie_pair(&cookies, "session").expect("session re-issued");
     let new_remember = find_cookie_pair(&cookies, "remember").expect("remember rotated");
@@ -284,6 +291,16 @@ async fn remember_login_restores_session_after_restart() {
         context.username.as_deref(),
         Some(username),
         "remember login must restore the authenticated session"
+    );
+
+    // The returned CSRF token must belong to the restored session: use it
+    // directly (no fresh /login bootstrap) to restore again.
+    let live_cookies = format!("{new_session}; {new_remember}");
+    let again = post_remember_login(&app, &live_cookies, &returned_csrf, true).await;
+    assert_eq!(
+        again.status(),
+        StatusCode::OK,
+        "returned csrf_token must be valid for the restored session"
     );
 }
 

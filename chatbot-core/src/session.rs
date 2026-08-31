@@ -60,6 +60,9 @@ pub struct HomeBootstrap {
 pub struct LoginFinalize {
     pub session_id: String,
     pub set_cookie: String,
+    /// CSRF token of the new session; clients that restore sessions over
+    /// fetch (remember token) need it to keep calling same-page endpoints.
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -378,6 +381,7 @@ pub fn finalize_login(
     record.username = Some(username.to_string());
     record.last_used = now;
     let session_id = session_identifier(&record);
+    let csrf_token = record.csrf_token.clone();
     let set_cookie = store.build_set_cookie(&cookie_value);
     sessions.insert(cookie_value, record);
     drop(sessions);
@@ -385,6 +389,7 @@ pub fn finalize_login(
     Ok(LoginFinalize {
         session_id,
         set_cookie,
+        csrf_token,
     })
 }
 

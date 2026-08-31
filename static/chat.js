@@ -193,6 +193,83 @@ try {
   }
 } catch (e) { /* no-op */ }
 
+// Silent session restore after a server restart: bootstrap a fresh guest
+// session (GET /login) for a CSRF token the dead page cannot produce,
+// exchange the HttpOnly remember cookie (POST /login/remember), then adopt
+// the restored session's CSRF token so same-page requests keep validating.
+// Concurrent callers share one attempt. Resolves to a boolean.
+var sessionRefreshPromise = null;
+function refreshSession() {
+  if (!window.APP_DATA || !window.APP_DATA.loggedIn) {
+    return Promise.resolve(false);
+  }
+  if (sessionRefreshPromise) {
+    return sessionRefreshPromise;
+  }
+  sessionRefreshPromise = originalFetch('/login')
+    .then(function (resp) {
+      if (!resp.ok) {
+        throw new Error('session bootstrap failed');
+      }
+      return resp.text();
+    })
+    .then(function (html) {
+      var match = html.match(/name="csrf_token" value="([^"]+)"/);
+      if (!match) {
+        throw new Error('csrf token not found');
+      }
+      return originalFetch('/login/remember', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'csrf_token=' + encodeURIComponent(match[1]),
+      });
+    })
+    .then(function (resp) {
+      if (!resp.ok) {
+        return false;
+      }
+      return resp.json().then(function (data) {
+        if (data && data.csrf_token) {
+          window.CSRF_TOKEN = data.csrf_token;
+          var meta = document.querySelector('meta[name="csrf-token"]');
+          if (meta) {
+            meta.setAttribute('content', data.csrf_token);
+          }
+          return true;
+        }
+        return false;
+      });
+    })
+    .catch(function () {
+      return false;
+    });
+  sessionRefreshPromise.finally(function () { sessionRefreshPromise = null; });
+  return sessionRefreshPromise;
+}
+
+// Rebuild a cached fetch init's X-CSRF-Token header after a session
+// refresh (headers were snapshotted by withCsrf at call time).
+function refreshCsrfInit(init) {
+  if (!init || !init.headers || !window.CSRF_TOKEN) {
+    return init;
+  }
+  var fresh = Object.assign({}, init);
+  var copy;
+  if (typeof Headers !== 'undefined' && init.headers instanceof Headers) {
+    copy = {};
+    init.headers.forEach(function (value, key) { copy[key] = value; });
+  } else {
+    copy = Object.assign({}, init.headers);
+  }
+  Object.keys(copy).forEach(function (key) {
+    if (key.toLowerCase() === 'x-csrf-token') {
+      copy[key] = window.CSRF_TOKEN;
+    }
+  });
+  fresh.headers = copy;
+  return fresh;
+}
+
 function syncHistoryImageEncCookie(encKey) {
   if (!encKey) return;
   var secure = (window.location.protocol === 'https:') ? '; Secure' : '';
@@ -617,6 +694,14 @@ async function handle401OrRetry(response, retryFn) {
     throw new Error('Encryption key required. Please unlock.');
   }
   if (response.status === 401) {
+    var restored = await refreshSession();
+    if (restored) {
+      if (retryFn) {
+        return retryFn();
+      }
+      window.location.reload();
+      throw new Error('Session expired');
+    }
     window.location.href = '/';
     throw new Error('Session expired');
   }
@@ -663,6 +748,12 @@ async function fetchWithEncKey(input, init, retryOnUnlock) {
     if (kind === 'enc_key') {
       var unlocked = await ensureEncryptionKeyUnlocked();
       if (unlocked) {
+        options.headers = await withCsrfAsync(options.headers || {});
+        return originalFetch(input, options);
+      }
+    } else {
+      var restored = await refreshSession();
+      if (restored) {
         options.headers = await withCsrfAsync(options.headers || {});
         return originalFetch(input, options);
       }
@@ -1842,9 +1933,18 @@ function sleepMs(ms) {
   return new Promise(function (resolve) { setTimeout(resolve, ms); });
 }
 
-function fetchWithGenerateRetry(url, init, attempt) {
+function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
   attempt = attempt || 0;
   return fetch(url, init).then(function (res) {
+    if (res.status === 401 && !afterRefresh) {
+      return refreshSession().then(function (restored) {
+        if (!restored) {
+          window.location.href = '/';
+          throw new Error('Session expired');
+        }
+        return fetchWithGenerateRetry(url, refreshCsrfInit(init), attempt, true);
+      });
+    }
     if ((res.status === 429 || (res.status === 400 && attempt < 8)) && attempt < 12) {
       return sleepMs(200 + attempt * 150).then(function () {
         if (init && init.signal && init.signal.aborted) {
@@ -1852,7 +1952,7 @@ function fetchWithGenerateRetry(url, init, attempt) {
           err.name = 'AbortError';
           throw err;
         }
-        return fetchWithGenerateRetry(url, init, attempt + 1);
+        return fetchWithGenerateRetry(url, init, attempt + 1, afterRefresh);
       });
     }
     return res;
@@ -3618,8 +3718,20 @@ $(document).ready(function() {
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
     })
-      .then(r => r.json())
+      .then(function (r) {
+        if (r.status === 401 && !isRetry) {
+          return refreshSession().then(function (restored) {
+            if (!restored) {
+              window.location.href = '/';
+              return null;
+            }
+            return saveSystemPromptNow(sysPromptText, true).then(function () { return null; });
+          });
+        }
+        return r.json();
+      })
       .then(data => {
+        if (!data) return;
         if (data.status === 'success') {
           noteSetVersionFromResponse(data);
           appendMessage('System prompt saved successfully.', 'system-message');
@@ -3645,8 +3757,20 @@ $(document).ready(function() {
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
     })
-      .then(r => r.json())
+      .then(function (r) {
+        if (r.status === 401 && !isRetry) {
+          return refreshSession().then(function (restored) {
+            if (!restored) {
+              window.location.href = '/';
+              return null;
+            }
+            return saveMemoryNow(memText, true).then(function () { return null; });
+          });
+        }
+        return r.json();
+      })
       .then(data => {
+        if (!data) return;
         if (data.status === 'success') {
           noteSetVersionFromResponse(data);
           appendMessage('Memory saved successfully.', 'system-message');
