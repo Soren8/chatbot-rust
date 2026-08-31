@@ -70,7 +70,12 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
                 remember_set_cookie: remember_store::build_set_cookie(&replacement_token),
             })
         }
-        Ok(remember_store::ResumeOutcome::Invalid) => None,
+        Ok(remember_store::ResumeOutcome::Invalid) => {
+            tracing::info!(
+                "remember token presented but not valid (expired, revoked, or replayed)"
+            );
+            None
+        }
         Err(err) => {
             warn!(?err, "remember token auto-restore failed");
             None

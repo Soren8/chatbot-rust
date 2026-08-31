@@ -100,6 +100,10 @@ async fn login_get_renders_form_with_security_headers() {
         body_str.contains("<form action=\"/login\" method=\"post\">"),
         "login form markup present"
     );
+    assert!(
+        body_str.contains("name=\"remember_me\" id=\"remember_me\" value=\"on\" checked"),
+        "remember checkbox should default to checked so sessions auto-restore"
+    );
 
     let csrf = common::extract_csrf_token(body_str).expect("csrf token embedded in login form");
     assert!(
