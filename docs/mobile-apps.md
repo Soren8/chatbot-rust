@@ -167,7 +167,11 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 - Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for production flavor. These http URLs are for the native app (which derives/stores keys via the OS plugin and does not rely on browser secure context). For any browser-based testing, use http://localhost or a https URL.
 - Server URL is read from the `server_url` string resource (flavor-specific) and passed to `VoiceScreen` via `CarContext.getString(R.string.server_url)`
 
-**Note**: WebView uses `LOAD_DEFAULT` so `<img src="/history_image/...">` can be cached like a normal browser. Use the in-app reload control if a stale `chat.js` is stuck after a server update. Rebuild the APK after changing `MainActivity` cache mode.
+**Note**: WebView uses `LOAD_DEFAULT` so `<img src="/history_image/...">` can be cached like a normal browser. The server marks the app shell (home/login HTML) `Cache-Control: no-store` — those must always reflect live session state (per-session CSRF token, session auto-restore after a server restart). Use the in-app reload control if a stale `chat.js` is stuck after a server update. Rebuild the APK after changing `MainActivity` cache mode.
+
+### Key cache & biometrics
+
+`NativeSecureKey` keeps one encrypted keystore entry **per account** (`account` parameter on `storeKey`/`getKey`/`clearKey`). Prompt cadence: one fingerprint/PIN per login from cached credentials (cold app start), none for username/password logins (the key was just derived and the plugin caches it), none within a running app session. Clearing app storage removes WebView data and cookies but **not** Android Keystore entries — those follow the app itself (uninstall). Plugin changes always require an APK rebuild; JS/template changes come from the server.
 
 ---
 

@@ -101,18 +101,17 @@ Enrollment flow: login derives the key client-side → server stores key verifie
 
 Existing users without a verifier get one created on the first authenticated request that presents a valid derived key (same key as password login). Until the client sends `X-Enc-Key`, encrypted endpoints return **401** with a clear unlock message.
 
-### Remember tokens (opt-in session persistence)
-
+### Remembered devices & cached logins
 *Implemented August 2026*
 
-"Remember this computer for 30 days" (login checkbox, default **off**) issues a durable device token so an in-memory session can be restored after a server restart. Security properties:
+**Remember this computer for 30 days** (login checkbox, checked by default; unchecking opts the device out and revokes any token it holds) issues a durable device token that restores the HTTP session after a server restart. Design properties:
 
-- **Session-only.** The token restores the HTTP session; every data endpoint still requires `X-Enc-Key`. A stolen token on another machine has no client key store and decrypts nothing (two-secrets model unchanged).
-- **Hashed at rest.** Token = `family_id(16B) || secret(32B)`; the server persists only `sha256(secret)` per family under `data/remember_tokens/`. A disk leak yields nothing usable.
-- **Rotated single-use.** Every restore rotates the secret. The previous generation gets a one-step grace pass (rejected, but the family survives) so concurrent tabs refreshing after a restart don't revoke each other's token; a token two or more generations stale is treated as theft and revokes the entire family — including the currently valid token.
-- **HttpOnly cookie** (`SameSite=Lax; Path=/; Max-Age=2592000`, `Secure` when CSRF is on), so XSS cannot read it. Restore requires the per-session CSRF token (`POST /login/remember`), preventing login-CSRF. Logout revokes the family and clears the cookie.
-- **Silent resume on app entry.** `GET /` with a guest session plus a valid remember cookie restores the session server-side (rotating the token) so a restart is invisible; the client then unlocks data from its cached key slot. If the device has no cached key slot (site data cleared, cookies survived), the chat page's key gate prompts sign-in. Authenticated visits never touch the token.
-- **`/login` never auto-restores.** It is the account-selection surface: the username section becomes a dropdown listing device-local cached accounts (keyed by plaintext username — a deliberate trade-off: anyone with the device already holds the cached keys, and "remember me" grants the session anyway) plus an "Other account…" option for typing. Picking a cached account hides the password and remember-me fields; Login then proves the cached key against the server verifier (`POST /login/keyauth`, CSRF-guarded, rate-limited, no new server-side state) and falls back to the sign-in form on failure. A ✕ control forgets the selected account: the key slot is deleted locally and the remember token is revoked via `/logout` (it may belong to the forgotten account), so nothing about that account resumes password-free afterwards. Logout alone revokes the token but keeps the slot — removal is the forget control's job. **The checkbox gates password-free re-entry, not the session key cache**: a slot is written on every successful login because the live session needs it for `X-Enc-Key`, but only slots written with "Remember this computer" checked are offered in the dropdown or may serve `keyauth`; an unchecked login downgrades that account's slot (and revokes the device's remember token server-side, a true opt-out).
+- **Session-only.** The token restores the HTTP session; every data endpoint still requires `X-Enc-Key`, so a stolen token on another machine decrypts nothing (two-secrets model unchanged).
+- **Hashed at rest, rotated on use.** The server persists only a hash of the token's current secret, and every restore rotates it. Recent-generation tokens get a grace pass so concurrent tabs refreshing after a restart don't revoke each other; older replays revoke the whole family. Logout revokes and clears it.
+- **HttpOnly cookie** (`Secure` when CSRF is on) — note that Android WebView refuses `Secure` cookies over plain HTTP, so plain-HTTP deployments need `csrf: false` (or HTTPS) for mobile sessions to work at all.
+- **Silent resume on app entry.** `GET /` restores a remembered session for guest visitors, making restarts invisible. `/login` never auto-restores — it is the account-selection surface.
+- **Cached-account login.** Accounts whose key is cached on the device (remembered logins) appear in the login page's account dropdown and can sign in password-free by presenting the cached encryption key, which the server verifies against its HMAC verifier — no new server-side state. A ✕ control forgets an account locally and revokes its token if it holds one.
+- **Checkbox semantics.** The key cache always backs the live session (the client must hold the key for `X-Enc-Key`), but only remembered logins stay usable password-free afterwards.
 
 ## Current Architecture Status
 *As of July 2026*
