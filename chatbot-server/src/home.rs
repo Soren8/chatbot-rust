@@ -283,7 +283,12 @@ fn build_response(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/html; charset=utf-8"),
         )
-        .header("Content-Security-Policy", SECURITY_CSP);
+        .header("Content-Security-Policy", SECURITY_CSP)
+        // The rendered page carries the username and a per-session CSRF token
+        // and must reflect the live session state (the Capacitor WebView runs
+        // with LOAD_DEFAULT and would otherwise serve a stale guest page after
+        // a server restart, skipping session auto-restore entirely).
+        .header(header::CACHE_CONTROL, "no-store");
 
     builder = builder
         .header("X-Content-Type-Options", "nosniff")

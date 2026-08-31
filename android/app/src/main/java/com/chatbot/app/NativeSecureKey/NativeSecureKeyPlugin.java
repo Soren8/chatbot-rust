@@ -119,7 +119,7 @@ public class NativeSecureKeyPlugin extends Plugin {
             if (perAccount) {
                 unlockedKeys.put(account, key);
             }
-            Log.i(TAG, "stored wrapped encryption key");
+            Log.i(TAG, "stored wrapped encryption key (account=" + account + ", cached=" + perAccount + ")");
             JSObject result = new JSObject();
             result.put("stored", true);
             call.resolve(result);
@@ -171,6 +171,7 @@ public class NativeSecureKeyPlugin extends Plugin {
                         if (account != null && !account.isEmpty()) {
                             unlockedKeys.put(account, key);
                         }
+                        Log.i(TAG, "unlocked encryption key (account=" + account + ", prompted=true)");
                         JSObject result = new JSObject();
                         result.put("key", key);
                         call.setKeepAlive(false);
