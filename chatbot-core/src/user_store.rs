@@ -57,6 +57,8 @@ struct UserRecord {
     autoplay_tts: bool,
     #[serde(default = "default_web_search")]
     web_search: bool,
+    #[serde(default = "default_voice_mode")]
+    voice_mode: bool,
 }
 
 fn default_autoplay_tts() -> bool {
@@ -64,6 +66,10 @@ fn default_autoplay_tts() -> bool {
 }
 
 fn default_web_search() -> bool {
+    false
+}
+
+fn default_voice_mode() -> bool {
     false
 }
 
@@ -172,6 +178,7 @@ impl UserStore {
                 render_markdown: true,
                 autoplay_tts: false,
                 web_search: false,
+                voice_mode: false,
             },
         );
 
@@ -309,6 +316,7 @@ impl UserStore {
         render_markdown: Option<bool>,
         autoplay_tts: Option<bool>,
         web_search: Option<bool>,
+        voice_mode: Option<bool>,
     ) -> Result<(), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let mut users = self.load_users()?;
@@ -329,6 +337,9 @@ impl UserStore {
             if let Some(web_search) = web_search {
                 record.web_search = web_search;
             }
+            if let Some(voice_mode) = voice_mode {
+                record.voice_mode = voice_mode;
+            }
         } else {
             return Err(UserStoreError::Crypto("User not found".into()));
         }
@@ -340,7 +351,7 @@ impl UserStore {
     pub fn user_preferences(
         &self,
         username: &str,
-    ) -> Result<(Option<String>, Option<String>, bool, bool, bool), UserStoreError> {
+    ) -> Result<(Option<String>, Option<String>, bool, bool, bool, bool), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
 
@@ -351,9 +362,10 @@ impl UserStore {
                 record.render_markdown,
                 record.autoplay_tts,
                 record.web_search,
+                record.voice_mode,
             ))
         } else {
-            Ok((None, None, true, false, false))
+            Ok((None, None, true, false, false, false))
         }
     }
 

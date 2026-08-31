@@ -128,8 +128,12 @@ fn native_vad_stop_does_not_stop_a_newer_bridge() {
 fn voice_mode_survives_capacitor_reload_without_a_second_tap() {
     let chat_js = include_str!("../../static/chat.js");
     assert!(
-        chat_js.contains("chatbotVoiceModeWanted"),
+        chat_js.contains("persistVoiceModeWanted") && chat_js.contains("voiceModeWanted"),
         "voice mode on/off must persist across location.reload() (Capacitor reload-ui)"
+    );
+    assert!(
+        chat_js.contains("voice_mode") && chat_js.contains("/update_preferences"),
+        "voice mode persistence must be server-side (per-account), consistent with web search"
     );
     assert!(
         chat_js.contains("recoverNativeVoice") || chat_js.contains("_recoverNativeVoice"),

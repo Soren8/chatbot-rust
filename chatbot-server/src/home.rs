@@ -148,6 +148,7 @@ struct UserDetails {
     render_markdown: bool,
     autoplay_tts: bool,
     web_search: bool,
+    voice_mode: bool,
 }
 
 fn resolve_user_details(username: Option<&str>) -> UserDetails {
@@ -165,6 +166,7 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                         render_markdown: true,
                         autoplay_tts: false,
                         web_search: false,
+                        voice_mode: false,
                     };
                 }
             };
@@ -174,9 +176,9 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                 FREE_TIER.to_string()
             });
 
-            let (last_set, last_model, render_markdown, autoplay_tts, web_search) = store.user_preferences(name).unwrap_or_else(|err| {
+            let (last_set, last_model, render_markdown, autoplay_tts, web_search, voice_mode) = store.user_preferences(name).unwrap_or_else(|err| {
                  warn!(?err, "failed to load user preferences");
-                 (None, None, true, false, false)
+                 (None, None, true, false, false, false)
             });
 
             UserDetails {
@@ -187,6 +189,7 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                 render_markdown,
                 autoplay_tts,
                 web_search,
+                voice_mode,
             }
         }
         None => UserDetails {
@@ -197,6 +200,7 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
             render_markdown: true,
             autoplay_tts: false,
             web_search: false,
+            voice_mode: false,
         },
     }
 }
@@ -248,6 +252,7 @@ fn render_template(
         render_markdown => user_details.render_markdown,
         autoplay_tts => user_details.autoplay_tts,
         web_search => user_details.web_search,
+        voice_mode => user_details.voice_mode,
         available_llms => available_models,
         default_system_prompt => default_prompt,
         csrf_token => csrf_token,
@@ -334,6 +339,7 @@ mod tests {
             render_markdown: true,
             autoplay_tts: false,
             web_search: false,
+            voice_mode: false,
         };
         let available_models = vec![FrontendModel {
             provider_name: "test-model".to_string(),

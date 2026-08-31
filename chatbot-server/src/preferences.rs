@@ -20,6 +20,7 @@ struct UpdatePreferencesRequest {
     render_markdown: Option<bool>,
     autoplay_tts: Option<bool>,
     web_search: Option<bool>,
+    voice_mode: Option<bool>,
 }
 
 pub async fn handle_update_preferences(
@@ -71,6 +72,7 @@ pub async fn handle_update_preferences(
                 payload.render_markdown,
                 payload.autoplay_tts,
                 payload.web_search,
+                payload.voice_mode,
             )
             .map_err(|err| {
                 map_user_store_err(err, "preferences::post::update", "store error")

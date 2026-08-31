@@ -30,6 +30,7 @@ try {
         renderMarkdown: cfg && cfg.renderMarkdown !== undefined ? cfg.renderMarkdown : true,
         autoplayTTS: cfg && cfg.autoplayTTS !== undefined ? cfg.autoplayTTS : false,
         webSearch: cfg && cfg.webSearch !== undefined ? cfg.webSearch : false,
+        voiceMode: cfg && cfg.voiceMode !== undefined ? cfg.voiceMode : false,
         lastSet: (cfg && cfg.lastSet) || null,
         lastModel: (cfg && cfg.lastModel) || null,
       };
@@ -41,7 +42,7 @@ try {
       });
       window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
     } else {
-      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true, autoplayTTS: false, webSearch: false };
+      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true, autoplayTTS: false, webSearch: false, voiceMode: false };
       window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || '';
     }
   }
@@ -3140,7 +3141,8 @@ $(document).ready(function() {
           last_set: currentSet,
           render_markdown: renderMarkdown,
           autoplay_tts: autoplayTTS,
-          web_search: window.APP_DATA.webSearch
+          web_search: window.APP_DATA.webSearch,
+          voice_mode: window.APP_DATA.voiceMode
       };
 
       fetch('/update_preferences', {
@@ -4954,7 +4956,6 @@ $(document).ready(function() {
   }
   window.playNativeVoiceModeTts = playNativeVoiceModeTts;
 
-  const VOICE_MODE_WANTED_KEY = 'chatbotVoiceModeWanted';
   let voiceScreenWakeLock = null;
 
   function releaseVoiceScreenWakeLock() {
@@ -4990,14 +4991,19 @@ $(document).ready(function() {
   }
 
   function persistVoiceModeWanted(on) {
-    try {
-      if (on) sessionStorage.setItem(VOICE_MODE_WANTED_KEY, '1');
-      else sessionStorage.removeItem(VOICE_MODE_WANTED_KEY);
-    } catch (e) { /* ignore */ }
+    window.APP_DATA.voiceMode = on;
+    if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
+    fetch('/update_preferences', {
+      method: 'POST',
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ voice_mode: on }),
+    }).catch(function (err) {
+      console.debug('Failed to save voice mode preference:', err);
+    });
   }
 
   function voiceModeWanted() {
-    try { return sessionStorage.getItem(VOICE_MODE_WANTED_KEY) === '1'; } catch (e) { return false; }
+    return !!(window.APP_DATA && window.APP_DATA.voiceMode);
   }
 
   async function startVoiceMode(attempt) {

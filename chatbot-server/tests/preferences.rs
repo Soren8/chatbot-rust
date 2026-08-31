@@ -107,7 +107,9 @@ async fn preferences_persistence() {
                 .body(Body::from(serde_json::to_vec(&json!({
                     "last_set": "my-set",
                     "last_model": "gpt-4",
-                    "render_markdown": false
+                    "render_markdown": false,
+                    "web_search": true,
+                    "voice_mode": true
                 })).unwrap()))
                 .unwrap(),
         )
@@ -131,4 +133,6 @@ async fn preferences_persistence() {
     assert!(body_str.contains(r#"lastSet": "my-set"#));
     assert!(body_str.contains(r#"lastModel": "gpt-4"#));
     assert!(body_str.contains(r#"renderMarkdown": false"#));
+    assert!(body_str.contains(r#"webSearch": true"#));
+    assert!(body_str.contains(r#"voiceMode": true"#));
 }
