@@ -82,8 +82,9 @@ function showLoginError(message) {
 
 /// Submit the login form via fetch so a failed attempt renders as an inline
 /// notice on the login page. On success the server answers with a redirect
-/// that sets the session cookie; we then navigate to it.
-async function postLogin(form) {
+/// that sets the session cookie; we then run `onSuccess` (used to cache the
+/// verified encryption key) and navigate. Failures never cache the key.
+async function postLogin(form, onSuccess) {
   try {
     const body = new URLSearchParams(new FormData(form)).toString();
     const resp = await fetch('/login', {
@@ -92,6 +93,13 @@ async function postLogin(form) {
       body: body,
     });
     if (resp.status >= 200 && resp.status < 400) {
+      if (typeof onSuccess === 'function') {
+        try {
+          await onSuccess();
+        } catch (e) {
+          console.error('post-login key caching failed', e);
+        }
+      }
       window.location.href = '/';
       return;
     }
@@ -266,6 +274,7 @@ $(function() {
 
     const username = $('#username').val().trim();
     const password = $('#password').val();
+    let derivedKey = null;
 
     if (!username || !password) {
       await postLogin(form);
@@ -287,7 +296,6 @@ $(function() {
       }
 
       const data = await resp.json();
-      let derivedKey;
       try {
         derivedKey = await deriveKeyForLogin(password, data.salt);
       } catch (deriveErr) {
@@ -306,22 +314,6 @@ $(function() {
         return;
       }
 
-      if (window.EncKey && window.EncKey.storeFromLogin) {
-        // The slot always backs the live session (X-Enc-Key); the checkbox
-        // only decides whether the account stays usable password-free later.
-        const rememberChecked = $('#remember_me').is(':checked');
-        try {
-          await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username, rememberChecked);
-          const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
-          if (!ok) {
-            throw new Error('Encryption key did not persist on this device');
-          }
-        } catch (storeErr) {
-          console.error('Failed to store encryption key locally', storeErr);
-          alert('Could not save encryption key on this device. Login cannot continue.');
-          return;
-        }
-      }
       form.querySelector('input[name="storage_key"]')?.remove();
       $('<input>').attr({
         type: 'hidden',
@@ -334,6 +326,24 @@ $(function() {
       return;
     }
 
-    await postLogin(form);
+    // Cache the key only after the server has verified it (a failed login must
+    // not land in the saved-account dropdown). The slot backs the live session
+    // (X-Enc-Key); `remember_me` only decides password-free re-entry later.
+    await postLogin(form, async function () {
+      if (!derivedKey || !window.EncKey || !window.EncKey.storeFromLogin) {
+        return;
+      }
+      const rememberChecked = $('#remember_me').is(':checked');
+      try {
+        await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username, rememberChecked);
+        const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
+        if (!ok) {
+          throw new Error('Encryption key did not persist on this device');
+        }
+      } catch (storeErr) {
+        console.error('Failed to store encryption key locally', storeErr);
+        throw storeErr;
+      }
+    });
   });
 });
