@@ -29,6 +29,7 @@ try {
         sendThoughts: cfg && cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
         renderMarkdown: cfg && cfg.renderMarkdown !== undefined ? cfg.renderMarkdown : true,
         autoplayTTS: cfg && cfg.autoplayTTS !== undefined ? cfg.autoplayTTS : false,
+        webSearch: cfg && cfg.webSearch !== undefined ? cfg.webSearch : false,
         lastSet: (cfg && cfg.lastSet) || null,
         lastModel: (cfg && cfg.lastModel) || null,
       };
@@ -40,7 +41,7 @@ try {
       });
       window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
     } else {
-      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true, autoplayTTS: false };
+      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true, autoplayTTS: false, webSearch: false };
       window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || '';
     }
   }
@@ -1485,6 +1486,14 @@ function updateSearchToggleVisibility() {
     const $searchToggle = $('#web-search-toggle');
     if ($selected.data('search') === true || $selected.data('search') === 'true') {
         $searchToggle.show();
+        // Reflect the per-account preference stored on the server.
+        if (window.APP_DATA && window.APP_DATA.webSearch) {
+            $searchToggle.removeClass('btn-outline-secondary').addClass('btn-primary');
+            $searchToggle.attr('title', 'Web Search: ON');
+        } else {
+            $searchToggle.removeClass('btn-primary').addClass('btn-outline-secondary');
+            $searchToggle.attr('title', 'Web Search: OFF');
+        }
     } else {
         $searchToggle.hide();
         // Reset search to OFF if not supported
@@ -3130,7 +3139,8 @@ $(document).ready(function() {
           last_model: currentModel,
           last_set: currentSet,
           render_markdown: renderMarkdown,
-          autoplay_tts: autoplayTTS
+          autoplay_tts: autoplayTTS,
+          web_search: window.APP_DATA.webSearch
       };
 
       fetch('/update_preferences', {
@@ -4126,11 +4136,27 @@ $(document).ready(function() {
       if (isActive) {
           $(this).removeClass('btn-primary').addClass('btn-outline-secondary');
           $(this).attr('title', 'Web Search: OFF');
+          window.APP_DATA.webSearch = false;
       } else {
           $(this).removeClass('btn-outline-secondary').addClass('btn-primary');
           $(this).attr('title', 'Web Search: ON');
+          window.APP_DATA.webSearch = true;
       }
+      persistWebSearchPref();
   });
+
+  // Persist the web-search preference to the server (per-account) so it
+  // survives refreshes and follows the user across devices.
+  function persistWebSearchPref() {
+      if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
+      fetch('/update_preferences', {
+          method: 'POST',
+          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ web_search: window.APP_DATA.webSearch }),
+      }).catch(function (err) {
+          console.debug('Failed to save web search preference:', err);
+      });
+  }
 
   // Microphone / STT
   const $micBtn = $('#mic-button');

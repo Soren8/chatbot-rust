@@ -55,9 +55,15 @@ struct UserRecord {
     render_markdown: bool,
     #[serde(default = "default_autoplay_tts")]
     autoplay_tts: bool,
+    #[serde(default = "default_web_search")]
+    web_search: bool,
 }
 
 fn default_autoplay_tts() -> bool {
+    false
+}
+
+fn default_web_search() -> bool {
     false
 }
 
@@ -165,6 +171,7 @@ impl UserStore {
                 last_model: None,
                 render_markdown: true,
                 autoplay_tts: false,
+                web_search: false,
             },
         );
 
@@ -301,6 +308,7 @@ impl UserStore {
         last_model: Option<String>,
         render_markdown: Option<bool>,
         autoplay_tts: Option<bool>,
+        web_search: Option<bool>,
     ) -> Result<(), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let mut users = self.load_users()?;
@@ -318,6 +326,9 @@ impl UserStore {
             if let Some(autoplay) = autoplay_tts {
                 record.autoplay_tts = autoplay;
             }
+            if let Some(web_search) = web_search {
+                record.web_search = web_search;
+            }
         } else {
             return Err(UserStoreError::Crypto("User not found".into()));
         }
@@ -329,7 +340,7 @@ impl UserStore {
     pub fn user_preferences(
         &self,
         username: &str,
-    ) -> Result<(Option<String>, Option<String>, bool, bool), UserStoreError> {
+    ) -> Result<(Option<String>, Option<String>, bool, bool, bool), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
 
@@ -339,9 +350,10 @@ impl UserStore {
                 record.last_model.clone(),
                 record.render_markdown,
                 record.autoplay_tts,
+                record.web_search,
             ))
         } else {
-            Ok((None, None, true, false))
+            Ok((None, None, true, false, false))
         }
     }
 
