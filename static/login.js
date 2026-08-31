@@ -261,27 +261,19 @@ $(function() {
       }
 
       if (window.EncKey && window.EncKey.storeFromLogin) {
+        // The slot always backs the live session (X-Enc-Key); the checkbox
+        // only decides whether the account stays usable password-free later.
         const rememberChecked = $('#remember_me').is(':checked');
-        if (rememberChecked) {
-          try {
-            await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username);
-            const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
-            if (!ok) {
-              throw new Error('Encryption key did not persist on this device');
-            }
-          } catch (storeErr) {
-            console.error('Failed to store encryption key locally', storeErr);
-            alert('Could not save encryption key on this device. Login cannot continue.');
-            return;
+        try {
+          await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username, rememberChecked);
+          const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
+          if (!ok) {
+            throw new Error('Encryption key did not persist on this device');
           }
-        } else {
-          // Unchecked "remember": this login must not stay cached — drop any
-          // slot a previous remembered login left for this account.
-          try {
-            await window.EncKey.removeSlot(username);
-          } catch (err) {
-            console.debug('removing cached key failed', err);
-          }
+        } catch (storeErr) {
+          console.error('Failed to store encryption key locally', storeErr);
+          alert('Could not save encryption key on this device. Login cannot continue.');
+          return;
         }
       }
       $('<input>').attr({

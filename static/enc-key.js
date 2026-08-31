@@ -218,12 +218,19 @@
     await idbDelete(LEGACY_WEBAUTHN_CRED_ID);
   }
 
-  async function storeWrappedKey(rawKeyB64, mode, username) {
+  // `remembered` gates password-free re-entry (dropdown + keyauth); the slot
+  // itself is always written because the logged-in session needs it for
+  // X-Enc-Key on every data request.
+  async function storeWrappedKey(rawKeyB64, mode, username, remembered) {
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', { key: rawKeyB64 });
       cachedKey = rawKeyB64;
       if (username || currentUsername()) {
-        await idbSet(await slotKey(username), { mode: 'native-keystore', updatedAt: Date.now() });
+        await idbSet(slotKey(username), {
+          mode: 'native-keystore',
+          remembered: !!remembered,
+          updatedAt: Date.now(),
+        });
       }
       await removeLegacySlots();
       return;
@@ -245,9 +252,10 @@
     }
     const wrapKey = await ensureWrapKey();
     const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
-    await idbSet(await slotKey(name), {
+    await idbSet(slotKey(name), {
       wrapped,
       mode: mode || 'indexeddb',
+      remembered: !!remembered,
       updatedAt: Date.now(),
     });
     cachedKey = rawKeyB64;
@@ -353,33 +361,19 @@
         ))
         .map((entry) => ({
           username: entry.key.slice(SLOT_PREFIX.length),
+          remembered: entry.value.remembered !== false,
           updatedAt: entry.value.updatedAt || 0,
         }))
-        // Entries from the old hashed-slot scheme are unusable now (the
-        // server no longer maps hashes); hide them.
-        .filter((entry) => !/^[0-9a-f]{64}$/.test(entry.username))
+        // Only accounts whose login had "Remember this computer" checked are
+        // offered password-free re-entry. Legacy hashed-slot entries from the
+        // old scheme are unusable now (the server no longer maps hashes) and
+        // are hidden too.
+        .filter((entry) => entry.remembered && !/^[0-9a-f]{64}$/.test(entry.username))
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((entry) => entry.username);
     } catch (err) {
       console.debug('enc-key: unable to list cached accounts', err);
       return [];
-    }
-  }
-
-  async function hasCachedAccount(username) {
-    if (isNativeSecureStorage()) {
-      try {
-        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
-        return !!(result && result.key);
-      } catch (_) {
-        return false;
-      }
-    }
-    try {
-      const record = await idbGet(await slotKey(username));
-      return !!record;
-    } catch (_) {
-      return false;
     }
   }
 
@@ -527,8 +521,13 @@
   }
 
   // Slot-lookup variants used by the login page, which knows the username
-  // from the account dropdown but has no session yet.
+  // from the account dropdown but has no session yet. Only remembered slots
+  // (login had "Remember this computer" checked) may serve keyauth.
   async function getKeyForUsername(username) {
+    const record = await idbGet(slotKey(username));
+    if (!record || record.remembered === false || record.mode === 'webauthn-prf') {
+      return null;
+    }
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
         const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
@@ -544,8 +543,7 @@
     if (!hasWebCrypto() || !isSecureContext()) {
       return null;
     }
-    const record = await idbGet(slotKey(username));
-    if (!record || record.mode === 'webauthn-prf' || !record.wrapped) {
+    if (!record.wrapped) {
       return null;
     }
     const wrapKey = await idbGet(WRAP_KEY_ID);
@@ -662,7 +660,6 @@
     lock,
     clearStoredKey,
     listCachedAccounts,
-    hasCachedAccount,
     getKeyForUsername,
     unlockWithWebAuthnForUser,
     touchSlot,
