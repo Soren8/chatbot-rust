@@ -57,9 +57,55 @@ async function deriveKeyForLogin(password, saltB64) {
 function showLoginNotice(message) {
   const $notice = $('#login-notice');
   if ($notice.length) {
-    $notice.text(message).removeClass('d-none');
+    $notice
+      .text(message)
+      .removeClass('d-none alert-danger')
+      .addClass('alert-warning');
   } else {
     console.info(message);
+  }
+}
+
+/// Show a login failure inline as a red alert. Failures must stay on the page
+/// rather than navigating to a bare error page.
+function showLoginError(message) {
+  const $notice = $('#login-notice');
+  if ($notice.length) {
+    $notice
+      .text(message)
+      .removeClass('d-none alert-warning')
+      .addClass('alert-danger');
+  } else {
+    console.info(message);
+  }
+}
+
+/// Submit the login form via fetch so a failed attempt renders as an inline
+/// notice on the login page. On success the server answers with a redirect
+/// that sets the session cookie; we then navigate to it.
+async function postLogin(form) {
+  try {
+    const body = new URLSearchParams(new FormData(form)).toString();
+    const resp = await fetch('/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body,
+    });
+    if (resp.status >= 200 && resp.status < 400) {
+      window.location.href = '/';
+      return;
+    }
+    let message = 'Invalid credentials';
+    try {
+      const data = await resp.json();
+      if (data && data.error) {
+        message = data.error;
+      }
+    } catch (e) {}
+    showLoginError(message);
+  } catch (err) {
+    console.error('login submission failed', err);
+    showLoginError('Could not reach the server. Please try again.');
   }
 }
 
@@ -222,7 +268,7 @@ $(function() {
     const password = $('#password').val();
 
     if (!username || !password) {
-      form.submit();
+      await postLogin(form);
       return;
     }
 
@@ -236,7 +282,7 @@ $(function() {
           return;
         }
         console.warn('Could not fetch salt, falling back to server derivation');
-        form.submit();
+        await postLogin(form);
         return;
       }
 
@@ -256,7 +302,7 @@ $(function() {
           return;
         }
         console.log('Web Crypto unavailable. Using server-side derivation.');
-        form.submit();
+        await postLogin(form);
         return;
       }
 
@@ -276,6 +322,7 @@ $(function() {
           return;
         }
       }
+      form.querySelector('input[name="storage_key"]')?.remove();
       $('<input>').attr({
         type: 'hidden',
         name: 'storage_key',
@@ -287,6 +334,6 @@ $(function() {
       return;
     }
 
-    form.submit();
+    await postLogin(form);
   });
 });
