@@ -223,10 +223,14 @@
   // X-Enc-Key on every data request.
   async function storeWrappedKey(rawKeyB64, mode, username, remembered) {
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
-      await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', { key: rawKeyB64 });
+      const name = username || currentUsername();
+      await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', {
+        key: rawKeyB64,
+        account: name,
+      });
       cachedKey = rawKeyB64;
-      if (username || currentUsername()) {
-        await idbSet(slotKey(username), {
+      if (name) {
+        await idbSet(slotKey(name), {
           mode: 'native-keystore',
           remembered: !!remembered,
           updatedAt: Date.now(),
@@ -281,7 +285,9 @@
     }
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
-        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
+        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {
+          account: username || currentUsername(),
+        });
         cachedKey = result && result.key ? result.key : null;
       } catch (err) {
         console.error('native secure key read failed', err);
@@ -382,7 +388,9 @@
     sessionStorage.removeItem('chatbot_enc_key');
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
-        await global.NativeBridge.callNativePlugin('NativeSecureKey', 'clearKey', {});
+        await global.NativeBridge.callNativePlugin('NativeSecureKey', 'clearKey', {
+          account: username,
+        });
       } catch (err) {
         console.debug('native secure key clear failed', err);
       }
@@ -530,7 +538,9 @@
     }
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
-        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {});
+        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {
+          account: username,
+        });
         if (result && result.key) {
           cachedKey = result.key;
           return cachedKey;
@@ -620,13 +630,15 @@
   }
 
   // Remove one account's cached credentials from this browser: the key slot
-  // (and, on native, the single keystore key). The account can still be used
-  // afterwards, but only via its password.
+  // and, on native, that account's keystore entry. The account can still be
+  // used afterwards, but only via its password.
   async function removeSlot(username) {
     cachedKey = null;
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       try {
-        await global.NativeBridge.callNativePlugin('NativeSecureKey', 'clearKey', {});
+        await global.NativeBridge.callNativePlugin('NativeSecureKey', 'clearKey', {
+          account: username,
+        });
       } catch (err) {
         console.debug('native secure key clear failed', err);
       }

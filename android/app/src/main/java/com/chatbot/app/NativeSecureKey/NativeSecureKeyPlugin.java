@@ -22,6 +22,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 
 import javax.crypto.Cipher;
@@ -41,6 +43,25 @@ public class NativeSecureKeyPlugin extends Plugin {
     private static final String LEGACY_KEY_ALIAS = "chatbot_native_secure_key";
     private static final int PBKDF2_ITERATIONS = 100_000;
     private static final int PBKDF2_KEY_BITS = 256;
+
+    /**
+     * Keys returned by getKey for this app-process lifetime, keyed by account.
+     * Lets one biometric unlock cover a whole login flow (keyauth call plus
+     * the chat page that follows) and keeps password logins prompt-free,
+     * since storeKey primes the cache. Cleared on clearKey / process death.
+     */
+    private final Map<String, String> unlockedKeys = new ConcurrentHashMap<>();
+
+    private static String accountSlot(String account) {
+        if (account == null || account.isEmpty()) {
+            return "";
+        }
+        return ":" + account.replaceAll("[^A-Za-z0-9_-]", "_");
+    }
+
+    private String prefKey(String base, String account) {
+        return base + accountSlot(account);
+    }
 
     @PluginMethod
     public void deriveKeyFromPassword(PluginCall call) {
@@ -74,6 +95,7 @@ public class NativeSecureKeyPlugin extends Plugin {
     @PluginMethod
     public void storeKey(PluginCall call) {
         String key = call.getString("key");
+        String account = call.getString("account");
         if (key == null || key.isEmpty()) {
             call.reject("key is required");
             return;
@@ -85,11 +107,18 @@ public class NativeSecureKeyPlugin extends Plugin {
             cipher.init(Cipher.ENCRYPT_MODE, secretKey);
             byte[] iv = cipher.getIV();
             byte[] encrypted = cipher.doFinal(key.getBytes(StandardCharsets.UTF_8));
-            SharedPreferences prefs = prefs();
-            prefs.edit()
-                    .putString(PREF_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
-                    .putString(PREF_DATA, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+            boolean perAccount = account != null && !account.isEmpty();
+            SharedPreferences.Editor editor = prefs().edit();
+            if (perAccount) {
+                // One-time cleanup of the pre-multi-account single slot.
+                editor.remove(PREF_IV).remove(PREF_DATA);
+            }
+            editor.putString(prefKey(PREF_IV, account), Base64.encodeToString(iv, Base64.NO_WRAP))
+                    .putString(prefKey(PREF_DATA, account), Base64.encodeToString(encrypted, Base64.NO_WRAP))
                     .apply();
+            if (perAccount) {
+                unlockedKeys.put(account, key);
+            }
             Log.i(TAG, "stored wrapped encryption key");
             JSObject result = new JSObject();
             result.put("stored", true);
@@ -102,6 +131,18 @@ public class NativeSecureKeyPlugin extends Plugin {
 
     @PluginMethod
     public void getKey(PluginCall call) {
+        String account = call.getString("account");
+        if (account != null && !account.isEmpty()) {
+            String cached = unlockedKeys.get(account);
+            if (cached != null) {
+                JSObject result = new JSObject();
+                result.put("key", cached);
+                call.resolve(result);
+                return;
+            }
+        }
+        String ivPref = prefKey(PREF_IV, account);
+        String dataPref = prefKey(PREF_DATA, account);
         call.setKeepAlive(true);
         FragmentActivity activity = getActivity();
         if (activity == null) {
@@ -111,8 +152,8 @@ public class NativeSecureKeyPlugin extends Plugin {
         activity.runOnUiThread(() -> {
             try {
                 SharedPreferences prefs = prefs();
-                String ivB64 = prefs.getString(PREF_IV, null);
-                String dataB64 = prefs.getString(PREF_DATA, null);
+                String ivB64 = prefs.getString(ivPref, null);
+                String dataB64 = prefs.getString(dataPref, null);
                 if (ivB64 == null || dataB64 == null) {
                     call.setKeepAlive(false);
                     call.resolve(new JSObject());
@@ -126,8 +167,12 @@ public class NativeSecureKeyPlugin extends Plugin {
                         byte[] iv = Base64.decode(ivB64, Base64.NO_WRAP);
                         cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(128, iv));
                         byte[] decrypted = cipher.doFinal(Base64.decode(dataB64, Base64.NO_WRAP));
+                        String key = new String(decrypted, StandardCharsets.UTF_8);
+                        if (account != null && !account.isEmpty()) {
+                            unlockedKeys.put(account, key);
+                        }
                         JSObject result = new JSObject();
-                        result.put("key", new String(decrypted, StandardCharsets.UTF_8));
+                        result.put("key", key);
                         call.setKeepAlive(false);
                         call.resolve(result);
                     } catch (Exception e) {
@@ -152,7 +197,19 @@ public class NativeSecureKeyPlugin extends Plugin {
 
     @PluginMethod
     public void clearKey(PluginCall call) {
-        prefs().edit().remove(PREF_IV).remove(PREF_DATA).apply();
+        String account = call.getString("account");
+        if (account != null && !account.isEmpty()) {
+            prefs().edit()
+                    .remove(prefKey(PREF_IV, account))
+                    .remove(prefKey(PREF_DATA, account))
+                    .apply();
+            unlockedKeys.remove(account);
+            call.resolve(new JSObject());
+            return;
+        }
+        // Full wipe: every account slot plus the keystore wrapping key.
+        prefs().edit().clear().apply();
+        unlockedKeys.clear();
         try {
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);
