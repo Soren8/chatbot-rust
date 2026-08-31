@@ -410,6 +410,20 @@ pub async fn handle_login_keyauth_post(
         }
     }
 
+    // The cached key just proved the account (dropdown entries are remembered
+    // logins by definition), so keep the device auto-restorable: issue a
+    // fresh remember token for the last-used account.
+    match issue_remember_cookie(&username) {
+        Ok(set_cookie) => {
+            if let Ok(value) = HeaderValue::from_str(&set_cookie) {
+                builder = builder.header(header::SET_COOKIE, value);
+            }
+        }
+        Err(err) => {
+            warn!(?err, "failed to persist remember token after keyauth login");
+        }
+    }
+
     builder
         .body(Body::from(payload))
         .map_err(|err| map_response_build_err(err, "login::keyauth::response"))

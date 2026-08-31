@@ -672,6 +672,71 @@ async fn login_without_remember_revokes_existing_token() {
 }
 
 #[tokio::test]
+async fn keyauth_issues_remember_token_for_last_used_account() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "keyauthtoken";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    {
+        let store = UserStore::new().expect("user store");
+        let key = store
+            .derive_encryption_key(username, password)
+            .expect("derive key");
+        store
+            .ensure_key_verifier(username, &key)
+            .expect("register verifier");
+    }
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
+
+    let key_b64 = {
+        let store = UserStore::new().expect("user store");
+        String::from_utf8(
+            store
+                .derive_encryption_key(username, password)
+                .expect("derive key"),
+        )
+        .expect("key utf8")
+    };
+
+    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    let remember = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("remember=") && cookie.contains(&format!("Max-Age={REMEMBER_MAX_AGE}")))
+        .expect("keyauth must issue a remember token")
+        .clone();
+
+    // After a server restart, the app entry point auto-restores the
+    // last-used account with that token alone.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &remember)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / after keyauth");
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("read home body");
+    let body_str = std::str::from_utf8(&body).expect("utf8");
+    assert!(
+        body_str.contains("\"loggedIn\": true"),
+        "keyauth login must leave the device auto-restorable"
+    );
+}
+
+#[tokio::test]
 async fn logout_revokes_remember_token() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();

@@ -173,7 +173,7 @@ window.fetch = function(input, init) {
       )) {
         return response;
       }
-      window.location.href = '/login';
+      window.location.href = '/';
       throw new Error('Session expired');
     }
     return response;
@@ -249,7 +249,7 @@ function fetchVoiceRetry(url, buildOptions, attempts) {
     return fetch(url, opts).then(function (res) {
       if (res.ok) return res;
       if (res.status === 401) {
-        window.location.href = '/login';
+        window.location.href = '/';
         throw new Error('Session expired');
       }
       if (n > 1 && isRetryableVoiceStatus(res.status)) {
@@ -617,7 +617,7 @@ async function handle401OrRetry(response, retryFn) {
     throw new Error('Encryption key required. Please unlock.');
   }
   if (response.status === 401) {
-    window.location.href = '/login';
+    window.location.href = '/';
     throw new Error('Session expired');
   }
   return response;
@@ -1464,7 +1464,7 @@ function fetchHistoryPair(pairIndex, extra) {
     });
   }).then(function(r) {
     if (r.status === 401) {
-      window.location.href = '/login';
+      window.location.href = '/';
       throw new Error('Session expired');
     }
     if (!r.ok) throw new Error('Failed to load message');
@@ -2578,7 +2578,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     }))
   })
   .then(response => {
-    if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+    if (response.status === 401) { window.location.href = '/'; throw new Error('Session expired'); }
     if (!response.ok) {
       return response.text().then(t => {
         let errData = null;
@@ -2807,7 +2807,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
     }))
   })
   .then(r => {
-    if (r.status === 401) { window.location.href = '/login'; return null; }
+    if (r.status === 401) { window.location.href = '/'; return null; }
     return r.json().then(data => ({ ok: r.ok, status: r.status, data }));
   })
   .then(result => {
