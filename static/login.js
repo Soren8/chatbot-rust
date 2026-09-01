@@ -81,9 +81,11 @@ function showLoginError(message) {
 }
 
 /// Submit the login form via fetch so a failed attempt renders as an inline
-/// notice on the login page. On success the server answers with a redirect
-/// that sets the session cookie; we then run `onSuccess` (used to cache the
-/// verified encryption key) and navigate. Failures never cache the key.
+/// notice on the login page. A verified login is a redirect to "/" that sets
+/// the session cookie; we then run `onSuccess` (used to cache the verified
+/// encryption key) and navigate. Any other outcome — a 401, or a stale-CSRF
+/// 303 back to /login — is a failure and must never cache the key into the
+/// saved-account dropdown.
 async function postLogin(form, onSuccess) {
   try {
     const body = new URLSearchParams(new FormData(form)).toString();
@@ -91,8 +93,20 @@ async function postLogin(form, onSuccess) {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body,
+      redirect: 'manual',
     });
-    if (resp.status >= 200 && resp.status < 400) {
+    const isRedirect = resp.status >= 300 && resp.status < 400;
+    let dest = '';
+    const loc = resp.headers.get('Location') || '';
+    if (loc) {
+      try {
+        dest = new URL(loc, window.location.href).pathname;
+      } catch (e) {
+        dest = loc;
+      }
+    }
+    const success = isRedirect && dest === '/';
+    if (success) {
       if (typeof onSuccess === 'function') {
         try {
           await onSuccess();
@@ -104,12 +118,16 @@ async function postLogin(form, onSuccess) {
       return;
     }
     let message = 'Invalid credentials';
-    try {
-      const data = await resp.json();
-      if (data && data.error) {
-        message = data.error;
-      }
-    } catch (e) {}
+    if (isRedirect) {
+      message = 'Session expired. Reload and try again.';
+    } else {
+      try {
+        const data = await resp.json();
+        if (data && data.error) {
+          message = data.error;
+        }
+      } catch (e) {}
+    }
     showLoginError(message);
   } catch (err) {
     console.error('login submission failed', err);
