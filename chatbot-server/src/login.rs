@@ -374,6 +374,10 @@ pub async fn handle_login_keyauth_post(
             "Invalid encryption key. Sign in with your password.",
         ));
     }
+    // Successful use slides the verifier's 30-day window, like the remember token.
+    if let Err(err) = store.ensure_key_verifier(&username, enc_key.as_bytes()) {
+        warn!(?err, "failed to refresh key verifier after keyauth login");
+    }
 
     let finalize = session::finalize_login(cookie_header.as_deref(), &username)
         .map_err(|err| map_session_err(err, "login::keyauth::finalize"))?;

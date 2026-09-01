@@ -9,6 +9,9 @@
   // cached accounts (and forget them) by name. Only accounts whose login had
   // "Remember this computer" checked get a slot.
   const SLOT_PREFIX = 'acct:';
+  // A cached login is offered for password-free re-entry for at most this long,
+  // matching the 30-day server-side verifier expiry (and the remember token).
+  const MAX_CACHED_ACCOUNT_AGE_MS = 30 * 24 * 3600 * 1000;
   // Pre-multi-account entries; removed once a slotted login overwrites them.
   const LEGACY_WRAPPED_KEY_ID = 'wrapped-data-key';
   const LEGACY_MODE_KEY = 'storage-mode';
@@ -375,6 +378,10 @@
         // old scheme are unusable now (the server no longer maps hashes) and
         // are hidden too.
         .filter((entry) => entry.remembered && !/^[0-9a-f]{64}$/.test(entry.username))
+        // Hide cached logins older than 30 days so a stale credential can't be
+        // offered for re-entry (the server expires its verifier on the same
+        // clock).
+        .filter((entry) => !entry.updatedAt || (Date.now() - entry.updatedAt) <= MAX_CACHED_ACCOUNT_AGE_MS)
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((entry) => entry.username);
     } catch (err) {

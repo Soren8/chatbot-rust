@@ -25,6 +25,23 @@ const SALT_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const PBKDF2_ITERATIONS: u32 = 100_000;
 const KEY_VERIFIER_LABEL: &[u8] = b"chatbot-enc-key-v1";
+/// Cached encryption-key verifiers (password-free re-login) live at most this
+/// long, sliding on each successful use — matching the 30-day "remember" token.
+const KEY_VERIFIER_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
+
+fn unix_now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(Serialize, Deserialize)]
+struct KeyVerifierRecord {
+    verifier: Vec<u8>,
+    expires: u64,
+}
 
 pub static USERNAME_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").unwrap());
@@ -217,7 +234,7 @@ impl UserStore {
 
     fn key_verifier_path(&self, normalised_username: &str) -> PathBuf {
         self.key_verifiers_dir
-            .join(format!("{normalised_username}_kv"))
+            .join(format!("{normalised_username}_kv.json"))
     }
 
     fn compute_key_verifier(key: &[u8]) -> [u8; 32] {
@@ -234,19 +251,27 @@ impl UserStore {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let path = self.key_verifier_path(&normalised);
         let expected = Self::compute_key_verifier(key);
+        let expires = unix_now() + KEY_VERIFIER_MAX_AGE_SECS;
 
         if path.exists() {
-            let mut stored = [0u8; 32];
-            let mut file = File::open(&path)?;
-            file.read_exact(&mut stored)?;
-            if !constant_time_eq(&stored, &expected) {
+            let contents = fs::read_to_string(&path)?;
+            let record: KeyVerifierRecord = serde_json::from_str(&contents)
+                .map_err(|e| UserStoreError::Crypto(format!("corrupt key verifier: {e}")))?;
+            if !constant_time_eq(&record.verifier, &expected) {
                 return Err(UserStoreError::Crypto("Encryption key mismatch".into()));
             }
+            // Refresh the sliding 30-day window on each successful use.
+            let mut record = record;
+            record.expires = expires;
+            fs::write(&path, serde_json::to_string(&record)?)?;
             return Ok(());
         }
 
-        let mut file = File::create(&path)?;
-        file.write_all(&expected)?;
+        let record = KeyVerifierRecord {
+            verifier: expected.to_vec(),
+            expires,
+        };
+        fs::write(&path, serde_json::to_string(&record)?)?;
         Ok(())
     }
 
@@ -257,11 +282,16 @@ impl UserStore {
             return Ok(false);
         }
 
-        let mut stored = [0u8; 32];
-        let mut file = File::open(&path)?;
-        file.read_exact(&mut stored)?;
+        let contents = fs::read_to_string(&path)?;
+        let record: KeyVerifierRecord = serde_json::from_str(&contents)
+            .map_err(|e| UserStoreError::Crypto(format!("corrupt key verifier: {e}")))?;
+        if unix_now() >= record.expires {
+            // Expired: purge so a stale verifier can't linger and re-validate.
+            let _ = fs::remove_file(&path);
+            return Ok(false);
+        }
         Ok(constant_time_eq(
-            &stored,
+            &record.verifier,
             &Self::compute_key_verifier(key),
         ))
     }
