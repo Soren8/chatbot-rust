@@ -49,6 +49,9 @@ pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, Htt
     if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
         builder = builder.header(header::SET_COOKIE, value);
     }
+    if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_clear_cookie()) {
+        builder = builder.header(header::SET_COOKIE, value);
+    }
 
     builder
         .body(Body::empty())

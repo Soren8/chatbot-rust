@@ -371,3 +371,200 @@ async fn expired_verifier_json_still_validates() {
     );
     assert!(json_path.exists(), "verifier must not be deleted on use");
 }
+
+fn set_cookie_values(headers: &axum::http::HeaderMap) -> Vec<String> {
+    headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.to_owned())
+        .collect()
+}
+
+fn cookie_pair(set_cookie: &str) -> String {
+    set_cookie
+        .split(';')
+        .next()
+        .unwrap_or(set_cookie)
+        .trim()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn login_sets_httponly_enc_key_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
+    let username = "enc_cookie_user";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_router(resolve_static_root());
+    let login_page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /login");
+    let guest = login_page
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(common::extract_cookie)
+        .expect("guest cookie");
+    let login_body = to_bytes(login_page.into_body(), 128 * 1024)
+        .await
+        .expect("login body");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&login_body).expect("utf8"))
+        .expect("csrf");
+
+    let login_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &guest)
+                .body(Body::from(format!(
+                    "username={}&password={}&csrf_token={}&remember_me=on",
+                    urlencoding::encode(username),
+                    urlencoding::encode(password),
+                    urlencoding::encode(&csrf)
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+
+    let cookies = set_cookie_values(login_response.headers());
+    let enc = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("enc_key="))
+        .expect("enc_key cookie");
+    assert!(enc.contains("HttpOnly"), "enc_key must be HttpOnly: {enc}");
+    assert!(
+        enc.contains("SameSite=Strict"),
+        "enc_key must be SameSite=Strict: {enc}"
+    );
+    assert!(enc.contains("Path=/"), "enc_key Path=/: {enc}");
+}
+
+#[tokio::test]
+async fn load_set_accepts_enc_key_cookie_without_header() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
+    let username = "enc_cookie_load";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_router(resolve_static_root());
+    let login_page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /login");
+    let guest = login_page
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(common::extract_cookie)
+        .expect("guest cookie");
+    let login_body = to_bytes(login_page.into_body(), 128 * 1024)
+        .await
+        .expect("login body");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&login_body).expect("utf8"))
+        .expect("csrf");
+
+    let login_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &guest)
+                .body(Body::from(format!(
+                    "username={}&password={}&csrf_token={}&remember_me=on",
+                    urlencoding::encode(username),
+                    urlencoding::encode(password),
+                    urlencoding::encode(&csrf)
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+
+    let cookies = set_cookie_values(login_response.headers());
+    let session = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("session="))
+        .map(|cookie| cookie_pair(cookie))
+        .expect("session cookie");
+    let enc = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("enc_key="))
+        .map(|cookie| cookie_pair(cookie))
+        .expect("enc_key cookie");
+
+    let home = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /");
+    let home_body = to_bytes(home.into_body(), 512 * 1024)
+        .await
+        .expect("home body");
+    let home_html = std::str::from_utf8(&home_body).expect("utf8");
+    let csrf_token = CSRF_META_RE
+        .captures(home_html)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+        .expect("csrf token meta");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/load_set")
+                .header(header::COOKIE, format!("{session}; {enc}"))
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /load_set with enc cookie");
+
+    assert_ne!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "HttpOnly enc_key cookie must unlock data without X-Enc-Key"
+    );
+}

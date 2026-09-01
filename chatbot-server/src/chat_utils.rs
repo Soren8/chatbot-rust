@@ -56,11 +56,59 @@ pub fn provider_error_parts(err: &Error) -> (String, String) {
 pub const PROVIDER_ERROR_DETAIL_OPEN: &str = "[ConsoleError]";
 pub const PROVIDER_ERROR_DETAIL_CLOSE: &str = "[/ConsoleError]";
 
+pub const ENC_KEY_COOKIE_NAME: &str = "enc_key";
+
 pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
     headers
         .get("X-Enc-Key")
         .and_then(|value| value.to_str().ok())
         .and_then(EncryptionKey::from_header_value)
+        .or_else(|| {
+            extract_enc_key_cookie(
+                headers
+                    .get(header::COOKIE)
+                    .and_then(|value| value.to_str().ok()),
+            )
+        })
+}
+
+pub fn extract_enc_key_cookie(cookie_header: Option<&str>) -> Option<EncryptionKey> {
+    let header = cookie_header?;
+    for part in header.split(';') {
+        let part = part.trim();
+        let Some(value) = part.strip_prefix(ENC_KEY_COOKIE_NAME) else {
+            continue;
+        };
+        let Some(value) = value.strip_prefix('=') else {
+            continue;
+        };
+        let decoded = urlencoding::decode(value).ok()?;
+        return EncryptionKey::from_header_value(decoded.as_ref());
+    }
+    None
+}
+
+fn enc_cookie_secure_flag() -> &'static str {
+    if chatbot_core::config::app_config().csrf {
+        " Secure;"
+    } else {
+        ""
+    }
+}
+
+pub fn build_enc_key_set_cookie(key: &str, max_age_secs: u64) -> String {
+    let encoded = urlencoding::encode(key);
+    format!(
+        "{ENC_KEY_COOKIE_NAME}={encoded}; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age={max_age_secs}",
+        secure = enc_cookie_secure_flag()
+    )
+}
+
+pub fn build_enc_key_clear_cookie() -> String {
+    format!(
+        "{ENC_KEY_COOKIE_NAME}=; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age=0",
+        secure = enc_cookie_secure_flag()
+    )
 }
 
 pub fn get_ip(headers: &HeaderMap, extensions: &Extensions) -> String {

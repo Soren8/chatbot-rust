@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use chatbot_core::{
-    remember_store, session,
+    config, remember_store, session,
     user_store::{normalise_username, UserStore},
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -190,6 +190,19 @@ pub async fn handle_login_post(
         }
     }
 
+    if let Ok(key_str) = std::str::from_utf8(&encryption_key) {
+        let max_age = if remember_me {
+            remember_store::REMEMBER_MAX_AGE_SECS
+        } else {
+            config::app_config().session_timeout.max(60)
+        };
+        if let Ok(value) =
+            HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(key_str, max_age))
+        {
+            response = response.header(header::SET_COOKIE, value);
+        }
+    }
+
     response
         .body(Body::empty())
         .map_err(|err| map_response_build_err(err, "login::post::redirect"))
@@ -206,8 +219,8 @@ fn issue_remember_cookie(
 
 /// `POST /login/remember` — restore a session from the durable remember-token
 /// cookie (set by an earlier "Remember this computer" login). Restores the
-/// session only; encrypted data still requires `X-Enc-Key` from the client's
-/// cached key store. CSRF-protected like every other state-changing route.
+/// session only; encrypted data still requires the enc-key cookie (or
+/// `X-Enc-Key`). CSRF-protected like every other state-changing route.
 pub async fn handle_login_remember_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
@@ -385,6 +398,9 @@ pub async fn handle_login_forget_post(
         );
     if revoked {
         if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+            builder = builder.header(header::SET_COOKIE, value);
+        }
+        if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_clear_cookie()) {
             builder = builder.header(header::SET_COOKIE, value);
         }
     }

@@ -82,7 +82,7 @@ The in-memory `SessionStore` retains Fernet ciphertext blobs for history, memory
 | Tier | Platform | UX | Protection |
 | :--- | :--- | :--- | :--- |
 | **Option 2 (default web)** | Browser | Zero extra steps after login | Non-extractable AES-GCM wrap key in IndexedDB; wrapped data key persisted as blob. |
-| **Option 3 (opt-in web)** | Browser with WebAuthn PRF | One biometric/PIN per unlock (manual opt-in) | Wrapping secret derived from platform authenticator (Touch ID, Windows Hello, security key). Full profile copy on another machine is useless without the authenticator. Falls back to Option 2 when PRF is unsupported. |
+| **Option 3 (opt-in web)** | Browser with WebAuthn PRF (Pseudo-Random Function: authenticator HMACs a salt with a credential-bound secret) | One biometric/PIN per unlock (manual opt-in) | Wrapping secret derived from platform authenticator (Touch ID, Windows Hello, security key). Full profile copy on another machine is useless without the authenticator. Falls back to Option 2 when PRF is unsupported. **Not the web default** — many desktops have no platform authenticator or security key. |
 | **Option 4 (native default)** | Capacitor Android | One fingerprint/PIN per login from cached credentials (cold app start); none during username/password logins or within a running app session. A second prompt is allowed if the app process died and a stale session must unlock the keystore again. | Android Keystore AES/GCM wrap with user-authentication required on the wrap key (`setUserAuthenticationRequired`, 24h validity after device unlock) plus a software biometric/PIN gate on cache miss (`NativeSecureKey` plugin). Per-account keystore entries; the plugin caches unlocked keys for the app-process lifetime so one unlock covers a whole login flow. Applied automatically at login on mobile; no WebAuthn button. iOS Keychain plugin follows the same pattern when the iOS target ships. |
 
 Browsers grant secure context (required for Web Crypto + non-extractable IndexedDB key storage) for https:// origins and http://localhost (or 127.0.0.1). Plain HTTP to other LAN hostnames or IPs will not allow client-side key derivation/storage. The native Capacitor app loads over plain HTTP where `crypto.subtle` is unavailable, so it derives the key via the `NativeSecureKey` plugin, which keeps one encrypted keystore entry per account (`account` parameter on `storeKey`/`getKey`/`clearKey`).
@@ -93,9 +93,9 @@ Enrollment flow: login derives the key client-side → server stores key verifie
 
 ### Transport requirements
 
-- `X-Enc-Key` carries the raw derived key bytes (URL-safe base64 string).
+- Browsers send the key in an **HttpOnly** `enc_key` cookie (`Path=/`, `SameSite=Strict`, `Secure` when CSRF is on). JS cannot read it. Tests and non-browser clients may still send `X-Enc-Key` (raw derived key bytes).
 - Must travel over TLS (reverse-proxy terminated HTTPS in production).
-- Must **never** appear in access logs, `tracing` spans, or error reports. Proxies should scrub this header from logs.
+- Must **never** appear in access logs, `tracing` spans, or error reports. Proxies should scrub `Cookie` and `X-Enc-Key` from logs.
 
 ### Migration
 
@@ -106,7 +106,7 @@ Existing users without a verifier get one created at **password login** (not fro
 
 **Remember this computer for 30 days** (login checkbox, checked by default; unchecking opts the device out and revokes any token it holds) issues a durable device token that restores the HTTP session after a server restart. Design properties:
 
-- **Session-only.** The token restores the HTTP session; every data endpoint still requires `X-Enc-Key`, so a stolen token on another machine decrypts nothing (two-secrets model unchanged).
+- **Session-only.** The token restores the HTTP session; every data endpoint still requires the enc-key cookie (or `X-Enc-Key`), so a stolen remember token on another machine decrypts nothing (two-secrets model unchanged).
 - **Hashed at rest, rotated on use.** The server persists only a hash of the token's current secret, and every restore rotates it. File locks serialize concurrent resumes so two tabs redeeming the current secret cannot false-revoke the family. Recent-generation tokens get a grace pass so concurrent tabs refreshing after a restart don't revoke each other; older replays revoke the whole family. Re-login as the same account refreshes that family instead of minting another. Logout revokes and clears it.
 - **HttpOnly cookie** (`Secure` when CSRF is on) — note that Android WebView refuses `Secure` cookies over plain HTTP, so plain-HTTP deployments need `csrf: false` (or HTTPS) for mobile sessions to work at all.
 - **Silent resume on app entry.** `GET /` restores a remembered session for guest visitors, making restarts invisible. `/login` never auto-restores — it is the account-selection surface. When a live page's request 401s mid-use (e.g. after a restart), the client transparently re-establishes the session (`POST /login/remember` with a bootstrapped CSRF token, adopting the restored session's CSRF from the response) and retries the call — no reload, no prompt; it only falls back to `/` when the device holds no valid token.

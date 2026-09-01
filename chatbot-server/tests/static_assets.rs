@@ -163,8 +163,8 @@ fn format_ai_message_is_top_level_for_history_paging() {
         "thumbnail expand must use a GET /history_image URL, not POST JSON"
     );
     assert!(
-        chat_js.contains("hist_enc_key="),
-        "img src cannot send X-Enc-Key; key must be a Path=/history_image cookie"
+        !chat_js.contains("hist_enc_key="),
+        "JS must not write the encryption key into document.cookie"
     );
 }
 

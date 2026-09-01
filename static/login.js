@@ -291,9 +291,8 @@ $(function() {
       return;
     }
 
-    // Cache the key only after the server has verified it (a failed login must
-    // not land in the saved-account dropdown). The slot backs the live session
-    // (X-Enc-Key); `remember_me` decides whether the username stays in the dropdown.
+    // Record the username in the dropdown only after the server has verified
+    // the login. `remember_me` decides whether that slot stays listed.
     await postLogin(form, async function () {
       if (!derivedKey || !window.EncKey || !window.EncKey.storeFromLogin) {
         return;

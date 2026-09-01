@@ -221,50 +221,18 @@
     await idbDelete(LEGACY_WEBAUTHN_CRED_ID);
   }
 
-  // `remembered` gates the login dropdown; the slot itself is always written
-  // because the logged-in session needs it for X-Enc-Key on every data request.
-  async function storeWrappedKey(rawKeyB64, mode, username, remembered) {
-    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
-      const name = username || currentUsername();
-      await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', {
-        key: rawKeyB64,
-        account: name,
-      });
-      cachedKey = rawKeyB64;
-      if (name) {
-        await idbSet(slotKey(name), {
-          mode: 'native-keystore',
-          remembered: !!remembered,
-          updatedAt: Date.now(),
-        });
-      }
-      await removeLegacySlots();
-      return;
-    }
-    if (!hasWebCrypto() || !isSecureContext()) {
-      throw new Error('Encryption key storage requires a secure context (HTTPS) or the native app.');
-    }
+  // `remembered` gates the login dropdown. The raw key is not stored here;
+  // the server issues an HttpOnly cookie at password login.
+  async function storeWrappedKey(_rawKeyB64, _mode, username, remembered) {
+    cachedKey = null;
     const name = username || currentUsername();
-    if (!name) {
-      // Legacy single-slot storage: the calling page predates per-account
-      // slots (stale cached login.js). Keep the old behaviour so login still
-      // works; the next per-account login migrates the entry.
-      const wrapKey = await ensureWrapKey();
-      const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
-      await idbSet(LEGACY_WRAPPED_KEY_ID, wrapped);
-      await idbSet(LEGACY_MODE_KEY, mode || 'indexeddb');
-      cachedKey = rawKeyB64;
-      return;
+    if (name) {
+      await idbSet(slotKey(name), {
+        mode: 'cookie',
+        remembered: !!remembered,
+        updatedAt: Date.now(),
+      });
     }
-    const wrapKey = await ensureWrapKey();
-    const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
-    await idbSet(slotKey(name), {
-      wrapped,
-      mode: mode || 'indexeddb',
-      remembered: !!remembered,
-      updatedAt: Date.now(),
-    });
-    cachedKey = rawKeyB64;
     await removeLegacySlots();
   }
 
@@ -272,13 +240,13 @@
     return !!(global.NativeBridge && global.NativeBridge.isNativePlatform());
   }
 
-  async function verifyStoredKey(expectedB64, username) {
-    if (isNativeSecureStorage()) {
-      return cachedKey === expectedB64;
+  async function verifyStoredKey(_expectedB64, username) {
+    const name = username || currentUsername();
+    if (!name) {
+      return false;
     }
-    cachedKey = null;
-    const loaded = await loadWrappedKey(username);
-    return loaded === expectedB64;
+    const record = await idbGet(slotKey(name));
+    return !!record;
   }
 
   async function loadWrappedKey(username) {
@@ -665,13 +633,10 @@
   }
 
   async function getKeyForRequest() {
-    return loadWrappedKey();
+    return null;
   }
 
   function getKeyForRequestSync() {
-    if (cachedKey) {
-      return cachedKey;
-    }
     return null;
   }
 

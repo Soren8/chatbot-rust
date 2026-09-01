@@ -35,7 +35,7 @@ This document captures the current architecture of the project and the potential
   - [x] Provider metadata hygiene: the UI now receives only a sanitized model list (`provider_name`, `tier`), preventing accidental leakage of `api_key` or `base_url` values.
   - [x] Anonymous model choice: guests see the model picker when more than one free-tier model is configured (the guest list is pre-filtered to free tier); the choice is page-local and sent per request, never persisted.
   - [x] Session isolation: anonymous users are assigned stable random guest IDs instead of the remote IP, eliminating cross-user memory leaks behind shared NAT gateways.
-  - [x] Encryption key handling: login derives a Fernet key per user; the server stores only an HMAC key verifier (not the key itself). Clients send the key per request via `X-Enc-Key`, wrap it locally (IndexedDB / WebAuthn PRF / native keystore), and the server zeroizes it after each request. Browser use requires a secure context (https or localhost); see README for Tailscale Serve dev setup and [design-privacy.md](design-privacy.md#per-request-encryption-key-model).
+  - [x] Encryption key handling: login derives a Fernet key per user; the server stores only an HMAC key verifier (not the key itself). Browsers receive the key in an HttpOnly `enc_key` cookie (`SameSite=Strict`); tests may still send `X-Enc-Key`. The server zeroizes the key after each request. See [design-privacy.md](design-privacy.md#per-request-encryption-key-model).
   - [x] CSRF protection – every state-changing route validates a per-session token; the token is exposed to forms and Fetch calls, and the client attaches it automatically.
   - [x] Frontend sanitisation: set names rendered in the chat UI are escaped before insertion, closing stored-XSS vectors through crafted identifiers.
   - [x] CSP refinements: media sources now explicitly allow the `blob:` scheme used for streamed TTS playback; UI JS/CSS (jquery, bootstrap, marked, highlight.js) is first-party under `static/deps/` so `script-src` stays `'self'`.
@@ -70,8 +70,9 @@ This document captures the current architecture of the project and the potential
   - [ ] Implement hybrid chat-history encryption:
         - [x] Derive a per-user data key from a user-supplied passphrase.
         - [x] Encrypt set names and metadata on disk to prevent leakage of conversation identifiers.
-        - [x] Per-request key transport: clients send `X-Enc-Key` on every authenticated data call; server validates against HMAC verifier and keeps ciphertext-only in-memory cache.
+        - [x] Per-request key transport: HttpOnly `enc_key` cookie (or `X-Enc-Key`); server validates against HMAC verifier and keeps ciphertext-only in-memory cache.
         - [x] Tiered client key wrapping for **shipped platforms**: IndexedDB non-extractable key (web default), WebAuthn PRF opt-in, Android Keystore on Capacitor. (iOS still open below.)
+        - [ ] WebAuthn PRF as the **default** web wrap — not viable yet; many desktops lack Touch ID / Windows Hello / a security key. Keep Option 3 opt-in. PRF = Pseudo-Random Function (authenticator-side keyed hash).
         - [ ] iOS Keychain plugin mirroring `NativeSecureKey` when the iOS Capacitor target is added.
         - [ ] Allow optional registration of multiple hardware authenticators
      (Touch ID, YubiKey, WebAuthn) for seamless unlock on trusted devices with fallback to the passphrase on new or unregistered devices.
