@@ -171,7 +171,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 ### Key cache & biometrics
 
-`NativeSecureKey` keeps one encrypted keystore entry **per account** (`account` parameter on `storeKey`/`getKey`/`clearKey`). Prompt cadence: one fingerprint/PIN per login from cached credentials (cold app start), none for username/password logins (the key was just derived and the plugin caches it), none within a running app session. Clearing app storage removes WebView data and cookies but **not** Android Keystore entries — those follow the app itself (uninstall). Plugin changes always require an APK rebuild; JS/template changes come from the server.
+`NativeSecureKey` keeps one encrypted keystore entry **per account** (`account` parameter on `storeKey`/`getKey`/`clearKey`). The wrap key is Android Keystore AES/GCM with user authentication required (24h validity after device unlock; falls back to an unauthenticated key if the device has no lock screen). Prompt cadence: one fingerprint/PIN per login from cached credentials (cold app start), none for username/password logins (the key was just derived and the plugin caches it), none within a running app session. A second prompt is allowed if the app process died and a stale session must unlock the keystore again. Clearing app storage removes WebView data and cookies but **not** Android Keystore entries — those follow the app itself (uninstall). Plugin changes always require an APK rebuild; JS/template changes come from the server.
 
 ---
 

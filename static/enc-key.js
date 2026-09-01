@@ -381,7 +381,7 @@
         // Hide cached logins older than 30 days so a stale credential can't be
         // offered for re-entry (the server expires its verifier on the same
         // clock).
-        .filter((entry) => !entry.updatedAt || (Date.now() - entry.updatedAt) <= MAX_CACHED_ACCOUNT_AGE_MS)
+        .filter((entry) => entry.updatedAt && (Date.now() - entry.updatedAt) <= MAX_CACHED_ACCOUNT_AGE_MS)
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((entry) => entry.username);
     } catch (err) {
@@ -653,6 +653,23 @@
     await idbDelete(slotKey(username));
   }
 
+  async function purgeNonRememberedSlots() {
+    try {
+      const entries = await idbGetAllEntries();
+      for (const entry of entries) {
+        if (typeof entry.key !== 'string' || !entry.key.startsWith(SLOT_PREFIX) || !entry.value) {
+          continue;
+        }
+        if (entry.value.remembered !== false) {
+          continue;
+        }
+        await removeSlot(entry.key.slice(SLOT_PREFIX.length));
+      }
+    } catch (err) {
+      console.debug('enc-key: unable to purge non-remembered slots', err);
+    }
+  }
+
   async function getKeyForRequest() {
     return loadWrappedKey();
   }
@@ -683,6 +700,7 @@
     unlockWithWebAuthnForUser,
     touchSlot,
     removeSlot,
+    purgeNonRememberedSlots,
     supportsWebAuthnPrf,
     isNativeSecureStorage,
     isSecureContext,

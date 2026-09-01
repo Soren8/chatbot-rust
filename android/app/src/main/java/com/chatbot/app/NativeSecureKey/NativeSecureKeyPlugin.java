@@ -39,8 +39,10 @@ public class NativeSecureKeyPlugin extends Plugin {
     private static final String PREFS = "chatbot_secure_key";
     private static final String PREF_IV = "wrapped_iv";
     private static final String PREF_DATA = "wrapped_data";
-    private static final String KEY_ALIAS = "chatbot_native_secure_key_v2";
+    private static final String KEY_ALIAS = "chatbot_native_secure_key_v3";
+    private static final String LEGACY_KEY_ALIAS_V2 = "chatbot_native_secure_key_v2";
     private static final String LEGACY_KEY_ALIAS = "chatbot_native_secure_key";
+    private static final int KEYSTORE_AUTH_VALIDITY_SECONDS = 86400;
     private static final int PBKDF2_ITERATIONS = 100_000;
     private static final int PBKDF2_KEY_BITS = 256;
 
@@ -102,6 +104,7 @@ public class NativeSecureKeyPlugin extends Plugin {
         }
         try {
             removeLegacyKeyIfPresent();
+            migrateFromV2IfNeeded();
             SecretKey secretKey = getOrCreateKey();
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, secretKey);
@@ -162,6 +165,7 @@ public class NativeSecureKeyPlugin extends Plugin {
                 Runnable decryptAndResolve = () -> {
                     try {
                         removeLegacyKeyIfPresent();
+                        migrateFromV2IfNeeded();
                         SecretKey secretKey = getOrCreateKey();
                         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
                         byte[] iv = Base64.decode(ivB64, Base64.NO_WRAP);
@@ -216,6 +220,9 @@ public class NativeSecureKeyPlugin extends Plugin {
             keyStore.load(null);
             if (keyStore.containsAlias(KEY_ALIAS)) {
                 keyStore.deleteEntry(KEY_ALIAS);
+            }
+            if (keyStore.containsAlias(LEGACY_KEY_ALIAS_V2)) {
+                keyStore.deleteEntry(LEGACY_KEY_ALIAS_V2);
             }
             if (keyStore.containsAlias(LEGACY_KEY_ALIAS)) {
                 keyStore.deleteEntry(LEGACY_KEY_ALIAS);
@@ -305,24 +312,93 @@ public class NativeSecureKeyPlugin extends Plugin {
         }
     }
 
+    private void migrateFromV2IfNeeded() {
+        try {
+            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+            if (!keyStore.containsAlias(LEGACY_KEY_ALIAS_V2)) {
+                return;
+            }
+            SecretKey oldKey = (SecretKey) keyStore.getKey(LEGACY_KEY_ALIAS_V2, null);
+            if (oldKey == null) {
+                keyStore.deleteEntry(LEGACY_KEY_ALIAS_V2);
+                return;
+            }
+            SecretKey newKey = getOrCreateKey();
+            SharedPreferences prefs = prefs();
+            SharedPreferences.Editor editor = prefs.edit();
+            boolean migrated = false;
+            for (String key : prefs.getAll().keySet()) {
+                if (!key.startsWith(PREF_IV)) {
+                    continue;
+                }
+                String suffix = key.substring(PREF_IV.length());
+                String dataKey = PREF_DATA + suffix;
+                String ivB64 = prefs.getString(key, null);
+                String dataB64 = prefs.getString(dataKey, null);
+                if (ivB64 == null || dataB64 == null) {
+                    continue;
+                }
+                try {
+                    Cipher decrypt = Cipher.getInstance("AES/GCM/NoPadding");
+                    byte[] iv = Base64.decode(ivB64, Base64.NO_WRAP);
+                    decrypt.init(Cipher.DECRYPT_MODE, oldKey, new GCMParameterSpec(128, iv));
+                    byte[] plain = decrypt.doFinal(Base64.decode(dataB64, Base64.NO_WRAP));
+                    Cipher encrypt = Cipher.getInstance("AES/GCM/NoPadding");
+                    encrypt.init(Cipher.ENCRYPT_MODE, newKey);
+                    byte[] newIv = encrypt.getIV();
+                    byte[] encrypted = encrypt.doFinal(plain);
+                    editor.putString(key, Base64.encodeToString(newIv, Base64.NO_WRAP));
+                    editor.putString(dataKey, Base64.encodeToString(encrypted, Base64.NO_WRAP));
+                    migrated = true;
+                } catch (Exception e) {
+                    Log.w(TAG, "failed to migrate wrap for " + key, e);
+                }
+            }
+            if (migrated) {
+                editor.apply();
+            }
+            keyStore.deleteEntry(LEGACY_KEY_ALIAS_V2);
+        } catch (Exception e) {
+            Log.w(TAG, "v2 keystore migration skipped", e);
+        }
+    }
+
+    private void generateWrapKey(boolean requireAuth) throws Exception {
+        KeyGenerator keyGenerator = KeyGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_AES,
+                "AndroidKeyStore"
+        );
+        KeyGenParameterSpec.Builder builder = new KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
+        )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setUserAuthenticationRequired(requireAuth);
+        if (requireAuth) {
+            builder.setUserAuthenticationValidityDurationSeconds(KEYSTORE_AUTH_VALIDITY_SECONDS);
+        }
+        keyGenerator.init(builder.build());
+        keyGenerator.generateKey();
+    }
+
     private SecretKey getOrCreateKey() throws Exception {
         KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
         keyStore.load(null);
         if (!keyStore.containsAlias(KEY_ALIAS)) {
-            KeyGenerator keyGenerator = KeyGenerator.getInstance(
-                    KeyProperties.KEY_ALGORITHM_AES,
-                    "AndroidKeyStore"
-            );
-            KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
-                    KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
-            )
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setUserAuthenticationRequired(false)
-                    .build();
-            keyGenerator.init(spec);
-            keyGenerator.generateKey();
+            try {
+                generateWrapKey(true);
+            } catch (Exception e) {
+                Log.w(TAG, "auth-bound keystore key unavailable; using software-gated key", e);
+                try {
+                    if (keyStore.containsAlias(KEY_ALIAS)) {
+                        keyStore.deleteEntry(KEY_ALIAS);
+                    }
+                } catch (Exception ignored) {
+                }
+                generateWrapKey(false);
+            }
         }
         return ((SecretKey) keyStore.getKey(KEY_ALIAS, null));
     }

@@ -64,6 +64,10 @@ try {
   } catch (_) {}
 } catch (e) { /* no-op */ }
 
+if (window.EncKey && window.EncKey.purgeNonRememberedSlots && (!window.APP_DATA || !window.APP_DATA.loggedIn)) {
+  window.EncKey.purgeNonRememberedSlots();
+}
+
 // ── Native Mic Bridge ────────────────────────────────────────────────────────
 (function() {
   const hasCapacitor = !!(window.Capacitor && window.Capacitor.nativePromise);

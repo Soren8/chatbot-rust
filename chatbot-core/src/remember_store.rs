@@ -14,6 +14,7 @@
 use std::{
     env, fs,
     path::PathBuf,
+    sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -67,6 +68,13 @@ pub enum ResumeOutcome {
     Invalid,
 }
 
+fn store_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
 impl RememberStore {
     pub fn new() -> Result<Self, RememberError> {
         let base = env::var("HOST_DATA_DIR")
@@ -82,36 +90,71 @@ impl RememberStore {
     /// Issue a fresh token family for `username`, keeping at most
     /// [`MAX_FAMILIES_PER_USER`] families per user (oldest evicted).
     pub fn issue(&self, username: &str) -> Result<String, RememberError> {
-        self.purge_expired();
-        self.evict_beyond_cap(username)?;
+        let _guard = store_lock();
+        self.issue_locked(username)
+    }
 
-        let family = random_bytes(FAMILY_BYTES);
-        let secret = random_bytes(SECRET_BYTES);
-        let record = RememberRecord {
-            username: username.to_string(),
-            secret_hash: to_hex(&Sha256::digest(&secret)),
-            prev_secret_hash: None,
-            created: unix_now(),
-            expires: unix_now() + REMEMBER_MAX_AGE_SECS,
+    /// Reuse the presented family when it already belongs to `username`;
+    /// otherwise revoke a foreign family on this device and mint a new one.
+    pub fn issue_or_refresh(
+        &self,
+        username: &str,
+        presented: Option<&str>,
+    ) -> Result<String, RememberError> {
+        let _guard = store_lock();
+        if let Some((family, _)) = parse_token(presented) {
+            let family_hex = to_hex(&family);
+            if let Some(record) = self.read_record(&family_hex) {
+                if unix_now() < record.expires && record.username == username {
+                    return self.rotate_family_locked(&family, &record);
+                }
+                if record.username != username {
+                    let _ = fs::remove_file(self.family_path(&family_hex));
+                }
+            }
+        }
+        self.issue_locked(username)
+    }
+
+    /// Username bound to this family, if the file exists and is unexpired.
+    /// Does not rotate or check the secret (used by forget).
+    pub fn peek_username(&self, token: Option<&str>) -> Option<String> {
+        let _guard = store_lock();
+        let (family, _) = parse_token(token)?;
+        let record = self.read_record(&to_hex(&family))?;
+        if unix_now() >= record.expires {
+            return None;
+        }
+        Some(record.username)
+    }
+
+    /// Revoke the presented family only when it belongs to `username`.
+    pub fn revoke_if_username(&self, token: Option<&str>, username: &str) -> bool {
+        let _guard = store_lock();
+        let Some((family, _)) = parse_token(token) else {
+            return false;
         };
-        self.write_record(&to_hex(&family), &record)?;
-        Ok(pack_client_token(&family, &secret))
+        let family_hex = to_hex(&family);
+        let Some(record) = self.read_record(&family_hex) else {
+            return false;
+        };
+        if record.username != username {
+            return false;
+        }
+        fs::remove_file(self.family_path(&family_hex)).is_ok()
     }
 
     /// Validate a presented token. On success the secret is rotated (same
     /// family) and the replacement token returned. A stale secret revokes the
     /// entire family. Expired or unknown tokens are rejected.
     pub fn resume(&self, token: Option<&str>) -> Result<ResumeOutcome, RememberError> {
+        let _guard = store_lock();
         let Some((family, secret)) = parse_token(token) else {
             return Ok(ResumeOutcome::Invalid);
         };
         let family_hex = to_hex(&family);
         let path = self.family_path(&family_hex);
-        let Ok(contents) = fs::read_to_string(&path) else {
-            return Ok(ResumeOutcome::Invalid);
-        };
-        let Ok(record) = serde_json::from_str::<RememberRecord>(&contents) else {
-            let _ = fs::remove_file(&path);
+        let Some(record) = self.read_record(&family_hex) else {
             return Ok(ResumeOutcome::Invalid);
         };
         if unix_now() >= record.expires {
@@ -144,6 +187,48 @@ impl RememberStore {
             return Ok(ResumeOutcome::Invalid);
         }
 
+        let replacement_token = self.rotate_family_locked(&family, &record)?;
+        Ok(ResumeOutcome::Authenticated {
+            username: record.username,
+            replacement_token,
+        })
+    }
+
+    /// Revoke the token family presented in `token` (logout).
+    pub fn revoke(&self, token: Option<&str>) {
+        let _guard = store_lock();
+        if let Some((family, _)) = parse_token(token) {
+            let _ = fs::remove_file(self.family_path(&to_hex(&family)));
+        }
+    }
+
+    pub fn purge_expired(&self) -> usize {
+        let _guard = store_lock();
+        self.purge_expired_locked()
+    }
+
+    fn issue_locked(&self, username: &str) -> Result<String, RememberError> {
+        self.purge_expired_locked();
+        self.evict_beyond_cap(username)?;
+
+        let family = random_bytes(FAMILY_BYTES);
+        let secret = random_bytes(SECRET_BYTES);
+        let record = RememberRecord {
+            username: username.to_string(),
+            secret_hash: to_hex(&Sha256::digest(&secret)),
+            prev_secret_hash: None,
+            created: unix_now(),
+            expires: unix_now() + REMEMBER_MAX_AGE_SECS,
+        };
+        self.write_record(&to_hex(&family), &record)?;
+        Ok(pack_client_token(&family, &secret))
+    }
+
+    fn rotate_family_locked(
+        &self,
+        family: &[u8],
+        record: &RememberRecord,
+    ) -> Result<String, RememberError> {
         let replacement_secret = random_bytes(SECRET_BYTES);
         let replacement = RememberRecord {
             username: record.username.clone(),
@@ -152,21 +237,11 @@ impl RememberStore {
             created: unix_now(),
             expires: unix_now() + REMEMBER_MAX_AGE_SECS,
         };
-        self.write_record(&family_hex, &replacement)?;
-        Ok(ResumeOutcome::Authenticated {
-            username: record.username,
-            replacement_token: pack_client_token(&family, &replacement_secret),
-        })
+        self.write_record(&to_hex(family), &replacement)?;
+        Ok(pack_client_token(family, &replacement_secret))
     }
 
-    /// Revoke the token family presented in `token` (logout).
-    pub fn revoke(&self, token: Option<&str>) {
-        if let Some((family, _)) = parse_token(token) {
-            let _ = fs::remove_file(self.family_path(&to_hex(&family)));
-        }
-    }
-
-    pub fn purge_expired(&self) -> usize {
+    fn purge_expired_locked(&self) -> usize {
         let now = unix_now();
         let mut removed = 0;
         let Ok(entries) = fs::read_dir(&self.dir) else {
@@ -174,6 +249,9 @@ impl RememberStore {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
             let Ok(contents) = fs::read_to_string(&path) else {
                 continue;
             };
@@ -191,6 +269,9 @@ impl RememberStore {
         let mut families: Vec<(u64, String)> = Vec::new();
         for entry in fs::read_dir(&self.dir)?.flatten() {
             let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
             let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
@@ -219,9 +300,24 @@ impl RememberStore {
         self.dir.join(format!("{family_hex}.json"))
     }
 
+    fn read_record(&self, family_hex: &str) -> Option<RememberRecord> {
+        let path = self.family_path(family_hex);
+        let contents = fs::read_to_string(&path).ok()?;
+        match serde_json::from_str::<RememberRecord>(&contents) {
+            Ok(record) => Some(record),
+            Err(_) => {
+                let _ = fs::remove_file(&path);
+                None
+            }
+        }
+    }
+
     fn write_record(&self, family_hex: &str, record: &RememberRecord) -> Result<(), RememberError> {
         let json = serde_json::to_string_pretty(record)?;
-        fs::write(self.family_path(family_hex), json)?;
+        let path = self.family_path(family_hex);
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, json)?;
+        fs::rename(&tmp, &path)?;
         Ok(())
     }
 }
@@ -453,6 +549,99 @@ mod tests {
                 store.resume(Some(&token)).expect("resume"),
                 ResumeOutcome::Invalid
             ));
+        });
+    }
+
+    #[test]
+    fn issue_or_refresh_reuses_family_for_same_user() {
+        with_temp_store(|store, dir| {
+            let first = store.issue("alice").expect("issue");
+            let second = store
+                .issue_or_refresh("alice", Some(&first))
+                .expect("refresh");
+            assert_ne!(second, first);
+            let tokens_dir = dir.join(TOKENS_DIR);
+            let count = fs::read_dir(&tokens_dir)
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .ok()
+                        .and_then(|e| e.path().extension().map(|ext| ext == "json"))
+                        .unwrap_or(false)
+                })
+                .count();
+            assert_eq!(count, 1, "refresh must not mint a second family");
+            assert!(matches!(
+                store.resume(Some(&second)).expect("resume"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn issue_or_refresh_revokes_foreign_family() {
+        with_temp_store(|store, _| {
+            let alice = store.issue("alice").expect("issue");
+            let bob = store
+                .issue_or_refresh("bob", Some(&alice))
+                .expect("switch user");
+            assert!(matches!(
+                store.resume(Some(&alice)).expect("resume alice"),
+                ResumeOutcome::Invalid
+            ));
+            assert!(matches!(
+                store.resume(Some(&bob)).expect("resume bob"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn revoke_if_username_ignores_other_accounts() {
+        with_temp_store(|store, _| {
+            let alice = store.issue("alice").expect("issue");
+            assert!(!store.revoke_if_username(Some(&alice), "bob"));
+            assert!(matches!(
+                store.resume(Some(&alice)).expect("resume"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn concurrent_resume_of_current_secret_does_not_revoke_family() {
+        with_temp_store(|store, _| {
+            let token = store.issue("alice").expect("issue");
+            let (left, right) = std::thread::scope(|scope| {
+                let left = scope.spawn(|| store.resume(Some(&token)));
+                let right = scope.spawn(|| store.resume(Some(&token)));
+                (
+                    left.join().expect("left").expect("left resume"),
+                    right.join().expect("right").expect("right resume"),
+                )
+            });
+            let replacements: Vec<String> = [left, right]
+                .into_iter()
+                .filter_map(|outcome| match outcome {
+                    ResumeOutcome::Authenticated {
+                        replacement_token, ..
+                    } => Some(replacement_token),
+                    ResumeOutcome::Invalid => None,
+                })
+                .collect();
+            assert!(
+                !replacements.is_empty(),
+                "at least one concurrent resume must succeed"
+            );
+            let latest = replacements.last().expect("replacement");
+            assert!(
+                matches!(
+                    store.resume(Some(latest)).expect("resume latest"),
+                    ResumeOutcome::Authenticated { .. }
+                ),
+                "family must still accept the rotated token"
+            );
         });
     }
 

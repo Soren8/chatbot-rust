@@ -641,20 +641,17 @@ pub fn validate_encryption_key_for_user(
     let store =
         UserStore::new().map_err(|err| map_store_error("failed to open user store", &err))?;
 
-    if store
+    if !store
         .has_key_verifier(username)
         .map_err(|err| map_store_error("failed to check key verifier", &err))?
     {
-        if !store
-            .verify_encryption_key(username, key.as_bytes())
-            .map_err(|err| map_store_error("failed to verify encryption key", &err))?
-        {
-            return Err(unauthorized("Invalid encryption key."));
-        }
-    } else {
-        store
-            .ensure_key_verifier(username, key.as_bytes())
-            .map_err(|_| unauthorized("Invalid encryption key."))?;
+        return Err(unauthorized("Encryption key required. Please unlock."));
+    }
+    if !store
+        .verify_encryption_key(username, key.as_bytes())
+        .map_err(|err| map_store_error("failed to verify encryption key", &err))?
+    {
+        return Err(unauthorized("Invalid encryption key."));
     }
 
     Ok(())

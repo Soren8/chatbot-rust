@@ -25,22 +25,10 @@ const SALT_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const PBKDF2_ITERATIONS: u32 = 100_000;
 const KEY_VERIFIER_LABEL: &[u8] = b"chatbot-enc-key-v1";
-/// Cached encryption-key verifiers (password-free re-login) live at most this
-/// long, sliding on each successful use — matching the 30-day "remember" token.
-const KEY_VERIFIER_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
-
-fn unix_now() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
 
 #[derive(Serialize, Deserialize)]
 struct KeyVerifierRecord {
     verifier: Vec<u8>,
-    expires: u64,
 }
 
 pub static USERNAME_REGEX: Lazy<Regex> =
@@ -237,6 +225,11 @@ impl UserStore {
             .join(format!("{normalised_username}_kv.json"))
     }
 
+    fn legacy_key_verifier_path(&self, normalised_username: &str) -> PathBuf {
+        self.key_verifiers_dir
+            .join(format!("{normalised_username}_kv"))
+    }
+
     fn compute_key_verifier(key: &[u8]) -> [u8; 32] {
         type HmacSha256 = Hmac<Sha256>;
         let secret = config::app_config().secret_key.clone();
@@ -247,49 +240,56 @@ impl UserStore {
         mac.finalize().into_bytes().into()
     }
 
-    pub fn ensure_key_verifier(&self, username: &str, key: &[u8]) -> Result<(), UserStoreError> {
-        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let path = self.key_verifier_path(&normalised);
-        let expected = Self::compute_key_verifier(key);
-        let expires = unix_now() + KEY_VERIFIER_MAX_AGE_SECS;
-
+    fn load_key_verifier_record(
+        &self,
+        normalised_username: &str,
+    ) -> Result<Option<KeyVerifierRecord>, UserStoreError> {
+        let path = self.key_verifier_path(normalised_username);
         if path.exists() {
             let contents = fs::read_to_string(&path)?;
             let record: KeyVerifierRecord = serde_json::from_str(&contents)
                 .map_err(|e| UserStoreError::Crypto(format!("corrupt key verifier: {e}")))?;
+            return Ok(Some(record));
+        }
+
+        let legacy = self.legacy_key_verifier_path(normalised_username);
+        if !legacy.exists() {
+            return Ok(None);
+        }
+        let mut stored = [0u8; 32];
+        let mut file = File::open(&legacy)?;
+        file.read_exact(&mut stored)?;
+        let record = KeyVerifierRecord {
+            verifier: stored.to_vec(),
+        };
+        fs::write(&path, serde_json::to_string(&record)?)?;
+        let _ = fs::remove_file(&legacy);
+        Ok(Some(record))
+    }
+
+    pub fn ensure_key_verifier(&self, username: &str, key: &[u8]) -> Result<(), UserStoreError> {
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let expected = Self::compute_key_verifier(key);
+
+        if let Some(record) = self.load_key_verifier_record(&normalised)? {
             if !constant_time_eq(&record.verifier, &expected) {
                 return Err(UserStoreError::Crypto("Encryption key mismatch".into()));
             }
-            // Refresh the sliding 30-day window on each successful use.
-            let mut record = record;
-            record.expires = expires;
-            fs::write(&path, serde_json::to_string(&record)?)?;
             return Ok(());
         }
 
         let record = KeyVerifierRecord {
             verifier: expected.to_vec(),
-            expires,
         };
-        fs::write(&path, serde_json::to_string(&record)?)?;
+        fs::write(self.key_verifier_path(&normalised), serde_json::to_string(&record)?)?;
         Ok(())
     }
 
     pub fn verify_encryption_key(&self, username: &str, key: &[u8]) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let path = self.key_verifier_path(&normalised);
-        if !path.exists() {
+        let Some(record) = self.load_key_verifier_record(&normalised)? else {
             return Ok(false);
-        }
-
-        let contents = fs::read_to_string(&path)?;
-        let record: KeyVerifierRecord = serde_json::from_str(&contents)
-            .map_err(|e| UserStoreError::Crypto(format!("corrupt key verifier: {e}")))?;
-        if unix_now() >= record.expires {
-            // Expired: purge so a stale verifier can't linger and re-validate.
-            let _ = fs::remove_file(&path);
-            return Ok(false);
-        }
+        };
         Ok(constant_time_eq(
             &record.verifier,
             &Self::compute_key_verifier(key),
@@ -298,7 +298,7 @@ impl UserStore {
 
     pub fn has_key_verifier(&self, username: &str) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        Ok(self.key_verifier_path(&normalised).exists())
+        Ok(self.load_key_verifier_record(&normalised)?.is_some())
     }
 
     pub fn get_client_salt(&self, username: &str) -> Result<String, UserStoreError> {

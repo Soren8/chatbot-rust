@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     sync::{Mutex, OnceLock},
 };
 
@@ -788,5 +788,133 @@ async fn logout_revokes_remember_token() {
     // The revoked token no longer restores a session.
     let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
     let restore = post_remember_login(&app, &cookie_header, &csrf, true).await;
+    assert_eq!(restore.status(), StatusCode::UNAUTHORIZED);
+}
+
+fn remember_family_count(workspace: &common::TestWorkspace) -> usize {
+    let dir = workspace.path().join("remember_tokens");
+    fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().map(|ext| ext == "json").unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn remember_login_refreshes_existing_family() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+    let username = "refreshfamily";
+    seed_user(username, "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, remember) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+    assert_eq!(remember_family_count(&workspace), 1);
+
+    let (csrf, cookies) = get_login_page(&app, Some(&remember)).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let response = post_login(
+        &app,
+        &format!("{guest}; {remember}"),
+        &csrf,
+        username,
+        "Sup3rS3cret!",
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        remember_family_count(&workspace),
+        1,
+        "second remembered login must rotate the same family"
+    );
+}
+
+#[tokio::test]
+async fn forget_revokes_only_matching_account() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    seed_user("aliceforget", "Sup3rS3cret!");
+    seed_user("bobforget", "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, alice_remember) = login_with_remember(&app, "aliceforget", "Sup3rS3cret!").await;
+
+    let (csrf, cookies) = get_login_page(&app, Some(&alice_remember)).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let cookie_header = format!("{guest}; {alice_remember}");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login/forget")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &cookie_header)
+                .body(Body::from(format!(
+                    "csrf_token={}&username={}",
+                    urlencoding::encode(&csrf),
+                    urlencoding::encode("bobforget")
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login/forget bob");
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    assert!(
+        find_cookie_pair(&cookies, "remember").is_none(),
+        "forgetting another account must not clear this device token"
+    );
+
+    let (csrf, restore_cookies) = fresh_restore_session(&app, &alice_remember).await;
+    let restore = post_remember_login(&app, &restore_cookies, &csrf, true).await;
+    assert_eq!(
+        restore.status(),
+        StatusCode::OK,
+        "alice token must survive forgetting bob"
+    );
+
+    let alice_remember = find_cookie_pair(
+        &set_cookie_values(restore.headers()),
+        "remember",
+    )
+    .unwrap_or(alice_remember);
+
+    let (csrf, cookies) = get_login_page(&app, Some(&alice_remember)).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login/forget")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &format!("{guest}; {alice_remember}"))
+                .body(Body::from(format!(
+                    "csrf_token={}&username={}",
+                    urlencoding::encode(&csrf),
+                    urlencoding::encode("aliceforget")
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login/forget alice");
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    let clear = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("remember="))
+        .expect("forgetting the cookie's account must clear it");
+    assert!(clear.contains("Max-Age=0"));
+
+    let (csrf, restore_cookies) = fresh_restore_session(&app, &alice_remember).await;
+    let restore = post_remember_login(&app, &restore_cookies, &csrf, true).await;
     assert_eq!(restore.status(), StatusCode::UNAUTHORIZED);
 }

@@ -199,22 +199,6 @@ function applyAccountMode() {
   $('#forget-account').toggleClass('d-none', !cached);
 }
 
-async function refreshCsrfToken() {
-  try {
-    const resp = await fetch('/login');
-    if (!resp.ok) {
-      return;
-    }
-    const html = await resp.text();
-    const match = html.match(/name="csrf_token" value="([^"]+)"/);
-    if (match) {
-      $('input[name="csrf_token"]').first().val(match[1]);
-    }
-  } catch (err) {
-    console.debug('csrf token refresh failed', err);
-  }
-}
-
 function renderSavedAccountSelect() {
   if (!window.EncKey || !window.EncKey.listCachedAccounts) {
     return Promise.resolve();
@@ -244,12 +228,16 @@ function renderSavedAccountSelect() {
 }
 
 $(function() {
-  renderSavedAccountSelect();
+  const purge = (window.EncKey && window.EncKey.purgeNonRememberedSlots)
+    ? window.EncKey.purgeNonRememberedSlots()
+    : Promise.resolve();
+  purge.then(function () { return renderSavedAccountSelect(); }).catch(function () {
+    renderSavedAccountSelect();
+  });
   $('#saved-account-select').on('change', applyAccountMode);
 
-  // Remove a cached account's key from this browser. The remember token (if
-  // any) may belong to the forgotten account, so revoke it via /logout and
-  // pick up a fresh session + CSRF token for any further keyauth attempt.
+  // Remove a cached account's key from this browser. Revoke the remember
+  // token only when this device's cookie belongs to that account.
   $('#forget-account').on('click', async function() {
     const username = $('#saved-account-select').val();
     if (!username || username === OTHER_ACCOUNT || !window.EncKey || !window.EncKey.removeSlot) {
@@ -265,11 +253,17 @@ $(function() {
     try {
       await window.EncKey.removeSlot(username);
       try {
-        await fetch('/logout', { method: 'GET' });
+        const csrf = $('input[name="csrf_token"]').first().val() || '';
+        await fetch('/login/forget', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body:
+            'csrf_token=' + encodeURIComponent(csrf) +
+            '&username=' + encodeURIComponent(username),
+        });
       } catch (err) {
-        console.debug('logout during forget failed', err);
+        console.debug('forget token revoke failed', err);
       }
-      await refreshCsrfToken();
       await renderSavedAccountSelect();
       if (!savedAccountSectionVisible()) {
         showLoginNotice('Removed the cached login. Sign in with the username and password.');

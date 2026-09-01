@@ -166,7 +166,10 @@ pub async fn handle_login_post(
     }
 
     if remember_me {
-        match issue_remember_cookie(&username) {
+        match issue_remember_cookie(
+            &username,
+            remember_store::extract_token(cookie_header.as_deref()).as_deref(),
+        ) {
             Ok(set_cookie) => {
                 if let Ok(value) = HeaderValue::from_str(&set_cookie) {
                     response = response.header(header::SET_COOKIE, value);
@@ -195,9 +198,12 @@ pub async fn handle_login_post(
         .map_err(|err| map_response_build_err(err, "login::post::redirect"))
 }
 
-fn issue_remember_cookie(username: &str) -> Result<String, remember_store::RememberError> {
+fn issue_remember_cookie(
+    username: &str,
+    presented: Option<&str>,
+) -> Result<String, remember_store::RememberError> {
     let store = remember_store::RememberStore::new()?;
-    let token = store.issue(username)?;
+    let token = store.issue_or_refresh(username, presented)?;
     Ok(remember_store::build_set_cookie(&token))
 }
 
@@ -314,8 +320,7 @@ pub async fn handle_login_remember_post(
 /// page's cached-account dropdown) and the usual `csrf_token`; the key
 /// travels in the `X-Enc-Key` header. The server verifies the key against
 /// the stored HMAC verifier, so only someone holding the account's data key
-/// can restore its session. Creates no new server-side state and does not
-/// touch remember tokens.
+/// can restore its session. Refreshes this device's remember family.
 pub async fn handle_login_keyauth_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
@@ -374,10 +379,6 @@ pub async fn handle_login_keyauth_post(
             "Invalid encryption key. Sign in with your password.",
         ));
     }
-    // Successful use slides the verifier's 30-day window, like the remember token.
-    if let Err(err) = store.ensure_key_verifier(&username, enc_key.as_bytes()) {
-        warn!(?err, "failed to refresh key verifier after keyauth login");
-    }
 
     let finalize = session::finalize_login(cookie_header.as_deref(), &username)
         .map_err(|err| map_session_err(err, "login::keyauth::finalize"))?;
@@ -417,10 +418,10 @@ pub async fn handle_login_keyauth_post(
         }
     }
 
-    // The cached key just proved the account (dropdown entries are remembered
-    // logins by definition), so keep the device auto-restorable: issue a
-    // fresh remember token for the last-used account.
-    match issue_remember_cookie(&username) {
+    match issue_remember_cookie(
+        &username,
+        remember_store::extract_token(cookie_header.as_deref()).as_deref(),
+    ) {
         Ok(set_cookie) => {
             if let Ok(value) = HeaderValue::from_str(&set_cookie) {
                 builder = builder.header(header::SET_COOKIE, value);
@@ -434,6 +435,88 @@ pub async fn handle_login_keyauth_post(
     builder
         .body(Body::from(payload))
         .map_err(|err| map_response_build_err(err, "login::keyauth::response"))
+}
+
+/// `POST /login/forget` — drop this device's remember family only if it
+/// belongs to `username`. Other cached accounts on the same browser keep
+/// their token. CSRF-protected; does not destroy the guest session.
+pub async fn handle_login_forget_post(
+    request: Request<Body>,
+) -> Result<Response<Body>, HttpError> {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let cookie_header = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_owned());
+
+    let body_bytes = body::to_bytes(body, 16 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "login::forget"))?;
+    let form: HashMap<String, String> =
+        from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::forget"))?;
+    let csrf_token = form.get("csrf_token").map(|s| s.as_str());
+
+    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+        .map_err(|err| map_session_err(err, "login::forget::csrf"))?;
+    if !csrf_valid {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "Session expired. Sign in again.",
+        ));
+    }
+
+    let Some(username_raw) = form.get("username").map(|s| s.trim().to_owned()) else {
+        return Err(api_error(StatusCode::BAD_REQUEST, "username is required"));
+    };
+    let username = match normalise_username(&username_raw) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(api_error(StatusCode::BAD_REQUEST, "username is required"));
+        }
+    };
+
+    let presented = remember_store::extract_token(cookie_header.as_deref());
+    let revoked = match remember_store::RememberStore::new() {
+        Ok(store) => store.revoke_if_username(presented.as_deref(), &username),
+        Err(err) => {
+            return Err(log_and_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "remember store error",
+                "login::forget::open",
+                err,
+            ));
+        }
+    };
+
+    let payload = serde_json::to_vec(&json!({
+        "ok": true,
+        "revoked": revoked,
+    }))
+    .map_err(|err| {
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "serialisation error",
+            "login::forget::body",
+            err,
+        )
+    })?;
+
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+    if revoked {
+        if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+            builder = builder.header(header::SET_COOKIE, value);
+        }
+    }
+
+    builder
+        .body(Body::from(payload))
+        .map_err(|err| map_response_build_err(err, "login::forget::response"))
 }
 
 fn invalid_credentials() -> Result<Response<Body>, HttpError> {

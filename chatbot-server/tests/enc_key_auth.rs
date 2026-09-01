@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     sync::{Mutex, OnceLock},
 };
 
@@ -208,4 +208,166 @@ async fn authenticated_load_set_with_wrong_enc_key_returns_unauthorized() {
         StatusCode::UNAUTHORIZED,
         "wrong encryption key must be rejected"
     );
+}
+
+#[tokio::test]
+async fn missing_verifier_does_not_enroll_from_data_request() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+
+    let username = "enc_key_no_enroll";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_router(resolve_static_root());
+    let (session_cookie, csrf_token) = login_session(&app, username, password).await;
+    let enc_key = common::derive_encryption_key_header(username, password);
+
+    let verifier_dir = workspace.path().join("key_verifiers");
+    fs::remove_dir_all(&verifier_dir).ok();
+    fs::create_dir_all(&verifier_dir).expect("recreate verifier dir");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/load_set")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /load_set with no verifier");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "data endpoints must not enroll a missing verifier"
+    );
+    let leftover: Vec<_> = fs::read_dir(&verifier_dir)
+        .map(|entries| entries.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    assert!(
+        leftover.is_empty(),
+        "missing verifier must stay missing, found {leftover:?}"
+    );
+}
+
+#[tokio::test]
+async fn legacy_binary_verifier_still_validates_and_migrates() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+
+    let username = "enc_key_legacy_kv";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_router(resolve_static_root());
+    let (session_cookie, csrf_token) = login_session(&app, username, password).await;
+    let enc_key = common::derive_encryption_key_header(username, password);
+
+    let json_path = workspace
+        .path()
+        .join("key_verifiers")
+        .join(format!("{username}_kv.json"));
+    let legacy_path = workspace
+        .path()
+        .join("key_verifiers")
+        .join(format!("{username}_kv"));
+    let json = fs::read_to_string(&json_path).expect("json verifier");
+    let record: serde_json::Value = serde_json::from_str(&json).expect("parse verifier");
+    let bytes: Vec<u8> = record["verifier"]
+        .as_array()
+        .expect("verifier array")
+        .iter()
+        .map(|v| v.as_u64().expect("byte") as u8)
+        .collect();
+    fs::write(&legacy_path, bytes).expect("write legacy verifier");
+    fs::remove_file(&json_path).expect("remove json verifier");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/load_set")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /load_set with legacy verifier");
+
+    assert_ne!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "legacy verifier must still unlock data"
+    );
+    assert!(json_path.exists(), "legacy verifier must migrate to json");
+    assert!(!legacy_path.exists(), "legacy verifier file must be removed");
+}
+
+#[tokio::test]
+async fn expired_verifier_json_still_validates() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_openai_provider();
+
+    let username = "enc_key_expired_json";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_router(resolve_static_root());
+    let (session_cookie, csrf_token) = login_session(&app, username, password).await;
+    let enc_key = common::derive_encryption_key_header(username, password);
+
+    let json_path = workspace
+        .path()
+        .join("key_verifiers")
+        .join(format!("{username}_kv.json"));
+    let json = fs::read_to_string(&json_path).expect("json verifier");
+    let mut record: serde_json::Value = serde_json::from_str(&json).expect("parse verifier");
+    record["expires"] = json!(1);
+    fs::write(&json_path, serde_json::to_string(&record).unwrap()).expect("write expired field");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/load_set")
+                .header(header::COOKIE, &session_cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /load_set with expired-field verifier");
+
+    assert_ne!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "data-key verifier must not expire"
+    );
+    assert!(json_path.exists(), "verifier must not be deleted on use");
 }
