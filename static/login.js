@@ -142,15 +142,43 @@ function savedAccountSectionVisible() {
   return !$('#saved-account-section').hasClass('d-none');
 }
 
-/// Cached account selected: username filled from the dropdown (field hidden),
-/// password still required, forget button shown. "Other account…": type both.
+/// Cached account selected: username filled from the dropdown, password hidden
+/// (this device's remember cookie signs in). "Other account…": type both.
 function applyAccountMode() {
   const cached = cachedModeActive();
   $('#username-section').toggleClass('d-none', cached);
   if (cached) {
     $('#username').val($('#saved-account-select').val());
   }
+  $('#password-fields').toggleClass('d-none', cached);
+  $('#password').prop('required', !cached);
   $('#forget-account').toggleClass('d-none', !cached);
+}
+
+/// Password-free sign-in for a remembered device: the HttpOnly remember cookie
+/// restores the session. The encryption key is not a login credential.
+async function loginRememberedAccount() {
+  const username = $('#saved-account-select').val();
+  const csrf = $('input[name="csrf_token"]').first().val() || '';
+  const resp = await fetch('/login/remember', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body:
+      'csrf_token=' + encodeURIComponent(csrf) +
+      '&username=' + encodeURIComponent(username),
+  });
+  if (!resp.ok) {
+    return false;
+  }
+  const data = await resp.json();
+  if (!data || !data.ok) {
+    return false;
+  }
+  if (data.username && data.username !== username) {
+    return false;
+  }
+  window.location.href = '/';
+  return true;
 }
 
 function renderSavedAccountSelect() {
@@ -235,6 +263,19 @@ $(function() {
 
     if (cachedModeActive()) {
       $('#username').val($('#saved-account-select').val());
+      if (!$('#password').val()) {
+        try {
+          if (await loginRememberedAccount()) {
+            return;
+          }
+        } catch (err) {
+          console.debug('remembered login failed', err);
+        }
+        showLoginNotice('This computer is not remembered for that account. Enter the password.');
+        $('#password-fields').removeClass('d-none');
+        $('#password').prop('required', true).trigger('focus');
+        return;
+      }
     }
 
     const username = $('#username').val().trim();

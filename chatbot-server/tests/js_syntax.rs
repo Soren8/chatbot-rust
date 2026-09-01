@@ -35,6 +35,23 @@ fn first_party_static_js_parses() {
 }
 
 #[test]
+fn login_js_remembered_accounts_sign_in_without_password() {
+    let src = include_str!("../../static/login.js");
+    assert!(
+        src.contains("/login/remember"),
+        "cached-account Login must use the remember cookie, not the encryption key"
+    );
+    assert!(
+        !src.contains("/login/keyauth"),
+        "Fernet key must not be a login credential"
+    );
+    assert!(
+        src.contains("$('#password-fields').toggleClass('d-none', cached)"),
+        "remembered-account mode must hide the password field"
+    );
+}
+
+#[test]
 fn login_js_does_not_use_opaque_manual_redirect() {
     let src = include_str!("../../static/login.js");
     assert!(

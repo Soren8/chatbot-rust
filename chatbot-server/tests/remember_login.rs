@@ -321,6 +321,58 @@ async fn remember_login_requires_csrf() {
 }
 
 #[tokio::test]
+async fn remember_login_with_username_must_match_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "matchuser";
+    seed_user(username, "Sup3rS3cret!");
+    seed_user("otheruser", "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, remember) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+    let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
+
+    let mismatch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login/remember")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &cookie_header)
+                .body(Body::from(format!(
+                    "csrf_token={}&username={}",
+                    urlencoding::encode(&csrf),
+                    urlencoding::encode("otheruser")
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login/remember mismatch");
+    assert_eq!(mismatch.status(), StatusCode::UNAUTHORIZED);
+
+    let match_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login/remember")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &cookie_header)
+                .body(Body::from(format!(
+                    "csrf_token={}&username={}",
+                    urlencoding::encode(&csrf),
+                    urlencoding::encode(username)
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login/remember match");
+    assert_eq!(match_resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn remember_previous_generation_rejected_without_revoking() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();

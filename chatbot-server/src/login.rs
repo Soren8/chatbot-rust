@@ -256,6 +256,30 @@ pub async fn handle_login_remember_post(
             err,
         )
     })?;
+    if let Some(requested) = form
+        .get("username")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        let requested = match normalise_username(requested) {
+            Ok(value) => value,
+            Err(_) => {
+                return Err(api_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Remembered session expired. Sign in again.",
+                ));
+            }
+        };
+        match store.peek_username(presented.as_deref()) {
+            Some(bound) if bound == requested => {}
+            _ => {
+                return Err(api_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Remembered session expired. Sign in again.",
+                ));
+            }
+        }
+    }
 
     match store.resume(presented.as_deref()) {
         Ok(remember_store::ResumeOutcome::Authenticated {
