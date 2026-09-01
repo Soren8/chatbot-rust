@@ -81,11 +81,12 @@ function showLoginError(message) {
 }
 
 /// Submit the login form via fetch so a failed attempt renders as an inline
-/// notice on the login page. A verified login is a redirect to "/" that sets
-/// the session cookie; we then run `onSuccess` (used to cache the verified
-/// encryption key) and navigate. Any other outcome — a 401, or a stale-CSRF
-/// 303 back to /login — is a failure and must never cache the key into the
-/// saved-account dropdown.
+/// notice on the login page. A verified login is a 302 to "/" that sets the
+/// session cookie; fetch follows it, we run `onSuccess` (used to cache the
+/// verified encryption key), then navigate. A 401, or a stale-CSRF 303 that
+/// lands back on /login, is a failure and must never cache the key.
+/// Never set fetch redirect mode to manual: browsers turn that into an
+/// opaque response (status 0), so a successful login looks like invalid credentials.
 async function postLogin(form, onSuccess) {
   try {
     const body = new URLSearchParams(new FormData(form)).toString();
@@ -93,19 +94,14 @@ async function postLogin(form, onSuccess) {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body,
-      redirect: 'manual',
     });
-    const isRedirect = resp.status >= 300 && resp.status < 400;
     let dest = '';
-    const loc = resp.headers.get('Location') || '';
-    if (loc) {
-      try {
-        dest = new URL(loc, window.location.href).pathname;
-      } catch (e) {
-        dest = loc;
-      }
+    try {
+      dest = new URL(resp.url, window.location.href).pathname || '/';
+    } catch (e) {
+      dest = '';
     }
-    const success = isRedirect && dest === '/';
+    const success = resp.ok && dest === '/';
     if (success) {
       if (typeof onSuccess === 'function') {
         try {
@@ -118,7 +114,7 @@ async function postLogin(form, onSuccess) {
       return;
     }
     let message = 'Invalid credentials';
-    if (isRedirect) {
+    if (resp.ok && dest === '/login') {
       message = 'Session expired. Reload and try again.';
     } else {
       try {

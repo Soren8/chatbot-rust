@@ -32,3 +32,29 @@ fn first_party_static_js_parses() {
     );
     assert_script_parses("static/enc-key.js", include_str!("../../static/enc-key.js"));
 }
+
+#[test]
+fn login_js_does_not_use_opaque_manual_redirect() {
+    let src = include_str!("../../static/login.js");
+    assert!(
+        !src.contains("redirect: 'manual'") && !src.contains("redirect: \"manual\""),
+        "fetch redirect: 'manual' yields an opaque response (status 0) in browsers; \
+         postLogin then treats a successful 302 to / as invalid credentials"
+    );
+}
+
+#[test]
+fn chat_js_401_interceptor_allowlists_preference_saves() {
+    let src = include_str!("../../static/chat.js");
+    let interceptor = src
+        .split("window.fetch = function")
+        .nth(1)
+        .and_then(|rest| rest.split("window.location.href = '/'").next())
+        .expect("fetch 401 interceptor");
+    assert!(
+        interceptor.contains("/update_preferences"),
+        "POST /update_preferences 401s without X-Enc-Key; if the fetch interceptor \
+         is not allowlisted it assigns location.href = '/' and reloads the enc-key \
+         gate in a loop after every logged-in load"
+    );
+}

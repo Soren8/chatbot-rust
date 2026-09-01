@@ -172,11 +172,15 @@ window.fetch = function(input, init) {
         url.includes('/rename_set') ||
         url.includes('/update_memory') ||
         url.includes('/update_system_prompt') ||
+        url.includes('/update_preferences') ||
         url.includes('/delete_message') ||
         url.includes('/reset_chat') ||
         url.includes('/history_pair') ||
         url.includes('/history_image')
       )) {
+        return response;
+      }
+      if (window.APP_DATA && window.APP_DATA.loggedIn) {
         return response;
       }
       window.location.href = '/';
@@ -649,13 +653,17 @@ function hideEncKeyGate() {
   $('#enc-key-gate').addClass('d-none');
 }
 
+var encKeyUnlockInFlight = null;
 function beginEncKeyUnlockFlow() {
+  if (encKeyUnlockInFlight) {
+    return encKeyUnlockInFlight;
+  }
   if (window.EncKey && window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
     showEncKeyGateLoading('Confirm with fingerprint or device PIN…');
   } else {
     showEncKeyGateLoading('Loading encryption key…');
   }
-  return waitForEncryptionKey()
+  encKeyUnlockInFlight = waitForEncryptionKey()
     .then(function() {
       if (typeof window.loadChatSets !== 'function') {
         throw new Error('Chat is still starting. Try again.');
@@ -670,7 +678,11 @@ function beginEncKeyUnlockFlow() {
       console.error('encryption key unavailable on chat load', err);
       showEncKeyGateError(err);
       throw err;
+    })
+    .finally(function() {
+      encKeyUnlockInFlight = null;
     });
+  return encKeyUnlockInFlight;
 }
 
 async function response401Kind(response) {
@@ -706,6 +718,9 @@ async function handle401OrRetry(response, retryFn) {
         return retryFn();
       }
       window.location.reload();
+      throw new Error('Session expired');
+    }
+    if (window.APP_DATA && window.APP_DATA.loggedIn) {
       throw new Error('Session expired');
     }
     window.location.href = '/';
@@ -3149,10 +3164,12 @@ $(document).ready(function() {
           voice_mode: window.APP_DATA.voiceMode
       };
 
-      fetch('/update_preferences', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify(preferences)
+      withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
+          return fetch('/update_preferences', {
+              method: 'POST',
+              headers: headers,
+              body: JSON.stringify(preferences)
+          });
       }).catch(err => console.debug('Failed to save preferences:', err));
   }
 
@@ -4155,10 +4172,12 @@ $(document).ready(function() {
   // survives refreshes and follows the user across devices.
   function persistWebSearchPref() {
       if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
-      fetch('/update_preferences', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ web_search: window.APP_DATA.webSearch }),
+      withCsrfAsync({ 'Content-Type': 'application/json' }).then(function (headers) {
+          return fetch('/update_preferences', {
+              method: 'POST',
+              headers: headers,
+              body: JSON.stringify({ web_search: window.APP_DATA.webSearch }),
+          });
       }).catch(function (err) {
           console.debug('Failed to save web search preference:', err);
       });
@@ -4997,10 +5016,12 @@ $(document).ready(function() {
   function persistVoiceModeWanted(on) {
     window.APP_DATA.voiceMode = on;
     if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
-    fetch('/update_preferences', {
-      method: 'POST',
-      headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ voice_mode: on }),
+    withCsrfAsync({ 'Content-Type': 'application/json' }).then(function (headers) {
+      return fetch('/update_preferences', {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ voice_mode: on }),
+      });
     }).catch(function (err) {
       console.debug('Failed to save voice mode preference:', err);
     });
