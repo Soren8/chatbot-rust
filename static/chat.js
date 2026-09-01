@@ -154,6 +154,14 @@ if (window.EncKey && window.EncKey.purgeNonRememberedSlots && (!window.APP_DATA 
 const SESSION_EXPIRED_SEND_MSG =
   'Session expired or unauthorized. Your message was not sent — it is still in the input box.';
 
+function redirectHomeOnAuthFailure() {
+  if (window.APP_DATA && window.APP_DATA.loggedIn) {
+    return false;
+  }
+  window.location.href = '/';
+  return true;
+}
+
 const originalFetch = window.fetch;
 window.fetch = function(input, init) {
   return originalFetch.apply(this, arguments).then(response => {
@@ -180,10 +188,9 @@ window.fetch = function(input, init) {
       )) {
         return response;
       }
-      if (window.APP_DATA && window.APP_DATA.loggedIn) {
+      if (!redirectHomeOnAuthFailure()) {
         return response;
       }
-      window.location.href = '/';
       throw new Error('Session expired');
     }
     return response;
@@ -336,7 +343,7 @@ function fetchVoiceRetry(url, buildOptions, attempts) {
     return fetch(url, opts).then(function (res) {
       if (res.ok) return res;
       if (res.status === 401) {
-        window.location.href = '/';
+        redirectHomeOnAuthFailure();
         throw new Error('Session expired');
       }
       if (n > 1 && isRetryableVoiceStatus(res.status)) {
@@ -654,9 +661,23 @@ function hideEncKeyGate() {
 }
 
 var encKeyUnlockInFlight = null;
-function beginEncKeyUnlockFlow() {
+var ENC_GATE_RELOADS_KEY = 'chatbot_enc_gate_reloads';
+function beginEncKeyUnlockFlow(fromUser) {
   if (encKeyUnlockInFlight) {
     return encKeyUnlockInFlight;
+  }
+  if (!fromUser) {
+    var reloads = 0;
+    try {
+      reloads = parseInt(sessionStorage.getItem(ENC_GATE_RELOADS_KEY) || '0', 10) || 0;
+    } catch (e) {}
+    if (reloads >= 2) {
+      showEncKeyGateError(new Error('Could not load your chats. Sign out and log in with your password.'));
+      return Promise.reject(new Error('enc-key gate stopped after repeated failures'));
+    }
+    try {
+      sessionStorage.setItem(ENC_GATE_RELOADS_KEY, String(reloads + 1));
+    } catch (e) {}
   }
   if (window.EncKey && window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
     showEncKeyGateLoading('Confirm with fingerprint or device PIN…');
@@ -672,6 +693,7 @@ function beginEncKeyUnlockFlow() {
       return window.loadChatSets();
     })
     .then(function() {
+      try { sessionStorage.removeItem(ENC_GATE_RELOADS_KEY); } catch (e) {}
       hideEncKeyGate();
     })
     .catch(function(err) {
@@ -685,17 +707,20 @@ function beginEncKeyUnlockFlow() {
   return encKeyUnlockInFlight;
 }
 
+async function response401Message(response) {
+  try {
+    var body = await response.clone().json();
+    return (body.error || body.message || '').toString();
+  } catch (_) {
+    return '';
+  }
+}
+
 async function response401Kind(response) {
   if (response.status !== 401) {
     return null;
   }
-  var body = {};
-  try {
-    body = await response.clone().json();
-  } catch (_) {
-    return 'session';
-  }
-  var msg = (body.error || body.message || '').toString();
+  var msg = await response401Message(response);
   if (/encryption key|unlock|invalid encryption key/i.test(msg)) {
     return 'enc_key';
   }
@@ -705,6 +730,12 @@ async function response401Kind(response) {
 async function handle401OrRetry(response, retryFn) {
   var kind = await response401Kind(response);
   if (kind === 'enc_key') {
+    if (window.EncKey && window.EncKey.getKeyForRequestSync && window.EncKey.getKeyForRequestSync()) {
+      throw new Error(
+        (await response401Message(response)) ||
+          'Could not unlock chats with the cached key. Sign out and log in with your password.'
+      );
+    }
     var unlocked = await ensureEncryptionKeyUnlocked();
     if (unlocked && retryFn) {
       return retryFn();
@@ -713,18 +744,10 @@ async function handle401OrRetry(response, retryFn) {
   }
   if (response.status === 401) {
     var restored = await refreshSession();
-    if (restored) {
-      if (retryFn) {
-        return retryFn();
-      }
-      window.location.reload();
-      throw new Error('Session expired');
+    if (restored && retryFn) {
+      return retryFn();
     }
-    if (window.APP_DATA && window.APP_DATA.loggedIn) {
-      throw new Error('Session expired');
-    }
-    window.location.href = '/';
-    throw new Error('Session expired');
+    throw new Error('Session expired. Sign out and log in again.');
   }
   return response;
 }
@@ -1584,7 +1607,7 @@ function fetchHistoryPair(pairIndex, extra) {
     });
   }).then(function(r) {
     if (r.status === 401) {
-      window.location.href = '/';
+      redirectHomeOnAuthFailure();
       throw new Error('Session expired');
     }
     if (!r.ok) throw new Error('Failed to load message');
@@ -1968,7 +1991,7 @@ function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
     if (res.status === 401 && !afterRefresh) {
       return refreshSession().then(function (restored) {
         if (!restored) {
-          window.location.href = '/';
+          redirectHomeOnAuthFailure();
           throw new Error('Session expired');
         }
         return fetchWithGenerateRetry(url, refreshCsrfInit(init), attempt, true);
@@ -2707,7 +2730,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     }))
   })
   .then(response => {
-    if (response.status === 401) { window.location.href = '/'; throw new Error('Session expired'); }
+    if (response.status === 401) { redirectHomeOnAuthFailure(); throw new Error('Session expired'); }
     if (!response.ok) {
       return response.text().then(t => {
         let errData = null;
@@ -2936,7 +2959,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
     }))
   })
   .then(r => {
-    if (r.status === 401) { window.location.href = '/'; return null; }
+    if (r.status === 401) { redirectHomeOnAuthFailure(); return null; }
     return r.json().then(data => ({ ok: r.ok, status: r.status, data }));
   })
   .then(result => {
@@ -3512,12 +3535,18 @@ $(document).ready(function() {
           if (r.status === 401) {
             return handle401OrRetry(r, fetchSets);
           }
+          return r;
+        })
+        .then(async function(r) {
+          if (r.status === 401) {
+            var msg = await response401Message(r);
+            throw new Error(msg || 'Unauthorized');
+          }
           if (!r.ok) {
             throw new Error('Failed to load sets');
           }
-          return r;
+          return r.json();
         })
-        .then(r => r.json())
         .then(data => {
           if (!Array.isArray(data)) {
             throw new Error('Unexpected sets response');
@@ -3603,7 +3632,11 @@ $(document).ready(function() {
       fetchSet()
         .then(async r => {
           if (r.status === 401) {
-            return handle401OrRetry(r, fetchSet);
+            r = await handle401OrRetry(r, fetchSet);
+          }
+          if (r.status === 401) {
+            var msg = await response401Message(r);
+            throw new Error(msg || 'Unauthorized');
           }
           if (!r.ok) {
             try { const err = await r.json(); throw new Error(err && (err.error || err.message) || 'Failed to load set'); }
@@ -3627,7 +3660,8 @@ $(document).ready(function() {
 
     beginEncKeyUnlockFlow();
     $('#enc-key-retry').on('click', function() {
-      beginEncKeyUnlockFlow();
+      try { sessionStorage.removeItem(ENC_GATE_RELOADS_KEY); } catch (e) {}
+      beginEncKeyUnlockFlow(true);
     });
 
     $('#new-set').on('click', function() {
@@ -3755,7 +3789,7 @@ $(document).ready(function() {
         if (r.status === 401 && !isRetry) {
           return refreshSession().then(function (restored) {
             if (!restored) {
-              window.location.href = '/';
+              redirectHomeOnAuthFailure();
               return null;
             }
             return saveSystemPromptNow(sysPromptText, true).then(function () { return null; });
@@ -3794,7 +3828,7 @@ $(document).ready(function() {
         if (r.status === 401 && !isRetry) {
           return refreshSession().then(function (restored) {
             if (!restored) {
-              window.location.href = '/';
+              redirectHomeOnAuthFailure();
               return null;
             }
             return saveMemoryNow(memText, true).then(function () { return null; });

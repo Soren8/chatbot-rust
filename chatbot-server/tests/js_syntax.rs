@@ -46,15 +46,26 @@ fn login_js_does_not_use_opaque_manual_redirect() {
 #[test]
 fn chat_js_401_interceptor_allowlists_preference_saves() {
     let src = include_str!("../../static/chat.js");
-    let interceptor = src
-        .split("window.fetch = function")
-        .nth(1)
-        .and_then(|rest| rest.split("window.location.href = '/'").next())
-        .expect("fetch 401 interceptor");
+    let start = src.find("window.fetch = function").expect("fetch wrap");
+    let chunk = &src[start..start.saturating_add(1800).min(src.len())];
     assert!(
-        interceptor.contains("/update_preferences"),
+        chunk.contains("/update_preferences"),
         "POST /update_preferences 401s without X-Enc-Key; if the fetch interceptor \
          is not allowlisted it assigns location.href = '/' and reloads the enc-key \
          gate in a loop after every logged-in load"
+    );
+}
+
+#[test]
+fn chat_js_enc_key_gate_cannot_loop_on_401() {
+    let src = include_str!("../../static/chat.js");
+    assert!(
+        src.contains("chatbot_enc_gate_reloads"),
+        "enc-key gate must stop after repeated failures so it cannot loop between \
+         'Loading encryption key' and 'Loading your sets'"
+    );
+    assert!(
+        src.contains("redirectHomeOnAuthFailure"),
+        "401 handlers must not send logged-in users to / (that restarts the enc-key gate)"
     );
 }
