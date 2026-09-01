@@ -6,7 +6,7 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
-    config, session,
+    session,
     user_store::{normalise_username, CreateOutcome, UserStore},
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -31,13 +31,10 @@ pub async fn handle_signup_get(
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "signup::get"))?;
 
-    let config = config::app_config();
-    let sri = config.cdn_sri.clone();
-
     let csrf_token = bootstrap.csrf_token;
     let set_cookie = bootstrap.set_cookie;
 
-    let html = render_signup_template(&csrf_token, &sri).map_err(|err| {
+    let html = render_signup_template(&csrf_token).map_err(|err| {
         log_and_api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "template error",
@@ -126,15 +123,11 @@ pub async fn handle_signup_post(
         .map_err(|err| map_response_build_err(err, "signup::post::redirect"))
 }
 
-fn render_signup_template(
-    csrf_token: &str,
-    sri: &HashMap<String, String>,
-) -> Result<String, minijinja::Error> {
+fn render_signup_template(csrf_token: &str) -> Result<String, minijinja::Error> {
     let env = template_env();
     let template = env.get_template("signup.html")?;
     template.render(context! {
         csrf_token => csrf_token,
-        sri => sri,
     })
 }
 

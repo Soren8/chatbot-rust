@@ -137,7 +137,6 @@ pub struct AppConfig {
     pub csrf: bool,
     pub save_thoughts: bool,
     pub send_thoughts: bool,
-    pub cdn_sri: HashMap<String, String>,
     pub brave_api_key: Option<String>,
     /// Max requests per identity per rolling minute (`0` disables).
     pub rate_limit_per_user_per_minute: u32,
@@ -349,8 +348,6 @@ fn load_app_config() -> AppConfig {
     let tts_port = env::var("TTS_PORT").unwrap_or_else(|_| "5000".to_string());
     let tts_base_url = format!("http://{tts_host}:{tts_port}");
 
-    let cdn_sri = build_cdn_sri_map();
-
     let raw_config = load_yaml_config().unwrap_or_default();
 
     let voice_service_host = raw_config
@@ -485,7 +482,6 @@ fn load_app_config() -> AppConfig {
         csrf,
         save_thoughts,
         send_thoughts,
-        cdn_sri,
         brave_api_key,
         rate_limit_per_user_per_minute,
         rate_limit_global_per_minute,
@@ -753,53 +749,6 @@ fn replace_in_str(input: &str, user_vars: &HashMap<String, String>) -> String {
             })
         })
         .to_string()
-}
-
-fn build_cdn_sri_map() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    map.insert(
-        "jquery".to_string(),
-        env::var("SRI_JQUERY").unwrap_or_else(|_| {
-            "sha384-vtXRMe3mGCbOeY7l30aIg8H9p3GdeSe4IFlP6G8JMa7o7lXvnz3GFKzPxzJdPfGK".to_string()
-        }),
-    );
-    map.insert(
-        "bootstrap_css".to_string(),
-        env::var("SRI_BOOTSTRAP_CSS").unwrap_or_else(|_| {
-            "sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM".to_string()
-        }),
-    );
-    map.insert(
-        "bootstrap_js".to_string(),
-        env::var("SRI_BOOTSTRAP_JS").unwrap_or_else(|_| {
-            "sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz".to_string()
-        }),
-    );
-    map.insert(
-        "bootstrap_icons_css".to_string(),
-        env::var("SRI_BOOTSTRAP_ICONS_CSS").unwrap_or_else(|_| {
-            "sha384-Ay26V7L8bsJTsX9Sxclnvsn+hkdiwRnrjZJXqKmkIDobPgIIWBOVguEcQQLDuhfN".to_string()
-        }),
-    );
-    map.insert(
-        "marked".to_string(),
-        env::var("SRI_MARKED").unwrap_or_else(|_| {
-            "sha384-H+hy9ULve6xfxRkWIh/YOtvDdpXgV2fmAGQkIDTxIgZwNoaoBal14Di2YTMR6MzR".to_string()
-        }),
-    );
-    map.insert(
-        "highlightjs".to_string(),
-        env::var("SRI_HIGHLIGHTJS").unwrap_or_else(|_| {
-            "sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp".to_string()
-        }),
-    );
-    map.insert(
-        "highlightjs_css".to_string(),
-        env::var("SRI_HIGHLIGHTJS_CSS").unwrap_or_else(|_| {
-            "sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH".to_string()
-        }),
-    );
-    map
 }
 
 fn fallback_provider() -> ProviderConfig {

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
@@ -14,7 +12,7 @@ use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
 
-pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net data:; style-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com 'unsafe-inline'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com blob: 'wasm-unsafe-eval'; media-src 'self' blob: data:";
+pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
 
 #[derive(Serialize)]
@@ -115,7 +113,6 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         "rendering home template with config"
     );
 
-    let sri = config.cdn_sri.clone();
     let available_models = build_available_models(config.provider_names(), &user_details.tier, &config);
 
     let html = render_template(
@@ -124,7 +121,6 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         &available_models,
         &default_prompt,
         &bootstrap.csrf_token,
-        sri,
         save_thoughts,
         send_thoughts,
     )
@@ -237,7 +233,6 @@ fn render_template(
     available_models: &[FrontendModel],
     default_prompt: &str,
     csrf_token: &str,
-    sri: HashMap<String, String>,
     save_thoughts: bool,
     send_thoughts: bool,
 ) -> Result<String, minijinja::Error> {
@@ -256,7 +251,6 @@ fn render_template(
         available_llms => available_models,
         default_system_prompt => default_prompt,
         csrf_token => csrf_token,
-        sri => sri,
         save_thoughts => save_thoughts,
         send_thoughts => send_thoughts,
     })
@@ -348,7 +342,6 @@ mod tests {
         }];
         let default_prompt = "system prompt";
         let csrf_token = "csrf";
-        let sri = HashMap::new();
         let save_thoughts = true;
         let send_thoughts = true;
 
@@ -358,7 +351,6 @@ mod tests {
             &available_models,
             default_prompt,
             csrf_token,
-            sri,
             save_thoughts,
             send_thoughts,
         )

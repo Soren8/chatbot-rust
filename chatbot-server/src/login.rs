@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use chatbot_core::{
-    config, remember_store, session,
+    remember_store, session,
     user_store::{normalise_username, UserStore},
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -47,10 +47,7 @@ pub async fn handle_login_get(
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "login::get"))?;
 
-    let config = config::app_config();
-    let sri = config.cdn_sri.clone();
-
-    let html = render_login_template(&bootstrap.csrf_token, &sri).map_err(|err| {
+    let html = render_login_template(&bootstrap.csrf_token).map_err(|err| {
         log_and_api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "template error",
@@ -523,15 +520,11 @@ fn invalid_credentials() -> Result<Response<Body>, HttpError> {
     Err(api_error(StatusCode::UNAUTHORIZED, INVALID_CREDENTIALS))
 }
 
-fn render_login_template(
-    csrf_token: &str,
-    sri: &HashMap<String, String>,
-) -> Result<String, minijinja::Error> {
+fn render_login_template(csrf_token: &str) -> Result<String, minijinja::Error> {
     let env = template_env();
     let template = env.get_template("login.html")?;
     template.render(context! {
         csrf_token => csrf_token,
-        sri => sri,
     })
 }
 
