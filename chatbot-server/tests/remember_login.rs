@@ -456,177 +456,30 @@ async fn home_auto_restores_remembered_session_after_restart() {
     );
 }
 
-async fn post_keyauth(
-    app: &axum::Router,
-    cookie_header: &str,
-    csrf: &str,
-    username: &str,
-    enc_key: Option<&str>,
-) -> axum::http::Response<Body> {
-    let mut builder = Request::builder()
-        .method(Method::POST)
-        .uri("/login/keyauth")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(header::COOKIE, cookie_header);
-    if let Some(key) = enc_key {
-        builder = builder.header("X-Enc-Key", key);
-    }
-    let body = format!(
-        "csrf_token={}&username={}",
-        urlencoding::encode(csrf),
-        urlencoding::encode(username)
-    );
-    app.clone()
-        .oneshot(builder.body(Body::from(body)).unwrap())
-        .await
-        .expect("POST /login/keyauth")
-}
-
 #[tokio::test]
-async fn keyauth_restores_session_without_password() {
+async fn keyauth_route_is_gone() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
-    let username = "keyauthuser";
-    let password = "Sup3rS3cret!";
-    seed_user(username, password);
-
-    {
-        let store = UserStore::new().expect("user store");
-        let key = store
-            .derive_encryption_key(username, password)
-            .expect("derive key");
-        store
-            .ensure_key_verifier(username, &key)
-            .expect("register verifier");
-    }
 
     let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
-
-    let key_b64 = {
-        let store = UserStore::new().expect("user store");
-        String::from_utf8(
-            store
-                .derive_encryption_key(username, password)
-                .expect("derive key"),
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login/keyauth")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("csrf_token=x&username=anyone"))
+                .unwrap(),
         )
-        .expect("key utf8")
-    };
-
-    let response =
-        post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let cookies = set_cookie_values(response.headers());
-
-    let body = to_bytes(response.into_body(), 32 * 1024)
         .await
-        .expect("read keyauth body");
-    let body_str = std::str::from_utf8(&body).expect("utf8");
-    assert!(body_str.contains(username), "response names the user");
-
-    let session = find_cookie_pair(&cookies, "session").expect("session cookie from keyauth");
-    let context = session::session_context(Some(&session)).expect("session after keyauth");
+        .expect("POST /login/keyauth");
     assert_eq!(
-        context.username.as_deref(),
-        Some(username),
-        "keyauth must restore the authenticated session without a password"
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "cached-key login must not exist"
     );
-}
-
-#[tokio::test]
-async fn keyauth_rejects_bad_credentials() {
-    common::init_tracing();
-    let _guard = test_mutex().lock().unwrap();
-    let _workspace = setup_workspace();
-    let username = "keyauthbad";
-    let password = "Sup3rS3cret!";
-
-    {
-        let store = UserStore::new().expect("user store");
-        let key = store
-            .derive_encryption_key(username, password)
-            .expect("derive key");
-        store
-            .ensure_key_verifier(username, &key)
-            .expect("register verifier");
-    }
-
-    let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
-
-    // Wrong key.
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some("wrong-key")).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    // Missing key header.
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, None).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    // Unknown username.
-    let key_b64 = {
-        let store = UserStore::new().expect("user store");
-        String::from_utf8(
-            store
-                .derive_encryption_key(username, password)
-                .expect("derive key"),
-        )
-        .expect("key utf8")
-    };
-    let response = post_keyauth(&app, &guest_cookie, &csrf, "ghost_user", Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    // User without a registered verifier cannot key-login.
-    seed_user("noverifier", password);
-    let response = post_keyauth(&app, &guest_cookie, &csrf, "noverifier", Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn keyauth_requires_csrf() {
-    common::init_tracing();
-    let _guard = test_mutex().lock().unwrap();
-    let _workspace = setup_workspace();
-    let username = "keyauthcsrf";
-    seed_user(username, "Sup3rS3cret!");
-
-    {
-        let store = UserStore::new().expect("user store");
-        let key = store
-            .derive_encryption_key(username, "Sup3rS3cret!")
-            .expect("derive key");
-        store
-            .ensure_key_verifier(username, &key)
-            .expect("register verifier");
-    }
-
-    let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
-
-    let key_b64 = {
-        let store = UserStore::new().expect("user store");
-        String::from_utf8(
-            store
-                .derive_encryption_key(username, "Sup3rS3cret!")
-                .expect("derive key"),
-        )
-        .expect("key utf8")
-    };
-
-    // Empty CSRF value.
-    let response = post_keyauth(&app, &guest_cookie, "", username, Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    // Valid CSRF still works afterwards (no session rotation happened).
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let cookies = set_cookie_values(response.headers());
-    let session = find_cookie_pair(&cookies, "session").expect("session cookie from keyauth");
-    let context = session::session_context(Some(&session)).expect("session after keyauth");
-    assert_eq!(context.username.as_deref(), Some(username));
 }
 
 #[tokio::test]
@@ -686,71 +539,6 @@ async fn login_without_remember_revokes_existing_token() {
     let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
     let restore = post_remember_login(&app, &cookie_header, &csrf, true).await;
     assert_eq!(restore.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn keyauth_issues_remember_token_for_last_used_account() {
-    common::init_tracing();
-    let _guard = test_mutex().lock().unwrap();
-    let _workspace = setup_workspace();
-    let username = "keyauthtoken";
-    let password = "Sup3rS3cret!";
-    seed_user(username, password);
-
-    {
-        let store = UserStore::new().expect("user store");
-        let key = store
-            .derive_encryption_key(username, password)
-            .expect("derive key");
-        store
-            .ensure_key_verifier(username, &key)
-            .expect("register verifier");
-    }
-
-    let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
-
-    let key_b64 = {
-        let store = UserStore::new().expect("user store");
-        String::from_utf8(
-            store
-                .derive_encryption_key(username, password)
-                .expect("derive key"),
-        )
-        .expect("key utf8")
-    };
-
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let cookies = set_cookie_values(response.headers());
-    let remember = cookies
-        .iter()
-        .find(|cookie| cookie.starts_with("remember=") && cookie.contains(&format!("Max-Age={REMEMBER_MAX_AGE}")))
-        .expect("keyauth must issue a remember token")
-        .clone();
-
-    // After a server restart, the app entry point auto-restores the
-    // last-used account with that token alone.
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/")
-                .header(header::COOKIE, &remember)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / after keyauth");
-    let body = to_bytes(response.into_body(), 128 * 1024)
-        .await
-        .expect("read home body");
-    let body_str = std::str::from_utf8(&body).expect("utf8");
-    assert!(
-        body_str.contains("\"loggedIn\": true"),
-        "keyauth login must leave the device auto-restorable"
-    );
 }
 
 #[tokio::test]

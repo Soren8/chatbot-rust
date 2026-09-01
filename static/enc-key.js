@@ -9,8 +9,8 @@
   // cached accounts (and forget them) by name. Only accounts whose login had
   // "Remember this computer" checked get a slot.
   const SLOT_PREFIX = 'acct:';
-  // A cached login is offered for password-free re-entry for at most this long,
-  // matching the 30-day server-side verifier expiry (and the remember token).
+  // Cached accounts stay in the login dropdown for at most this long,
+  // matching the 30-day remember token.
   const MAX_CACHED_ACCOUNT_AGE_MS = 30 * 24 * 3600 * 1000;
   // Pre-multi-account entries; removed once a slotted login overwrites them.
   const LEGACY_WRAPPED_KEY_ID = 'wrapped-data-key';
@@ -221,9 +221,8 @@
     await idbDelete(LEGACY_WEBAUTHN_CRED_ID);
   }
 
-  // `remembered` gates password-free re-entry (dropdown + keyauth); the slot
-  // itself is always written because the logged-in session needs it for
-  // X-Enc-Key on every data request.
+  // `remembered` gates the login dropdown; the slot itself is always written
+  // because the logged-in session needs it for X-Enc-Key on every data request.
   async function storeWrappedKey(rawKeyB64, mode, username, remembered) {
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       const name = username || currentUsername();
@@ -373,14 +372,11 @@
           remembered: entry.value.remembered !== false,
           updatedAt: entry.value.updatedAt || 0,
         }))
-        // Only accounts whose login had "Remember this computer" checked are
-        // offered password-free re-entry. Legacy hashed-slot entries from the
-        // old scheme are unusable now (the server no longer maps hashes) and
-        // are hidden too.
+        // Only accounts whose login had "Remember this computer" checked appear
+        // in the dropdown. Legacy hashed-slot entries from the old scheme are
+        // unusable now (the server no longer maps hashes) and are hidden too.
         .filter((entry) => entry.remembered && !/^[0-9a-f]{64}$/.test(entry.username))
-        // Hide cached logins older than 30 days so a stale credential can't be
-        // offered for re-entry (the server expires its verifier on the same
-        // clock).
+        // Hide slots older than 30 days so a stale username is not offered.
         .filter((entry) => entry.updatedAt && (Date.now() - entry.updatedAt) <= MAX_CACHED_ACCOUNT_AGE_MS)
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((entry) => entry.username);
@@ -535,9 +531,7 @@
     return unwrapSlotWithWebAuthn(record);
   }
 
-  // Slot-lookup variants used by the login page, which knows the username
-  // from the account dropdown but has no session yet. Only remembered slots
-  // (login had "Remember this computer" checked) may serve keyauth.
+  // Slot-lookup by username (no session yet). Remembered slots only.
   async function getKeyForUsername(username) {
     const record = await idbGet(slotKey(username));
     if (!record || record.remembered === false || record.mode === 'webauthn-prf') {

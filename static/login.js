@@ -131,47 +131,6 @@ async function postLogin(form, onSuccess) {
   }
 }
 
-/// Password-free login for a cached account: prove knowledge of the cached
-/// encryption key against the server's HMAC verifier. Falls back to the
-/// sign-in form when the key cannot be presented (e.g. WebAuthn cancelled).
-async function loginCachedAccount() {
-  const username = $('#saved-account-select').val();
-  const csrfInput = $('input[name="csrf_token"]').first();
-  try {
-    let key = await window.EncKey.getKeyForUsername(username);
-    if (!key && window.EncKey.unlockWithWebAuthnForUser) {
-      key = await window.EncKey.unlockWithWebAuthnForUser(username);
-    }
-    if (!key) {
-      throw new Error('cached key unavailable');
-    }
-    const resp = await fetch('/login/keyauth', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Enc-Key': key,
-      },
-      body:
-        'csrf_token=' + encodeURIComponent(csrfInput.val()) +
-        '&username=' + encodeURIComponent(username),
-    });
-    if (!resp.ok) {
-      throw new Error('cached key login rejected');
-    }
-    const data = await resp.json();
-    if (!data || !data.username) {
-      throw new Error('unexpected keyauth response');
-    }
-    window.EncKey.touchSlot(username);
-    window.location.href = '/';
-  } catch (err) {
-    console.debug('cached key login failed', err);
-    showLoginNotice('Could not sign in with the cached key for this account. Sign in below.');
-    $('#saved-account-select').val(OTHER_ACCOUNT);
-    applyAccountMode();
-  }
-}
-
 function cachedModeActive() {
   return (
     savedAccountSectionVisible() &&
@@ -183,15 +142,14 @@ function savedAccountSectionVisible() {
   return !$('#saved-account-section').hasClass('d-none');
 }
 
-/// Cached account selected: password/remember-me hidden (resume needs
-/// neither), forget button shown. "Other account…": classic username +
-/// password + remember form.
+/// Cached account selected: username filled from the dropdown (field hidden),
+/// password still required, forget button shown. "Other account…": type both.
 function applyAccountMode() {
   const cached = cachedModeActive();
   $('#username-section').toggleClass('d-none', cached);
-  $('#username').prop('disabled', cached);
-  $('#password-fields').toggleClass('d-none', cached);
-  $('#password').prop('required', !cached);
+  if (cached) {
+    $('#username').val($('#saved-account-select').val());
+  }
   $('#forget-account').toggleClass('d-none', !cached);
 }
 
@@ -276,8 +234,7 @@ $(function() {
     const form = this;
 
     if (cachedModeActive()) {
-      await loginCachedAccount();
-      return;
+      $('#username').val($('#saved-account-select').val());
     }
 
     const username = $('#username').val().trim();
@@ -336,7 +293,7 @@ $(function() {
 
     // Cache the key only after the server has verified it (a failed login must
     // not land in the saved-account dropdown). The slot backs the live session
-    // (X-Enc-Key); `remember_me` only decides password-free re-entry later.
+    // (X-Enc-Key); `remember_me` decides whether the username stays in the dropdown.
     await postLogin(form, async function () {
       if (!derivedKey || !window.EncKey || !window.EncKey.storeFromLogin) {
         return;
