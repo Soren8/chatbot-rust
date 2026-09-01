@@ -11,6 +11,25 @@ window.nativeLog = function(tag, msg) {
   }
 };
 
+function ttHtml(html) {
+  if (html == null || typeof html !== 'string') {
+    return html;
+  }
+  if (window.__chatbotTt && typeof window.__chatbotTt.createHTML === 'function') {
+    return window.__chatbotTt.createHTML(html);
+  }
+  return html;
+}
+if (window.jQuery) {
+  var origHtml = jQuery.fn.html;
+  jQuery.fn.html = function (value) {
+    if (arguments.length === 0) {
+      return origHtml.call(this);
+    }
+    return origHtml.call(this, ttHtml(value));
+  };
+}
+
 // Ensure config exists before any DOM-ready handlers use it
 try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
@@ -1020,7 +1039,7 @@ function buildAiHistoryChildren(safeHtml) {
   const textSpan = document.createElement('span');
   textSpan.className = 'ai-message-text';
   if (typeof safeHtml === 'string' && safeHtml) {
-    textSpan.innerHTML = safeHtml;
+    textSpan.innerHTML = ttHtml(safeHtml);
   }
   frag.appendChild(textSpan);
   frag.appendChild(buildAiRegenerateContainer(true));
@@ -2294,9 +2313,9 @@ function highlightSentenceInElement(element, text, caretOffset, isPlaying) {
     const badge = document.createElement('div');
     badge.className = 'tts-hover-play-icon' + (isPlaying ? ' is-stop' : '');
     badge.setAttribute('aria-hidden', 'true');
-    badge.innerHTML = isPlaying
+    badge.innerHTML = ttHtml(isPlaying
       ? '<i class="bi bi-stop-fill"></i>'
-      : '<i class="bi bi-play-fill"></i>';
+      : '<i class="bi bi-play-fill"></i>');
     const badgeSize = 22;
     badge.style.left = Math.max(0, firstRect.left - badgeSize - 4) + 'px';
     badge.style.top = (firstRect.top + (firstRect.height - badgeSize) / 2) + 'px';

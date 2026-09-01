@@ -50,4 +50,12 @@ async fn test_csp_headers() {
             "CSP must not allow {host}. Current CSP: {csp}"
         );
     }
+    assert!(
+        csp.contains("require-trusted-types-for 'script'"),
+        "CSP must require Trusted Types for script. Current CSP: {csp}"
+    );
+    assert!(
+        csp.contains("trusted-types chatbot default"),
+        "CSP must allow chatbot and default TT policies. Current CSP: {csp}"
+    );
 }

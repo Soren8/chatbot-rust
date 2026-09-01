@@ -31,6 +31,7 @@ fn first_party_static_js_parses() {
         include_str!("../../static/native-bridge.js"),
     );
     assert_script_parses("static/enc-key.js", include_str!("../../static/enc-key.js"));
+    assert_script_parses("static/tt.js", include_str!("../../static/tt.js"));
 }
 
 #[test]

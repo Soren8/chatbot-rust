@@ -12,7 +12,7 @@ use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
 
-pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; media-src 'self' blob: data:";
+pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; require-trusted-types-for 'script'; trusted-types chatbot default; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
 
 #[derive(Serialize)]
