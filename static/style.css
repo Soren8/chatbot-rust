@@ -640,6 +640,10 @@ body {
     color: #9aa0a6;
 }
 
+.text-hint {
+    color: #d0d0d0;
+}
+
 /* Settings panel cards and controls should also use dark backgrounds */
 .card, .card-header {
     background-color: #1e1f21; /* dark gray */
