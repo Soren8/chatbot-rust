@@ -1,4 +1,7 @@
-use std::env;
+use std::{
+    env,
+    sync::{Mutex, OnceLock},
+};
 
 use axum::{
     body::{to_bytes, Body},
@@ -10,6 +13,11 @@ use tower::ServiceExt;
 
 mod common;
 
+fn test_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn setup_workspace() -> common::TestWorkspace {
     env::set_var("SECRET_KEY", "integration_test_secret");
     common::TestWorkspace::with_openai_provider()
@@ -18,6 +26,7 @@ fn setup_workspace() -> common::TestWorkspace {
 #[tokio::test]
 async fn logout_flow_clears_session_cookie() {
     common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
 
     let password = "Sup3rS3cret!";
@@ -121,6 +130,7 @@ async fn logout_flow_clears_session_cookie() {
 #[tokio::test]
 async fn logged_in_home_distinguishes_switch_account_from_device_logout() {
     common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
 
     let password = "Sup3rS3cret!";

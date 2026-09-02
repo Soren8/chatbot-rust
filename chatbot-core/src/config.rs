@@ -681,9 +681,9 @@ fn refuse_plaintext_provider_secrets(value: &Value) {
                     );
                 }
             },
-            other => {
+            _ => {
                 panic!(
-                    "llms[{idx}].api_key must be a string environment variable reference, got {other:?}"
+                    "llms[{idx}].api_key must be a string environment variable reference, got a non-string value"
                 );
             }
         }
@@ -1416,7 +1416,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "must be a string environment variable reference")]
     fn refuses_non_string_api_key() {
         let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1427,7 +1426,29 @@ mod tests {
         let _cwd_guard = CwdGuard::change_to(dir.path());
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         reset();
-        let _ = app_config();
+        let payload = std::panic::catch_unwind(|| {
+            let _ = app_config();
+        })
+        .expect_err("non-string api_key must panic");
+        let msg = panic_message(payload.as_ref());
+        assert!(
+            msg.contains("must be a string environment variable reference"),
+            "{msg}"
+        );
+        assert!(
+            !msg.contains("12345"),
+            "api_key value must not appear in the panic message: {msg}"
+        );
+    }
+
+    fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+        if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            String::from("<non-string panic payload>")
+        }
     }
 
     #[test]
