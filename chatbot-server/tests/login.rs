@@ -148,7 +148,7 @@ async fn login_flow_sets_session_cookie() {
         .expect("csrf token present");
 
     let payload = format!(
-        "username={}&password={}&csrf_token={}",
+        "username={}&password={}&csrf_token={}&remember_me=on",
         urlencoding::encode(username),
         urlencoding::encode(password),
         urlencoding::encode(&csrf)

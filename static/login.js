@@ -142,14 +142,17 @@ function savedAccountSectionVisible() {
   return !$('#saved-account-section').hasClass('d-none');
 }
 
-/// Cached account selected: password/remember-me hidden (resume needs
-/// neither), forget button shown. "Other account…": classic username +
-/// password + remember form.
+/// Cached account selected: username comes from the dropdown (text field
+/// hidden). Password and Remember stay visible so a typed password always
+/// posts /login. Empty password tries keyauth/remember. Never disable
+/// #username — FormData drops disabled fields.
 function applyAccountMode() {
   const cached = cachedModeActive();
   $('#username-section').toggleClass('d-none', cached);
-  $('#username').prop('disabled', cached);
-  $('#password-fields').toggleClass('d-none', cached);
+  if (cached) {
+    $('#username').val($('#saved-account-select').val());
+  }
+  $('#username').prop('disabled', false);
   $('#password').prop('required', !cached);
   $('#forget-account').toggleClass('d-none', !cached);
 }
@@ -186,25 +189,23 @@ async function loginCachedAccount() {
               window.EncKey.touchSlot(username);
             }
             window.location.href = '/';
-            return;
+            return true;
           }
         }
       }
     }
     if (await loginRememberedAccount()) {
-      return;
+      return true;
     }
-    throw new Error('cached login unavailable');
+    return false;
   } catch (err) {
     console.debug('cached key login failed', err);
     try {
       if (await loginRememberedAccount()) {
-        return;
+        return true;
       }
     } catch (e) {}
-    showLoginNotice('Could not sign in with the cached key for this account. Sign in below.');
-    $('#saved-account-select').val(OTHER_ACCOUNT);
-    applyAccountMode();
+    return false;
   }
 }
 
@@ -315,7 +316,20 @@ $(function() {
     const form = this;
 
     if (cachedModeActive()) {
-      await loginCachedAccount();
+      $('#username').val($('#saved-account-select').val());
+    }
+    $('#username').prop('disabled', false);
+
+    if (cachedModeActive() && !$('#password').val()) {
+      try {
+        if (await loginCachedAccount()) {
+          return;
+        }
+      } catch (err) {
+        console.debug('cached login failed', err);
+      }
+      showLoginNotice('Enter the password to sign in to this account.');
+      $('#password').prop('required', true).trigger('focus');
       return;
     }
 

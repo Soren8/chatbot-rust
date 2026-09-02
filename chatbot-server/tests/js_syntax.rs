@@ -46,8 +46,40 @@ fn login_js_remembered_accounts_sign_in_without_password() {
         "cached-account Login falls back to the remember cookie when no key is stored"
     );
     assert!(
-        src.contains("$('#password-fields').toggleClass('d-none', cached)"),
-        "remembered-account mode must hide the password field"
+        src.contains("$('#password').prop('required', !cached)"),
+        "cached-account mode may omit the password, but the field must stay on the form"
+    );
+    assert!(
+        !src.contains("$('#password-fields').toggleClass('d-none', cached)"),
+        "hiding #password-fields also hides Remember-this-computer and makes a \
+         username/password login look like a failed cached restore"
+    );
+}
+
+#[test]
+fn login_js_password_login_not_swallowed_by_cached_account() {
+    // HTTP tests POST /login directly and never run login.js, so they cannot
+    // catch this. A selected cached account used to call loginCachedAccount
+    // and return even when the user had typed a password (Remember checked),
+    // producing "This computer is not remembered for that account."
+    let src = include_str!("../../static/login.js");
+    let start = src
+        .find("$('form').on('submit'")
+        .expect("login form submit handler");
+    let handler = &src[start..];
+    assert!(
+        handler.contains("cachedModeActive() && !$('#password').val()")
+            || handler.contains("cachedModeActive() && !$(\"#password\").val()"),
+        "password-free cached login must run only when #password is empty"
+    );
+    assert!(
+        !handler.contains("await loginCachedAccount();\n      return;"),
+        "must not return from cachedModeActive before a filled password can postLogin"
+    );
+    assert!(
+        handler.contains("$('#username').prop('disabled', false)")
+            || handler.contains("$(\"#username\").prop('disabled', false)"),
+        "disabled username is omitted from FormData; re-enable before postLogin"
     );
 }
 
