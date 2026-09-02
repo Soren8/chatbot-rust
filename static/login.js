@@ -142,21 +142,74 @@ function savedAccountSectionVisible() {
   return !$('#saved-account-section').hasClass('d-none');
 }
 
-/// Cached account selected: username filled from the dropdown, password hidden
-/// (this device's remember cookie signs in). "Other account…": type both.
+/// Cached account selected: password/remember-me hidden (resume needs
+/// neither), forget button shown. "Other account…": classic username +
+/// password + remember form.
 function applyAccountMode() {
   const cached = cachedModeActive();
   $('#username-section').toggleClass('d-none', cached);
-  if (cached) {
-    $('#username').val($('#saved-account-select').val());
-  }
+  $('#username').prop('disabled', cached);
   $('#password-fields').toggleClass('d-none', cached);
   $('#password').prop('required', !cached);
   $('#forget-account').toggleClass('d-none', !cached);
 }
 
+/// Password-free login for a cached account: prove knowledge of the cached
+/// encryption key against the server's HMAC verifier. Falls back to the
+/// remember cookie when no key is stored on this device.
+async function loginCachedAccount() {
+  const username = $('#saved-account-select').val();
+  const csrfInput = $('input[name="csrf_token"]').first();
+  try {
+    if (window.EncKey && window.EncKey.getKeyForUsername) {
+      let key = await window.EncKey.getKeyForUsername(username);
+      if (!key && window.EncKey.unlockWithWebAuthnForUser) {
+        try {
+          key = await window.EncKey.unlockWithWebAuthnForUser(username);
+        } catch (e) {}
+      }
+      if (key) {
+        const resp = await fetch('/login/keyauth', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Enc-Key': key,
+          },
+          body:
+            'csrf_token=' + encodeURIComponent(csrfInput.val()) +
+            '&username=' + encodeURIComponent(username),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.username) {
+            if (window.EncKey.touchSlot) {
+              window.EncKey.touchSlot(username);
+            }
+            window.location.href = '/';
+            return;
+          }
+        }
+      }
+    }
+    if (await loginRememberedAccount()) {
+      return;
+    }
+    throw new Error('cached login unavailable');
+  } catch (err) {
+    console.debug('cached key login failed', err);
+    try {
+      if (await loginRememberedAccount()) {
+        return;
+      }
+    } catch (e) {}
+    showLoginNotice('Could not sign in with the cached key for this account. Sign in below.');
+    $('#saved-account-select').val(OTHER_ACCOUNT);
+    applyAccountMode();
+  }
+}
+
 /// Password-free sign-in for a remembered device: the HttpOnly remember cookie
-/// restores the session. The encryption key is not a login credential.
+/// restores the session when it belongs to the selected account.
 async function loginRememberedAccount() {
   const username = $('#saved-account-select').val();
   const csrf = $('input[name="csrf_token"]').first().val() || '';
@@ -262,20 +315,8 @@ $(function() {
     const form = this;
 
     if (cachedModeActive()) {
-      $('#username').val($('#saved-account-select').val());
-      if (!$('#password').val()) {
-        try {
-          if (await loginRememberedAccount()) {
-            return;
-          }
-        } catch (err) {
-          console.debug('remembered login failed', err);
-        }
-        showLoginNotice('This computer is not remembered for that account. Enter the password.');
-        $('#password-fields').removeClass('d-none');
-        $('#password').prop('required', true).trigger('focus');
-        return;
-      }
+      await loginCachedAccount();
+      return;
     }
 
     const username = $('#username').val().trim();

@@ -113,6 +113,10 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(login::handle_login_remember_post),
         )
         .route(
+            "/login/keyauth",
+            post(login::handle_login_keyauth_post),
+        )
+        .route(
             "/login/forget",
             post(login::handle_login_forget_post),
         )

@@ -306,6 +306,13 @@ function refreshCsrfInit(init) {
   return fresh;
 }
 
+function syncHistoryImageEncCookie(encKey) {
+  if (!encKey) return;
+  var secure = (window.location.protocol === 'https:') ? '; Secure' : '';
+  document.cookie = 'hist_enc_key=' + encodeURIComponent(encKey)
+    + '; Path=/history_image; SameSite=Strict' + secure;
+}
+
 function historyImageUrl(pairIndex, imageIndex) {
   var setId = (window.APP_DATA && window.APP_DATA.lastSetId) || '';
   var version = (window.APP_DATA && window.APP_DATA.setVersion != null)
@@ -380,6 +387,13 @@ function withCsrf(headers) {
   if (window.CSRF_TOKEN) {
     result['X-CSRF-Token'] = window.CSRF_TOKEN;
   }
+  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
+    var encKey = window.EncKey.getKeyForRequestSync();
+    if (encKey) {
+      result['X-Enc-Key'] = encKey;
+      syncHistoryImageEncCookie(encKey);
+    }
+  }
   return result;
 }
 
@@ -387,6 +401,13 @@ async function withCsrfAsync(headers) {
   var result = headers ? Object.assign({}, headers) : {};
   if (window.CSRF_TOKEN) {
     result['X-CSRF-Token'] = window.CSRF_TOKEN;
+  }
+  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
+    var encKey = await window.EncKey.getKeyForRequest();
+    if (encKey) {
+      result['X-Enc-Key'] = encKey;
+      syncHistoryImageEncCookie(encKey);
+    }
   }
   return result;
 }
@@ -616,7 +637,13 @@ function submitResetChat(isRetry) {
 }
 
 function preloadEncryptionKey() {
-  return Promise.resolve(null);
+  if (!window.APP_DATA || !window.APP_DATA.loggedIn || !window.EncKey) {
+    return Promise.resolve(null);
+  }
+  return window.EncKey.getKeyForRequest().catch(function(err) {
+    console.debug('encryption key preload failed', err);
+    return null;
+  });
 }
 
 function showEncKeyGateLoading(message) {
@@ -671,12 +698,17 @@ function beginEncKeyUnlockFlow(fromUser) {
       sessionStorage.setItem(ENC_GATE_RELOADS_KEY, String(reloads + 1));
     } catch (e) {}
   }
-  showEncKeyGateLoading('Loading your sets…');
-  encKeyUnlockInFlight = Promise.resolve()
+  if (window.EncKey && window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
+    showEncKeyGateLoading('Confirm with fingerprint or device PIN…');
+  } else {
+    showEncKeyGateLoading('Loading encryption key…');
+  }
+  encKeyUnlockInFlight = preloadEncryptionKey()
     .then(function() {
       if (typeof window.loadChatSets !== 'function') {
         throw new Error('Chat is still starting. Try again.');
       }
+      showEncKeyGateLoading('Loading your sets…');
       return window.loadChatSets();
     })
     .then(function() {
@@ -717,6 +749,16 @@ async function response401Kind(response) {
 async function handle401OrRetry(response, retryFn) {
   var kind = await response401Kind(response);
   if (kind === 'enc_key') {
+    if (window.EncKey && window.EncKey.getKeyForRequestSync && window.EncKey.getKeyForRequestSync()) {
+      throw new Error(
+        (await response401Message(response)) ||
+          'Could not unlock chats with the cached key. Sign out and log in with your password.'
+      );
+    }
+    var unlocked = await ensureEncryptionKeyUnlocked();
+    if (unlocked && retryFn) {
+      return retryFn();
+    }
     throw new Error(
       (await response401Message(response)) ||
         'Encryption key required. Sign out and log in with your password.'
@@ -769,7 +811,13 @@ async function fetchWithEncKey(input, init, retryOnUnlock) {
     window.EncKey
   ) {
     var kind = await response401Kind(response);
-    if (kind !== 'enc_key') {
+    if (kind === 'enc_key') {
+      var unlocked = await ensureEncryptionKeyUnlocked();
+      if (unlocked) {
+        options.headers = await withCsrfAsync(options.headers || {});
+        return originalFetch(input, options);
+      }
+    } else {
       var restored = await refreshSession();
       if (restored) {
         options.headers = await withCsrfAsync(options.headers || {});
@@ -787,7 +835,7 @@ $(function() {
     var $hint = $('#enc-key-storage-hint');
     if (window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
       if ($hint.length) {
-        $hint.text('Your chat key is stored in a secure cookie for this session.');
+        $hint.text('Your chat key is protected by this device OS. Saved at login; fingerprint or PIN required to unlock.');
       }
     } else if (window.EncKey.supportsWebAuthnPrf) {
       window.EncKey.supportsWebAuthnPrf().then(function(supported) {

@@ -38,12 +38,12 @@ fn first_party_static_js_parses() {
 fn login_js_remembered_accounts_sign_in_without_password() {
     let src = include_str!("../../static/login.js");
     assert!(
-        src.contains("/login/remember"),
-        "cached-account Login must use the remember cookie, not the encryption key"
+        src.contains("/login/keyauth"),
+        "cached-account Login must sign in with the stored encryption key"
     );
     assert!(
-        !src.contains("/login/keyauth"),
-        "Fernet key must not be a login credential"
+        src.contains("/login/remember"),
+        "cached-account Login falls back to the remember cookie when no key is stored"
     );
     assert!(
         src.contains("$('#password-fields').toggleClass('d-none', cached)"),

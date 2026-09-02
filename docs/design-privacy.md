@@ -68,9 +68,9 @@ The server validates the presented key against a per-user **key verifier** (HMAC
 
 | Attack | Mitigation |
 | :--- | :--- |
-| Stolen session / remember cookie used on another machine | Server has no standing key; other machine has no `enc_key` cookie → decrypt fails (401). |
-| XSS reading the Fernet key from JS | Browsers keep the key in an HttpOnly cookie; page JS never holds it. XSS can still scrape already-decrypted chat in the DOM. |
-| XSS exporting login to another machine | Remember and enc-key cookies are HttpOnly. There is no `/login/keyauth`; the Fernet key is not a login credential. |
+| Stolen session / remember cookie used on another machine | Server has no standing key; other machine has no `enc_key` cookie and no wrapped key → decrypt fails (401). |
+| XSS reading the Fernet key from JS | Live session also has an HttpOnly `enc_key` cookie. XSS on this origin can still unwrap IndexedDB / call keyauth. XSS can scrape already-decrypted chat in the DOM. |
+| XSS exporting login to another machine | Remember and enc-key cookies are HttpOnly (XSS cannot copy those). Cached login uses the device-stored key via `/login/keyauth`. |
 | Full browser profile theft | Cookie jar + profile copy still wins. Option 3/4 (WebAuthn PRF / Keystore) bind wrap keys to hardware; PRF is opt-in, not default. |
 | Server compromise while user idle | No standing key in session record or plaintext cache; only ciphertext on disk and in memory. |
 
@@ -82,7 +82,7 @@ The in-memory `SessionStore` retains Fernet ciphertext blobs for history, memory
 
 | Tier | Platform | UX | Protection |
 | :--- | :--- | :--- | :--- |
-| **Option 2 (default web)** | Browser | Zero extra steps after login | HttpOnly `enc_key` cookie (JS never holds the raw key). IndexedDB only stores usernames for the login dropdown. |
+| **Option 2 (default web)** | Browser | Zero extra steps after login | Non-extractable IndexedDB CryptoKey wraps the data key; HttpOnly `enc_key` cookie is also set at password/keyauth login. |
 | **Option 3 (opt-in web)** | Browser with WebAuthn PRF (Pseudo-Random Function: authenticator HMACs a salt with a credential-bound secret) | One biometric/PIN per unlock (manual opt-in) | Wrapping secret derived from platform authenticator (Touch ID, Windows Hello, security key). Full profile copy on another machine is useless without the authenticator. Falls back to Option 2 when PRF is unsupported. **Not the web default** — many desktops have no platform authenticator or security key. |
 | **Option 4 (native default)** | Capacitor Android | One fingerprint/PIN per login from cached credentials (cold app start); none during username/password logins or within a running app session. A second prompt is allowed if the app process died and a stale session must unlock the keystore again. | Android Keystore AES/GCM wrap with user-authentication required on the wrap key (`setUserAuthenticationRequired`, 24h validity after device unlock) plus a software biometric/PIN gate on cache miss (`NativeSecureKey` plugin). Per-account keystore entries; the plugin caches unlocked keys for the app-process lifetime so one unlock covers a whole login flow. Applied automatically at login on mobile; no WebAuthn button. iOS Keychain plugin follows the same pattern when the iOS target ships. |
 
@@ -90,11 +90,11 @@ Browsers grant secure context (required for Web Crypto + non-extractable Indexed
 
 For LAN/browser development with full Private Mode support, use Tailscale Serve (or equivalent) to terminate TLS on your node with publicly-trusted certs, or access via http://localhost. The native Capacitor app uses its own keystore plugin and works over plain HTTP. See the development notes in README.md.
 
-Enrollment flow: login derives the key client-side → server stores key verifier and sets the HttpOnly `enc_key` cookie → raw key discarded from JS. Data requests send that cookie automatically.
+Enrollment flow: login derives the key client-side → server stores key verifier and sets the HttpOnly `enc_key` cookie → client wraps the key in IndexedDB (or native keystore). Data requests send the cookie and, when JS has the unwrapped key, `X-Enc-Key`.
 
 ### Transport requirements
 
-- Browsers send the key in an **HttpOnly** `enc_key` cookie (`Path=/`, `SameSite=Strict`, `Secure` when CSRF is on). JS cannot read it. Tests and non-browser clients may still send `X-Enc-Key` (raw derived key bytes).
+- Browsers send the key in an **HttpOnly** `enc_key` cookie (`Path=/`, `SameSite=Strict`, `Secure` when CSRF is on) and may also send `X-Enc-Key` from the device-stored key. Tests and non-browser clients send `X-Enc-Key`. `<img src>` uses a `Path=/history_image` `hist_enc_key` cookie.
 - Must travel over TLS (reverse-proxy terminated HTTPS in production).
 - Must **never** appear in access logs, `tracing` spans, or error reports. Proxies should scrub `Cookie` and `X-Enc-Key` from logs.
 
@@ -111,7 +111,7 @@ Existing users without a verifier get one created at **password login** (not fro
 - **Hashed at rest, rotated on use.** The server persists only a hash of the token's current secret, and every restore rotates it. File locks serialize concurrent resumes so two tabs redeeming the current secret cannot false-revoke the family. Recent-generation tokens get a grace pass so concurrent tabs refreshing after a restart don't revoke each other; older replays revoke the whole family. Re-login as the same account refreshes that family instead of minting another. Logout revokes and clears it.
 - **HttpOnly cookie** (`Secure` when CSRF is on) — note that Android WebView refuses `Secure` cookies over plain HTTP, so plain-HTTP deployments need `csrf: false` (or HTTPS) for mobile sessions to work at all.
 - **Silent resume on app entry.** `GET /` restores a remembered session for guest visitors, making restarts invisible. `/login` never auto-restores — it is the account-selection surface. When a live page's request 401s mid-use (e.g. after a restart), the client transparently re-establishes the session (`POST /login/remember` with a bootstrapped CSRF token, adopting the restored session's CSRF from the response) and retries the call — no reload, no prompt; it only falls back to `/` when the device holds no valid token.
-- **Cached-account picker.** Accounts remembered on this device appear in the login page's account dropdown. Login with no password calls `POST /login/remember` (optional `username` must match the cookie). Password is hidden unless that restore fails (other account, or remember revoked). A ✕ control forgets an account locally and `POST /login/forget` revokes this device's remember token only when that cookie belongs to the forgotten username. The Fernet key is never used to mint a session.
+- **Cached-account picker.** Accounts remembered on this device appear in the login page's account dropdown. Login with no password calls `POST /login/keyauth` (stored encryption key in `X-Enc-Key`) and falls back to `POST /login/remember` when that cookie belongs to the selected username. Password is hidden unless both fail. A ✕ control forgets an account locally and `POST /login/forget` revokes this device's remember token only when that cookie belongs to the forgotten username.
 - **Checkbox semantics.** Checked: issue/refresh the 30-day remember cookie and the `enc_key` cookie (same max-age). Unchecked: revoke remember and issue a session-scoped enc-key cookie. Logout revokes remember and clears `enc_key` — the next visit needs the password. Logging out or visiting `/login` as a guest drops `remembered: false` username slots; remembered slots stay until forgotten or aged out (30 days, sliding on use).
 - **Data-key verifier.** The HMAC verifier used on every enc-key check does not expire and is created only at password login. Missing verifiers are not enrolled from data requests (a stolen session cannot rebind the key). Pre-JSON `{user}_kv` files migrate in place.
 
@@ -119,9 +119,9 @@ Existing users without a verifier get one created at **password login** (not fro
 
 | Choice | What we kept | What we gave up |
 | :--- | :--- | :--- |
-| **Remember cookie** (HttpOnly) is password-free login on this device | Checkbox still means: no password on this computer for 30 days (app entry + login dropdown when the cookie matches). XSS cannot copy the cookie to another machine. | Logout revokes it, so an explicit sign-out requires the password next time. One cookie per browser (last remembered account). |
-| **No `/login/keyauth`** | The Fernet key cannot mint a session on another machine. | A copied IndexedDB slot is not enough to log in. |
-| **HttpOnly `enc_key` cookie, not JS `X-Enc-Key`** | XSS cannot read the key. Server still sees it per request (required for the LLM) and zeroizes; no standing copy in session RAM. | Cookie `Path=/` (routes are not under `/api`). Proxies must not log `Cookie`. Profile copy still steals the cookie jar. |
+| **Remember cookie** (HttpOnly) is silent session restore on this device | Checkbox still means: no password on this computer for 30 days (app entry + login dropdown when the cookie matches). XSS cannot copy the cookie to another machine. | Logout revokes it. One cookie per browser (last remembered account). |
+| **`/login/keyauth`** | Cached accounts stay password-free after logout and when switching accounts (device-stored key). | A copied IndexedDB slot (or XSS that unwraps it) can mint a session on another machine. |
+| **HttpOnly `enc_key` cookie plus JS `X-Enc-Key`** | Cookie covers `<img>` and fetch after password/keyauth. Stored key covers auto-restore for accounts that logged in before the cookie existed. | Cookie `Path=/`. Proxies must not log `Cookie` / `X-Enc-Key`. Profile copy still steals the cookie jar and IndexedDB. |
 | **First-party JS + tight CSP** | CDN compromise cannot run on this origin. | Vendored jquery/bootstrap/marked/hljs in `static/deps/`. |
 | **Trusted Types** | `require-trusted-types-for 'script'`; first-party sinks use policy `chatbot`. | Policy `default` is identity so jquery/bootstrap/highlight.js still assign HTML. Accidental library sinks are not locked. |
 | **WebAuthn PRF not default** | Desktops without Hello/Touch ID/a security key still work. | Profile copy of the default web store is only a partial mitigation. |
