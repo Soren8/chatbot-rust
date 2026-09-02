@@ -143,7 +143,7 @@ function savedAccountSectionVisible() {
 }
 
 /// Cached account selected: username from the dropdown, password hidden
-/// (keyauth/remember). Never disable #username — FormData drops disabled
+/// (remember cookie). Never disable #username — FormData drops disabled
 /// fields. A typed password still posts /login.
 function applyAccountMode() {
   const cached = cachedModeActive();
@@ -157,56 +157,11 @@ function applyAccountMode() {
   $('#forget-account').toggleClass('d-none', !cached);
 }
 
-/// Password-free login for a cached account: prove knowledge of the cached
-/// encryption key against the server's HMAC verifier. Falls back to the
-/// remember cookie when no key is stored on this device.
+/// Password-free login for a cached account: the HttpOnly remember cookie
+/// mints the session. A matching stored key is sent only to set enc_key —
+/// it cannot log in by itself.
 async function loginCachedAccount() {
-  const username = $('#saved-account-select').val();
-  const csrfInput = $('input[name="csrf_token"]').first();
-  try {
-    if (window.EncKey && window.EncKey.getKeyForUsername) {
-      let key = await window.EncKey.getKeyForUsername(username);
-      if (!key && window.EncKey.unlockWithWebAuthnForUser) {
-        try {
-          key = await window.EncKey.unlockWithWebAuthnForUser(username);
-        } catch (e) {}
-      }
-      if (key) {
-        const resp = await fetch('/login/keyauth', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-Enc-Key': key,
-          },
-          body:
-            'csrf_token=' + encodeURIComponent(csrfInput.val()) +
-            '&username=' + encodeURIComponent(username),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data && data.username) {
-            if (window.EncKey.touchSlot) {
-              window.EncKey.touchSlot(username);
-            }
-            window.location.href = '/';
-            return true;
-          }
-        }
-      }
-    }
-    if (await loginRememberedAccount()) {
-      return true;
-    }
-    return false;
-  } catch (err) {
-    console.debug('cached key login failed', err);
-    try {
-      if (await loginRememberedAccount()) {
-        return true;
-      }
-    } catch (e) {}
-    return false;
-  }
+  return loginRememberedAccount();
 }
 
 /// Password-free sign-in for a remembered device: the HttpOnly remember cookie
@@ -214,9 +169,23 @@ async function loginCachedAccount() {
 async function loginRememberedAccount() {
   const username = $('#saved-account-select').val();
   const csrf = $('input[name="csrf_token"]').first().val() || '';
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (window.EncKey && window.EncKey.getKeyForUsername) {
+    try {
+      let key = await window.EncKey.getKeyForUsername(username);
+      if (!key && window.EncKey.unlockWithWebAuthnForUser) {
+        try {
+          key = await window.EncKey.unlockWithWebAuthnForUser(username);
+        } catch (e) {}
+      }
+      if (key) {
+        headers['X-Enc-Key'] = key;
+      }
+    } catch (e) {}
+  }
   const resp = await fetch('/login/remember', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: headers,
     body:
       'csrf_token=' + encodeURIComponent(csrf) +
       '&username=' + encodeURIComponent(username),
@@ -230,6 +199,9 @@ async function loginRememberedAccount() {
   }
   if (data.username && data.username !== username) {
     return false;
+  }
+  if (window.EncKey && window.EncKey.touchSlot) {
+    window.EncKey.touchSlot(username);
   }
   window.location.href = '/';
   return true;

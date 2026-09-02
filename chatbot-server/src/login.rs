@@ -163,13 +163,15 @@ pub async fn handle_login_post(
     }
 
     if remember_me {
-        match issue_remember_cookie(
+        match issue_remember_cookies(
             &username,
-            remember_store::extract_token(cookie_header.as_deref()).as_deref(),
+            remember_store::extract_token_for_user(cookie_header.as_deref(), &username).as_deref(),
         ) {
-            Ok(set_cookie) => {
-                if let Ok(value) = HeaderValue::from_str(&set_cookie) {
-                    response = response.header(header::SET_COOKIE, value);
+            Ok(set_cookies) => {
+                for set_cookie in set_cookies {
+                    if let Ok(value) = HeaderValue::from_str(&set_cookie) {
+                        response = response.header(header::SET_COOKIE, value);
+                    }
                 }
             }
             Err(err) => {
@@ -180,12 +182,28 @@ pub async fn handle_login_post(
             }
         }
     } else {
-        // Unchecked "remember this computer": drop any remember token the
-        // device still holds so the choice is a real opt-out.
+        // Unchecked "remember this computer": revoke this account's family only.
+        let last = remember_store::extract_token(cookie_header.as_deref());
+        let account = remember_store::extract_account_token(cookie_header.as_deref(), &username);
+        let last_belongs = remember_store::RememberStore::new()
+            .ok()
+            .and_then(|store| store.peek_username(last.as_deref()))
+            .as_deref()
+            == Some(username.as_str());
         if let Ok(store) = remember_store::RememberStore::new() {
-            store.revoke(remember_store::extract_token(cookie_header.as_deref()).as_deref());
+            store.revoke(account.as_deref());
+            if last_belongs {
+                store.revoke(last.as_deref());
+            }
         }
-        if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+        if last_belongs {
+            if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+                response = response.header(header::SET_COOKIE, value);
+            }
+        }
+        if let Ok(value) =
+            HeaderValue::from_str(&remember_store::build_account_clear_cookie(&username))
+        {
             response = response.header(header::SET_COOKIE, value);
         }
     }
@@ -208,19 +226,22 @@ pub async fn handle_login_post(
         .map_err(|err| map_response_build_err(err, "login::post::redirect"))
 }
 
-fn issue_remember_cookie(
+fn issue_remember_cookies(
     username: &str,
     presented: Option<&str>,
-) -> Result<String, remember_store::RememberError> {
+) -> Result<Vec<String>, remember_store::RememberError> {
     let store = remember_store::RememberStore::new()?;
     let token = store.issue_or_refresh(username, presented)?;
-    Ok(remember_store::build_set_cookie(&token))
+    Ok(vec![
+        remember_store::build_set_cookie(&token),
+        remember_store::build_account_set_cookie(username, &token),
+    ])
 }
 
 /// `POST /login/remember` — restore a session from the durable remember-token
-/// cookie (set by an earlier "Remember this computer" login). Restores the
-/// session only; encrypted data still requires the enc-key cookie (or
-/// `X-Enc-Key`). CSRF-protected like every other state-changing route.
+/// cookie (last-used `remember` or per-account `remember-{username}`). Restores
+/// the session only; the Fernet key cannot mint a session. An optional
+/// `X-Enc-Key` that matches the verifier sets the HttpOnly `enc_key` cookie.
 pub async fn handle_login_remember_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
@@ -247,7 +268,28 @@ pub async fn handle_login_remember_post(
         ));
     }
 
-    let presented = remember_store::extract_token(cookie_header.as_deref());
+    let requested_username = match form
+        .get("username")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(requested) => match normalise_username(requested) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                return Err(api_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Remembered session expired. Sign in again.",
+                ));
+            }
+        },
+        None => None,
+    };
+    let presented = match requested_username.as_deref() {
+        Some(username) => {
+            remember_store::extract_token_for_user(cookie_header.as_deref(), username)
+        }
+        None => remember_store::extract_token(cookie_header.as_deref()),
+    };
     let store = remember_store::RememberStore::new().map_err(|err| {
         log_and_api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -256,20 +298,7 @@ pub async fn handle_login_remember_post(
             err,
         )
     })?;
-    if let Some(requested) = form
-        .get("username")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        let requested = match normalise_username(requested) {
-            Ok(value) => value,
-            Err(_) => {
-                return Err(api_error(
-                    StatusCode::UNAUTHORIZED,
-                    "Remembered session expired. Sign in again.",
-                ));
-            }
-        };
+    if let Some(requested) = requested_username.as_deref() {
         match store.peek_username(presented.as_deref()) {
             Some(bound) if bound == requested => {}
             _ => {
@@ -318,6 +347,7 @@ pub async fn handle_login_remember_post(
             for set_cookie in [
                 finalize.set_cookie,
                 remember_store::build_set_cookie(&replacement_token),
+                remember_store::build_account_set_cookie(&username, &replacement_token),
             ] {
                 match HeaderValue::from_str(&set_cookie) {
                     Ok(value) => {
@@ -328,6 +358,28 @@ pub async fn handle_login_remember_post(
                             ?err,
                             "discarding invalid Set-Cookie header from remember login"
                         );
+                    }
+                }
+            }
+
+            if let Some(enc_key) = headers
+                .get("x-enc-key")
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+            {
+                if let Ok(store) = UserStore::new() {
+                    if store
+                        .verify_encryption_key(&username, enc_key.as_bytes())
+                        .unwrap_or(false)
+                    {
+                        if let Ok(value) =
+                            HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(
+                                enc_key,
+                                remember_store::REMEMBER_MAX_AGE_SECS,
+                            ))
+                        {
+                            builder = builder.header(header::SET_COOKIE, value);
+                        }
                     }
                 }
             }
@@ -347,136 +399,6 @@ pub async fn handle_login_remember_post(
             err,
         )),
     }
-}
-
-/// `POST /login/keyauth` — password-free re-login using the client's cached
-/// encryption key. Body: `username` (the account picked from the login
-/// page's cached-account dropdown) and the usual `csrf_token`; the key
-/// travels in the `X-Enc-Key` header. The server verifies the key against
-/// the stored HMAC verifier, so only someone holding the account's data key
-/// can restore its session. Refreshes this device's remember family and
-/// issues the HttpOnly `enc_key` cookie.
-pub async fn handle_login_keyauth_post(
-    request: Request<Body>,
-) -> Result<Response<Body>, HttpError> {
-    let (parts, body) = request.into_parts();
-    let headers = parts.headers;
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
-
-    let body_bytes = body::to_bytes(body, 16 * 1024)
-        .await
-        .map_err(|err| map_body_read_err(err, "login::keyauth"))?;
-    let form: HashMap<String, String> =
-        from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::keyauth"))?;
-    let csrf_token = form.get("csrf_token").map(|s| s.as_str());
-
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
-        .map_err(|err| map_session_err(err, "login::keyauth::csrf"))?;
-    if !csrf_valid {
-        return Err(api_error(
-            StatusCode::UNAUTHORIZED,
-            "Session expired. Sign in again.",
-        ));
-    }
-
-    let Some(username_raw) = form.get("username").map(|s| s.trim().to_owned()) else {
-        return Err(api_error(StatusCode::BAD_REQUEST, "username is required"));
-    };
-    let username = match normalise_username(&username_raw) {
-        Ok(value) => value,
-        Err(_) => return Err(api_error(StatusCode::UNAUTHORIZED, "Unknown saved account.")),
-    };
-    let Some(enc_key) = headers
-        .get("x-enc-key")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned())
-    else {
-        return Err(api_error(
-            StatusCode::UNAUTHORIZED,
-            "Encryption key required. Please unlock.",
-        ));
-    };
-
-    let store = UserStore::new().map_err(|err| {
-        map_user_store_err(err, "login::keyauth", "Unable to log in")
-    })?;
-    let verified = store
-        .verify_encryption_key(&username, enc_key.as_bytes())
-        .map_err(|err| map_user_store_err(err, "login::keyauth", "Unable to log in"))?;
-    if !verified {
-        let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
-        tracing::info!(username = %username, ip = %ip, "Cached key login failed verification");
-        return Err(api_error(
-            StatusCode::UNAUTHORIZED,
-            "Invalid encryption key. Sign in with your password.",
-        ));
-    }
-
-    let finalize = session::finalize_login(cookie_header.as_deref(), &username)
-        .map_err(|err| map_session_err(err, "login::keyauth::finalize"))?;
-
-    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
-    tracing::info!(username = %username, ip = %ip, "Session restored via cached key");
-
-    let payload = serde_json::to_vec(&json!({
-        "ok": true,
-        "username": username,
-    }))
-    .map_err(|err| {
-        log_and_api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "serialisation error",
-            "login::keyauth::body",
-            err,
-        )
-    })?;
-
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
-
-    match HeaderValue::from_str(&finalize.set_cookie) {
-        Ok(value) => {
-            builder = builder.header(header::SET_COOKIE, value);
-        }
-        Err(err) => {
-            warn!(
-                ?err,
-                "discarding invalid Set-Cookie header from keyauth login"
-            );
-        }
-    }
-
-    match issue_remember_cookie(
-        &username,
-        remember_store::extract_token(cookie_header.as_deref()).as_deref(),
-    ) {
-        Ok(set_cookie) => {
-            if let Ok(value) = HeaderValue::from_str(&set_cookie) {
-                builder = builder.header(header::SET_COOKIE, value);
-            }
-        }
-        Err(err) => {
-            warn!(?err, "failed to persist remember token after keyauth login");
-        }
-    }
-
-    if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(
-        &enc_key,
-        remember_store::REMEMBER_MAX_AGE_SECS,
-    )) {
-        builder = builder.header(header::SET_COOKIE, value);
-    }
-
-    builder
-        .body(Body::from(payload))
-        .map_err(|err| map_response_build_err(err, "login::keyauth::response"))
 }
 
 /// `POST /login/forget` — drop this device's remember family only if it
@@ -518,7 +440,12 @@ pub async fn handle_login_forget_post(
         }
     };
 
-    let presented = remember_store::extract_token(cookie_header.as_deref());
+    let last = remember_store::extract_token(cookie_header.as_deref());
+    let presented = remember_store::extract_token_for_user(cookie_header.as_deref(), &username);
+    let last_belongs = match remember_store::RememberStore::new() {
+        Ok(store) => store.peek_username(last.as_deref()).as_deref() == Some(username.as_str()),
+        Err(_) => false,
+    };
     let revoked = match remember_store::RememberStore::new() {
         Ok(store) => store.revoke_if_username(presented.as_deref(), &username),
         Err(err) => {
@@ -551,11 +478,20 @@ pub async fn handle_login_forget_post(
             HeaderValue::from_static("application/json"),
         );
     if revoked {
-        if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+        if let Ok(value) =
+            HeaderValue::from_str(&remember_store::build_account_clear_cookie(&username))
+        {
             builder = builder.header(header::SET_COOKIE, value);
         }
-        if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_clear_cookie()) {
-            builder = builder.header(header::SET_COOKIE, value);
+        if last_belongs {
+            if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+                builder = builder.header(header::SET_COOKIE, value);
+            }
+            if let Ok(value) =
+                HeaderValue::from_str(&crate::chat_utils::build_enc_key_clear_cookie())
+            {
+                builder = builder.header(header::SET_COOKIE, value);
+            }
         }
     }
 

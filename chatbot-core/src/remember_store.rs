@@ -3,7 +3,8 @@
 //! A remember token restores the HTTP **session** only — it never grants access
 //! to encrypted chat data. Data endpoints keep requiring `X-Enc-Key` validated
 //! against the per-user HMAC key verifier (two-secrets model, see
-//! docs/design-privacy.md).
+//! docs/design-privacy.md). Logout does not revoke the family; ✕ / uncheck /
+//! expiry do.
 //!
 //! Token format: `base64url(family_id(16B) || secret(32B))`. The server stores
 //! only `sha256(secret)` per family in `data/remember_tokens/{family_hex}.json`,
@@ -354,16 +355,33 @@ fn parse_token(token: Option<&str>) -> Option<(Vec<u8>, Vec<u8>)> {
     Some((bytes[..FAMILY_BYTES].to_vec(), bytes[FAMILY_BYTES..].to_vec()))
 }
 
-/// Extract the remember token from a raw `Cookie` header.
+/// Last-used remember cookie name (`remember=`). Per-account cookies are
+/// `remember-{username}=` (see [`account_cookie_name`]).
 pub fn extract_token(cookie_header: Option<&str>) -> Option<String> {
+    extract_named_cookie(cookie_header, REMEMBER_COOKIE_NAME)
+}
+
+pub fn account_cookie_name(username: &str) -> String {
+    format!("{REMEMBER_COOKIE_NAME}-{username}")
+}
+
+/// Remember token for `username`: `remember-{username}` first, else last-used.
+pub fn extract_account_token(cookie_header: Option<&str>, username: &str) -> Option<String> {
+    extract_named_cookie(cookie_header, &account_cookie_name(username))
+}
+
+pub fn extract_token_for_user(cookie_header: Option<&str>, username: &str) -> Option<String> {
+    extract_account_token(cookie_header, username).or_else(|| extract_token(cookie_header))
+}
+
+fn extract_named_cookie(cookie_header: Option<&str>, name: &str) -> Option<String> {
     let header = cookie_header?;
+    let prefix = format!("{name}=");
     for part in header.split(';') {
         let trimmed = part.trim();
-        if let Some(value) = trimmed.strip_prefix(REMEMBER_COOKIE_NAME) {
-            if let Some(rest) = value.strip_prefix('=') {
-                if !rest.is_empty() {
-                    return Some(rest.to_string());
-                }
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            if !rest.is_empty() {
+                return Some(rest.to_string());
             }
         }
     }
@@ -378,10 +396,24 @@ pub fn build_set_cookie(token: &str) -> String {
     )
 }
 
-/// `Set-Cookie` value clearing the remember cookie (logout).
+/// `Set-Cookie` value clearing the last-used remember cookie.
 pub fn build_clear_cookie() -> String {
     let secure = secure_flag();
     format!("{REMEMBER_COOKIE_NAME}=; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age=0")
+}
+
+pub fn build_account_set_cookie(username: &str, token: &str) -> String {
+    let name = account_cookie_name(username);
+    let secure = secure_flag();
+    format!(
+        "{name}={token}; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age={REMEMBER_MAX_AGE_SECS}"
+    )
+}
+
+pub fn build_account_clear_cookie(username: &str) -> String {
+    let name = account_cookie_name(username);
+    let secure = secure_flag();
+    format!("{name}=; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age=0")
 }
 
 fn secure_flag() -> &'static str {
@@ -689,6 +721,25 @@ mod tests {
         );
         assert_eq!(extract_token(Some("session=abc")), None);
         assert_eq!(extract_token(None), None);
+        assert_eq!(
+            extract_token(Some("remember-alice=accttok; remember=tok")),
+            Some("tok".to_string()),
+            "last-used parser must ignore per-account cookies"
+        );
+        assert_eq!(
+            extract_account_token(Some("remember-alice=accttok; remember=tok"), "alice"),
+            Some("accttok".to_string())
+        );
+        assert_eq!(
+            extract_token_for_user(Some("remember-bob=b; remember=tok"), "alice"),
+            Some("tok".to_string())
+        );
+        let account = build_account_set_cookie("alice", "tok");
+        assert!(account.starts_with("remember-alice=tok;"));
+        assert!(account.contains("HttpOnly"));
+        let clear_account = build_account_clear_cookie("alice");
+        assert!(clear_account.starts_with("remember-alice=;"));
+        assert!(clear_account.contains("Max-Age=0"));
         let clear = build_clear_cookie();
         assert!(clear.starts_with("remember=;"));
         assert!(clear.contains("Max-Age=0"));

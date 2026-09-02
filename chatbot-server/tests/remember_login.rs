@@ -143,7 +143,7 @@ async fn login_with_remember(
     (session, remember)
 }
 
-async fn post_keyauth(
+async fn post_remember_login_as(
     app: &axum::Router,
     cookie_header: &str,
     csrf: &str,
@@ -152,7 +152,7 @@ async fn post_keyauth(
 ) -> axum::http::Response<Body> {
     let mut builder = Request::builder()
         .method(Method::POST)
-        .uri("/login/keyauth")
+        .uri("/login/remember")
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .header(header::COOKIE, cookie_header);
     if let Some(key) = enc_key {
@@ -166,7 +166,7 @@ async fn post_keyauth(
     app.clone()
         .oneshot(builder.body(Body::from(body)).unwrap())
         .await
-        .expect("POST /login/keyauth")
+        .expect("POST /login/remember")
 }
 
 fn derive_key_b64(username: &str, password: &str) -> String {
@@ -254,6 +254,15 @@ async fn login_with_remember_checkbox_issues_durable_cookie() {
     );
     // csrf defaults to on in the test config → Secure flag required.
     assert!(remember.contains("Secure"));
+    let account = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("remember-rememberuser="))
+        .expect("per-account remember cookie issued with checkbox");
+    assert!(account.contains("HttpOnly"));
+    assert_eq!(
+        cookie_pair(account).strip_prefix("remember-rememberuser="),
+        cookie_pair(remember).strip_prefix("remember=")
+    );
 
     let token = cookie_pair(remember);
     let token_value = token.strip_prefix("remember=").expect("token value");
@@ -555,45 +564,35 @@ async fn home_auto_restores_remembered_session_after_restart() {
 }
 
 #[tokio::test]
-async fn keyauth_restores_session_without_password() {
+async fn keyauth_route_is_gone() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
-    let username = "keyauthuser";
-    let password = "Sup3rS3cret!";
-    seed_user(username, password);
-    register_verifier(username, password);
-
     let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
-    let key_b64 = derive_key_b64(username, password);
-
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let cookies = set_cookie_values(response.headers());
-
-    let body = to_bytes(response.into_body(), 32 * 1024)
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login/keyauth")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("username=anyone"))
+                .unwrap(),
+        )
         .await
-        .expect("read keyauth body");
-    let body_str = std::str::from_utf8(&body).expect("utf8");
-    assert!(body_str.contains(username), "response names the user");
-
-    let session = find_cookie_pair(&cookies, "session").expect("session cookie from keyauth");
-    let context = session::session_context(Some(&session)).expect("session after keyauth");
+        .expect("POST /login/keyauth");
     assert_eq!(
-        context.username.as_deref(),
-        Some(username),
-        "cached-key login must restore the authenticated session without a password"
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "the Fernet key must not mint a session"
     );
 }
 
 #[tokio::test]
-async fn keyauth_sets_enc_key_cookie() {
+async fn encryption_key_alone_does_not_mint_session() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
-    let username = "keyauthenc";
+    let username = "keyonlyuser";
     let password = "Sup3rS3cret!";
     seed_user(username, password);
     register_verifier(username, password);
@@ -603,116 +602,63 @@ async fn keyauth_sets_enc_key_cookie() {
     let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
     let key_b64 = derive_key_b64(username, password);
 
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
+    let response =
+        post_remember_login_as(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "X-Enc-Key without a remember cookie must not log in"
+    );
+}
+
+#[tokio::test]
+async fn remember_login_sets_enc_key_cookie_when_key_matches() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "rememberenc";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+    register_verifier(username, password);
+
+    let app = build_app();
+    let (_session, remember) = login_with_remember(&app, username, password).await;
+    let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
+    let key_b64 = derive_key_b64(username, password);
+
+    let response =
+        post_remember_login_as(&app, &cookie_header, &csrf, username, Some(&key_b64)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let cookies = set_cookie_values(response.headers());
     let enc = cookies
         .iter()
         .find(|cookie| cookie.starts_with("enc_key="))
-        .expect("keyauth must issue enc_key cookie so chats unlock without X-Enc-Key");
+        .expect("matching X-Enc-Key on remember login must set enc_key cookie");
     assert!(enc.contains("HttpOnly"), "enc_key must be HttpOnly: {enc}");
 }
 
 #[tokio::test]
-async fn keyauth_rejects_bad_credentials() {
+async fn remember_login_without_key_does_not_set_enc_key() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
-    let username = "keyauthbad";
-    let password = "Sup3rS3cret!";
-    seed_user(username, password);
-    register_verifier(username, password);
+    let username = "remembernokey";
+    seed_user(username, "Sup3rS3cret!");
 
     let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
+    let (_session, remember) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+    let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
 
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some("wrong-key")).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, None).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    let key_b64 = derive_key_b64(username, password);
-    let response = post_keyauth(&app, &guest_cookie, &csrf, "ghost_user", Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    seed_user("noverifier", password);
-    let response = post_keyauth(&app, &guest_cookie, &csrf, "noverifier", Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn keyauth_requires_csrf() {
-    common::init_tracing();
-    let _guard = test_mutex().lock().unwrap();
-    let _workspace = setup_workspace();
-    let username = "keyauthcsrf";
-    let password = "Sup3rS3cret!";
-    seed_user(username, password);
-    register_verifier(username, password);
-
-    let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
-    let key_b64 = derive_key_b64(username, password);
-
-    let response = post_keyauth(&app, &guest_cookie, "", username, Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
+    let response = post_remember_login_as(&app, &cookie_header, &csrf, username, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     let cookies = set_cookie_values(response.headers());
-    let session = find_cookie_pair(&cookies, "session").expect("session cookie from keyauth");
-    let context = session::session_context(Some(&session)).expect("session after keyauth");
-    assert_eq!(context.username.as_deref(), Some(username));
-}
-
-#[tokio::test]
-async fn keyauth_issues_remember_token_for_last_used_account() {
-    common::init_tracing();
-    let _guard = test_mutex().lock().unwrap();
-    let _workspace = setup_workspace();
-    let username = "keyauthtoken";
-    let password = "Sup3rS3cret!";
-    seed_user(username, password);
-    register_verifier(username, password);
-
-    let app = build_app();
-    let (csrf, cookies) = get_login_page(&app, None).await;
-    let guest_cookie = find_cookie_pair(&cookies, "session").expect("guest session cookie");
-    let key_b64 = derive_key_b64(username, password);
-
-    let response = post_keyauth(&app, &guest_cookie, &csrf, username, Some(&key_b64)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let cookies = set_cookie_values(response.headers());
-    let remember = cookies
-        .iter()
-        .find(|cookie| {
-            cookie.starts_with("remember=") && cookie.contains(&format!("Max-Age={REMEMBER_MAX_AGE}"))
-        })
-        .expect("keyauth must issue a remember token")
-        .clone();
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/")
-                .header(header::COOKIE, &remember)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("GET / after keyauth");
-    let body = to_bytes(response.into_body(), 128 * 1024)
-        .await
-        .expect("read home body");
-    let body_str = std::str::from_utf8(&body).expect("utf8");
     assert!(
-        body_str.contains("\"loggedIn\": true"),
-        "keyauth login must leave the device auto-restorable"
+        cookies.iter().all(|cookie| !cookie.starts_with("enc_key=")),
+        "remember restore without a key must not mint enc_key"
     );
+    let session = find_cookie_pair(&cookies, "session").expect("session from remember");
+    let context = session::session_context(Some(&session)).expect("session after remember");
+    assert_eq!(context.username.as_deref(), Some(username));
 }
 
 #[tokio::test]
@@ -775,7 +721,7 @@ async fn login_without_remember_revokes_existing_token() {
 }
 
 #[tokio::test]
-async fn logout_revokes_remember_token() {
+async fn logout_keeps_remember_token() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
@@ -798,18 +744,71 @@ async fn logout_revokes_remember_token() {
         .await
         .expect("GET /logout");
     assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("logout redirect");
+    assert_eq!(location, "/login");
 
     let cookies = set_cookie_values(response.headers());
-    let clear = cookies
-        .iter()
-        .find(|cookie| cookie.starts_with("remember="))
-        .expect("logout must clear the remember cookie");
-    assert!(clear.contains("Max-Age=0"), "clearing cookie expires it");
+    assert!(
+        cookies
+            .iter()
+            .all(|cookie| !cookie.starts_with("remember=") || !cookie.contains("Max-Age=0")),
+        "logout must not expire the remember cookie"
+    );
 
-    // The revoked token no longer restores a session.
     let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
     let restore = post_remember_login(&app, &cookie_header, &csrf, true).await;
-    assert_eq!(restore.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        restore.status(),
+        StatusCode::OK,
+        "logout must leave the remember token usable until forget"
+    );
+}
+
+#[tokio::test]
+async fn per_account_cookie_survives_switching_accounts() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    seed_user("aliceacct", "Sup3rS3cret!");
+    seed_user("bobacct", "Sup3rS3cret!");
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let alice_login = post_login(&app, &guest, &csrf, "aliceacct", "Sup3rS3cret!", true).await;
+    assert_eq!(alice_login.status(), StatusCode::FOUND);
+    let alice_cookies = set_cookie_values(alice_login.headers());
+    let alice_account = find_cookie_pair(&alice_cookies, "remember-aliceacct")
+        .expect("alice per-account remember cookie");
+
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let bob_login = post_login(&app, &guest, &csrf, "bobacct", "Sup3rS3cret!", true).await;
+    assert_eq!(bob_login.status(), StatusCode::FOUND);
+    let bob_cookies = set_cookie_values(bob_login.headers());
+    let bob_remember = find_cookie_pair(&bob_cookies, "remember").expect("bob last-used cookie");
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &alice_account).await;
+    let restore =
+        post_remember_login_as(&app, &cookie_header, &csrf, "aliceacct", None).await;
+    assert_eq!(
+        restore.status(),
+        StatusCode::OK,
+        "alice's per-account cookie must still work after bob logged in"
+    );
+    let restored = set_cookie_values(restore.headers());
+    let session = find_cookie_pair(&restored, "session").expect("alice session");
+    let context = session::session_context(Some(&session)).expect("session");
+    assert_eq!(context.username.as_deref(), Some("aliceacct"));
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &bob_remember).await;
+    let bob_restore =
+        post_remember_login_as(&app, &cookie_header, &csrf, "bobacct", None).await;
+    assert_eq!(bob_restore.status(), StatusCode::OK);
 }
 
 fn remember_family_count(workspace: &common::TestWorkspace) -> usize {

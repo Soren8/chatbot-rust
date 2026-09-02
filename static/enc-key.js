@@ -221,8 +221,8 @@
     await idbDelete(LEGACY_WEBAUTHN_CRED_ID);
   }
 
-  // `remembered` gates password-free re-entry (dropdown + keyauth). The slot
-  // is always written so a logged-in session can send X-Enc-Key.
+  // `remembered` gates password-free re-entry (dropdown + remember cookie).
+  // The slot is always written so a logged-in session can send X-Enc-Key.
   async function storeWrappedKey(rawKeyB64, mode, username, remembered) {
     if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
       const name = username || currentUsername();

@@ -104,7 +104,7 @@ async fn logout_flow_clears_session_cookie() {
         .get(header::LOCATION)
         .and_then(|value| value.to_str().ok())
         .expect("redirect location");
-    assert_eq!(location, "/");
+    assert_eq!(location, "/login");
 
     let logout_cookie = logout_response
         .headers()
