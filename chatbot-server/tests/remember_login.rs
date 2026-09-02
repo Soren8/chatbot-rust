@@ -564,6 +564,116 @@ async fn home_auto_restores_remembered_session_after_restart() {
 }
 
 #[tokio::test]
+async fn home_auto_restore_sets_per_account_remember_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "homeacct";
+    seed_user(username, "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, remember) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &remember)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / with remember cookie");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let cookies = set_cookie_values(response.headers());
+    let new_remember = find_cookie_pair(&cookies, "remember").expect("rotated last-used cookie");
+    let account_name = format!("remember-{username}");
+    let new_account =
+        find_cookie_pair(&cookies, &account_name).expect("rotated per-account remember cookie");
+    assert_ne!(new_remember, remember, "token must rotate on auto-restore");
+    assert_eq!(
+        new_account.strip_prefix(&format!("{account_name}=")),
+        new_remember.strip_prefix("remember="),
+        "GET / must write the same rotated secret to last-used and per-account cookies"
+    );
+}
+
+#[tokio::test]
+async fn home_auto_restore_twice_does_not_self_revoke_per_account_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "twicerestore";
+    seed_user(username, "Sup3rS3cret!");
+
+    let app = build_app();
+    let (_session, first_remember) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+
+    let first_home = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &first_remember)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("first GET /");
+    assert_eq!(first_home.status(), StatusCode::OK);
+    let first_cookies = set_cookie_values(first_home.headers());
+    let second_remember =
+        find_cookie_pair(&first_cookies, "remember").expect("last-used after first restore");
+    let account_name = format!("remember-{username}");
+    let second_account = find_cookie_pair(&first_cookies, &account_name)
+        .expect("per-account after first restore");
+
+    let second_home = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, &second_remember)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("second GET /");
+    assert_eq!(second_home.status(), StatusCode::OK);
+    let second_cookies = set_cookie_values(second_home.headers());
+    let third_account = find_cookie_pair(&second_cookies, &account_name)
+        .expect("per-account after second restore");
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &third_account).await;
+    let restore =
+        post_remember_login_as(&app, &cookie_header, &csrf, username, None).await;
+    assert_eq!(
+        restore.status(),
+        StatusCode::OK,
+        "latest per-account cookie must still restore after two GET / rotations"
+    );
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &first_remember).await;
+    let stale = post_remember_login_as(&app, &cookie_header, &csrf, username, None).await;
+    assert_eq!(
+        stale.status(),
+        StatusCode::UNAUTHORIZED,
+        "two-generation-old token must still revoke the family"
+    );
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &second_account).await;
+    let after_revoke =
+        post_remember_login_as(&app, &cookie_header, &csrf, username, None).await;
+    assert_eq!(
+        after_revoke.status(),
+        StatusCode::UNAUTHORIZED,
+        "theft detection must still invalidate the family after a two-generation replay"
+    );
+}
+
+#[tokio::test]
 async fn keyauth_route_is_gone() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
@@ -799,6 +909,63 @@ async fn per_account_cookie_survives_switching_accounts() {
         restore.status(),
         StatusCode::OK,
         "alice's per-account cookie must still work after bob logged in"
+    );
+    let restored = set_cookie_values(restore.headers());
+    let session = find_cookie_pair(&restored, "session").expect("alice session");
+    let context = session::session_context(Some(&session)).expect("session");
+    assert_eq!(context.username.as_deref(), Some("aliceacct"));
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &bob_remember).await;
+    let bob_restore =
+        post_remember_login_as(&app, &cookie_header, &csrf, "bobacct", None).await;
+    assert_eq!(bob_restore.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn remembered_login_as_second_account_keeps_first_family() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    seed_user("aliceacct", "Sup3rS3cret!");
+    seed_user("bobacct", "Sup3rS3cret!");
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let alice_login = post_login(&app, &guest, &csrf, "aliceacct", "Sup3rS3cret!", true).await;
+    assert_eq!(alice_login.status(), StatusCode::FOUND);
+    let alice_cookies = set_cookie_values(alice_login.headers());
+    let alice_last_used =
+        find_cookie_pair(&alice_cookies, "remember").expect("alice last-used cookie");
+    let alice_account = find_cookie_pair(&alice_cookies, "remember-aliceacct")
+        .expect("alice per-account remember cookie");
+
+    let (csrf, cookies) = get_login_page(&app, Some(&alice_last_used)).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let bob_login = post_login(
+        &app,
+        &format!("{guest}; {alice_last_used}; {alice_account}"),
+        &csrf,
+        "bobacct",
+        "Sup3rS3cret!",
+        true,
+    )
+    .await;
+    assert_eq!(bob_login.status(), StatusCode::FOUND);
+    let bob_cookies = set_cookie_values(bob_login.headers());
+    let bob_remember = find_cookie_pair(&bob_cookies, "remember").expect("bob last-used cookie");
+    assert!(
+        find_cookie_pair(&bob_cookies, "remember-bobacct").is_some(),
+        "bob per-account remember cookie"
+    );
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &alice_account).await;
+    let restore =
+        post_remember_login_as(&app, &cookie_header, &csrf, "aliceacct", None).await;
+    assert_eq!(
+        restore.status(),
+        StatusCode::OK,
+        "alice's per-account cookie must still work after bob logged in on the same browser"
     );
     let restored = set_cookie_values(restore.headers());
     let session = find_cookie_pair(&restored, "session").expect("alice session");

@@ -96,7 +96,8 @@ impl RememberStore {
     }
 
     /// Reuse the presented family when it already belongs to `username`;
-    /// otherwise revoke a foreign family on this device and mint a new one.
+    /// otherwise mint a new family. A foreign family is left intact so another
+    /// cached account on this browser keeps its per-account cookie.
     pub fn issue_or_refresh(
         &self,
         username: &str,
@@ -108,9 +109,6 @@ impl RememberStore {
             if let Some(record) = self.read_record(&family_hex) {
                 if unix_now() < record.expires && record.username == username {
                     return self.rotate_family_locked(&family, &record);
-                }
-                if record.username != username {
-                    let _ = fs::remove_file(self.family_path(&family_hex));
                 }
             }
         }
@@ -612,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_or_refresh_revokes_foreign_family() {
+    fn issue_or_refresh_preserves_foreign_family() {
         with_temp_store(|store, _| {
             let alice = store.issue("alice").expect("issue");
             let bob = store
@@ -620,7 +618,7 @@ mod tests {
                 .expect("switch user");
             assert!(matches!(
                 store.resume(Some(&alice)).expect("resume alice"),
-                ResumeOutcome::Invalid
+                ResumeOutcome::Authenticated { .. }
             ));
             assert!(matches!(
                 store.resume(Some(&bob)).expect("resume bob"),

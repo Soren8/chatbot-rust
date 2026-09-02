@@ -25,8 +25,10 @@ struct FrontendModel {
 struct RestoredSession {
     /// Cookie pair ("session=...") of the freshly minted session.
     session_cookie: String,
-    /// Full Set-Cookie value for the rotated remember token.
+    /// Full Set-Cookie value for the rotated last-used remember token.
     remember_set_cookie: String,
+    /// Full Set-Cookie value for the rotated per-account remember token.
+    account_set_cookie: String,
 }
 
 /// Silent resume of a remembered session on app entry (`GET /`). After a
@@ -66,6 +68,10 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
             Some(RestoredSession {
                 session_cookie,
                 remember_set_cookie: remember_store::build_set_cookie(&replacement_token),
+                account_set_cookie: remember_store::build_account_set_cookie(
+                    &username,
+                    &replacement_token,
+                ),
             })
         }
         Ok(remember_store::ResumeOutcome::Invalid) => {
@@ -94,6 +100,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
     if let Some(restored) = try_auto_restore(cookie_header.as_deref(), &ip) {
         cookie_header = Some(restored.session_cookie);
         restored_cookies.push(restored.remember_set_cookie);
+        restored_cookies.push(restored.account_set_cookie);
     }
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
