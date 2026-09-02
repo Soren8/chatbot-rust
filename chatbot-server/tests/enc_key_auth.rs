@@ -568,3 +568,114 @@ async fn load_set_accepts_enc_key_cookie_without_header() {
         "HttpOnly enc_key cookie must unlock data without X-Enc-Key"
     );
 }
+
+#[tokio::test]
+async fn load_set_accepts_account_enc_key_cookie_without_last_used() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let _workspace = common::TestWorkspace::with_openai_provider();
+
+    let username = "enc_acct_load";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_router(resolve_static_root());
+    let login_page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /login");
+    let guest = login_page
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(common::extract_cookie)
+        .expect("guest cookie");
+    let login_body = to_bytes(login_page.into_body(), 128 * 1024)
+        .await
+        .expect("login body");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&login_body).expect("utf8"))
+        .expect("csrf");
+
+    let login_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &guest)
+                .body(Body::from(format!(
+                    "username={}&password={}&csrf_token={}&remember_me=on",
+                    urlencoding::encode(username),
+                    urlencoding::encode(password),
+                    urlencoding::encode(&csrf)
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+
+    let cookies = set_cookie_values(login_response.headers());
+    let session = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("session="))
+        .map(|cookie| cookie_pair(cookie))
+        .expect("session cookie");
+    let account_enc = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with(&format!("enc_key-{username}=")))
+        .map(|cookie| cookie_pair(cookie))
+        .expect("per-account enc_key cookie");
+
+    let home = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /");
+    let home_body = to_bytes(home.into_body(), 512 * 1024)
+        .await
+        .expect("home body");
+    let home_html = std::str::from_utf8(&home_body).expect("utf8");
+    let csrf_token = CSRF_META_RE
+        .captures(home_html)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+        .expect("csrf token meta");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/load_set")
+                .header(header::COOKIE, format!("{session}; {account_enc}"))
+                .header("X-CSRF-Token", &csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"set_name": "default"})).expect("load payload"),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /load_set with account enc cookie");
+
+    assert_ne!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "enc_key-{{user}} must unlock data without last-used enc_key or X-Enc-Key"
+    );
+}

@@ -7,7 +7,8 @@
   const WRAP_KEY_ID = 'device-wrap';
   // Per-account slots are keyed by the username so the login page can list
   // cached accounts (and forget them) by name. Only accounts whose login had
-  // "Remember this computer" checked get a slot.
+  // "Remember this computer" checked get a slot. The Fernet key is not stored
+  // here — it lives in HttpOnly cookies.
   const SLOT_PREFIX = 'acct:';
   // Cached accounts stay in the login dropdown for at most this long,
   // matching the 30-day remember token.
@@ -222,108 +223,56 @@
   }
 
   // `remembered` gates password-free re-entry (dropdown + remember cookie).
-  // The slot is always written so a logged-in session can send X-Enc-Key.
-  async function storeWrappedKey(rawKeyB64, mode, username, remembered) {
-    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
-      const name = username || currentUsername();
-      await global.NativeBridge.callNativePlugin('NativeSecureKey', 'storeKey', {
-        key: rawKeyB64,
-        account: name,
-      });
-      cachedKey = rawKeyB64;
-      if (name) {
-        await idbSet(slotKey(name), {
-          mode: 'native-keystore',
-          remembered: !!remembered,
-          updatedAt: Date.now(),
-        });
-      }
-      await removeLegacySlots();
-      return;
-    }
-    if (!hasWebCrypto() || !isSecureContext()) {
-      throw new Error('Encryption key storage requires a secure context (HTTPS) or the native app.');
-    }
+  // The Fernet key is not written to IndexedDB or the native plugin.
+  async function storeWrappedKey(_rawKeyB64, _mode, username, remembered) {
+    cachedKey = null;
     const name = username || currentUsername();
     if (!name) {
-      const wrapKey = await ensureWrapKey();
-      const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
-      await idbSet(LEGACY_WRAPPED_KEY_ID, wrapped);
-      await idbSet(LEGACY_MODE_KEY, mode || 'indexeddb');
-      cachedKey = rawKeyB64;
       return;
     }
-    const wrapKey = await ensureWrapKey();
-    const wrapped = await wrapDataKey(rawKeyB64, wrapKey);
     await idbSet(slotKey(name), {
-      wrapped,
-      mode: mode || 'indexeddb',
+      mode: 'cookie',
       remembered: !!remembered,
       updatedAt: Date.now(),
     });
-    cachedKey = rawKeyB64;
+    await scrubWrappedKeys();
     await removeLegacySlots();
+  }
+
+  async function scrubWrappedKeys() {
+    try {
+      await idbDelete(WRAP_KEY_ID);
+      await idbDelete(LEGACY_WRAPPED_KEY_ID);
+      const entries = await idbGetAllEntries();
+      for (const entry of entries) {
+        if (!entry.value || typeof entry.value !== 'object' || !entry.value.wrapped) {
+          continue;
+        }
+        const next = {
+          mode: 'cookie',
+          remembered: entry.value.remembered !== false,
+          updatedAt: entry.value.updatedAt || Date.now(),
+        };
+        await idbSet(entry.key, next);
+      }
+    } catch (_) {}
   }
 
   function isNativeSecureStorage() {
     return !!(global.NativeBridge && global.NativeBridge.isNativePlatform());
   }
 
-  async function verifyStoredKey(expectedB64, username) {
-    if (isNativeSecureStorage()) {
-      return cachedKey === expectedB64;
+  async function verifyStoredKey(_expectedB64, username) {
+    try {
+      const record = await idbGet(slotKey(username));
+      return !!(record && record.updatedAt);
+    } catch (_) {
+      return false;
     }
-    cachedKey = null;
-    const loaded = await loadWrappedKey(username);
-    return loaded === expectedB64;
   }
 
-  async function loadWrappedKey(username) {
-    if (cachedKey) {
-      return cachedKey;
-    }
-    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
-      try {
-        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {
-          account: username || currentUsername(),
-        });
-        cachedKey = result && result.key ? result.key : null;
-      } catch (err) {
-        console.error('native secure key read failed', err);
-        cachedKey = null;
-      }
-      return cachedKey;
-    }
-    if (!hasWebCrypto() || !isSecureContext()) {
-      return null;
-    }
-    const name = username || currentUsername();
-    if (!name) {
-      return loadLegacyWrappedKey();
-    }
-    const key = await slotKey(name);
-    const record = await idbGet(key);
-    if (!record) {
-      return loadLegacyWrappedKey();
-    }
-    if (record.mode === 'cookie') {
-      return null;
-    }
-    if (record.mode === 'webauthn-prf') {
-      return cachedKey;
-    }
-    const wrapKey = await idbGet(WRAP_KEY_ID);
-    if (!wrapKey) {
-      console.debug('enc-key: wrapping key missing from IndexedDB');
-      return null;
-    }
-    try {
-      cachedKey = await unwrapDataKey(record.wrapped, wrapKey);
-      return cachedKey;
-    } catch (err) {
-      console.error('enc-key: failed to unwrap stored key', err);
-      return null;
-    }
+  async function loadWrappedKey(_username) {
+    return null;
   }
 
   // Pre-per-account storage format (single global slot, no username
@@ -531,43 +480,10 @@
     return unwrapSlotWithWebAuthn(record);
   }
 
-  // Slot-lookup by username (no session yet). Remembered slots only.
+  // Slot-lookup by username (no session yet). The data key is not available
+  // to page JS; HttpOnly cookies carry it.
   async function getKeyForUsername(username) {
-    const record = await idbGet(slotKey(username));
-    if (!record || record.remembered === false || record.mode === 'webauthn-prf') {
-      return null;
-    }
-    if (global.NativeBridge && global.NativeBridge.isNativePlatform()) {
-      try {
-        const result = await global.NativeBridge.callNativePlugin('NativeSecureKey', 'getKey', {
-          account: username,
-        });
-        if (result && result.key) {
-          cachedKey = result.key;
-          return cachedKey;
-        }
-      } catch (err) {
-        console.error('native secure key read failed', err);
-      }
-      return null;
-    }
-    if (!hasWebCrypto() || !isSecureContext()) {
-      return null;
-    }
-    if (!record.wrapped) {
-      return null;
-    }
-    const wrapKey = await idbGet(WRAP_KEY_ID);
-    if (!wrapKey) {
-      return null;
-    }
-    try {
-      cachedKey = await unwrapDataKey(record.wrapped, wrapKey);
-      return cachedKey;
-    } catch (err) {
-      console.error('enc-key: failed to unwrap stored key', err);
-      return null;
-    }
+    return null;
   }
 
   async function unlockWithWebAuthnForUser(username) {
@@ -665,7 +581,7 @@
   }
 
   async function getKeyForRequest() {
-    return loadWrappedKey();
+    return null;
   }
 
   function getKeyForRequestSync() {
@@ -678,6 +594,8 @@
   function lock() {
     cachedKey = null;
   }
+
+  scrubWrappedKeys();
 
   const EncKey = {
     storeFromLogin: storeWrappedKey,

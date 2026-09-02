@@ -158,8 +158,8 @@ function applyAccountMode() {
 }
 
 /// Password-free login for a cached account: the HttpOnly remember cookie
-/// mints the session. A matching stored key is sent only to set enc_key —
-/// it cannot log in by itself.
+/// mints the session. The HttpOnly enc_key-{user} cookie is promoted to
+/// enc_key by the server — JS must not send the Fernet key.
 async function loginCachedAccount() {
   return loginRememberedAccount();
 }
@@ -169,23 +169,9 @@ async function loginCachedAccount() {
 async function loginRememberedAccount() {
   const username = $('#saved-account-select').val();
   const csrf = $('input[name="csrf_token"]').first().val() || '';
-  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
-  if (window.EncKey && window.EncKey.getKeyForUsername) {
-    try {
-      let key = await window.EncKey.getKeyForUsername(username);
-      if (!key && window.EncKey.unlockWithWebAuthnForUser) {
-        try {
-          key = await window.EncKey.unlockWithWebAuthnForUser(username);
-        } catch (e) {}
-      }
-      if (key) {
-        headers['X-Enc-Key'] = key;
-      }
-    } catch (e) {}
-  }
   const resp = await fetch('/login/remember', {
     method: 'POST',
-    headers: headers,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body:
       'csrf_token=' + encodeURIComponent(csrf) +
       '&username=' + encodeURIComponent(username),

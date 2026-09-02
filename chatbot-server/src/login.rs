@@ -214,16 +214,55 @@ pub async fn handle_login_post(
         } else {
             config::app_config().session_timeout.max(60)
         };
-        if let Ok(value) =
-            HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(key_str, max_age))
-        {
-            response = response.header(header::SET_COOKIE, value);
-        }
+        response = attach_enc_key_cookies(response, &username, key_str, max_age, remember_me);
     }
 
     response
         .body(Body::empty())
         .map_err(|err| map_response_build_err(err, "login::post::redirect"))
+}
+
+fn attach_enc_key_cookies(
+    mut builder: axum::http::response::Builder,
+    username: &str,
+    key_str: &str,
+    max_age: u64,
+    persist_account: bool,
+) -> axum::http::response::Builder {
+    if let Ok(value) =
+        HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(key_str, max_age))
+    {
+        builder = builder.header(header::SET_COOKIE, value);
+    }
+    if persist_account {
+        if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_set_cookie(
+            username, key_str, max_age,
+        )) {
+            builder = builder.header(header::SET_COOKIE, value);
+        }
+    } else if let Ok(value) =
+        HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_clear_cookie(username))
+    {
+        builder = builder.header(header::SET_COOKIE, value);
+    }
+    builder
+}
+
+fn presented_enc_key_string(
+    headers: &axum::http::HeaderMap,
+    username: &str,
+    cookie_header: Option<&str>,
+) -> Option<String> {
+    if let Some(enc_key) = headers
+        .get("x-enc-key")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(enc_key.to_string());
+    }
+    let key = crate::chat_utils::extract_account_enc_key_cookie(cookie_header, username)
+        .or_else(|| crate::chat_utils::extract_enc_key_cookie(cookie_header))?;
+    crate::chat_utils::enc_key_cookie_value(&key).map(str::to_string)
 }
 
 fn issue_remember_cookies(
@@ -240,8 +279,9 @@ fn issue_remember_cookies(
 
 /// `POST /login/remember` — restore a session from the durable remember-token
 /// cookie (last-used `remember` or per-account `remember-{username}`). Restores
-/// the session only; the Fernet key cannot mint a session. An optional
-/// `X-Enc-Key` that matches the verifier sets the HttpOnly `enc_key` cookie.
+/// the session only; the Fernet key cannot mint a session. A matching
+/// `enc_key-{username}` cookie (or test `X-Enc-Key`) sets the last-used
+/// HttpOnly `enc_key` cookie.
 pub async fn handle_login_remember_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
@@ -362,24 +402,20 @@ pub async fn handle_login_remember_post(
                 }
             }
 
-            if let Some(enc_key) = headers
-                .get("x-enc-key")
-                .and_then(|value| value.to_str().ok())
-                .filter(|value| !value.is_empty())
+            if let Some(enc_key) = presented_enc_key_string(&headers, &username, cookie_header.as_deref())
             {
                 if let Ok(store) = UserStore::new() {
                     if store
                         .verify_encryption_key(&username, enc_key.as_bytes())
                         .unwrap_or(false)
                     {
-                        if let Ok(value) =
-                            HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(
-                                enc_key,
-                                remember_store::REMEMBER_MAX_AGE_SECS,
-                            ))
-                        {
-                            builder = builder.header(header::SET_COOKIE, value);
-                        }
+                        builder = attach_enc_key_cookies(
+                            builder,
+                            &username,
+                            &enc_key,
+                            remember_store::REMEMBER_MAX_AGE_SECS,
+                            true,
+                        );
                     }
                 }
             }
@@ -480,6 +516,11 @@ pub async fn handle_login_forget_post(
     if revoked {
         if let Ok(value) =
             HeaderValue::from_str(&remember_store::build_account_clear_cookie(&username))
+        {
+            builder = builder.header(header::SET_COOKIE, value);
+        }
+        if let Ok(value) =
+            HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_clear_cookie(&username))
         {
             builder = builder.header(header::SET_COOKIE, value);
         }

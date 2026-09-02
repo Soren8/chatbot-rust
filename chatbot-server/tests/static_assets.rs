@@ -163,8 +163,8 @@ fn format_ai_message_is_top_level_for_history_paging() {
         "thumbnail expand must use a GET /history_image URL, not POST JSON"
     );
     assert!(
-        chat_js.contains("Path=/history_image"),
-        "<img src> cannot send X-Enc-Key; hist_enc_key cookie is Path=/history_image only"
+        !chat_js.contains("hist_enc_key"),
+        "<img src> sends the HttpOnly Path=/ enc_key cookie; JS must not write hist_enc_key"
     );
 }
 
@@ -411,7 +411,7 @@ fn code_block_copy_works_in_insecure_contexts() {
     let handler = ai_message_text_click_handler_region(
         chat_js,
         "$(document).on('click', '.copy-code-button'",
-        "// Load sets for logged-in users (wait for encryption key from login storage first)",
+        "// Load sets for logged-in users (HttpOnly enc_key cookie is sent automatically)",
     )
     .expect("copy-code-button click handler");
     assert!(

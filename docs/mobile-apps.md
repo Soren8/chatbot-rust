@@ -164,14 +164,14 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 - Web UI updates (chat.js, CSS, templates) do not require rebuilding the APK; rebuild `webserver` to pick up static changes in the running server.
 - The device must have network access to the server (same WiFi or port-forwarded)
 - For car use, the server URL should point to the machine running `chatbot-server`
-- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for production flavor. These http URLs are for the native app (which derives/stores keys via the OS plugin and does not rely on browser secure context). For any browser-based testing, use http://localhost or a https URL.
+- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for production flavor. These http URLs are for the native app (password login derives the key via the OS plugin; the data key then lives in HttpOnly cookies). For any browser-based testing, use http://localhost or a https URL.
 - Server URL is read from the `server_url` string resource (flavor-specific) and passed to `VoiceScreen` via `CarContext.getString(R.string.server_url)`
 
 **Note**: WebView uses `LOAD_DEFAULT` so `<img src="/history_image/...">` can be cached like a normal browser. The server marks the app shell (home/login HTML) `Cache-Control: no-store` — those must always reflect live session state (per-session CSRF token, session auto-restore after a server restart). Use the in-app reload control if a stale `chat.js` is stuck after a server update. Rebuild the APK after changing `MainActivity` cache mode.
 
 ### Key cache & biometrics
 
-`NativeSecureKey` keeps one encrypted keystore entry **per account** (`account` parameter on `storeKey`/`getKey`/`clearKey`). The wrap key is Android Keystore AES/GCM with user authentication required (24h validity after device unlock; falls back to an unauthenticated key if the device has no lock screen). Prompt cadence: one fingerprint/PIN per login from cached credentials (cold app start), none for username/password logins (the key was just derived and the plugin caches it), none within a running app session. A second prompt is allowed if the app process died and a stale session must unlock the keystore again. Clearing app storage removes WebView data and cookies but **not** Android Keystore entries — those follow the app itself (uninstall). Plugin changes always require an APK rebuild; JS/template changes come from the server.
+The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies (same as the browser). Page JS does not call `NativeSecureKey.getKey` on the request path. `deriveKeyFromPassword` is used at password login only. Clearing app storage removes WebView cookies, so cached decrypt needs a password login again. Plugin changes always require an APK rebuild; JS/template changes come from the server.
 
 ---
 

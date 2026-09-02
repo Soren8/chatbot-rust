@@ -58,9 +58,9 @@
     <div id="enc-key-gate" class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center bg-dark bg-opacity-75 d-none" style="z-index: 2000;">
         <div class="card bg-dark text-light border-secondary p-4 text-center" style="max-width: 24rem;">
             <div id="enc-key-gate-spinner" class="spinner-border text-primary mb-3 mx-auto" role="status" aria-hidden="true"></div>
-            <p class="enc-key-gate-message mb-0">Loading encryption key…</p>
+            <p class="enc-key-gate-message mb-0">Loading your sets…</p>
             <div id="enc-key-gate-actions" class="d-none mt-3 d-flex flex-column gap-2">
-                <button id="enc-key-retry" type="button" class="btn btn-primary btn-sm">Unlock encryption key</button>
+                <button id="enc-key-retry" type="button" class="btn btn-primary btn-sm">Try again</button>
                 <a href="/logout" class="btn btn-outline-secondary btn-sm">Switch account</a>
                 <button type="button" class="btn btn-outline-danger btn-sm logout-this-computer">Log out of this computer</button>
             </div>
@@ -89,7 +89,7 @@
                                 <h6 class="mb-0">Encryption</h6>
                             </div>
                             <div class="card-body d-flex flex-column gap-2">
-                                <p id="enc-key-storage-hint" class="small mb-0">Your chat key stays on this device. It is saved locally to your browser when you log in.</p>
+                                <p id="enc-key-storage-hint" class="small mb-0">Your chat key is stored in a cookie this page cannot read.</p>
                                 <button id="enable-device-lock" class="btn btn-outline-secondary btn-sm" type="button" style="display:none;">Enhance encryption key cache security</button>
                             </div>
                         </div>

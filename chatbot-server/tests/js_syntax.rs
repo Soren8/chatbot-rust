@@ -99,7 +99,7 @@ fn chat_js_401_interceptor_allowlists_preference_saves() {
     let chunk = &src[start..start.saturating_add(1800).min(src.len())];
     assert!(
         chunk.contains("/update_preferences"),
-        "POST /update_preferences 401s without X-Enc-Key; if the fetch interceptor \
+        "POST /update_preferences 401s without an enc-key cookie; if the fetch interceptor \
          is not allowlisted it assigns location.href = '/' and reloads the enc-key \
          gate in a loop after every logged-in load"
     );
@@ -116,5 +116,57 @@ fn chat_js_enc_key_gate_cannot_loop_on_401() {
     assert!(
         src.contains("redirectHomeOnAuthFailure"),
         "401 handlers must not send logged-in users to / (that restarts the enc-key gate)"
+    );
+}
+
+#[test]
+fn page_js_does_not_touch_enc_key() {
+    // HttpOnly enc_key / enc_key-{user} cookies carry the Fernet key.
+    // Page JS must not read, unwrap, or send it (XSS export).
+    for (name, src) in [
+        ("static/login.js", include_str!("../../static/login.js")),
+        ("static/chat.js", include_str!("../../static/chat.js")),
+    ] {
+        assert!(
+            !src.contains("X-Enc-Key"),
+            "{name} must not send X-Enc-Key; tests use that header, browsers use cookies"
+        );
+        assert!(
+            !src.contains("hist_enc_key"),
+            "{name} must not write hist_enc_key; Path=/ enc_key is sent on <img>"
+        );
+        assert!(
+            !src.contains("getKeyForUsername"),
+            "{name} must not unwrap a stored data key"
+        );
+        assert!(
+            !src.contains("getKeyForRequest"),
+            "{name} must not read the data key for fetch"
+        );
+        assert!(
+            !src.contains("document.cookie"),
+            "{name} must not put the data key in document.cookie"
+        );
+    }
+    let enc = include_str!("../../static/enc-key.js");
+    assert!(
+        !enc.contains("headers['X-Enc-Key']") && !enc.contains("headers[\"X-Enc-Key\"]"),
+        "enc-key.js must not send X-Enc-Key"
+    );
+    let get_key = enc
+        .find("async function getKeyForUsername")
+        .expect("getKeyForUsername");
+    let next = enc[get_key + 1..]
+        .find("async function ")
+        .map(|i| get_key + 1 + i)
+        .unwrap_or(enc.len());
+    let body = &enc[get_key..next];
+    assert!(
+        body.contains("return null"),
+        "getKeyForUsername must not unwrap or return a stored data key"
+    );
+    assert!(
+        !body.contains("unwrapDataKey") && !body.contains("NativeSecureKey"),
+        "getKeyForUsername must not unwrap IndexedDB or call native getKey"
     );
 }

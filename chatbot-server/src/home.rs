@@ -95,6 +95,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
 
+    let request_cookies = cookie_header.clone();
     let mut restored_cookies: Vec<String> = Vec::new();
     let mut cookie_header = cookie_header;
     if let Some(restored) = try_auto_restore(cookie_header.as_deref(), &ip) {
@@ -105,6 +106,13 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "home::get"))?;
+
+    if let Some(username) = bootstrap.username.as_deref() {
+        restored_cookies.extend(crate::chat_utils::promote_enc_key_cookies(
+            request_cookies.as_deref(),
+            username,
+        ));
+    }
 
     let logged_in = bootstrap.username.is_some();
     let user_details = resolve_user_details(bootstrap.username.as_deref());

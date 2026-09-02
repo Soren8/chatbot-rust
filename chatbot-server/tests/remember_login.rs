@@ -1105,3 +1105,216 @@ async fn forget_revokes_only_matching_account() {
     let restore = post_remember_login(&app, &restore_cookies, &csrf, true).await;
     assert_eq!(restore.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn login_with_remember_issues_per_account_enc_key_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "encacctuser";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let response = post_login(&app, &guest, &csrf, username, password, true).await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let cookies = set_cookie_values(response.headers());
+    let last = find_cookie_pair(&cookies, "enc_key").expect("enc_key cookie");
+    let account_name = format!("enc_key-{username}");
+    let account = find_cookie_pair(&cookies, &account_name).expect("per-account enc_key cookie");
+    let last_set = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("enc_key="))
+        .expect("enc_key Set-Cookie");
+    let account_set = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with(&format!("{account_name}=")))
+        .expect("account enc_key Set-Cookie");
+    assert!(last_set.contains("HttpOnly"), "enc_key must be HttpOnly");
+    assert!(
+        last_set.contains("SameSite=Strict"),
+        "enc_key must be Strict: {last_set}"
+    );
+    assert!(account_set.contains("HttpOnly"));
+    assert!(account_set.contains("SameSite=Strict"));
+    assert!(
+        account_set.contains(&format!("Max-Age={REMEMBER_MAX_AGE}")),
+        "per-account enc_key must last 30 days, got {account_set}"
+    );
+    assert_eq!(
+        account.strip_prefix(&format!("{account_name}=")),
+        last.strip_prefix("enc_key=")
+    );
+}
+
+#[tokio::test]
+async fn remember_login_promotes_account_enc_key_without_header() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "encpromote";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let login = post_login(&app, &guest, &csrf, username, password, true).await;
+    assert_eq!(login.status(), StatusCode::FOUND);
+    let login_cookies = set_cookie_values(login.headers());
+    let remember = find_cookie_pair(&login_cookies, "remember").expect("remember");
+    let account_enc = find_cookie_pair(&login_cookies, &format!("enc_key-{username}"))
+        .expect("account enc_key");
+
+    let (csrf, cookie_header) = fresh_restore_session(&app, &remember).await;
+    let response = post_remember_login_as(
+        &app,
+        &format!("{cookie_header}; {account_enc}"),
+        &csrf,
+        username,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    let enc = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("enc_key="))
+        .expect("remember restore must copy enc_key-{user} onto enc_key without X-Enc-Key");
+    assert!(enc.contains("HttpOnly"), "promoted enc_key must be HttpOnly: {enc}");
+}
+
+#[tokio::test]
+async fn logout_keeps_account_enc_key_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "enclogout";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let login = post_login(&app, &guest, &csrf, username, password, true).await;
+    let login_cookies = set_cookie_values(login.headers());
+    let session = find_cookie_pair(&login_cookies, "session").expect("session");
+    let remember = find_cookie_pair(&login_cookies, "remember").expect("remember");
+    let account_enc = find_cookie_pair(&login_cookies, &format!("enc_key-{username}"))
+        .expect("account enc_key");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/logout")
+                .header(
+                    header::COOKIE,
+                    format!("{session}; {remember}; {account_enc}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /logout");
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let cookies = set_cookie_values(response.headers());
+    let clear = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("enc_key="))
+        .expect("logout must clear last-used enc_key");
+    assert!(clear.contains("Max-Age=0"));
+    assert!(
+        cookies
+            .iter()
+            .all(|cookie| !cookie.starts_with(&format!("enc_key-{username}="))),
+        "logout must not clear enc_key-{{user}}"
+    );
+}
+
+#[tokio::test]
+async fn forget_clears_account_enc_key_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "encforget";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let login = post_login(&app, &guest, &csrf, username, password, true).await;
+    let login_cookies = set_cookie_values(login.headers());
+    let remember = find_cookie_pair(&login_cookies, "remember").expect("remember");
+    let account_enc = find_cookie_pair(&login_cookies, &format!("enc_key-{username}"))
+        .expect("account enc_key");
+
+    let (csrf, cookies) = get_login_page(&app, Some(&remember)).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login/forget")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    header::COOKIE,
+                    format!("{guest}; {remember}; {account_enc}"),
+                )
+                .body(Body::from(format!(
+                    "csrf_token={}&username={}",
+                    urlencoding::encode(&csrf),
+                    urlencoding::encode(username)
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login/forget");
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    let clear = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with(&format!("enc_key-{username}=")))
+        .expect("forget must clear enc_key-{{user}}");
+    assert!(clear.contains("Max-Age=0"));
+}
+
+#[tokio::test]
+async fn home_auto_restore_promotes_account_enc_key_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let username = "enchomerestore";
+    let password = "Sup3rS3cret!";
+    seed_user(username, password);
+
+    let app = build_app();
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let login = post_login(&app, &guest, &csrf, username, password, true).await;
+    let login_cookies = set_cookie_values(login.headers());
+    let remember = find_cookie_pair(&login_cookies, "remember").expect("remember");
+    let account_enc = find_cookie_pair(&login_cookies, &format!("enc_key-{username}"))
+        .expect("account enc_key");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, format!("{remember}; {account_enc}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /");
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = set_cookie_values(response.headers());
+    assert!(
+        cookies.iter().any(|cookie| cookie.starts_with("enc_key=")),
+        "GET / restore must copy enc_key-{{user}} onto last-used enc_key"
+    );
+}
