@@ -828,8 +828,44 @@ async function fetchWithEncKey(input, init, retryOnUnlock) {
   return response;
 }
 
+function logoutThisComputer() {
+  var username = window.APP_DATA && window.APP_DATA.username;
+  if (!username) {
+    window.location.href = '/logout';
+    return;
+  }
+  if (!window.confirm(
+    'Forget ' + username + ' on this computer? You will need the password to sign in to it again.'
+  )) {
+    return;
+  }
+  var csrf = window.CSRF_TOKEN || '';
+  var done = Promise.resolve();
+  if (window.EncKey && window.EncKey.removeSlot) {
+    done = window.EncKey.removeSlot(username).catch(function () {});
+  }
+  done
+    .then(function () {
+      return fetch('/login/forget', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body:
+          'csrf_token=' + encodeURIComponent(csrf) +
+          '&username=' + encodeURIComponent(username),
+      });
+    })
+    .catch(function () {})
+    .then(function () {
+      window.location.href = '/logout';
+    });
+}
+
 // Settings panel behavior (collapse on small screens)
 $(function() {
+  $(document).on('click', '.logout-this-computer', function (e) {
+    e.preventDefault();
+    logoutThisComputer();
+  });
   if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
     var $deviceLock = $('#enable-device-lock');
     var $hint = $('#enc-key-storage-hint');
