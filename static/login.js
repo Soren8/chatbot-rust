@@ -142,10 +142,9 @@ function savedAccountSectionVisible() {
   return !$('#saved-account-section').hasClass('d-none');
 }
 
-/// Cached account selected: username comes from the dropdown (text field
-/// hidden). Password and Remember stay visible so a typed password always
-/// posts /login. Empty password tries keyauth/remember. Never disable
-/// #username — FormData drops disabled fields.
+/// Cached account selected: username from the dropdown, password hidden
+/// (keyauth/remember). Never disable #username — FormData drops disabled
+/// fields. A typed password still posts /login.
 function applyAccountMode() {
   const cached = cachedModeActive();
   $('#username-section').toggleClass('d-none', cached);
@@ -153,6 +152,7 @@ function applyAccountMode() {
     $('#username').val($('#saved-account-select').val());
   }
   $('#username').prop('disabled', false);
+  $('#password-fields').toggleClass('d-none', cached);
   $('#password').prop('required', !cached);
   $('#forget-account').toggleClass('d-none', !cached);
 }
@@ -329,6 +329,7 @@ $(function() {
         console.debug('cached login failed', err);
       }
       showLoginNotice('Enter the password to sign in to this account.');
+      $('#password-fields').removeClass('d-none');
       $('#password').prop('required', true).trigger('focus');
       return;
     }

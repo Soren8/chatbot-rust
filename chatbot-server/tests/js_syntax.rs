@@ -46,13 +46,12 @@ fn login_js_remembered_accounts_sign_in_without_password() {
         "cached-account Login falls back to the remember cookie when no key is stored"
     );
     assert!(
-        src.contains("$('#password').prop('required', !cached)"),
-        "cached-account mode may omit the password, but the field must stay on the form"
+        src.contains("$('#password-fields').toggleClass('d-none', cached)"),
+        "cached-account mode must hide the password field so Login is password-free"
     );
     assert!(
-        !src.contains("$('#password-fields').toggleClass('d-none', cached)"),
-        "hiding #password-fields also hides Remember-this-computer and makes a \
-         username/password login look like a failed cached restore"
+        src.contains("$('#password').prop('required', !cached)"),
+        "hidden password must not be HTML-required or the browser blocks cached Login"
     );
 }
 
