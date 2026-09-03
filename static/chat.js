@@ -20,15 +20,11 @@ function ttHtml(html) {
   }
   return html;
 }
-if (window.jQuery) {
-  var origHtml = jQuery.fn.html;
-  jQuery.fn.html = function (value) {
-    if (arguments.length === 0) {
-      return origHtml.call(this);
-    }
-    return origHtml.call(this, ttHtml(value));
-  };
-}
+// ttHtml is only for direct element.innerHTML sinks (they accept TrustedHTML).
+// Never feed ttHtml output into jQuery setters: jQuery 3.6.0's .html() treats
+// TrustedHTML as a non-node object and empties the element instead of
+// rendering it. jQuery/vendor .html(string) calls rely on the identity
+// `default` Trusted-Types policy registered in static/tt.js.
 
 // Ensure config exists before any DOM-ready handlers use it
 try {

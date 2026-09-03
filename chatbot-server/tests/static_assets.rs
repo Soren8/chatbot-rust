@@ -436,6 +436,35 @@ fn code_block_copy_works_in_insecure_contexts() {
     );
 }
 
+/// Regression: the Trusted-Types commit (57f8421) overrode `jQuery.fn.html`
+/// so every setter value passed through `ttHtml`, which returns a TrustedHTML
+/// object on TT-enforcing browsers (Chrome/Edge/Android WebView). jQuery
+/// 3.6.0's `.html()` cannot handle TrustedHTML: the value fails the
+/// `typeof value === "string"` innerHTML fast path and falls through to
+/// `this.empty().append(value)`, where `buildFragment` sees a non-node object
+/// (`jQuery.merge` reads no array-like `.length`) — so every `.html(string)`
+/// call EMPTIED its element. That blanked streamed AI output text, the
+/// thinking toggle labels, the per-message TTS play/reset icons, and the mic
+/// button's stop icon. jQuery `.html()` sinks must rely on the identity
+/// `default` TT policy instead (static/tt.js); `ttHtml` stays reserved for
+/// direct `element.innerHTML` assignments, which accept TrustedHTML natively.
+#[test]
+fn jquery_html_setter_not_wrapped_with_trusted_html() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        !chat_js.contains("jQuery.fn.html"),
+        "do not override jQuery.fn.html: feeding ttHtml (TrustedHTML) into .html() empties the target element in jQuery 3.6.0 instead of rendering it"
+    );
+    assert!(
+        !chat_js.contains("origHtml"),
+        "stale jQuery.fn.html wrapper remnant must be removed"
+    );
+    assert!(
+        !chat_js.contains(".html(ttHtml(") && !chat_js.contains(".html( ttHtml("),
+        "ttHtml is only for direct element.innerHTML sinks; jQuery .html() must receive plain strings"
+    );
+}
+
 fn ai_message_text_click_handler_region<'a>(
     src: &'a str,
     start_marker: &str,
