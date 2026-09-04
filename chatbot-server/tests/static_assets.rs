@@ -465,6 +465,27 @@ fn jquery_html_setter_not_wrapped_with_trusted_html() {
     );
 }
 
+#[test]
+fn navbar_account_dropdown_is_on_top_in_z_order() {
+    let style_css = include_str!("../../static/style.css");
+    assert!(
+        style_css.contains(".navbar .dropdown-menu") || style_css.contains(".dropdown-menu"),
+        "style.css must specify dropdown-menu styling"
+    );
+    assert!(
+        style_css.contains("2100"),
+        "dropdown-menu must have high z-index (2100) to stay on top of everything z-order wise"
+    );
+    assert!(
+        style_css.contains(".navbar .navbar-nav") && style_css.contains(".navbar .dropdown"),
+        "navbar-nav and dropdown container must have explicit positioning above brand"
+    );
+    assert!(
+        style_css.contains(".navbar .navbar-brand-center {\n    z-index: 0;\n}"),
+        "navbar-brand-center must remain at z-index: 0 so controls and dropdowns stay on top"
+    );
+}
+
 fn ai_message_text_click_handler_region<'a>(
     src: &'a str,
     start_marker: &str,

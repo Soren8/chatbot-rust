@@ -322,15 +322,35 @@
 .navbar-brand-center {
     position: absolute;
     left: 50%;
-    transform: translateX(-50%);
     top: 50%;
     transform: translate(-50%, -50%);
     pointer-events: none; /* ensure clicks go to controls on the sides */
 }
 
-/* Ensure brand remains visible above other elements */
+/* Keep centered brand below interactive navbar controls */
 .navbar .navbar-brand-center {
-    z-index: 1;
+    z-index: 0;
+}
+
+/* Ensure navbar controls and account dropdown stay on top of the centered brand */
+.navbar #settings-toggle,
+.navbar #reload-ui,
+.navbar .navbar-nav,
+.navbar .dropdown {
+    position: relative;
+    z-index: 10;
+}
+
+/* Account dropdown toggle has matching background to cleanly mask any brand overlap on thin screens */
+.navbar .dropdown .dropdown-toggle {
+    background-color: var(--bs-dark, #212529);
+}
+
+/* The account dropdown menu must be on top of everything z-order wise */
+.navbar .dropdown-menu,
+.dropdown-menu {
+    --bs-dropdown-zindex: 2100;
+    z-index: 2100 !important;
 }
 
 /* Ensure navbar stays on top of fixed content on mobile */
