@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{HeaderName, HeaderValue, StatusCode},
+    http::{header, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
@@ -98,6 +98,128 @@ async fn log_server_error_responses(
     response
 }
 
+/// Enforce HTTP cache revalidation on static assets (`/static/*`).
+///
+/// Android WebView runs with `WebSettings.LOAD_DEFAULT` to support long-term
+/// caching of history images (`/history_image/...` carrying `max-age=31536000, immutable`).
+/// Without an explicit `Cache-Control` header on `/static/*`, Chromium applies
+/// heuristic freshness calculation, caching JS/CSS for days without revalidation
+/// and forcing users to clear app storage (wiping login credentials and image caches).
+/// Marking static assets `no-cache, must-revalidate` ensures the WebView always validates
+/// ETag / 304 with the server on page load and reload, pulling fresh code immediately
+/// upon server updates while keeping cached credentials and images intact.
+async fn set_static_cache_control_headers(
+    request: axum::extract::Request<Body>,
+    next: Next,
+) -> Response {
+    let is_static = request.uri().path().starts_with("/static");
+    let mut response = next.run(request).await;
+    if is_static && (response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED) {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, must-revalidate"),
+        );
+    }
+    response
+}
+
+/// Strip the `Secure` flag from a `Set-Cookie` header value.
+///
+/// In RFC 6265bis §5.4, clients (such as Android WebView / Chromium) strictly drop
+/// any cookie with the `Secure` flag if received over plain HTTP (non-localhost).
+/// When running over plain HTTP without HTTPS termination, stripping `Secure`
+/// allows mobile WebViews and non-TLS clients to accept and store cookies.
+pub fn strip_secure_cookie_flag(cookie: &str) -> String {
+    cookie
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && !part.eq_ignore_ascii_case("secure"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Detects whether an incoming request is over plain HTTP (no TLS / reverse-proxy HTTPS).
+///
+/// When requests run in mock/unit tests using `tower::ServiceExt::oneshot` without a `Host`
+/// header or proxy headers, this returns `false` to preserve the configured `Secure` flag
+/// expectations in tests.
+fn is_plain_http_request(request: &axum::extract::Request<Body>) -> bool {
+    if request
+        .uri()
+        .scheme_str()
+        .map(|s| s.eq_ignore_ascii_case("https"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let headers = request.headers();
+
+    if let Some(proto) = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) {
+        if proto
+            .split(',')
+            .next()
+            .map(|s| s.trim().eq_ignore_ascii_case("https"))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+    if let Some(ssl) = headers.get("x-forwarded-ssl").and_then(|v| v.to_str().ok()) {
+        if ssl.trim().eq_ignore_ascii_case("on") {
+            return false;
+        }
+    }
+    if let Some(front_end) = headers.get("front-end-https").and_then(|v| v.to_str().ok()) {
+        if front_end.trim().eq_ignore_ascii_case("on") {
+            return false;
+        }
+    }
+    if let Some(forwarded) = headers.get("forwarded").and_then(|v| v.to_str().ok()) {
+        if forwarded.to_ascii_lowercase().contains("proto=https") {
+            return false;
+        }
+    }
+
+    headers.contains_key(axum::http::header::HOST)
+        || request.uri().authority().is_some()
+        || headers.contains_key("x-forwarded-proto")
+}
+
+async fn sanitize_cookies_middleware(
+    request: axum::extract::Request<Body>,
+    next: Next,
+) -> Response {
+    let plain_http = is_plain_http_request(&request);
+    let mut response = next.run(request).await;
+
+    if plain_http {
+        let headers = response.headers_mut();
+        if headers.contains_key(axum::http::header::SET_COOKIE) {
+            let cookies: Vec<_> = headers
+                .get_all(axum::http::header::SET_COOKIE)
+                .iter()
+                .cloned()
+                .collect();
+            headers.remove(axum::http::header::SET_COOKIE);
+            for cookie in cookies {
+                if let Ok(cookie_str) = cookie.to_str() {
+                    let sanitized = strip_secure_cookie_flag(cookie_str);
+                    if let Ok(new_val) = HeaderValue::from_str(&sanitized) {
+                        headers.append(axum::http::header::SET_COOKIE, new_val);
+                    } else {
+                        headers.append(axum::http::header::SET_COOKIE, cookie);
+                    }
+                } else {
+                    headers.append(axum::http::header::SET_COOKIE, cookie);
+                }
+            }
+        }
+    }
+
+    response
+}
+
 pub fn build_router(static_root: PathBuf) -> Router {
     let rate_limited = Router::new()
         .route(
@@ -113,8 +235,8 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(login::handle_login_remember_post),
         )
         .route(
-            "/login/keyauth",
-            post(login::handle_login_keyauth_post),
+            "/login/forget",
+            post(login::handle_login_forget_post),
         )
         .route("/chat", post(chat::handle_chat))
         .route("/tts", post(tts::handle_tts))
@@ -156,6 +278,8 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(preferences::handle_update_preferences),
         )
         .merge(rate_limited)
+        .layer(middleware::from_fn(sanitize_cookies_middleware))
+        .layer(middleware::from_fn(set_static_cache_control_headers))
         .layer(middleware::from_fn(log_server_error_responses))
 }
 

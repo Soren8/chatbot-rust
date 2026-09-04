@@ -12,6 +12,8 @@ docker compose run --rm tests
 
 The `tests` service caps CPU pressure at half the physical cores (`CARGO_BUILD_JOBS` / `RUST_TEST_THREADS`, min 1; SMT threads excluded) plus a hard `cpus` quota in cores' worth of CPU time (default 3, `TEST_CPUS` override) that also bounds single-rustc LLVM threads; adjust there if needed, not per-invocation.
 
+**One suite run per change set.** A green run is final — never re-run it; tee output to `temp/test-logs/` and grep the file if you need details again.
+
 If that run reports **any** failure — including tests that look unrelated to the current change — **stop and ask the user what to do**. Do not ignore them, skip them, filter cargo to a subset, treat them as pre-existing noise, commit, or declare the task done. Wait for an explicit instruction (fix now, bisect, continue anyway, etc.).
 
 First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`, locked in `Cargo.lock`). Do not install Node/npm for this, and do not add hand-rolled brace scanners.

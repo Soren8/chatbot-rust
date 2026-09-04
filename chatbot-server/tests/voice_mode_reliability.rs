@@ -128,8 +128,12 @@ fn native_vad_stop_does_not_stop_a_newer_bridge() {
 fn voice_mode_survives_capacitor_reload_without_a_second_tap() {
     let chat_js = include_str!("../../static/chat.js");
     assert!(
-        chat_js.contains("chatbotVoiceModeWanted"),
+        chat_js.contains("persistVoiceModeWanted") && chat_js.contains("voiceModeWanted"),
         "voice mode on/off must persist across location.reload() (Capacitor reload-ui)"
+    );
+    assert!(
+        chat_js.contains("voice_mode") && chat_js.contains("/update_preferences"),
+        "voice mode persistence must be server-side (per-account), consistent with web search"
     );
     assert!(
         chat_js.contains("recoverNativeVoice") || chat_js.contains("_recoverNativeVoice"),
@@ -1232,6 +1236,66 @@ fn voice_mode_gui_stop_halts_tts_on_desktop_and_mobile() {
         function_contains(chat_js, "playTTSVoiceMode", "playTTS")
             && function_contains(chat_js, "playTTS", "options.sentences"),
         "voice-mode TTS must honor a clicked sentence list via playTTS"
+    );
+}
+
+/// The screen-off microphone foreground service and file logger must be
+/// robust against process kills, missing permissions, and uninitialized states.
+/// Specifically:
+/// 1. ConnectivityManager.requestNetwork requires CHANGE_NETWORK_STATE;
+/// 2. FileLogger must not throw NullPointerException when logFile is null;
+/// 3. FileLogger must catch Throwable on disk writes so logging cannot crash callers;
+/// 4. VoiceModeForegroundService must handle null intents on restart and return START_NOT_STICKY;
+/// 5. VoiceModeForegroundService must initialize FileLogger in onCreate.
+#[test]
+fn voice_mode_foreground_service_and_logger_robustness() {
+    let manifest = include_str!("../../android/app/src/main/AndroidManifest.xml");
+    let service = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeForegroundService.java"
+    );
+    let logger = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/util/FileLogger.java"
+    );
+    let logger_test = include_str!(
+        "../../android/app/src/test/java/com/chatbot/app/util/FileLoggerTest.java"
+    );
+
+    assert!(
+        manifest.contains("android.permission.CHANGE_NETWORK_STATE"),
+        "manifest must declare CHANGE_NETWORK_STATE for ConnectivityManager.requestNetwork"
+    );
+
+    assert!(
+        logger.contains("logFile == null") || logger.contains("logFile != null"),
+        "FileLogger must null-check logFile before attempting to construct FileWriter"
+    );
+    assert!(
+        logger.contains("catch (Throwable") || logger.contains("catch (Exception"),
+        "FileLogger must catch Throwable/Exception so disk logging never crashes callers"
+    );
+    assert!(
+        logger.contains("getFilesDir()"),
+        "FileLogger must fall back to internal storage if getExternalFilesDir is null"
+    );
+
+    assert!(
+        service.contains("intent == null"),
+        "VoiceModeForegroundService.onStartCommand must check for null intent on process restart"
+    );
+    assert!(
+        service.contains("START_NOT_STICKY") && !service.contains("START_STICKY"),
+        "VoiceModeForegroundService must be START_NOT_STICKY so dead sessions are not auto-resurrected"
+    );
+    assert!(
+        service.contains("FileLogger.init"),
+        "VoiceModeForegroundService must initialize FileLogger in onCreate"
+    );
+
+    assert!(
+        logger_test.contains("logWithoutInitDoesNotThrow")
+            && logger_test.contains("logExceptionWithoutInitDoesNotThrow")
+            && logger_test.contains("initWithNullContextDoesNotThrow"),
+        "FileLoggerTest must verify null safety when uninitialized"
     );
 }
 

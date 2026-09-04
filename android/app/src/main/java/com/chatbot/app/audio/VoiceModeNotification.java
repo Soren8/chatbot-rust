@@ -73,20 +73,26 @@ public final class VoiceModeNotification {
     }
 
     static Bitmap appArtwork(Context context) {
-        Drawable d = context.getApplicationInfo().loadIcon(context.getPackageManager());
-        if (d instanceof BitmapDrawable) {
-            Bitmap bitmap = ((BitmapDrawable) d).getBitmap();
-            if (bitmap != null) {
+        try {
+            Drawable d = context.getApplicationInfo().loadIcon(context.getPackageManager());
+            if (d instanceof BitmapDrawable) {
+                Bitmap bitmap = ((BitmapDrawable) d).getBitmap();
+                if (bitmap != null) {
+                    return bitmap;
+                }
+            }
+            if (d != null) {
+                int w = Math.max(d.getIntrinsicWidth(), 1);
+                int h = Math.max(d.getIntrinsicHeight(), 1);
+                Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                Canvas canvas = new Canvas(bitmap);
+                d.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+                d.draw(canvas);
                 return bitmap;
             }
+        } catch (Throwable ignored) {
         }
-        int w = Math.max(d.getIntrinsicWidth(), 1);
-        int h = Math.max(d.getIntrinsicHeight(), 1);
-        Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bitmap);
-        d.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
-        d.draw(canvas);
-        return bitmap;
+        return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
     }
 
     static PendingIntent stopBroadcast(Context context) {

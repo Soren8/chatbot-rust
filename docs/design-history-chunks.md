@@ -829,7 +829,7 @@ Do **not** claim “old image works if no heavy set is opened”: an empty `crea
 | Roll back memory independently of history | `header_generation` in AAD + meta |
 | Roll back pair list to hide/restore messages | Manifest AAD includes set `version`; meta CAS is SoT |
 | Paste an image blob as a thumb | Distinct `kind` in AAD |
-| `/history_image` without key | Unchanged: 401 unless `X-Enc-Key` or Path-scoped `hist_enc_key` cookie |
+| `/history_image` without key | Unchanged: 401 unless `X-Enc-Key` or HttpOnly `enc_key` cookie |
 | Session cookie theft | Unchanged per-request key model |
 | Logging | Log `set_id`, `pair_id`, `image_id`, versions, byte lengths, elapsed; never names, keys, plaintext |
 | Cache RAM dump | Process-local plaintext of **recent** chunks only (narrower than today’s full-set cache). Still discarded on restart |
@@ -948,7 +948,7 @@ Follow AGENTS.md: new behavior → tests first; `docker compose run --rm tests`;
 - `chatbot-server/tests/load_set_history.rs` — paging, thumbs, `/history_pair`, `/history_image`, delete-by-thumb
 - `history_robustness.rs` — CAS, capture, multi-set
 - `sets.rs`, `memory.rs`, `enc_key_auth.rs`, regenerate/delete/chat suites
-- `static_assets.rs` — `/history_image` URL + `hist_enc_key` cookie
+- `static_assets.rs` — `/history_image` URL; HttpOnly `enc_key` cookie (JS must not write `hist_enc_key`)
 
 Add integration tests:
 

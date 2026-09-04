@@ -24,6 +24,13 @@ async fn serves_static_files_from_configured_root() {
         .expect("static file request");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-cache, must-revalidate")
+    );
     let body = to_bytes(response.into_body(), 64 * 1024)
         .await
         .expect("read body");
@@ -163,8 +170,8 @@ fn format_ai_message_is_top_level_for_history_paging() {
         "thumbnail expand must use a GET /history_image URL, not POST JSON"
     );
     assert!(
-        chat_js.contains("hist_enc_key="),
-        "img src cannot send X-Enc-Key; key must be a Path=/history_image cookie"
+        !chat_js.contains("hist_enc_key"),
+        "<img src> sends the HttpOnly Path=/ enc_key cookie; JS must not write hist_enc_key"
     );
 }
 
@@ -411,7 +418,7 @@ fn code_block_copy_works_in_insecure_contexts() {
     let handler = ai_message_text_click_handler_region(
         chat_js,
         "$(document).on('click', '.copy-code-button'",
-        "// Load sets for logged-in users (wait for encryption key from login storage first)",
+        "// Load sets for logged-in users (HttpOnly enc_key cookie is sent automatically)",
     )
     .expect("copy-code-button click handler");
     assert!(
@@ -433,6 +440,67 @@ fn code_block_copy_works_in_insecure_contexts() {
     assert!(
         style_css.contains(".copy-code-button.copy-failed"),
         ".copy-code-button.copy-failed rule must exist so the failure state is visible"
+    );
+}
+
+/// Regression: the Trusted-Types commit (57f8421) overrode `jQuery.fn.html`
+/// so every setter value passed through `ttHtml`, which returns a TrustedHTML
+/// object on TT-enforcing browsers (Chrome/Edge/Android WebView). jQuery
+/// 3.6.0's `.html()` cannot handle TrustedHTML: the value fails the
+/// `typeof value === "string"` innerHTML fast path and falls through to
+/// `this.empty().append(value)`, where `buildFragment` sees a non-node object
+/// (`jQuery.merge` reads no array-like `.length`) — so every `.html(string)`
+/// call EMPTIED its element. That blanked streamed AI output text, the
+/// thinking toggle labels, the per-message TTS play/reset icons, and the mic
+/// button's stop icon. jQuery `.html()` sinks must rely on the identity
+/// `default` TT policy instead (static/tt.js); `ttHtml` stays reserved for
+/// direct `element.innerHTML` assignments, which accept TrustedHTML natively.
+#[test]
+fn jquery_html_setter_not_wrapped_with_trusted_html() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        !chat_js.contains("jQuery.fn.html"),
+        "do not override jQuery.fn.html: feeding ttHtml (TrustedHTML) into .html() empties the target element in jQuery 3.6.0 instead of rendering it"
+    );
+    assert!(
+        !chat_js.contains("origHtml"),
+        "stale jQuery.fn.html wrapper remnant must be removed"
+    );
+    assert!(
+        !chat_js.contains(".html(ttHtml(") && !chat_js.contains(".html( ttHtml("),
+        "ttHtml is only for direct element.innerHTML sinks; jQuery .html() must receive plain strings"
+    );
+}
+
+#[test]
+fn navbar_account_dropdown_is_on_top_in_z_order() {
+    let style_css = include_str!("../../static/style.css");
+    assert!(
+        style_css.contains(".navbar .dropdown-menu") || style_css.contains(".dropdown-menu"),
+        "style.css must specify dropdown-menu styling"
+    );
+    assert!(
+        style_css.contains("2100"),
+        "dropdown-menu must have high z-index (2100) to stay on top of everything z-order wise"
+    );
+    assert!(
+        style_css.contains(".navbar .navbar-nav") && style_css.contains(".navbar .dropdown"),
+        "navbar-nav and dropdown container must have explicit positioning above brand"
+    );
+    assert!(
+        style_css.contains(".navbar .dropdown {\n    position: relative !important;\n}"),
+        "dropdown container must remain position: relative !important so toggle stays anchored when menu expands"
+    );
+    assert!(
+        style_css.contains("position: absolute !important;")
+            && style_css.contains("top: 100% !important;")
+            && style_css.contains("right: 0 !important;")
+            && style_css.contains("left: auto !important;"),
+        "dropdown-menu must float below navbar with position: absolute, top: 100%, right: 0 across all viewports"
+    );
+    assert!(
+        style_css.contains(".navbar .navbar-brand-center {\n    z-index: 0;\n}"),
+        "navbar-brand-center must remain at z-index: 0 so controls and dropdowns stay on top"
     );
 }
 

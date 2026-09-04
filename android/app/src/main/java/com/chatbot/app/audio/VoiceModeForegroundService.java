@@ -39,30 +39,55 @@ public class VoiceModeForegroundService extends Service {
     };
 
     public static void start(Context context) {
-        Context app = context.getApplicationContext();
-        Intent intent = new Intent(app, VoiceModeForegroundService.class);
-        intent.setAction(ACTION_START);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            app.startForegroundService(intent);
-        } else {
-            app.startService(intent);
+        if (context == null) {
+            return;
+        }
+        try {
+            Context app = context.getApplicationContext();
+            Intent intent = new Intent(app, VoiceModeForegroundService.class);
+            intent.setAction(ACTION_START);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                app.startForegroundService(intent);
+            } else {
+                app.startService(intent);
+            }
+        } catch (Exception e) {
+            FileLogger.log(TAG, "start failed: " + e.getMessage(), e);
         }
     }
 
     public static void stop(Context context) {
-        context.getApplicationContext().stopService(
-                new Intent(context.getApplicationContext(), VoiceModeForegroundService.class));
+        if (context == null) {
+            return;
+        }
+        try {
+            context.getApplicationContext().stopService(
+                    new Intent(context.getApplicationContext(), VoiceModeForegroundService.class));
+        } catch (Exception e) {
+            FileLogger.log(TAG, "stop failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        FileLogger.init(getApplicationContext());
+        FileLogger.log(TAG, "onCreate");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent == null) {
+            FileLogger.log(TAG, "onStartCommand called with null intent, stopping");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         promoteToForeground();
         acquireCpuWakeLock();
         acquireNetwork();
         startKeepAlive();
-        FileLogger.log(TAG, "onStartCommand action="
-                + (intent != null ? intent.getAction() : "null"));
-        return START_STICKY;
+        FileLogger.log(TAG, "onStartCommand action=" + intent.getAction());
+        return START_NOT_STICKY;
     }
 
     @Override
@@ -80,15 +105,20 @@ public class VoiceModeForegroundService extends Service {
     }
 
     private void promoteToForeground() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                    VoiceModeNotification.NOTIFICATION_ID,
-                    VoiceModeNotification.build(this),
-                    FGS_TYPE);
-        } else {
-            startForeground(
-                    VoiceModeNotification.NOTIFICATION_ID,
-                    VoiceModeNotification.build(this));
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                        VoiceModeNotification.NOTIFICATION_ID,
+                        VoiceModeNotification.build(this),
+                        FGS_TYPE);
+            } else {
+                startForeground(
+                        VoiceModeNotification.NOTIFICATION_ID,
+                        VoiceModeNotification.build(this));
+            }
+        } catch (Exception e) {
+            FileLogger.log(TAG, "promoteToForeground failed: " + e.getMessage(), e);
+            stopSelf();
         }
     }
 
@@ -100,16 +130,29 @@ public class VoiceModeForegroundService extends Service {
         if (pm == null) {
             return;
         }
-        cpuWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "chatbot:voice-mode");
-        cpuWakeLock.setReferenceCounted(false);
-        cpuWakeLock.acquire();
+        try {
+            if (cpuWakeLock == null) {
+                cpuWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "chatbot:voice-mode");
+                cpuWakeLock.setReferenceCounted(false);
+            }
+            if (!cpuWakeLock.isHeld()) {
+                cpuWakeLock.acquire();
+            }
+        } catch (Exception e) {
+            FileLogger.log(TAG, "acquireCpuWakeLock failed: " + e.getMessage(), e);
+        }
     }
 
     private void releaseCpuWakeLock() {
-        if (cpuWakeLock != null && cpuWakeLock.isHeld()) {
-            cpuWakeLock.release();
+        try {
+            if (cpuWakeLock != null && cpuWakeLock.isHeld()) {
+                cpuWakeLock.release();
+            }
+        } catch (Exception e) {
+            FileLogger.log(TAG, "releaseCpuWakeLock failed: " + e.getMessage(), e);
+        } finally {
+            cpuWakeLock = null;
         }
-        cpuWakeLock = null;
     }
 
     private void acquireNetwork() {

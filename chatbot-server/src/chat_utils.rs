@@ -56,11 +56,137 @@ pub fn provider_error_parts(err: &Error) -> (String, String) {
 pub const PROVIDER_ERROR_DETAIL_OPEN: &str = "[ConsoleError]";
 pub const PROVIDER_ERROR_DETAIL_CLOSE: &str = "[/ConsoleError]";
 
+pub const ENC_KEY_COOKIE_NAME: &str = "enc_key";
+
+pub fn account_enc_key_cookie_name(username: &str) -> String {
+    format!("{ENC_KEY_COOKIE_NAME}-{username}")
+}
+
 pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
     headers
         .get("X-Enc-Key")
         .and_then(|value| value.to_str().ok())
         .and_then(EncryptionKey::from_header_value)
+        .or_else(|| {
+            let cookie = headers
+                .get(header::COOKIE)
+                .and_then(|value| value.to_str().ok());
+            extract_enc_key_cookie(cookie).or_else(|| {
+                let username = session::session_context(cookie)
+                    .ok()
+                    .and_then(|ctx| ctx.username)?;
+                extract_account_enc_key_cookie(cookie, &username)
+            })
+        })
+}
+
+pub fn extract_enc_key_cookie(cookie_header: Option<&str>) -> Option<EncryptionKey> {
+    decode_named_enc_cookie(cookie_header, ENC_KEY_COOKIE_NAME)
+}
+
+pub fn extract_account_enc_key_cookie(
+    cookie_header: Option<&str>,
+    username: &str,
+) -> Option<EncryptionKey> {
+    decode_named_enc_cookie(cookie_header, &account_enc_key_cookie_name(username))
+}
+
+fn decode_named_enc_cookie(cookie_header: Option<&str>, name: &str) -> Option<EncryptionKey> {
+    let header = cookie_header?;
+    let prefix = format!("{name}=");
+    for part in header.split(';') {
+        let part = part.trim();
+        let Some(value) = part.strip_prefix(&prefix) else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let decoded = urlencoding::decode(value).ok()?;
+        return EncryptionKey::from_header_value(decoded.as_ref());
+    }
+    None
+}
+
+fn enc_cookie_secure_flag() -> &'static str {
+    if chatbot_core::config::app_config().csrf {
+        " Secure;"
+    } else {
+        ""
+    }
+}
+
+pub fn build_enc_key_set_cookie(key: &str, max_age_secs: u64) -> String {
+    build_named_enc_key_set_cookie(ENC_KEY_COOKIE_NAME, key, max_age_secs)
+}
+
+pub fn build_enc_key_account_set_cookie(username: &str, key: &str, max_age_secs: u64) -> String {
+    build_named_enc_key_set_cookie(&account_enc_key_cookie_name(username), key, max_age_secs)
+}
+
+fn build_named_enc_key_set_cookie(name: &str, key: &str, max_age_secs: u64) -> String {
+    let encoded = urlencoding::encode(key);
+    format!(
+        "{name}={encoded}; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age={max_age_secs}",
+        secure = enc_cookie_secure_flag()
+    )
+}
+
+pub fn build_enc_key_clear_cookie() -> String {
+    format!(
+        "{ENC_KEY_COOKIE_NAME}=; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age=0",
+        secure = enc_cookie_secure_flag()
+    )
+}
+
+pub fn build_enc_key_account_clear_cookie(username: &str) -> String {
+    let name = account_enc_key_cookie_name(username);
+    format!(
+        "{name}=; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age=0",
+        secure = enc_cookie_secure_flag()
+    )
+}
+
+pub fn enc_key_cookie_value(key: &EncryptionKey) -> Option<&str> {
+    std::str::from_utf8(key.as_bytes()).ok()
+}
+
+/// After switch-account (last-used `enc_key` cleared) or a deploy that only had
+/// last-used, copy a verified key onto the missing cookie. Does not slide
+/// max-age when both cookies are already present.
+pub fn promote_enc_key_cookies(cookie_header: Option<&str>, username: &str) -> Vec<String> {
+    let last = extract_enc_key_cookie(cookie_header);
+    let account = extract_account_enc_key_cookie(cookie_header, username);
+    let Some(key) = last.as_ref().or(account.as_ref()) else {
+        return Vec::new();
+    };
+    let Ok(store) = chatbot_core::user_store::UserStore::new() else {
+        return Vec::new();
+    };
+    if !store
+        .verify_encryption_key(username, key.as_bytes())
+        .unwrap_or(false)
+    {
+        return Vec::new();
+    }
+    let Some(key_str) = enc_key_cookie_value(key) else {
+        return Vec::new();
+    };
+    let remembered = chatbot_core::remember_store::extract_token_for_user(cookie_header, username)
+        .is_some();
+    let max_age = if remembered {
+        chatbot_core::remember_store::REMEMBER_MAX_AGE_SECS
+    } else {
+        chatbot_core::config::app_config().session_timeout.max(60)
+    };
+    let mut cookies = Vec::new();
+    if last.is_none() {
+        cookies.push(build_enc_key_set_cookie(key_str, max_age));
+    }
+    if account.is_none() && remembered {
+        cookies.push(build_enc_key_account_set_cookie(username, key_str, max_age));
+    }
+    cookies
 }
 
 pub fn get_ip(headers: &HeaderMap, extensions: &Extensions) -> String {

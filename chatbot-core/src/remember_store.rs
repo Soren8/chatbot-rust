@@ -3,7 +3,8 @@
 //! A remember token restores the HTTP **session** only — it never grants access
 //! to encrypted chat data. Data endpoints keep requiring `X-Enc-Key` validated
 //! against the per-user HMAC key verifier (two-secrets model, see
-//! docs/design-privacy.md).
+//! docs/design-privacy.md). Logout does not revoke the family; ✕ / uncheck /
+//! expiry do.
 //!
 //! Token format: `base64url(family_id(16B) || secret(32B))`. The server stores
 //! only `sha256(secret)` per family in `data/remember_tokens/{family_hex}.json`,
@@ -14,6 +15,7 @@
 use std::{
     env, fs,
     path::PathBuf,
+    sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -67,6 +69,13 @@ pub enum ResumeOutcome {
     Invalid,
 }
 
+fn store_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
 impl RememberStore {
     pub fn new() -> Result<Self, RememberError> {
         let base = env::var("HOST_DATA_DIR")
@@ -82,36 +91,69 @@ impl RememberStore {
     /// Issue a fresh token family for `username`, keeping at most
     /// [`MAX_FAMILIES_PER_USER`] families per user (oldest evicted).
     pub fn issue(&self, username: &str) -> Result<String, RememberError> {
-        self.purge_expired();
-        self.evict_beyond_cap(username)?;
+        let _guard = store_lock();
+        self.issue_locked(username)
+    }
 
-        let family = random_bytes(FAMILY_BYTES);
-        let secret = random_bytes(SECRET_BYTES);
-        let record = RememberRecord {
-            username: username.to_string(),
-            secret_hash: to_hex(&Sha256::digest(&secret)),
-            prev_secret_hash: None,
-            created: unix_now(),
-            expires: unix_now() + REMEMBER_MAX_AGE_SECS,
+    /// Reuse the presented family when it already belongs to `username`;
+    /// otherwise mint a new family. A foreign family is left intact so another
+    /// cached account on this browser keeps its per-account cookie.
+    pub fn issue_or_refresh(
+        &self,
+        username: &str,
+        presented: Option<&str>,
+    ) -> Result<String, RememberError> {
+        let _guard = store_lock();
+        if let Some((family, _)) = parse_token(presented) {
+            let family_hex = to_hex(&family);
+            if let Some(record) = self.read_record(&family_hex) {
+                if unix_now() < record.expires && record.username == username {
+                    return self.rotate_family_locked(&family, &record);
+                }
+            }
+        }
+        self.issue_locked(username)
+    }
+
+    /// Username bound to this family, if the file exists and is unexpired.
+    /// Does not rotate or check the secret (used by forget).
+    pub fn peek_username(&self, token: Option<&str>) -> Option<String> {
+        let _guard = store_lock();
+        let (family, _) = parse_token(token)?;
+        let record = self.read_record(&to_hex(&family))?;
+        if unix_now() >= record.expires {
+            return None;
+        }
+        Some(record.username)
+    }
+
+    /// Revoke the presented family only when it belongs to `username`.
+    pub fn revoke_if_username(&self, token: Option<&str>, username: &str) -> bool {
+        let _guard = store_lock();
+        let Some((family, _)) = parse_token(token) else {
+            return false;
         };
-        self.write_record(&to_hex(&family), &record)?;
-        Ok(pack_client_token(&family, &secret))
+        let family_hex = to_hex(&family);
+        let Some(record) = self.read_record(&family_hex) else {
+            return false;
+        };
+        if record.username != username {
+            return false;
+        }
+        fs::remove_file(self.family_path(&family_hex)).is_ok()
     }
 
     /// Validate a presented token. On success the secret is rotated (same
     /// family) and the replacement token returned. A stale secret revokes the
     /// entire family. Expired or unknown tokens are rejected.
     pub fn resume(&self, token: Option<&str>) -> Result<ResumeOutcome, RememberError> {
+        let _guard = store_lock();
         let Some((family, secret)) = parse_token(token) else {
             return Ok(ResumeOutcome::Invalid);
         };
         let family_hex = to_hex(&family);
         let path = self.family_path(&family_hex);
-        let Ok(contents) = fs::read_to_string(&path) else {
-            return Ok(ResumeOutcome::Invalid);
-        };
-        let Ok(record) = serde_json::from_str::<RememberRecord>(&contents) else {
-            let _ = fs::remove_file(&path);
+        let Some(record) = self.read_record(&family_hex) else {
             return Ok(ResumeOutcome::Invalid);
         };
         if unix_now() >= record.expires {
@@ -144,6 +186,48 @@ impl RememberStore {
             return Ok(ResumeOutcome::Invalid);
         }
 
+        let replacement_token = self.rotate_family_locked(&family, &record)?;
+        Ok(ResumeOutcome::Authenticated {
+            username: record.username,
+            replacement_token,
+        })
+    }
+
+    /// Revoke the token family presented in `token` (logout).
+    pub fn revoke(&self, token: Option<&str>) {
+        let _guard = store_lock();
+        if let Some((family, _)) = parse_token(token) {
+            let _ = fs::remove_file(self.family_path(&to_hex(&family)));
+        }
+    }
+
+    pub fn purge_expired(&self) -> usize {
+        let _guard = store_lock();
+        self.purge_expired_locked()
+    }
+
+    fn issue_locked(&self, username: &str) -> Result<String, RememberError> {
+        self.purge_expired_locked();
+        self.evict_beyond_cap(username)?;
+
+        let family = random_bytes(FAMILY_BYTES);
+        let secret = random_bytes(SECRET_BYTES);
+        let record = RememberRecord {
+            username: username.to_string(),
+            secret_hash: to_hex(&Sha256::digest(&secret)),
+            prev_secret_hash: None,
+            created: unix_now(),
+            expires: unix_now() + REMEMBER_MAX_AGE_SECS,
+        };
+        self.write_record(&to_hex(&family), &record)?;
+        Ok(pack_client_token(&family, &secret))
+    }
+
+    fn rotate_family_locked(
+        &self,
+        family: &[u8],
+        record: &RememberRecord,
+    ) -> Result<String, RememberError> {
         let replacement_secret = random_bytes(SECRET_BYTES);
         let replacement = RememberRecord {
             username: record.username.clone(),
@@ -152,21 +236,11 @@ impl RememberStore {
             created: unix_now(),
             expires: unix_now() + REMEMBER_MAX_AGE_SECS,
         };
-        self.write_record(&family_hex, &replacement)?;
-        Ok(ResumeOutcome::Authenticated {
-            username: record.username,
-            replacement_token: pack_client_token(&family, &replacement_secret),
-        })
+        self.write_record(&to_hex(family), &replacement)?;
+        Ok(pack_client_token(family, &replacement_secret))
     }
 
-    /// Revoke the token family presented in `token` (logout).
-    pub fn revoke(&self, token: Option<&str>) {
-        if let Some((family, _)) = parse_token(token) {
-            let _ = fs::remove_file(self.family_path(&to_hex(&family)));
-        }
-    }
-
-    pub fn purge_expired(&self) -> usize {
+    fn purge_expired_locked(&self) -> usize {
         let now = unix_now();
         let mut removed = 0;
         let Ok(entries) = fs::read_dir(&self.dir) else {
@@ -174,6 +248,9 @@ impl RememberStore {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
             let Ok(contents) = fs::read_to_string(&path) else {
                 continue;
             };
@@ -191,6 +268,9 @@ impl RememberStore {
         let mut families: Vec<(u64, String)> = Vec::new();
         for entry in fs::read_dir(&self.dir)?.flatten() {
             let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
             let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
@@ -219,9 +299,24 @@ impl RememberStore {
         self.dir.join(format!("{family_hex}.json"))
     }
 
+    fn read_record(&self, family_hex: &str) -> Option<RememberRecord> {
+        let path = self.family_path(family_hex);
+        let contents = fs::read_to_string(&path).ok()?;
+        match serde_json::from_str::<RememberRecord>(&contents) {
+            Ok(record) => Some(record),
+            Err(_) => {
+                let _ = fs::remove_file(&path);
+                None
+            }
+        }
+    }
+
     fn write_record(&self, family_hex: &str, record: &RememberRecord) -> Result<(), RememberError> {
         let json = serde_json::to_string_pretty(record)?;
-        fs::write(self.family_path(family_hex), json)?;
+        let path = self.family_path(family_hex);
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, json)?;
+        fs::rename(&tmp, &path)?;
         Ok(())
     }
 }
@@ -258,16 +353,33 @@ fn parse_token(token: Option<&str>) -> Option<(Vec<u8>, Vec<u8>)> {
     Some((bytes[..FAMILY_BYTES].to_vec(), bytes[FAMILY_BYTES..].to_vec()))
 }
 
-/// Extract the remember token from a raw `Cookie` header.
+/// Last-used remember cookie name (`remember=`). Per-account cookies are
+/// `remember-{username}=` (see [`account_cookie_name`]).
 pub fn extract_token(cookie_header: Option<&str>) -> Option<String> {
+    extract_named_cookie(cookie_header, REMEMBER_COOKIE_NAME)
+}
+
+pub fn account_cookie_name(username: &str) -> String {
+    format!("{REMEMBER_COOKIE_NAME}-{username}")
+}
+
+/// Remember token for `username`: `remember-{username}` first, else last-used.
+pub fn extract_account_token(cookie_header: Option<&str>, username: &str) -> Option<String> {
+    extract_named_cookie(cookie_header, &account_cookie_name(username))
+}
+
+pub fn extract_token_for_user(cookie_header: Option<&str>, username: &str) -> Option<String> {
+    extract_account_token(cookie_header, username).or_else(|| extract_token(cookie_header))
+}
+
+fn extract_named_cookie(cookie_header: Option<&str>, name: &str) -> Option<String> {
     let header = cookie_header?;
+    let prefix = format!("{name}=");
     for part in header.split(';') {
         let trimmed = part.trim();
-        if let Some(value) = trimmed.strip_prefix(REMEMBER_COOKIE_NAME) {
-            if let Some(rest) = value.strip_prefix('=') {
-                if !rest.is_empty() {
-                    return Some(rest.to_string());
-                }
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            if !rest.is_empty() {
+                return Some(rest.to_string());
             }
         }
     }
@@ -282,10 +394,24 @@ pub fn build_set_cookie(token: &str) -> String {
     )
 }
 
-/// `Set-Cookie` value clearing the remember cookie (logout).
+/// `Set-Cookie` value clearing the last-used remember cookie.
 pub fn build_clear_cookie() -> String {
     let secure = secure_flag();
     format!("{REMEMBER_COOKIE_NAME}=; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age=0")
+}
+
+pub fn build_account_set_cookie(username: &str, token: &str) -> String {
+    let name = account_cookie_name(username);
+    let secure = secure_flag();
+    format!(
+        "{name}={token}; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age={REMEMBER_MAX_AGE_SECS}"
+    )
+}
+
+pub fn build_account_clear_cookie(username: &str) -> String {
+    let name = account_cookie_name(username);
+    let secure = secure_flag();
+    format!("{name}=; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age=0")
 }
 
 fn secure_flag() -> &'static str {
@@ -457,6 +583,99 @@ mod tests {
     }
 
     #[test]
+    fn issue_or_refresh_reuses_family_for_same_user() {
+        with_temp_store(|store, dir| {
+            let first = store.issue("alice").expect("issue");
+            let second = store
+                .issue_or_refresh("alice", Some(&first))
+                .expect("refresh");
+            assert_ne!(second, first);
+            let tokens_dir = dir.join(TOKENS_DIR);
+            let count = fs::read_dir(&tokens_dir)
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .ok()
+                        .and_then(|e| e.path().extension().map(|ext| ext == "json"))
+                        .unwrap_or(false)
+                })
+                .count();
+            assert_eq!(count, 1, "refresh must not mint a second family");
+            assert!(matches!(
+                store.resume(Some(&second)).expect("resume"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn issue_or_refresh_preserves_foreign_family() {
+        with_temp_store(|store, _| {
+            let alice = store.issue("alice").expect("issue");
+            let bob = store
+                .issue_or_refresh("bob", Some(&alice))
+                .expect("switch user");
+            assert!(matches!(
+                store.resume(Some(&alice)).expect("resume alice"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+            assert!(matches!(
+                store.resume(Some(&bob)).expect("resume bob"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn revoke_if_username_ignores_other_accounts() {
+        with_temp_store(|store, _| {
+            let alice = store.issue("alice").expect("issue");
+            assert!(!store.revoke_if_username(Some(&alice), "bob"));
+            assert!(matches!(
+                store.resume(Some(&alice)).expect("resume"),
+                ResumeOutcome::Authenticated { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn concurrent_resume_of_current_secret_does_not_revoke_family() {
+        with_temp_store(|store, _| {
+            let token = store.issue("alice").expect("issue");
+            let (left, right) = std::thread::scope(|scope| {
+                let left = scope.spawn(|| store.resume(Some(&token)));
+                let right = scope.spawn(|| store.resume(Some(&token)));
+                (
+                    left.join().expect("left").expect("left resume"),
+                    right.join().expect("right").expect("right resume"),
+                )
+            });
+            let replacements: Vec<String> = [left, right]
+                .into_iter()
+                .filter_map(|outcome| match outcome {
+                    ResumeOutcome::Authenticated {
+                        replacement_token, ..
+                    } => Some(replacement_token),
+                    ResumeOutcome::Invalid => None,
+                })
+                .collect();
+            assert!(
+                !replacements.is_empty(),
+                "at least one concurrent resume must succeed"
+            );
+            let latest = replacements.last().expect("replacement");
+            assert!(
+                matches!(
+                    store.resume(Some(latest)).expect("resume latest"),
+                    ResumeOutcome::Authenticated { .. }
+                ),
+                "family must still accept the rotated token"
+            );
+        });
+    }
+
+    #[test]
     fn per_user_family_cap() {
         with_temp_store(|store, dir| {
             for _ in 0..MAX_FAMILIES_PER_USER {
@@ -500,6 +719,25 @@ mod tests {
         );
         assert_eq!(extract_token(Some("session=abc")), None);
         assert_eq!(extract_token(None), None);
+        assert_eq!(
+            extract_token(Some("remember-alice=accttok; remember=tok")),
+            Some("tok".to_string()),
+            "last-used parser must ignore per-account cookies"
+        );
+        assert_eq!(
+            extract_account_token(Some("remember-alice=accttok; remember=tok"), "alice"),
+            Some("accttok".to_string())
+        );
+        assert_eq!(
+            extract_token_for_user(Some("remember-bob=b; remember=tok"), "alice"),
+            Some("tok".to_string())
+        );
+        let account = build_account_set_cookie("alice", "tok");
+        assert!(account.starts_with("remember-alice=tok;"));
+        assert!(account.contains("HttpOnly"));
+        let clear_account = build_account_clear_cookie("alice");
+        assert!(clear_account.starts_with("remember-alice=;"));
+        assert!(clear_account.contains("Max-Age=0"));
         let clear = build_clear_cookie();
         assert!(clear.starts_with("remember=;"));
         assert!(clear.contains("Max-Age=0"));

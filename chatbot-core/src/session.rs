@@ -60,6 +60,9 @@ pub struct HomeBootstrap {
 pub struct LoginFinalize {
     pub session_id: String,
     pub set_cookie: String,
+    /// CSRF token of the new session; clients that restore sessions over
+    /// fetch (remember token) need it to keep calling same-page endpoints.
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -378,6 +381,7 @@ pub fn finalize_login(
     record.username = Some(username.to_string());
     record.last_used = now;
     let session_id = session_identifier(&record);
+    let csrf_token = record.csrf_token.clone();
     let set_cookie = store.build_set_cookie(&cookie_value);
     sessions.insert(cookie_value, record);
     drop(sessions);
@@ -385,6 +389,7 @@ pub fn finalize_login(
     Ok(LoginFinalize {
         session_id,
         set_cookie,
+        csrf_token,
     })
 }
 
@@ -636,20 +641,17 @@ pub fn validate_encryption_key_for_user(
     let store =
         UserStore::new().map_err(|err| map_store_error("failed to open user store", &err))?;
 
-    if store
+    if !store
         .has_key_verifier(username)
         .map_err(|err| map_store_error("failed to check key verifier", &err))?
     {
-        if !store
-            .verify_encryption_key(username, key.as_bytes())
-            .map_err(|err| map_store_error("failed to verify encryption key", &err))?
-        {
-            return Err(unauthorized("Invalid encryption key."));
-        }
-    } else {
-        store
-            .ensure_key_verifier(username, key.as_bytes())
-            .map_err(|_| unauthorized("Invalid encryption key."))?;
+        return Err(unauthorized("Encryption key required. Please unlock."));
+    }
+    if !store
+        .verify_encryption_key(username, key.as_bytes())
+        .map_err(|err| map_store_error("failed to verify encryption key", &err))?
+    {
+        return Err(unauthorized("Invalid encryption key."));
     }
 
     Ok(())

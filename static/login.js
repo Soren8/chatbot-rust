@@ -57,50 +57,96 @@ async function deriveKeyForLogin(password, saltB64) {
 function showLoginNotice(message) {
   const $notice = $('#login-notice');
   if ($notice.length) {
-    $notice.text(message).removeClass('d-none');
+    $notice
+      .text(message)
+      .removeClass('d-none alert-danger')
+      .addClass('alert-warning');
   } else {
     console.info(message);
   }
 }
 
-/// Password-free login for a cached account: prove knowledge of the cached
-/// encryption key against the server's HMAC verifier. Falls back to the
-/// sign-in form when the key cannot be presented (e.g. WebAuthn cancelled).
-async function loginCachedAccount() {
-  const username = $('#saved-account-select').val();
-  const csrfInput = $('input[name="csrf_token"]').first();
+/// Show a login failure inline as a red alert. Failures must stay on the page
+/// rather than navigating to a bare error page.
+function showLoginError(message) {
+  const $notice = $('#login-notice');
+  if ($notice.length) {
+    $notice
+      .text(message)
+      .removeClass('d-none alert-warning')
+      .addClass('alert-danger');
+  } else {
+    console.info(message);
+  }
+}
+
+/// Submit the login form via fetch so a failed attempt renders as an inline
+/// notice on the login page. A verified login is a 302 to "/" that sets the
+/// session cookie; fetch follows it, we run `onSuccess` (used to cache the
+/// verified encryption key), then navigate. A 401, or a stale-CSRF 303 that
+/// lands back on /login, is a failure and must never cache the key.
+/// Never set fetch redirect mode to manual: browsers turn that into an
+/// opaque response (status 0), so a successful login looks like invalid credentials.
+async function postLogin(form, onSuccess, isRetry = false) {
   try {
-    let key = await window.EncKey.getKeyForUsername(username);
-    if (!key && window.EncKey.unlockWithWebAuthnForUser) {
-      key = await window.EncKey.unlockWithWebAuthnForUser(username);
-    }
-    if (!key) {
-      throw new Error('cached key unavailable');
-    }
-    const resp = await fetch('/login/keyauth', {
+    const body = new URLSearchParams(new FormData(form)).toString();
+    const resp = await fetch('/login', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Enc-Key': key,
-      },
-      body:
-        'csrf_token=' + encodeURIComponent(csrfInput.val()) +
-        '&username=' + encodeURIComponent(username),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body,
     });
-    if (!resp.ok) {
-      throw new Error('cached key login rejected');
+    let dest = '';
+    try {
+      dest = new URL(resp.url, window.location.href).pathname || '/';
+    } catch (e) {
+      dest = '';
     }
-    const data = await resp.json();
-    if (!data || !data.username) {
-      throw new Error('unexpected keyauth response');
+    const success = resp.ok && dest === '/';
+    if (success) {
+      if (typeof onSuccess === 'function') {
+        try {
+          await onSuccess();
+        } catch (e) {
+          console.error('post-login key caching failed', e);
+        }
+      }
+      window.location.href = '/';
+      return;
     }
-    window.EncKey.touchSlot(username);
-    window.location.href = '/';
+    let message = 'Invalid credentials';
+    if (resp.ok && dest === '/login') {
+      try {
+        const text = await resp.text();
+        const match =
+          text.match(/name=["']csrf_token["']\s+value=["']([^"']+)["']/i) ||
+          text.match(/value=["']([^"']+)["']\s+name=["']csrf_token["']/i);
+        if (match && match[1]) {
+          const freshToken = match[1];
+          const $csrf = $(form).find('input[name="csrf_token"]');
+          if ($csrf.length) {
+            $csrf.val(freshToken);
+          }
+          $('input[name="csrf_token"]').val(freshToken);
+          if (!isRetry) {
+            return await postLogin(form, onSuccess, true);
+          }
+        }
+      } catch (e) {
+        console.error('failed to extract fresh csrf token', e);
+      }
+      message = 'Session expired. Please try signing in again.';
+    } else {
+      try {
+        const data = await resp.json();
+        if (data && data.error) {
+          message = data.error;
+        }
+      } catch (e) {}
+    }
+    showLoginError(message);
   } catch (err) {
-    console.debug('cached key login failed', err);
-    showLoginNotice('Could not sign in with the cached key for this account. Sign in below.');
-    $('#saved-account-select').val(OTHER_ACCOUNT);
-    applyAccountMode();
+    console.error('login submission failed', err);
+    showLoginError('Could not reach the server. Please try again.');
   }
 }
 
@@ -115,32 +161,78 @@ function savedAccountSectionVisible() {
   return !$('#saved-account-section').hasClass('d-none');
 }
 
-/// Cached account selected: password/remember-me hidden (resume needs
-/// neither), forget button shown. "Other account…": classic username +
-/// password + remember form.
+/// Cached account selected: username from the dropdown, password hidden
+/// (remember cookie). Never disable #username — FormData drops disabled
+/// fields. A typed password still posts /login.
 function applyAccountMode() {
   const cached = cachedModeActive();
   $('#username-section').toggleClass('d-none', cached);
-  $('#username').prop('disabled', cached);
+  if (cached) {
+    $('#username').val($('#saved-account-select').val());
+  }
+  $('#username').prop('disabled', false);
   $('#password-fields').toggleClass('d-none', cached);
   $('#password').prop('required', !cached);
   $('#forget-account').toggleClass('d-none', !cached);
 }
 
-async function refreshCsrfToken() {
-  try {
-    const resp = await fetch('/login');
-    if (!resp.ok) {
-      return;
+/// Password-free login for a cached account: the HttpOnly remember cookie
+/// mints the session. The HttpOnly enc_key-{user} cookie is promoted to
+/// enc_key by the server — JS must not send the Fernet key.
+async function loginCachedAccount() {
+  const username = $('#saved-account-select').val();
+  if (window.NativeBridge && window.NativeBridge.isNativePlatform() && username) {
+    try {
+      const res = await window.NativeBridge.callNativePlugin('NativeSecureKey', 'unlockCachedLogin', {
+        account: username,
+      });
+      if (!res || !res.unlocked) {
+        return false;
+      }
+    } catch (err) {
+      console.debug('native biometric unlock failed', err);
+      return false;
     }
-    const html = await resp.text();
-    const match = html.match(/name="csrf_token" value="([^"]+)"/);
-    if (match) {
-      $('input[name="csrf_token"]').first().val(match[1]);
-    }
-  } catch (err) {
-    console.debug('csrf token refresh failed', err);
   }
+  return loginRememberedAccount();
+}
+
+/// Password-free sign-in for a remembered device: the HttpOnly remember cookie
+/// restores the session when it belongs to the selected account.
+async function loginRememberedAccount() {
+  const username = $('#saved-account-select').val();
+  const csrf = $('input[name="csrf_token"]').first().val() || '';
+  const resp = await fetch('/login/remember', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body:
+      'csrf_token=' + encodeURIComponent(csrf) +
+      '&username=' + encodeURIComponent(username),
+  });
+  if (!resp.ok) {
+    return false;
+  }
+  const data = await resp.json();
+  if (!data || !data.ok) {
+    return false;
+  }
+  if (data.username && data.username !== username) {
+    return false;
+  }
+  if (window.EncKey && window.EncKey.touchSlot) {
+    window.EncKey.touchSlot(username);
+  }
+  if (window.NativeBridge && window.NativeBridge.isNativePlatform()) {
+    try {
+      await window.NativeBridge.callNativePlugin('NativeSecureKey', 'sealCachedCredentials', {
+        account: username,
+      });
+    } catch (e) {
+      console.debug('failed to seal rotated credentials', e);
+    }
+  }
+  window.location.href = '/';
+  return true;
 }
 
 function renderSavedAccountSelect() {
@@ -172,12 +264,19 @@ function renderSavedAccountSelect() {
 }
 
 $(function() {
-  renderSavedAccountSelect();
+  if (window.NativeBridge && window.NativeBridge.isNativePlatform()) {
+    window.NativeBridge.callNativePlugin('NativeSecureKey', 'purgeCachedCookies').catch(function () {});
+  }
+  const purge = (window.EncKey && window.EncKey.purgeNonRememberedSlots)
+    ? window.EncKey.purgeNonRememberedSlots()
+    : Promise.resolve();
+  purge.then(function () { return renderSavedAccountSelect(); }).catch(function () {
+    renderSavedAccountSelect();
+  });
   $('#saved-account-select').on('change', applyAccountMode);
 
-  // Remove a cached account's key from this browser. The remember token (if
-  // any) may belong to the forgotten account, so revoke it via /logout and
-  // pick up a fresh session + CSRF token for any further keyauth attempt.
+  // Remove a cached account's key from this browser. Revoke the remember
+  // token only when this device's cookie belongs to that account.
   $('#forget-account').on('click', async function() {
     const username = $('#saved-account-select').val();
     if (!username || username === OTHER_ACCOUNT || !window.EncKey || !window.EncKey.removeSlot) {
@@ -193,11 +292,17 @@ $(function() {
     try {
       await window.EncKey.removeSlot(username);
       try {
-        await fetch('/logout', { method: 'GET' });
+        const csrf = $('input[name="csrf_token"]').first().val() || '';
+        await fetch('/login/forget', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body:
+            'csrf_token=' + encodeURIComponent(csrf) +
+            '&username=' + encodeURIComponent(username),
+        });
       } catch (err) {
-        console.debug('logout during forget failed', err);
+        console.debug('forget token revoke failed', err);
       }
-      await refreshCsrfToken();
       await renderSavedAccountSelect();
       if (!savedAccountSectionVisible()) {
         showLoginNotice('Removed the cached login. Sign in with the username and password.');
@@ -214,15 +319,30 @@ $(function() {
     const form = this;
 
     if (cachedModeActive()) {
-      await loginCachedAccount();
+      $('#username').val($('#saved-account-select').val());
+    }
+    $('#username').prop('disabled', false);
+
+    if (cachedModeActive() && !$('#password').val()) {
+      try {
+        if (await loginCachedAccount()) {
+          return;
+        }
+      } catch (err) {
+        console.debug('cached login failed', err);
+      }
+      showLoginNotice('Enter the password to sign in to this account.');
+      $('#password-fields').removeClass('d-none');
+      $('#password').prop('required', true).trigger('focus');
       return;
     }
 
     const username = $('#username').val().trim();
     const password = $('#password').val();
+    let derivedKey = null;
 
     if (!username || !password) {
-      form.submit();
+      await postLogin(form);
       return;
     }
 
@@ -236,12 +356,11 @@ $(function() {
           return;
         }
         console.warn('Could not fetch salt, falling back to server derivation');
-        form.submit();
+        await postLogin(form);
         return;
       }
 
       const data = await resp.json();
-      let derivedKey;
       try {
         derivedKey = await deriveKeyForLogin(password, data.salt);
       } catch (deriveErr) {
@@ -256,26 +375,11 @@ $(function() {
           return;
         }
         console.log('Web Crypto unavailable. Using server-side derivation.');
-        form.submit();
+        await postLogin(form);
         return;
       }
 
-      if (window.EncKey && window.EncKey.storeFromLogin) {
-        // The slot always backs the live session (X-Enc-Key); the checkbox
-        // only decides whether the account stays usable password-free later.
-        const rememberChecked = $('#remember_me').is(':checked');
-        try {
-          await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username, rememberChecked);
-          const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
-          if (!ok) {
-            throw new Error('Encryption key did not persist on this device');
-          }
-        } catch (storeErr) {
-          console.error('Failed to store encryption key locally', storeErr);
-          alert('Could not save encryption key on this device. Login cannot continue.');
-          return;
-        }
-      }
+      form.querySelector('input[name="storage_key"]')?.remove();
       $('<input>').attr({
         type: 'hidden',
         name: 'storage_key',
@@ -287,6 +391,32 @@ $(function() {
       return;
     }
 
-    form.submit();
+    // Record the username in the dropdown only after the server has verified
+    // the login. `remember_me` decides whether that slot stays listed.
+    await postLogin(form, async function () {
+      if (!derivedKey || !window.EncKey || !window.EncKey.storeFromLogin) {
+        return;
+      }
+      const rememberChecked = $('#remember_me').is(':checked');
+      if (window.NativeBridge && window.NativeBridge.isNativePlatform() && rememberChecked) {
+        try {
+          await window.NativeBridge.callNativePlugin('NativeSecureKey', 'sealCachedCredentials', {
+            account: username,
+          });
+        } catch (e) {
+          console.debug('failed to seal cached credentials in keystore', e);
+        }
+      }
+      try {
+        await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username, rememberChecked);
+        const ok = await window.EncKey.verifyStoredKey(derivedKey, username);
+        if (!ok) {
+          throw new Error('Encryption key did not persist on this device');
+        }
+      } catch (storeErr) {
+        console.error('Failed to store encryption key locally', storeErr);
+        throw storeErr;
+      }
+    });
   });
 });

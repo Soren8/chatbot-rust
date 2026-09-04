@@ -26,6 +26,11 @@ const KEY_LEN: usize = 32;
 const PBKDF2_ITERATIONS: u32 = 100_000;
 const KEY_VERIFIER_LABEL: &[u8] = b"chatbot-enc-key-v1";
 
+#[derive(Serialize, Deserialize)]
+struct KeyVerifierRecord {
+    verifier: Vec<u8>,
+}
+
 pub static USERNAME_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").unwrap());
 
@@ -55,9 +60,21 @@ struct UserRecord {
     render_markdown: bool,
     #[serde(default = "default_autoplay_tts")]
     autoplay_tts: bool,
+    #[serde(default = "default_web_search")]
+    web_search: bool,
+    #[serde(default = "default_voice_mode")]
+    voice_mode: bool,
 }
 
 fn default_autoplay_tts() -> bool {
+    false
+}
+
+fn default_web_search() -> bool {
+    false
+}
+
+fn default_voice_mode() -> bool {
     false
 }
 
@@ -165,6 +182,8 @@ impl UserStore {
                 last_model: None,
                 render_markdown: true,
                 autoplay_tts: false,
+                web_search: false,
+                voice_mode: false,
             },
         );
 
@@ -203,6 +222,11 @@ impl UserStore {
 
     fn key_verifier_path(&self, normalised_username: &str) -> PathBuf {
         self.key_verifiers_dir
+            .join(format!("{normalised_username}_kv.json"))
+    }
+
+    fn legacy_key_verifier_path(&self, normalised_username: &str) -> PathBuf {
+        self.key_verifiers_dir
             .join(format!("{normalised_username}_kv"))
     }
 
@@ -216,45 +240,65 @@ impl UserStore {
         mac.finalize().into_bytes().into()
     }
 
+    fn load_key_verifier_record(
+        &self,
+        normalised_username: &str,
+    ) -> Result<Option<KeyVerifierRecord>, UserStoreError> {
+        let path = self.key_verifier_path(normalised_username);
+        if path.exists() {
+            let contents = fs::read_to_string(&path)?;
+            let record: KeyVerifierRecord = serde_json::from_str(&contents)
+                .map_err(|e| UserStoreError::Crypto(format!("corrupt key verifier: {e}")))?;
+            return Ok(Some(record));
+        }
+
+        let legacy = self.legacy_key_verifier_path(normalised_username);
+        if !legacy.exists() {
+            return Ok(None);
+        }
+        let mut stored = [0u8; 32];
+        let mut file = File::open(&legacy)?;
+        file.read_exact(&mut stored)?;
+        let record = KeyVerifierRecord {
+            verifier: stored.to_vec(),
+        };
+        fs::write(&path, serde_json::to_string(&record)?)?;
+        let _ = fs::remove_file(&legacy);
+        Ok(Some(record))
+    }
+
     pub fn ensure_key_verifier(&self, username: &str, key: &[u8]) -> Result<(), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let path = self.key_verifier_path(&normalised);
         let expected = Self::compute_key_verifier(key);
 
-        if path.exists() {
-            let mut stored = [0u8; 32];
-            let mut file = File::open(&path)?;
-            file.read_exact(&mut stored)?;
-            if !constant_time_eq(&stored, &expected) {
+        if let Some(record) = self.load_key_verifier_record(&normalised)? {
+            if !constant_time_eq(&record.verifier, &expected) {
                 return Err(UserStoreError::Crypto("Encryption key mismatch".into()));
             }
             return Ok(());
         }
 
-        let mut file = File::create(&path)?;
-        file.write_all(&expected)?;
+        let record = KeyVerifierRecord {
+            verifier: expected.to_vec(),
+        };
+        fs::write(self.key_verifier_path(&normalised), serde_json::to_string(&record)?)?;
         Ok(())
     }
 
     pub fn verify_encryption_key(&self, username: &str, key: &[u8]) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let path = self.key_verifier_path(&normalised);
-        if !path.exists() {
+        let Some(record) = self.load_key_verifier_record(&normalised)? else {
             return Ok(false);
-        }
-
-        let mut stored = [0u8; 32];
-        let mut file = File::open(&path)?;
-        file.read_exact(&mut stored)?;
+        };
         Ok(constant_time_eq(
-            &stored,
+            &record.verifier,
             &Self::compute_key_verifier(key),
         ))
     }
 
     pub fn has_key_verifier(&self, username: &str) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        Ok(self.key_verifier_path(&normalised).exists())
+        Ok(self.load_key_verifier_record(&normalised)?.is_some())
     }
 
     pub fn get_client_salt(&self, username: &str) -> Result<String, UserStoreError> {
@@ -301,6 +345,8 @@ impl UserStore {
         last_model: Option<String>,
         render_markdown: Option<bool>,
         autoplay_tts: Option<bool>,
+        web_search: Option<bool>,
+        voice_mode: Option<bool>,
     ) -> Result<(), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let mut users = self.load_users()?;
@@ -318,6 +364,12 @@ impl UserStore {
             if let Some(autoplay) = autoplay_tts {
                 record.autoplay_tts = autoplay;
             }
+            if let Some(web_search) = web_search {
+                record.web_search = web_search;
+            }
+            if let Some(voice_mode) = voice_mode {
+                record.voice_mode = voice_mode;
+            }
         } else {
             return Err(UserStoreError::Crypto("User not found".into()));
         }
@@ -329,7 +381,7 @@ impl UserStore {
     pub fn user_preferences(
         &self,
         username: &str,
-    ) -> Result<(Option<String>, Option<String>, bool, bool), UserStoreError> {
+    ) -> Result<(Option<String>, Option<String>, bool, bool, bool, bool), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let users = self.load_users()?;
 
@@ -339,9 +391,11 @@ impl UserStore {
                 record.last_model.clone(),
                 record.render_markdown,
                 record.autoplay_tts,
+                record.web_search,
+                record.voice_mode,
             ))
         } else {
-            Ok((None, None, true, false))
+            Ok((None, None, true, false, false, false))
         }
     }
 

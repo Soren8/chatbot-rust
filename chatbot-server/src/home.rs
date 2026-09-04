@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
@@ -14,7 +12,7 @@ use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
 
-pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net data:; style-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com 'unsafe-inline'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com blob: 'wasm-unsafe-eval'; media-src 'self' blob: data:";
+pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; require-trusted-types-for 'script'; trusted-types chatbot default; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
 
 #[derive(Serialize)]
@@ -27,8 +25,10 @@ struct FrontendModel {
 struct RestoredSession {
     /// Cookie pair ("session=...") of the freshly minted session.
     session_cookie: String,
-    /// Full Set-Cookie value for the rotated remember token.
+    /// Full Set-Cookie value for the rotated last-used remember token.
     remember_set_cookie: String,
+    /// Full Set-Cookie value for the rotated per-account remember token.
+    account_set_cookie: String,
 }
 
 /// Silent resume of a remembered session on app entry (`GET /`). After a
@@ -68,6 +68,10 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
             Some(RestoredSession {
                 session_cookie,
                 remember_set_cookie: remember_store::build_set_cookie(&replacement_token),
+                account_set_cookie: remember_store::build_account_set_cookie(
+                    &username,
+                    &replacement_token,
+                ),
             })
         }
         Ok(remember_store::ResumeOutcome::Invalid) => {
@@ -91,15 +95,24 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_owned());
 
+    let request_cookies = cookie_header.clone();
     let mut restored_cookies: Vec<String> = Vec::new();
     let mut cookie_header = cookie_header;
     if let Some(restored) = try_auto_restore(cookie_header.as_deref(), &ip) {
         cookie_header = Some(restored.session_cookie);
         restored_cookies.push(restored.remember_set_cookie);
+        restored_cookies.push(restored.account_set_cookie);
     }
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "home::get"))?;
+
+    if let Some(username) = bootstrap.username.as_deref() {
+        restored_cookies.extend(crate::chat_utils::promote_enc_key_cookies(
+            request_cookies.as_deref(),
+            username,
+        ));
+    }
 
     let logged_in = bootstrap.username.is_some();
     let user_details = resolve_user_details(bootstrap.username.as_deref());
@@ -115,7 +128,6 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         "rendering home template with config"
     );
 
-    let sri = config.cdn_sri.clone();
     let available_models = build_available_models(config.provider_names(), &user_details.tier, &config);
 
     let html = render_template(
@@ -124,7 +136,6 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         &available_models,
         &default_prompt,
         &bootstrap.csrf_token,
-        sri,
         save_thoughts,
         send_thoughts,
     )
@@ -147,6 +158,8 @@ struct UserDetails {
     last_model: Option<String>,
     render_markdown: bool,
     autoplay_tts: bool,
+    web_search: bool,
+    voice_mode: bool,
 }
 
 fn resolve_user_details(username: Option<&str>) -> UserDetails {
@@ -163,6 +176,8 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                         last_model: None,
                         render_markdown: true,
                         autoplay_tts: false,
+                        web_search: false,
+                        voice_mode: false,
                     };
                 }
             };
@@ -172,9 +187,9 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                 FREE_TIER.to_string()
             });
 
-            let (last_set, last_model, render_markdown, autoplay_tts) = store.user_preferences(name).unwrap_or_else(|err| {
+            let (last_set, last_model, render_markdown, autoplay_tts, web_search, voice_mode) = store.user_preferences(name).unwrap_or_else(|err| {
                  warn!(?err, "failed to load user preferences");
-                 (None, None, true, false)
+                 (None, None, true, false, false, false)
             });
 
             UserDetails {
@@ -184,6 +199,8 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
                 last_model,
                 render_markdown,
                 autoplay_tts,
+                web_search,
+                voice_mode,
             }
         }
         None => UserDetails {
@@ -193,6 +210,8 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
             last_model: None,
             render_markdown: true,
             autoplay_tts: false,
+            web_search: false,
+            voice_mode: false,
         },
     }
 }
@@ -229,7 +248,6 @@ fn render_template(
     available_models: &[FrontendModel],
     default_prompt: &str,
     csrf_token: &str,
-    sri: HashMap<String, String>,
     save_thoughts: bool,
     send_thoughts: bool,
 ) -> Result<String, minijinja::Error> {
@@ -243,10 +261,11 @@ fn render_template(
         last_model => user_details.last_model,
         render_markdown => user_details.render_markdown,
         autoplay_tts => user_details.autoplay_tts,
+        web_search => user_details.web_search,
+        voice_mode => user_details.voice_mode,
         available_llms => available_models,
         default_system_prompt => default_prompt,
         csrf_token => csrf_token,
-        sri => sri,
         save_thoughts => save_thoughts,
         send_thoughts => send_thoughts,
     })
@@ -328,6 +347,8 @@ mod tests {
             last_model: None,
             render_markdown: true,
             autoplay_tts: false,
+            web_search: false,
+            voice_mode: false,
         };
         let available_models = vec![FrontendModel {
             provider_name: "test-model".to_string(),
@@ -336,7 +357,6 @@ mod tests {
         }];
         let default_prompt = "system prompt";
         let csrf_token = "csrf";
-        let sri = HashMap::new();
         let save_thoughts = true;
         let send_thoughts = true;
 
@@ -346,7 +366,6 @@ mod tests {
             &available_models,
             default_prompt,
             csrf_token,
-            sri,
             save_thoughts,
             send_thoughts,
         )
