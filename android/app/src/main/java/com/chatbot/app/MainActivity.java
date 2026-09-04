@@ -25,6 +25,7 @@ import java.util.concurrent.Executor;
 import com.chatbot.app.Logger.LoggerPlugin;
 import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
+import com.chatbot.app.util.FileLogger;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.CapConfig;
 
@@ -37,6 +38,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        FileLogger.init(getApplicationContext());
         getWindow().setFlags(
             WindowManager.LayoutParams.FLAG_SECURE,
             WindowManager.LayoutParams.FLAG_SECURE

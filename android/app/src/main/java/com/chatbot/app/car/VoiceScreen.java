@@ -142,17 +142,33 @@ public class VoiceScreen extends Screen {
             FileLogger.log(TAG, "ERROR creating AudioRecord (permissions?)", se);
             setStatus("Mic permission missing");
             return;
+        } catch (Exception e) {
+            FileLogger.log(TAG, "ERROR creating AudioRecord", e);
+            setStatus("Audio init failed");
+            return;
         }
 
         if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
             FileLogger.log(TAG, "ERROR: AudioRecord not initialized state=" + audioRecord.getState());
-            audioRecord.release();
+            try {
+                audioRecord.release();
+            } catch (Exception ignored) {}
             audioRecord = null;
             setStatus("Audio init failed");
             return;
         }
 
-        audioRecord.startRecording();
+        try {
+            audioRecord.startRecording();
+        } catch (Exception e) {
+            FileLogger.log(TAG, "ERROR startRecording()", e);
+            try {
+                audioRecord.release();
+            } catch (Exception ignored) {}
+            audioRecord = null;
+            setStatus("Audio recording failed");
+            return;
+        }
         FileLogger.log(TAG, "AudioRecord.startRecording() called, audioSource=" + audioRecord.getAudioSource());
         captureRunning.set(true);
         setStatus("Listening…");
@@ -400,7 +416,20 @@ public class VoiceScreen extends Screen {
                 .setBufferSizeInBytes(1024 * 1024)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
-        track.play();
+        if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+            FileLogger.log(TAG, "playTts: track not initialized");
+            try { track.release(); } catch (Exception ignored) {}
+            conn.disconnect();
+            return;
+        }
+        try {
+            track.play();
+        } catch (Exception e) {
+            FileLogger.log(TAG, "playTts: track.play failed", e);
+            try { track.release(); } catch (Exception ignored) {}
+            conn.disconnect();
+            return;
+        }
 
         long total = 0;
         try (InputStream is = conn.getInputStream()) {
