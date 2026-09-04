@@ -170,3 +170,37 @@ fn page_js_does_not_touch_enc_key() {
         "getKeyForUsername must not unwrap IndexedDB or call native getKey"
     );
 }
+
+#[test]
+fn mobile_cached_login_requires_biometric_unlock() {
+    let src = include_str!("../../static/login.js");
+    let login_cached = src
+        .find("async function loginCachedAccount")
+        .expect("loginCachedAccount function");
+    let next = src[login_cached + 1..]
+        .find("async function ")
+        .map(|i| login_cached + 1 + i)
+        .unwrap_or(src.len());
+    let body = &src[login_cached..next];
+    assert!(
+        body.contains("unlockCachedLogin"),
+        "mobile cached login must prompt biometric unlock via NativeSecureKey before /login/remember"
+    );
+
+    let plugin_src = include_str!("../../android/app/src/main/java/com/chatbot/app/NativeSecureKey/NativeSecureKeyPlugin.java");
+    assert!(
+        plugin_src.contains("unlockCachedLogin") && plugin_src.contains("sealCachedCredentials"),
+        "NativeSecureKeyPlugin must support unlockCachedLogin and sealCachedCredentials"
+    );
+
+    let main_activity_src = include_str!("../../android/app/src/main/java/com/chatbot/app/MainActivity.java");
+    assert!(
+        main_activity_src.contains("FLAG_SECURE"),
+        "MainActivity must set FLAG_SECURE to prevent app switcher leaks"
+    );
+    assert!(
+        main_activity_src.contains("RESUME_LOCK_GRACE_MS"),
+        "MainActivity must enforce 1-minute resume lock grace period"
+    );
+}
+

@@ -13,11 +13,15 @@ import androidx.biometric.BiometricPrompt;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.FragmentActivity;
 
+import android.webkit.CookieManager;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+
+import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -39,6 +43,8 @@ public class NativeSecureKeyPlugin extends Plugin {
     private static final String PREFS = "chatbot_secure_key";
     private static final String PREF_IV = "wrapped_iv";
     private static final String PREF_DATA = "wrapped_data";
+    private static final String PREF_CREDS_IV = "wrapped_creds_iv";
+    private static final String PREF_CREDS_DATA = "wrapped_creds_data";
     private static final String KEY_ALIAS = "chatbot_native_secure_key_v3";
     private static final String LEGACY_KEY_ALIAS_V2 = "chatbot_native_secure_key_v2";
     private static final String LEGACY_KEY_ALIAS = "chatbot_native_secure_key";
@@ -63,6 +69,22 @@ public class NativeSecureKeyPlugin extends Plugin {
 
     private String prefKey(String base, String account) {
         return base + accountSlot(account);
+    }
+
+    private String resolveServerUrl() {
+        String url = null;
+        try {
+            url = getContext().getString(R.string.server_url);
+        } catch (Exception ignored) {}
+        if (url == null || url.isEmpty()) {
+            if (getBridge() != null && getBridge().getServerUrl() != null) {
+                url = getBridge().getServerUrl();
+            }
+        }
+        if (url == null || url.isEmpty()) {
+            url = "http://localhost";
+        }
+        return url;
     }
 
     @PluginMethod
@@ -201,20 +223,215 @@ public class NativeSecureKeyPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void sealCachedCredentials(PluginCall call) {
+        String account = call.getString("account");
+        if (account == null || account.isEmpty()) {
+            call.reject("account is required");
+            return;
+        }
+        try {
+            removeLegacyKeyIfPresent();
+            migrateFromV2IfNeeded();
+            String serverUrl = resolveServerUrl();
+            CookieManager cm = CookieManager.getInstance();
+            String cookieHeader = cm.getCookie(serverUrl);
+            String rememberVal = null;
+            String encKeyVal = null;
+            if (cookieHeader != null) {
+                String rememberKey = "remember-" + account;
+                String encKeyName = "enc_key-" + account;
+                for (String part : cookieHeader.split(";")) {
+                    String[] kv = part.trim().split("=", 2);
+                    if (kv.length == 2) {
+                        String k = kv[0].trim();
+                        String v = kv[1].trim();
+                        if (k.equals(rememberKey) || (rememberVal == null && k.equals("remember"))) {
+                            rememberVal = v;
+                        }
+                        if (k.equals(encKeyName) || (encKeyVal == null && k.equals("enc_key"))) {
+                            encKeyVal = v;
+                        }
+                    }
+                }
+            }
+            if (encKeyVal == null) {
+                encKeyVal = unlockedKeys.get(account);
+            }
+            if (rememberVal == null && encKeyVal == null) {
+                Log.w(TAG, "no credentials found in CookieManager to seal for " + account);
+                JSObject result = new JSObject();
+                result.put("sealed", false);
+                call.resolve(result);
+                return;
+            }
+            JSONObject payload = new JSONObject();
+            payload.put("account", account);
+            payload.put("remember", rememberVal != null ? rememberVal : "");
+            payload.put("enc_key", encKeyVal != null ? encKeyVal : "");
+
+            SecretKey secretKey = getOrCreateKey();
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+            byte[] iv = cipher.getIV();
+            byte[] encrypted = cipher.doFinal(payload.toString().getBytes(StandardCharsets.UTF_8));
+
+            prefs().edit()
+                    .putString(prefKey(PREF_CREDS_IV, account), Base64.encodeToString(iv, Base64.NO_WRAP))
+                    .putString(prefKey(PREF_CREDS_DATA, account), Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                    .apply();
+
+            Log.i(TAG, "sealed cached credentials into keystore for account=" + account);
+            JSObject result = new JSObject();
+            result.put("sealed", true);
+            call.resolve(result);
+        } catch (Exception e) {
+            Log.e(TAG, "failed to seal cached credentials", e);
+            call.reject("failed to seal cached credentials", e);
+        }
+    }
+
+    @PluginMethod
+    public void unlockCachedLogin(PluginCall call) {
+        String account = call.getString("account");
+        if (account == null || account.isEmpty()) {
+            call.reject("account is required");
+            return;
+        }
+        String ivPref = prefKey(PREF_CREDS_IV, account);
+        String dataPref = prefKey(PREF_CREDS_DATA, account);
+        SharedPreferences prefs = prefs();
+        String ivB64 = prefs.getString(ivPref, null);
+        String dataB64 = prefs.getString(dataPref, null);
+        if (ivB64 == null || dataB64 == null) {
+            Log.i(TAG, "no sealed credentials for account=" + account);
+            JSObject result = new JSObject();
+            result.put("unlocked", false);
+            result.put("reason", "no_credentials");
+            call.resolve(result);
+            return;
+        }
+        call.setKeepAlive(true);
+        FragmentActivity activity = getActivity();
+        if (activity == null) {
+            call.reject("activity unavailable");
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            Runnable decryptAndInject = () -> {
+                try {
+                    removeLegacyKeyIfPresent();
+                    migrateFromV2IfNeeded();
+                    SecretKey secretKey = getOrCreateKey();
+                    Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                    byte[] iv = Base64.decode(ivB64, Base64.NO_WRAP);
+                    cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(128, iv));
+                    byte[] decrypted = cipher.doFinal(Base64.decode(dataB64, Base64.NO_WRAP));
+                    JSONObject payload = new JSONObject(new String(decrypted, StandardCharsets.UTF_8));
+                    String rememberVal = payload.optString("remember", "");
+                    String encKeyVal = payload.optString("enc_key", "");
+
+                    String serverUrl = resolveServerUrl();
+                    CookieManager cm = CookieManager.getInstance();
+                    if (!rememberVal.isEmpty()) {
+                        cm.setCookie(serverUrl, "remember-" + account + "=" + rememberVal + "; Path=/; SameSite=Strict; HttpOnly");
+                        cm.setCookie(serverUrl, "remember=" + rememberVal + "; Path=/; SameSite=Strict; HttpOnly");
+                    }
+                    if (!encKeyVal.isEmpty()) {
+                        cm.setCookie(serverUrl, "enc_key-" + account + "=" + encKeyVal + "; Path=/; SameSite=Strict; HttpOnly");
+                        cm.setCookie(serverUrl, "enc_key=" + encKeyVal + "; Path=/; SameSite=Strict; HttpOnly");
+                        unlockedKeys.put(account, encKeyVal);
+                    }
+                    cm.flush();
+
+                    Log.i(TAG, "unlocked and injected cached credentials for account=" + account);
+                    JSObject result = new JSObject();
+                    result.put("unlocked", true);
+                    call.setKeepAlive(false);
+                    call.resolve(result);
+                } catch (Exception e) {
+                    Log.e(TAG, "failed to decrypt cached credentials", e);
+                    call.setKeepAlive(false);
+                    call.reject("failed to decrypt cached credentials", e);
+                }
+            };
+
+            if (!canPromptForBiometric()) {
+                Log.i(TAG, "biometric prompt unavailable; performing keystore-only unlock");
+                decryptAndInject.run();
+                return;
+            }
+            promptForUnlock(activity, () -> decryptAndInject.run(), call);
+        });
+    }
+
+    @PluginMethod
+    public void purgeCachedCookies(PluginCall call) {
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            String serverUrl = resolveServerUrl();
+            String cookieHeader = cm.getCookie(serverUrl);
+            if (cookieHeader != null) {
+                for (String part : cookieHeader.split(";")) {
+                    String[] kv = part.trim().split("=", 2);
+                    if (kv.length >= 1) {
+                        String name = kv[0].trim();
+                        if (name.startsWith("remember") || name.startsWith("enc_key")) {
+                            cm.setCookie(serverUrl, name + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+                        }
+                    }
+                }
+                cm.flush();
+            }
+            JSObject res = new JSObject();
+            res.put("purged", true);
+            call.resolve(res);
+        } catch (Exception e) {
+            Log.w(TAG, "failed to purge cached cookies", e);
+            call.reject("failed to purge cached cookies", e);
+        }
+    }
+
+    @PluginMethod
     public void clearKey(PluginCall call) {
         String account = call.getString("account");
         if (account != null && !account.isEmpty()) {
             prefs().edit()
                     .remove(prefKey(PREF_IV, account))
                     .remove(prefKey(PREF_DATA, account))
+                    .remove(prefKey(PREF_CREDS_IV, account))
+                    .remove(prefKey(PREF_CREDS_DATA, account))
                     .apply();
             unlockedKeys.remove(account);
+            try {
+                CookieManager cm = CookieManager.getInstance();
+                String serverUrl = resolveServerUrl();
+                cm.setCookie(serverUrl, "remember-" + account + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+                cm.setCookie(serverUrl, "enc_key-" + account + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+                cm.flush();
+            } catch (Exception ignored) {}
             call.resolve(new JSObject());
             return;
         }
         // Full wipe: every account slot plus the keystore wrapping key.
         prefs().edit().clear().apply();
         unlockedKeys.clear();
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            String serverUrl = resolveServerUrl();
+            String cookieHeader = cm.getCookie(serverUrl);
+            if (cookieHeader != null) {
+                for (String part : cookieHeader.split(";")) {
+                    String[] kv = part.trim().split("=", 2);
+                    if (kv.length >= 1) {
+                        String name = kv[0].trim();
+                        if (name.startsWith("remember") || name.startsWith("enc_key")) {
+                            cm.setCookie(serverUrl, name + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+                        }
+                    }
+                }
+                cm.flush();
+            }
+        } catch (Exception ignored) {}
         try {
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);

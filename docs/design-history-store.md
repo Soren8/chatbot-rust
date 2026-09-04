@@ -108,7 +108,7 @@ From [`docs/design-privacy.md`](design-privacy.md):
 
 - Strict Private Mode: client-derived key, per-request `X-Enc-Key`, server never persists data key.
 - Only HMAC key verifier on server.
-- Ciphertext at rest; session cache ciphertext-only between requests.
+- Ciphertext at rest (redb); in-memory cache temporarily holds decrypted working snapshots during active requests to feed LLM context, evicted/wiped from RAM after an idle TTL.
 - **Set names are sensitive** — not plaintext filenames, not unencrypted index keys.
 
 ---
@@ -193,7 +193,7 @@ chatbot-core/src/
       mod.rs                # trait HistoryStore + RedbHistoryStore (crate-private)
       keys.rs               # key encoding (UUID bytes, no display names)
       tables.rs             # redb table definitions
-    cache.rs                # optional ciphertext cache keyed (user_id, set_id)
+    cache.rs                # process-local decrypted snapshot cache with TTL eviction keyed (user_id, set_id)
     migration.rs            # sets.json → redb
     ops.rs                  # pure functions: append_pair, delete_pair, regenerate apply (on snapshots)
   session.rs                # uses history::api; drops free-form history mutation helpers over time

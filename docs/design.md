@@ -70,8 +70,8 @@ This document captures the current architecture of the project and the potential
   - [ ] Implement hybrid chat-history encryption:
         - [x] Derive a per-user data key from a user-supplied passphrase.
         - [x] Encrypt set names and metadata on disk to prevent leakage of conversation identifiers.
-        - [x] Per-request key transport: HttpOnly `enc_key` / `enc_key-{username}` cookies (or `X-Enc-Key` for tests); server validates against HMAC verifier and keeps ciphertext-only in-memory cache. Page JS does not unwrap or send the key.
-        - [x] Default client storage is those HttpOnly cookies. IndexedDB holds cached usernames for the login dropdown only (not the data key). WebAuthn PRF / Android Keystore wrapping is not on the request path. (iOS still open below.)
+        - [x] Per-request key transport: HttpOnly `enc_key` / `enc_key-{username}` cookies (or `X-Enc-Key` for tests); server validates against HMAC verifier. End-to-end encryption is guaranteed for data persisted to disk (redb); plaintext is held in RAM during active requests (required for LLM interaction) and cached snapshots are wiped after an idle TTL. Page JS does not unwrap or send the key.
+        - [x] Default client storage is those HttpOnly cookies (IndexedDB holds cached usernames for the login dropdown only; WebAuthn PRF is not on the request path). On mobile, cached credentials are sealed in Android Keystore at rest, requiring biometric unlock before cached login. (iOS still open below.)
         - [ ] WebAuthn PRF as the **default** web wrap — not viable yet; many desktops lack Touch ID / Windows Hello / a security key. Keep Option 3 opt-in. PRF = Pseudo-Random Function (authenticator-side keyed hash).
         - [ ] iOS Keychain plugin mirroring `NativeSecureKey` when the iOS Capacitor target is added.
         - [ ] Allow optional registration of multiple hardware authenticators

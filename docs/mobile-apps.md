@@ -171,7 +171,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 ### Key cache & biometrics
 
-The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies (same as the browser). Page JS does not call `NativeSecureKey.getKey` on the request path. `deriveKeyFromPassword` is used at password login only. Clearing app storage removes WebView cookies, so cached decrypt needs a password login again. Plugin changes always require an APK rebuild; JS/template changes come from the server.
+The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies. Page JS does not call `NativeSecureKey.getKey` on the request path, and never handles the raw Fernet key. `deriveKeyFromPassword` is used at password login only. On mobile, cached credentials (`remember-{username}` and `enc_key-{username}`) are sealed in hardware-backed Android Keystore at rest. When logging in with cached credentials, `NativeSecureKey.unlockCachedLogin` prompts biometric authentication (`BiometricPrompt` with device PIN fallback) before native injects the cookies into `CookieManager`. Active logged-in sessions enforce a 1-minute resume lock with `FLAG_SECURE` (bypassed when `VoiceModeForegroundSession` is active). Clearing app storage or forgetting an account removes the Keystore entries and cookies. Plugin changes always require an APK rebuild; JS/template changes come from the server.
 
 ---
 

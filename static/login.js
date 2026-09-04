@@ -161,6 +161,20 @@ function applyAccountMode() {
 /// mints the session. The HttpOnly enc_key-{user} cookie is promoted to
 /// enc_key by the server — JS must not send the Fernet key.
 async function loginCachedAccount() {
+  const username = $('#saved-account-select').val();
+  if (window.NativeBridge && window.NativeBridge.isNativePlatform() && username) {
+    try {
+      const res = await window.NativeBridge.callNativePlugin('NativeSecureKey', 'unlockCachedLogin', {
+        account: username,
+      });
+      if (!res || !res.unlocked) {
+        return false;
+      }
+    } catch (err) {
+      console.debug('native biometric unlock failed', err);
+      return false;
+    }
+  }
   return loginRememberedAccount();
 }
 
@@ -188,6 +202,15 @@ async function loginRememberedAccount() {
   }
   if (window.EncKey && window.EncKey.touchSlot) {
     window.EncKey.touchSlot(username);
+  }
+  if (window.NativeBridge && window.NativeBridge.isNativePlatform()) {
+    try {
+      await window.NativeBridge.callNativePlugin('NativeSecureKey', 'sealCachedCredentials', {
+        account: username,
+      });
+    } catch (e) {
+      console.debug('failed to seal rotated credentials', e);
+    }
   }
   window.location.href = '/';
   return true;
@@ -222,6 +245,9 @@ function renderSavedAccountSelect() {
 }
 
 $(function() {
+  if (window.NativeBridge && window.NativeBridge.isNativePlatform()) {
+    window.NativeBridge.callNativePlugin('NativeSecureKey', 'purgeCachedCookies').catch(function () {});
+  }
   const purge = (window.EncKey && window.EncKey.purgeNonRememberedSlots)
     ? window.EncKey.purgeNonRememberedSlots()
     : Promise.resolve();
@@ -353,6 +379,15 @@ $(function() {
         return;
       }
       const rememberChecked = $('#remember_me').is(':checked');
+      if (window.NativeBridge && window.NativeBridge.isNativePlatform() && rememberChecked) {
+        try {
+          await window.NativeBridge.callNativePlugin('NativeSecureKey', 'sealCachedCredentials', {
+            account: username,
+          });
+        } catch (e) {
+          console.debug('failed to seal cached credentials in keystore', e);
+        }
+      }
       try {
         await window.EncKey.storeFromLogin(derivedKey, 'indexeddb', username, rememberChecked);
         const ok = await window.EncKey.verifyStoredKey(derivedKey, username);

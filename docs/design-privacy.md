@@ -72,21 +72,29 @@ The server validates the presented key against a per-user **key verifier** (HMAC
 | XSS reading the Fernet key from JS | Enc-key cookies are HttpOnly. Page JS does not unwrap or send the key. XSS can still scrape already-decrypted chat in the DOM. |
 | XSS exporting login to another machine | Remember and enc-key cookies are HttpOnly (XSS cannot copy those). There is no `/login/keyauth`; the Fernet key is not a login credential. |
 | Full browser profile theft | Cookie jar + profile copy still wins. |
-| Server compromise while user idle | No standing key in session record or plaintext cache; only ciphertext on disk and in memory. |
+| Server compromise while user idle | Data persisted to disk is guaranteed end-to-end encrypted (AEAD ciphertext). In RAM, plaintext working snapshots are evicted and wiped after the idle TTL expires. Server stores no standing master key. |
 
-### Server-side cache (ciphertext-only)
+### In-Memory Plaintext Handling & RAM Lifecycle
 
-The in-memory `SessionStore` retains Fernet ciphertext blobs for history, memory, and system prompt — never decrypted plaintext across requests. Each request decrypts the working set with the presented key, processes the request, re-encrypts into the cache, and zeroizes plaintext. A hijacked cookie without the key sees only ciphertext.
+End-to-end encryption is guaranteed for all data **persisted to disk** (stored in `redb` as AEAD ciphertext via `HistoryService`).
+
+In contrast, **plaintext in memory is required during requests**, because LLM backends (both local inference engines and upstream APIs) cannot interact with or process ciphertext. When generating completions or assembling prompt context, chat history, memories, and system instructions must exist unencrypted in RAM.
+
+To balance performance with security:
+- The server maintains a process-local working snapshot cache (`SetCache` in `chatbot-core/src/history/cache.rs`) that temporarily holds decrypted snapshots (`SetSnapshot`) for active sets, avoiding repeated AEAD decrypt operations on hot paths.
+- Plaintext data is **wiped from RAM after a period of time**: entries in `SetCache` expire and are evicted after an idle time-to-live (TTL, default 1 hour) or when cache capacity (default 256 sets) is reached.
+- The single durable source of truth is always the encrypted ciphertext in `redb`.
+- The session state (`SessionStore`) holds session metadata and a sealed working mirror; it does not retain standing encryption keys or permanent plaintext history. The user's derived encryption key is zeroized after request execution and validated per-request against an HMAC-SHA256 key verifier.
 
 ### Client-side key storage tiers
 
 | Tier | Platform | UX | Protection |
 | :--- | :--- | :--- | :--- |
-| **Option 2 (default web and native)** | Browser and Capacitor | Zero extra steps after login | HttpOnly `enc_key` plus per-account `enc_key-{username}` (`SameSite=Strict`, same max-age as remember). IndexedDB stores account names for the login dropdown only. |
+| **Option 2 (default web)** | Browser | Zero extra steps after login | HttpOnly `enc_key` plus per-account `enc_key-{username}` (`SameSite=Strict`, same max-age as remember). IndexedDB stores account names for the login dropdown only. |
 | **Option 3 (opt-in web)** | Browser with WebAuthn PRF (Pseudo-Random Function: authenticator HMACs a salt with a credential-bound secret) | One biometric/PIN per unlock (manual opt-in) | Not on the request path while page JS must not hold the data key. |
-| **Option 4 (native keystore)** | Capacitor Android | — | Not on the request path; WebView sends the same HttpOnly cookies as the browser. iOS Keychain plugin still open when the iOS target ships. |
+| **Option 4 (native keystore)** | Capacitor Android | One biometric/PIN unlock when logging in from cached credentials; 1-minute resume lock on backgrounded sessions | Android Keystore hardware-backed AES/GCM wrap for cached credentials (`NativeSecureKey` plugin). Plaintext cookies purged at rest from the WebView jar; injected on biometric unlock. Zero prompts during active session. iOS Keychain plugin still open when the iOS target ships. |
 
-Browsers grant secure context (required for Web Crypto key derivation) for https:// origins and http://localhost (or 127.0.0.1). Plain HTTP to other LAN hostnames or IPs will not allow client-side key derivation; login then falls back to server-side derivation. The native Capacitor app loads over plain HTTP and derives the key via the `NativeSecureKey` plugin at password login only (`deriveKeyFromPassword`); the data key is then stored in HttpOnly cookies, not returned to JS on later requests.
+Browsers grant secure context (required for Web Crypto key derivation) for https:// origins and http://localhost (or 127.0.0.1). Plain HTTP to other LAN hostnames or IPs will not allow client-side key derivation; login then falls back to server-side derivation. The native Capacitor app loads over plain HTTP and derives the key via the `NativeSecureKey` plugin at password login only (`deriveKeyFromPassword`). On mobile, cached credentials (`remember` and `enc_key`) are sealed into Android Keystore; cached login prompts biometric unlock (`BiometricPrompt` with device PIN fallback) before native injects the cookies into `CookieManager`. Active logged-in sessions enforce a 1-minute resume lock with `FLAG_SECURE` (bypassed when background voice mode is running).
 
 For LAN/browser development with full Private Mode support, use Tailscale Serve (or equivalent) to terminate TLS on your node with publicly-trusted certs, or access via http://localhost. See the development notes in README.md.
 
