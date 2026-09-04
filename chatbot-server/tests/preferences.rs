@@ -94,8 +94,9 @@ async fn preferences_persistence() {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
         .expect("csrf token meta");
 
-    // Update preferences
-    let update_resp = app
+    let enc_key = common::derive_encryption_key_header(username, password);
+
+    let denied = app
         .clone()
         .oneshot(
             Request::builder()
@@ -105,9 +106,35 @@ async fn preferences_persistence() {
                 .header("X-CSRF-Token", &csrf_token)
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_vec(&json!({
+                    "web_search": true
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.status(),
+        StatusCode::UNAUTHORIZED,
+        "preferences require the encryption key"
+    );
+
+    // Update preferences
+    let update_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/update_preferences")
+                .header(header::COOKIE, &cookie)
+                .header("X-CSRF-Token", &csrf_token)
+                .header("X-Enc-Key", &enc_key)
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({
                     "last_set": "my-set",
                     "last_model": "gpt-4",
-                    "render_markdown": false
+                    "render_markdown": false,
+                    "web_search": true,
+                    "voice_mode": true
                 })).unwrap()))
                 .unwrap(),
         )
@@ -131,4 +158,6 @@ async fn preferences_persistence() {
     assert!(body_str.contains(r#"lastSet": "my-set"#));
     assert!(body_str.contains(r#"lastModel": "gpt-4"#));
     assert!(body_str.contains(r#"renderMarkdown": false"#));
+    assert!(body_str.contains(r#"webSearch": true"#));
+    assert!(body_str.contains(r#"voiceMode": true"#));
 }

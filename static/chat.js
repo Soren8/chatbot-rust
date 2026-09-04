@@ -11,6 +11,21 @@ window.nativeLog = function(tag, msg) {
   }
 };
 
+function ttHtml(html) {
+  if (html == null || typeof html !== 'string') {
+    return html;
+  }
+  if (window.__chatbotTt && typeof window.__chatbotTt.createHTML === 'function') {
+    return window.__chatbotTt.createHTML(html);
+  }
+  return html;
+}
+// ttHtml is only for direct element.innerHTML sinks (they accept TrustedHTML).
+// Never feed ttHtml output into jQuery setters: jQuery 3.6.0's .html() treats
+// TrustedHTML as a non-node object and empties the element instead of
+// rendering it. jQuery/vendor .html(string) calls rely on the identity
+// `default` Trusted-Types policy registered in static/tt.js.
+
 // Ensure config exists before any DOM-ready handlers use it
 try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
@@ -29,6 +44,8 @@ try {
         sendThoughts: cfg && cfg.sendThoughts !== undefined ? cfg.sendThoughts : false,
         renderMarkdown: cfg && cfg.renderMarkdown !== undefined ? cfg.renderMarkdown : true,
         autoplayTTS: cfg && cfg.autoplayTTS !== undefined ? cfg.autoplayTTS : false,
+        webSearch: cfg && cfg.webSearch !== undefined ? cfg.webSearch : false,
+        voiceMode: cfg && cfg.voiceMode !== undefined ? cfg.voiceMode : false,
         lastSet: (cfg && cfg.lastSet) || null,
         lastModel: (cfg && cfg.lastModel) || null,
       };
@@ -40,7 +57,7 @@ try {
       });
       window.DEFAULT_SYSTEM_PROMPT = (cfg && cfg.defaultSystemPrompt) || window.DEFAULT_SYSTEM_PROMPT || '';
     } else {
-      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true, autoplayTTS: false };
+      window.APP_DATA = { userTier: 'free', availableModels: [], loggedIn: false, saveThoughts: true, sendThoughts: false, renderMarkdown: true, autoplayTTS: false, webSearch: false, voiceMode: false };
       window.DEFAULT_SYSTEM_PROMPT = window.DEFAULT_SYSTEM_PROMPT || '';
     }
   }
@@ -61,6 +78,10 @@ try {
     }
   } catch (_) {}
 } catch (e) { /* no-op */ }
+
+if (window.EncKey && window.EncKey.purgeNonRememberedSlots && (!window.APP_DATA || !window.APP_DATA.loggedIn)) {
+  window.EncKey.purgeNonRememberedSlots();
+}
 
 // ── Native Mic Bridge ────────────────────────────────────────────────────────
 (function() {
@@ -148,6 +169,14 @@ try {
 const SESSION_EXPIRED_SEND_MSG =
   'Session expired or unauthorized. Your message was not sent — it is still in the input box.';
 
+function redirectHomeOnAuthFailure() {
+  if (window.APP_DATA && window.APP_DATA.loggedIn) {
+    return false;
+  }
+  window.location.href = '/';
+  return true;
+}
+
 const originalFetch = window.fetch;
 window.fetch = function(input, init) {
   return originalFetch.apply(this, arguments).then(response => {
@@ -166,6 +195,7 @@ window.fetch = function(input, init) {
         url.includes('/rename_set') ||
         url.includes('/update_memory') ||
         url.includes('/update_system_prompt') ||
+        url.includes('/update_preferences') ||
         url.includes('/delete_message') ||
         url.includes('/reset_chat') ||
         url.includes('/history_pair') ||
@@ -173,7 +203,9 @@ window.fetch = function(input, init) {
       )) {
         return response;
       }
-      window.location.href = '/login';
+      if (!redirectHomeOnAuthFailure()) {
+        return response;
+      }
       throw new Error('Session expired');
     }
     return response;
@@ -193,12 +225,84 @@ try {
   }
 } catch (e) { /* no-op */ }
 
-function syncHistoryImageEncCookie(encKey) {
-  if (!encKey) return;
-  var secure = (window.location.protocol === 'https:') ? '; Secure' : '';
-  document.cookie = 'hist_enc_key=' + encodeURIComponent(encKey)
-    + '; Path=/history_image; SameSite=Strict' + secure;
+// Silent session restore after a server restart: bootstrap a fresh guest
+// session (GET /login) for a CSRF token the dead page cannot produce,
+// exchange the HttpOnly remember cookie (POST /login/remember), then adopt
+// the restored session's CSRF token so same-page requests keep validating.
+// Concurrent callers share one attempt. Resolves to a boolean.
+var sessionRefreshPromise = null;
+function refreshSession() {
+  if (!window.APP_DATA || !window.APP_DATA.loggedIn) {
+    return Promise.resolve(false);
+  }
+  if (sessionRefreshPromise) {
+    return sessionRefreshPromise;
+  }
+  sessionRefreshPromise = originalFetch('/login')
+    .then(function (resp) {
+      if (!resp.ok) {
+        throw new Error('session bootstrap failed');
+      }
+      return resp.text();
+    })
+    .then(function (html) {
+      var match = html.match(/name="csrf_token" value="([^"]+)"/);
+      if (!match) {
+        throw new Error('csrf token not found');
+      }
+      return originalFetch('/login/remember', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'csrf_token=' + encodeURIComponent(match[1]),
+      });
+    })
+    .then(function (resp) {
+      if (!resp.ok) {
+        return false;
+      }
+      return resp.json().then(function (data) {
+        if (data && data.csrf_token) {
+          window.CSRF_TOKEN = data.csrf_token;
+          var meta = document.querySelector('meta[name="csrf-token"]');
+          if (meta) {
+            meta.setAttribute('content', data.csrf_token);
+          }
+          return true;
+        }
+        return false;
+      });
+    })
+    .catch(function () {
+      return false;
+    });
+  sessionRefreshPromise.finally(function () { sessionRefreshPromise = null; });
+  return sessionRefreshPromise;
 }
+
+// Rebuild a cached fetch init's X-CSRF-Token header after a session
+// refresh (headers were snapshotted by withCsrf at call time).
+function refreshCsrfInit(init) {
+  if (!init || !init.headers || !window.CSRF_TOKEN) {
+    return init;
+  }
+  var fresh = Object.assign({}, init);
+  var copy;
+  if (typeof Headers !== 'undefined' && init.headers instanceof Headers) {
+    copy = {};
+    init.headers.forEach(function (value, key) { copy[key] = value; });
+  } else {
+    copy = Object.assign({}, init.headers);
+  }
+  Object.keys(copy).forEach(function (key) {
+    if (key.toLowerCase() === 'x-csrf-token') {
+      copy[key] = window.CSRF_TOKEN;
+    }
+  });
+  fresh.headers = copy;
+  return fresh;
+}
+
+
 
 function historyImageUrl(pairIndex, imageIndex) {
   var setId = (window.APP_DATA && window.APP_DATA.lastSetId) || '';
@@ -249,7 +353,7 @@ function fetchVoiceRetry(url, buildOptions, attempts) {
     return fetch(url, opts).then(function (res) {
       if (res.ok) return res;
       if (res.status === 401) {
-        window.location.href = '/login';
+        redirectHomeOnAuthFailure();
         throw new Error('Session expired');
       }
       if (n > 1 && isRetryableVoiceStatus(res.status)) {
@@ -274,13 +378,6 @@ function withCsrf(headers) {
   if (window.CSRF_TOKEN) {
     result['X-CSRF-Token'] = window.CSRF_TOKEN;
   }
-  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
-    var encKey = window.EncKey.getKeyForRequestSync();
-    if (encKey) {
-      result['X-Enc-Key'] = encKey;
-      syncHistoryImageEncCookie(encKey);
-    }
-  }
   return result;
 }
 
@@ -288,13 +385,6 @@ async function withCsrfAsync(headers) {
   var result = headers ? Object.assign({}, headers) : {};
   if (window.CSRF_TOKEN) {
     result['X-CSRF-Token'] = window.CSRF_TOKEN;
-  }
-  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
-    var encKey = await window.EncKey.getKeyForRequest();
-    if (encKey) {
-      result['X-Enc-Key'] = encKey;
-      syncHistoryImageEncCookie(encKey);
-    }
   }
   return result;
 }
@@ -523,16 +613,6 @@ function submitResetChat(isRetry) {
     .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
 }
 
-function preloadEncryptionKey() {
-  if (!window.APP_DATA || !window.APP_DATA.loggedIn || !window.EncKey) {
-    return Promise.resolve(null);
-  }
-  return window.EncKey.getKeyForRequest().catch(function(err) {
-    console.debug('encryption key preload failed', err);
-    return null;
-  });
-}
-
 function showEncKeyGateLoading(message) {
   var $encGate = $('#enc-key-gate');
   if (!$encGate.length) {
@@ -541,7 +621,7 @@ function showEncKeyGateLoading(message) {
   $encGate.removeClass('d-none');
   $('#enc-key-gate-spinner').show();
   $('#enc-key-gate-actions').addClass('d-none');
-  $encGate.find('.enc-key-gate-message').text(message || 'Loading encryption key…');
+  $encGate.find('.enc-key-gate-message').text(message || 'Loading your sets…');
 }
 
 function showEncKeyGateError(err) {
@@ -566,41 +646,62 @@ function hideEncKeyGate() {
   $('#enc-key-gate').addClass('d-none');
 }
 
-function beginEncKeyUnlockFlow() {
-  if (window.EncKey && window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
-    showEncKeyGateLoading('Confirm with fingerprint or device PIN…');
-  } else {
-    showEncKeyGateLoading('Loading encryption key…');
+var encKeyUnlockInFlight = null;
+var ENC_GATE_RELOADS_KEY = 'chatbot_enc_gate_reloads';
+function beginEncKeyUnlockFlow(fromUser) {
+  if (encKeyUnlockInFlight) {
+    return encKeyUnlockInFlight;
   }
-  return waitForEncryptionKey()
+  if (!fromUser) {
+    var reloads = 0;
+    try {
+      reloads = parseInt(sessionStorage.getItem(ENC_GATE_RELOADS_KEY) || '0', 10) || 0;
+    } catch (e) {}
+    if (reloads >= 2) {
+      showEncKeyGateError(new Error('Could not load your chats. Sign out and log in with your password.'));
+      return Promise.reject(new Error('enc-key gate stopped after repeated failures'));
+    }
+    try {
+      sessionStorage.setItem(ENC_GATE_RELOADS_KEY, String(reloads + 1));
+    } catch (e) {}
+  }
+  showEncKeyGateLoading('Loading your sets…');
+  encKeyUnlockInFlight = Promise.resolve()
     .then(function() {
       if (typeof window.loadChatSets !== 'function') {
         throw new Error('Chat is still starting. Try again.');
       }
-      showEncKeyGateLoading('Loading your sets…');
       return window.loadChatSets();
     })
     .then(function() {
+      try { sessionStorage.removeItem(ENC_GATE_RELOADS_KEY); } catch (e) {}
       hideEncKeyGate();
     })
     .catch(function(err) {
       console.error('encryption key unavailable on chat load', err);
       showEncKeyGateError(err);
       throw err;
+    })
+    .finally(function() {
+      encKeyUnlockInFlight = null;
     });
+  return encKeyUnlockInFlight;
+}
+
+async function response401Message(response) {
+  try {
+    var body = await response.clone().json();
+    return (body.error || body.message || '').toString();
+  } catch (_) {
+    return '';
+  }
 }
 
 async function response401Kind(response) {
   if (response.status !== 401) {
     return null;
   }
-  var body = {};
-  try {
-    body = await response.clone().json();
-  } catch (_) {
-    return 'session';
-  }
-  var msg = (body.error || body.message || '').toString();
+  var msg = await response401Message(response);
   if (/encryption key|unlock|invalid encryption key/i.test(msg)) {
     return 'enc_key';
   }
@@ -610,93 +711,64 @@ async function response401Kind(response) {
 async function handle401OrRetry(response, retryFn) {
   var kind = await response401Kind(response);
   if (kind === 'enc_key') {
-    var unlocked = await ensureEncryptionKeyUnlocked();
-    if (unlocked && retryFn) {
-      return retryFn();
-    }
-    throw new Error('Encryption key required. Please unlock.');
+    throw new Error(
+      (await response401Message(response)) ||
+        'Could not unlock chats. Sign out and log in with your password.'
+    );
   }
   if (response.status === 401) {
-    window.location.href = '/login';
-    throw new Error('Session expired');
-  }
-  return response;
-}
-
-async function ensureEncryptionKeyUnlocked() {
-  if (!window.APP_DATA || !window.APP_DATA.loggedIn || !window.EncKey) {
-    return null;
-  }
-  var existing = window.EncKey.getKeyForRequestSync();
-  if (existing) {
-    return existing;
-  }
-  return window.EncKey.getKeyForRequest();
-}
-
-async function waitForEncryptionKey() {
-  if (!window.EncKey) {
-    throw new Error('Encryption key unavailable. Sign out and log in again.');
-  }
-  if (window.EncKey.lock) {
-    window.EncKey.lock();
-  }
-  var key = await window.EncKey.getKeyForRequest();
-  if (key) {
-    return key;
-  }
-  throw new Error('Encryption key unavailable. Sign out and log in again.');
-}
-
-async function fetchWithEncKey(input, init, retryOnUnlock) {
-  var options = init ? Object.assign({}, init) : {};
-  options.headers = await withCsrfAsync(options.headers || {});
-  var response = await originalFetch(input, options);
-  if (
-    retryOnUnlock !== false &&
-    response.status === 401 &&
-    window.APP_DATA &&
-    window.APP_DATA.loggedIn &&
-    window.EncKey
-  ) {
-    var kind = await response401Kind(response);
-    if (kind === 'enc_key') {
-      var unlocked = await ensureEncryptionKeyUnlocked();
-      if (unlocked) {
-        options.headers = await withCsrfAsync(options.headers || {});
-        return originalFetch(input, options);
-      }
+    var restored = await refreshSession();
+    if (restored && retryFn) {
+      return retryFn();
     }
+    throw new Error('Session expired. Sign out and log in again.');
   }
   return response;
+}
+
+function logoutThisComputer() {
+  var username = window.APP_DATA && window.APP_DATA.username;
+  if (!username) {
+    window.location.href = '/logout';
+    return;
+  }
+  if (!window.confirm(
+    'Forget ' + username + ' on this computer? You will need the password to sign in to it again.'
+  )) {
+    return;
+  }
+  var csrf = window.CSRF_TOKEN || '';
+  var done = Promise.resolve();
+  if (window.EncKey && window.EncKey.removeSlot) {
+    done = window.EncKey.removeSlot(username).catch(function () {});
+  }
+  done
+    .then(function () {
+      return fetch('/login/forget', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body:
+          'csrf_token=' + encodeURIComponent(csrf) +
+          '&username=' + encodeURIComponent(username),
+      });
+    })
+    .catch(function () {})
+    .then(function () {
+      window.location.href = '/logout';
+    });
 }
 
 // Settings panel behavior (collapse on small screens)
 $(function() {
-  if (window.APP_DATA && window.APP_DATA.loggedIn && window.EncKey) {
-    var $deviceLock = $('#enable-device-lock');
+  $(document).on('click', '.logout-this-computer', function (e) {
+    e.preventDefault();
+    logoutThisComputer();
+  });
+  if (window.APP_DATA && window.APP_DATA.loggedIn) {
     var $hint = $('#enc-key-storage-hint');
-    if (window.EncKey.isNativeSecureStorage && window.EncKey.isNativeSecureStorage()) {
-      if ($hint.length) {
-        $hint.text('Your chat key is protected by this device OS. Saved at login; fingerprint or PIN required to unlock.');
-      }
-    } else if (window.EncKey.supportsWebAuthnPrf) {
-      window.EncKey.supportsWebAuthnPrf().then(function(supported) {
-        if (supported) {
-          $deviceLock.show();
-        }
-      });
+    if ($hint.length) {
+      $hint.text('Your chat key is stored in a cookie this page cannot read.');
     }
-    $deviceLock.on('click', function() {
-      var name = window.APP_DATA.username || 'chatbot-user';
-      window.EncKey.registerWebAuthnDeviceLock(name)
-        .then(function() {
-          $deviceLock.hide();
-        })
-        .catch(function(err) {
-          alert('Could not enhance encryption key cache security: ' + (err && err.message ? err.message : err));
-        });
-    });
   }
   try {
     var $collapseEl = $('#settingsCollapse');
@@ -930,7 +1002,7 @@ function buildAiHistoryChildren(safeHtml) {
   const textSpan = document.createElement('span');
   textSpan.className = 'ai-message-text';
   if (typeof safeHtml === 'string' && safeHtml) {
-    textSpan.innerHTML = safeHtml;
+    textSpan.innerHTML = ttHtml(safeHtml);
   }
   frag.appendChild(textSpan);
   frag.appendChild(buildAiRegenerateContainer(true));
@@ -1394,6 +1466,14 @@ function updateSearchToggleVisibility() {
     const $searchToggle = $('#web-search-toggle');
     if ($selected.data('search') === true || $selected.data('search') === 'true') {
         $searchToggle.show();
+        // Reflect the per-account preference stored on the server.
+        if (window.APP_DATA && window.APP_DATA.webSearch) {
+            $searchToggle.removeClass('btn-outline-secondary').addClass('btn-primary');
+            $searchToggle.attr('title', 'Web Search: ON');
+        } else {
+            $searchToggle.removeClass('btn-primary').addClass('btn-outline-secondary');
+            $searchToggle.attr('title', 'Web Search: OFF');
+        }
     } else {
         $searchToggle.hide();
         // Reset search to OFF if not supported
@@ -1464,7 +1544,7 @@ function fetchHistoryPair(pairIndex, extra) {
     });
   }).then(function(r) {
     if (r.status === 401) {
-      window.location.href = '/login';
+      redirectHomeOnAuthFailure();
       throw new Error('Session expired');
     }
     if (!r.ok) throw new Error('Failed to load message');
@@ -1842,9 +1922,18 @@ function sleepMs(ms) {
   return new Promise(function (resolve) { setTimeout(resolve, ms); });
 }
 
-function fetchWithGenerateRetry(url, init, attempt) {
+function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
   attempt = attempt || 0;
   return fetch(url, init).then(function (res) {
+    if (res.status === 401 && !afterRefresh) {
+      return refreshSession().then(function (restored) {
+        if (!restored) {
+          redirectHomeOnAuthFailure();
+          throw new Error('Session expired');
+        }
+        return fetchWithGenerateRetry(url, refreshCsrfInit(init), attempt, true);
+      });
+    }
     if ((res.status === 429 || (res.status === 400 && attempt < 8)) && attempt < 12) {
       return sleepMs(200 + attempt * 150).then(function () {
         if (init && init.signal && init.signal.aborted) {
@@ -1852,7 +1941,7 @@ function fetchWithGenerateRetry(url, init, attempt) {
           err.name = 'AbortError';
           throw err;
         }
-        return fetchWithGenerateRetry(url, init, attempt + 1);
+        return fetchWithGenerateRetry(url, init, attempt + 1, afterRefresh);
       });
     }
     return res;
@@ -2187,9 +2276,9 @@ function highlightSentenceInElement(element, text, caretOffset, isPlaying) {
     const badge = document.createElement('div');
     badge.className = 'tts-hover-play-icon' + (isPlaying ? ' is-stop' : '');
     badge.setAttribute('aria-hidden', 'true');
-    badge.innerHTML = isPlaying
+    badge.innerHTML = ttHtml(isPlaying
       ? '<i class="bi bi-stop-fill"></i>'
-      : '<i class="bi bi-play-fill"></i>';
+      : '<i class="bi bi-play-fill"></i>');
     const badgeSize = 22;
     badge.style.left = Math.max(0, firstRect.left - badgeSize - 4) + 'px';
     badge.style.top = (firstRect.top + (firstRect.height - badgeSize) / 2) + 'px';
@@ -2578,7 +2667,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     }))
   })
   .then(response => {
-    if (response.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+    if (response.status === 401) { redirectHomeOnAuthFailure(); throw new Error('Session expired'); }
     if (!response.ok) {
       return response.text().then(t => {
         let errData = null;
@@ -2807,7 +2896,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
     }))
   })
   .then(r => {
-    if (r.status === 401) { window.location.href = '/login'; return null; }
+    if (r.status === 401) { redirectHomeOnAuthFailure(); return null; }
     return r.json().then(data => ({ ok: r.ok, status: r.status, data }));
   })
   .then(result => {
@@ -3030,13 +3119,17 @@ $(document).ready(function() {
           last_model: currentModel,
           last_set: currentSet,
           render_markdown: renderMarkdown,
-          autoplay_tts: autoplayTTS
+          autoplay_tts: autoplayTTS,
+          web_search: window.APP_DATA.webSearch,
+          voice_mode: window.APP_DATA.voiceMode
       };
 
-      fetch('/update_preferences', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify(preferences)
+      withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
+          return fetch('/update_preferences', {
+              method: 'POST',
+              headers: headers,
+              body: JSON.stringify(preferences)
+          });
       }).catch(err => console.debug('Failed to save preferences:', err));
   }
 
@@ -3368,7 +3461,7 @@ $(document).ready(function() {
     });
   });
 
-  // Load sets for logged-in users (wait for encryption key from login storage first)
+  // Load sets for logged-in users (HttpOnly enc_key cookie is sent automatically)
   if (window.APP_DATA.loggedIn) {
     function loadSets(shouldTriggerChange = true) {
       async function fetchSets() {
@@ -3379,12 +3472,18 @@ $(document).ready(function() {
           if (r.status === 401) {
             return handle401OrRetry(r, fetchSets);
           }
+          return r;
+        })
+        .then(async function(r) {
+          if (r.status === 401) {
+            var msg = await response401Message(r);
+            throw new Error(msg || 'Unauthorized');
+          }
           if (!r.ok) {
             throw new Error('Failed to load sets');
           }
-          return r;
+          return r.json();
         })
-        .then(r => r.json())
         .then(data => {
           if (!Array.isArray(data)) {
             throw new Error('Unexpected sets response');
@@ -3470,7 +3569,11 @@ $(document).ready(function() {
       fetchSet()
         .then(async r => {
           if (r.status === 401) {
-            return handle401OrRetry(r, fetchSet);
+            r = await handle401OrRetry(r, fetchSet);
+          }
+          if (r.status === 401) {
+            var msg = await response401Message(r);
+            throw new Error(msg || 'Unauthorized');
           }
           if (!r.ok) {
             try { const err = await r.json(); throw new Error(err && (err.error || err.message) || 'Failed to load set'); }
@@ -3494,7 +3597,8 @@ $(document).ready(function() {
 
     beginEncKeyUnlockFlow();
     $('#enc-key-retry').on('click', function() {
-      beginEncKeyUnlockFlow();
+      try { sessionStorage.removeItem(ENC_GATE_RELOADS_KEY); } catch (e) {}
+      beginEncKeyUnlockFlow(true);
     });
 
     $('#new-set').on('click', function() {
@@ -3618,8 +3722,20 @@ $(document).ready(function() {
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
     })
-      .then(r => r.json())
+      .then(function (r) {
+        if (r.status === 401 && !isRetry) {
+          return refreshSession().then(function (restored) {
+            if (!restored) {
+              redirectHomeOnAuthFailure();
+              return null;
+            }
+            return saveSystemPromptNow(sysPromptText, true).then(function () { return null; });
+          });
+        }
+        return r.json();
+      })
       .then(data => {
+        if (!data) return;
         if (data.status === 'success') {
           noteSetVersionFromResponse(data);
           appendMessage('System prompt saved successfully.', 'system-message');
@@ -3645,8 +3761,20 @@ $(document).ready(function() {
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
     })
-      .then(r => r.json())
+      .then(function (r) {
+        if (r.status === 401 && !isRetry) {
+          return refreshSession().then(function (restored) {
+            if (!restored) {
+              redirectHomeOnAuthFailure();
+              return null;
+            }
+            return saveMemoryNow(memText, true).then(function () { return null; });
+          });
+        }
+        return r.json();
+      })
       .then(data => {
+        if (!data) return;
         if (data.status === 'success') {
           noteSetVersionFromResponse(data);
           appendMessage('Memory saved successfully.', 'system-message');
@@ -4002,11 +4130,29 @@ $(document).ready(function() {
       if (isActive) {
           $(this).removeClass('btn-primary').addClass('btn-outline-secondary');
           $(this).attr('title', 'Web Search: OFF');
+          window.APP_DATA.webSearch = false;
       } else {
           $(this).removeClass('btn-outline-secondary').addClass('btn-primary');
           $(this).attr('title', 'Web Search: ON');
+          window.APP_DATA.webSearch = true;
       }
+      persistWebSearchPref();
   });
+
+  // Persist the web-search preference to the server (per-account) so it
+  // survives refreshes and follows the user across devices.
+  function persistWebSearchPref() {
+      if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
+      withCsrfAsync({ 'Content-Type': 'application/json' }).then(function (headers) {
+          return fetch('/update_preferences', {
+              method: 'POST',
+              headers: headers,
+              body: JSON.stringify({ web_search: window.APP_DATA.webSearch }),
+          });
+      }).catch(function (err) {
+          console.debug('Failed to save web search preference:', err);
+      });
+  }
 
   // Microphone / STT
   const $micBtn = $('#mic-button');
@@ -4804,7 +4950,6 @@ $(document).ready(function() {
   }
   window.playNativeVoiceModeTts = playNativeVoiceModeTts;
 
-  const VOICE_MODE_WANTED_KEY = 'chatbotVoiceModeWanted';
   let voiceScreenWakeLock = null;
 
   function releaseVoiceScreenWakeLock() {
@@ -4840,14 +4985,21 @@ $(document).ready(function() {
   }
 
   function persistVoiceModeWanted(on) {
-    try {
-      if (on) sessionStorage.setItem(VOICE_MODE_WANTED_KEY, '1');
-      else sessionStorage.removeItem(VOICE_MODE_WANTED_KEY);
-    } catch (e) { /* ignore */ }
+    window.APP_DATA.voiceMode = on;
+    if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
+    withCsrfAsync({ 'Content-Type': 'application/json' }).then(function (headers) {
+      return fetch('/update_preferences', {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ voice_mode: on }),
+      });
+    }).catch(function (err) {
+      console.debug('Failed to save voice mode preference:', err);
+    });
   }
 
   function voiceModeWanted() {
-    try { return sessionStorage.getItem(VOICE_MODE_WANTED_KEY) === '1'; } catch (e) { return false; }
+    return !!(window.APP_DATA && window.APP_DATA.voiceMode);
   }
 
   async function startVoiceMode(attempt) {

@@ -461,23 +461,27 @@ public class NativeMicPlugin extends Plugin {
             if (audioManager == null) {
                 return false;
             }
-            for (AudioDeviceInfo device : audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-                if (VoiceAudioRoute.isBluetoothOutputType(device.getType())) {
-                    FileLogger.log(TAG, "bluetooth output type=" + device.getType()
-                            + " id=" + device.getId());
+            try {
+                for (AudioDeviceInfo device : audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                    if (VoiceAudioRoute.isBluetoothOutputType(device.getType())) {
+                        FileLogger.log(TAG, "bluetooth output type=" + device.getType()
+                                + " id=" + device.getId());
+                        return true;
+                    }
+                }
+                if (supportsCommunicationDevice()) {
+                    AudioDeviceInfo comm = audioManager.getCommunicationDevice();
+                    if (comm != null && VoiceAudioRoute.isBluetoothOutputType(comm.getType())) {
+                        FileLogger.log(TAG, "bluetooth communication device type=" + comm.getType());
+                        return true;
+                    }
+                }
+                if (audioManager.isBluetoothScoOn() || audioManager.isBluetoothA2dpOn()) {
+                    FileLogger.log(TAG, "bluetooth sco/a2dp flag on");
                     return true;
                 }
-            }
-            if (supportsCommunicationDevice()) {
-                AudioDeviceInfo comm = audioManager.getCommunicationDevice();
-                if (comm != null && VoiceAudioRoute.isBluetoothOutputType(comm.getType())) {
-                    FileLogger.log(TAG, "bluetooth communication device type=" + comm.getType());
-                    return true;
-                }
-            }
-            if (audioManager.isBluetoothScoOn() || audioManager.isBluetoothA2dpOn()) {
-                FileLogger.log(TAG, "bluetooth sco/a2dp flag on");
-                return true;
+            } catch (Exception e) {
+                FileLogger.log(TAG, "hasBluetoothAudio check failed: " + e.getMessage(), e);
             }
             return false;
         }

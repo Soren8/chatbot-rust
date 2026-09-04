@@ -108,7 +108,7 @@ From [`docs/design-privacy.md`](design-privacy.md):
 
 - Strict Private Mode: client-derived key, per-request `X-Enc-Key`, server never persists data key.
 - Only HMAC key verifier on server.
-- Ciphertext at rest; session cache ciphertext-only between requests.
+- Ciphertext at rest (redb); in-memory cache temporarily holds decrypted working snapshots during active requests to feed LLM context, evicted/wiped from RAM after an idle TTL.
 - **Set names are sensitive** — not plaintext filenames, not unencrypted index keys.
 
 ---
@@ -193,7 +193,7 @@ chatbot-core/src/
       mod.rs                # trait HistoryStore + RedbHistoryStore (crate-private)
       keys.rs               # key encoding (UUID bytes, no display names)
       tables.rs             # redb table definitions
-    cache.rs                # optional ciphertext cache keyed (user_id, set_id)
+    cache.rs                # process-local decrypted snapshot cache with TTL eviction keyed (user_id, set_id)
     migration.rs            # sets.json → redb
     ops.rs                  # pure functions: append_pair, delete_pair, regenerate apply (on snapshots)
   session.rs                # uses history::api; drops free-form history mutation helpers over time
@@ -695,7 +695,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 - Commit: single local txn; target p99 ≪ model TTFT (no user-visible regression vs provider latency).
 - Per-message cap (`history::ops::MAX_MESSAGE_CHARS`) matches the `/chat` HTTP body cap (5 MiB) so base64 `[IMAGE:data:...]` attachments that the request accepts are not rejected at finalize.
 - Model context packing (`chat` / `chat_images`): durable history still stores full attachments; outbound prompts keep the most recent image full-resolution and downscale older ones to small JPEG thumbnails so vision context is not dominated by prior base64 blobs.
-- **UI history projection (does not change Phase 1 storage):** `/load_set` can return a tail page (`limit` + optional `before`) and `thumbnails: true` rewrites user-side `[IMAGE:...]` tags to small JPEGs for the JSON response only. Full fidelity stays in redb. Lightbox expand uses `GET /history_image/{set_id}/{version}/{pair_index}/{image_index}` (real `image/*` bytes + `Cache-Control: private`) so the browser/WebView cache works; `<img>` sends a Path-scoped `hist_enc_key` cookie because it cannot set `X-Enc-Key`. `POST /history_pair` still returns one full pair for edit/regenerate. Delete matches user text with image payloads stripped so a thumbnail echo still locates the stored pair. Regenerate/edit coalesces a shorter incoming image payload back to the stored full-resolution bytes unless the client removed the attachment.
+- **UI history projection (does not change Phase 1 storage):** `/load_set` can return a tail page (`limit` + optional `before`) and `thumbnails: true` rewrites user-side `[IMAGE:...]` tags to small JPEGs for the JSON response only. Full fidelity stays in redb. Lightbox expand uses `GET /history_image/{set_id}/{version}/{pair_index}/{image_index}` (real `image/*` bytes + `Cache-Control: private`) so the browser/WebView cache works; `<img>` sends the HttpOnly Path=`/` `enc_key` cookie. `POST /history_pair` still returns one full pair for edit/regenerate. Delete matches user text with image payloads stripped so a thumbnail echo still locates the stored pair. Regenerate/edit coalesces a shorter incoming image payload back to the stored full-resolution bytes unless the client removed the attachment.
 
 ---
 

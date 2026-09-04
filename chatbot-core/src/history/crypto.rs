@@ -184,7 +184,7 @@ fn aead_open(aad: &[u8], blob: &[u8], enc_key: &EncryptionKey) -> Result<Vec<u8>
 
 fn derive_aes_key(enc_key: &EncryptionKey) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(None, enc_key.as_bytes());
-    let mut out = [0u8; 32];
+    let mut out: [u8; 32] = Default::default();
     // HKDF expand only fails if length is invalid; 32 is fine.
     hk.expand(HKDF_INFO, &mut out)
         .expect("HKDF expand length valid");

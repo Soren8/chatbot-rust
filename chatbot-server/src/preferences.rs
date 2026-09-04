@@ -19,6 +19,8 @@ struct UpdatePreferencesRequest {
     last_model: Option<String>,
     render_markdown: Option<bool>,
     autoplay_tts: Option<bool>,
+    web_search: Option<bool>,
+    voice_mode: Option<bool>,
 }
 
 pub async fn handle_update_preferences(
@@ -58,6 +60,13 @@ pub async fn handle_update_preferences(
         .map_err(|err| map_session_err(err, "preferences::post::session"))?;
 
     if let Some(username) = session.username {
+        let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+        if let Err(response) =
+            session::validate_encryption_key_for_user(&username, encryption_key.as_ref())
+        {
+            return crate::build_response(response);
+        }
+
         let mut store = UserStore::new().map_err(|err| {
             map_user_store_err(err, "preferences::post::open_store", "store error")
         })?;
@@ -69,6 +78,8 @@ pub async fn handle_update_preferences(
                 payload.last_model,
                 payload.render_markdown,
                 payload.autoplay_tts,
+                payload.web_search,
+                payload.voice_mode,
             )
             .map_err(|err| {
                 map_user_store_err(err, "preferences::post::update", "store error")
