@@ -341,14 +341,25 @@
     z-index: 10;
 }
 
+/* Keep dropdown anchor relative so toggle position remains fixed when menu opens */
+.navbar .dropdown {
+    position: relative !important;
+}
+
 /* Account dropdown toggle has matching background to cleanly mask any brand overlap on thin screens */
 .navbar .dropdown .dropdown-toggle {
     background-color: var(--bs-dark, #212529);
 }
 
-/* The account dropdown menu must be on top of everything z-order wise */
+/* Float account dropdown below navbar and anchor to right edge across all viewports */
+.navbar .navbar-nav .dropdown-menu,
 .navbar .dropdown-menu,
 .dropdown-menu {
+    position: absolute !important;
+    top: 100% !important;
+    right: 0 !important;
+    left: auto !important;
+    float: none !important;
     --bs-dropdown-zindex: 2100;
     z-index: 2100 !important;
 }

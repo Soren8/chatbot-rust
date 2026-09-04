@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{HeaderName, HeaderValue, StatusCode},
+    http::{header, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
@@ -93,6 +93,31 @@ async fn log_server_error_responses(
             method = %method,
             path = %path,
             "5xx response returned to client"
+        );
+    }
+    response
+}
+
+/// Enforce HTTP cache revalidation on static assets (`/static/*`).
+///
+/// Android WebView runs with `WebSettings.LOAD_DEFAULT` to support long-term
+/// caching of history images (`/history_image/...` carrying `max-age=31536000, immutable`).
+/// Without an explicit `Cache-Control` header on `/static/*`, Chromium applies
+/// heuristic freshness calculation, caching JS/CSS for days without revalidation
+/// and forcing users to clear app storage (wiping login credentials and image caches).
+/// Marking static assets `no-cache, must-revalidate` ensures the WebView always validates
+/// ETag / 304 with the server on page load and reload, pulling fresh code immediately
+/// upon server updates while keeping cached credentials and images intact.
+async fn set_static_cache_control_headers(
+    request: axum::extract::Request<Body>,
+    next: Next,
+) -> Response {
+    let is_static = request.uri().path().starts_with("/static");
+    let mut response = next.run(request).await;
+    if is_static && (response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED) {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, must-revalidate"),
         );
     }
     response
@@ -254,6 +279,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         )
         .merge(rate_limited)
         .layer(middleware::from_fn(sanitize_cookies_middleware))
+        .layer(middleware::from_fn(set_static_cache_control_headers))
         .layer(middleware::from_fn(log_server_error_responses))
 }
 

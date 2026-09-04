@@ -142,6 +142,7 @@ fn build_signup_response(
             HeaderValue::from_static("text/html; charset=utf-8"),
         )
         .header("Content-Security-Policy", SECURITY_CSP)
+        .header(header::CACHE_CONTROL, "no-store")
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");

@@ -24,6 +24,13 @@ async fn serves_static_files_from_configured_root() {
         .expect("static file request");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-cache, must-revalidate")
+    );
     let body = to_bytes(response.into_body(), 64 * 1024)
         .await
         .expect("read body");
@@ -479,6 +486,17 @@ fn navbar_account_dropdown_is_on_top_in_z_order() {
     assert!(
         style_css.contains(".navbar .navbar-nav") && style_css.contains(".navbar .dropdown"),
         "navbar-nav and dropdown container must have explicit positioning above brand"
+    );
+    assert!(
+        style_css.contains(".navbar .dropdown {\n    position: relative !important;\n}"),
+        "dropdown container must remain position: relative !important so toggle stays anchored when menu expands"
+    );
+    assert!(
+        style_css.contains("position: absolute !important;")
+            && style_css.contains("top: 100% !important;")
+            && style_css.contains("right: 0 !important;")
+            && style_css.contains("left: auto !important;"),
+        "dropdown-menu must float below navbar with position: absolute, top: 100%, right: 0 across all viewports"
     );
     assert!(
         style_css.contains(".navbar .navbar-brand-center {\n    z-index: 0;\n}"),
