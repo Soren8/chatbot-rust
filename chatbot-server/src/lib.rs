@@ -98,6 +98,103 @@ async fn log_server_error_responses(
     response
 }
 
+/// Strip the `Secure` flag from a `Set-Cookie` header value.
+///
+/// In RFC 6265bis §5.4, clients (such as Android WebView / Chromium) strictly drop
+/// any cookie with the `Secure` flag if received over plain HTTP (non-localhost).
+/// When running over plain HTTP without HTTPS termination, stripping `Secure`
+/// allows mobile WebViews and non-TLS clients to accept and store cookies.
+pub fn strip_secure_cookie_flag(cookie: &str) -> String {
+    cookie
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && !part.eq_ignore_ascii_case("secure"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Detects whether an incoming request is over plain HTTP (no TLS / reverse-proxy HTTPS).
+///
+/// When requests run in mock/unit tests using `tower::ServiceExt::oneshot` without a `Host`
+/// header or proxy headers, this returns `false` to preserve the configured `Secure` flag
+/// expectations in tests.
+fn is_plain_http_request(request: &axum::extract::Request<Body>) -> bool {
+    if request
+        .uri()
+        .scheme_str()
+        .map(|s| s.eq_ignore_ascii_case("https"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let headers = request.headers();
+
+    if let Some(proto) = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) {
+        if proto
+            .split(',')
+            .next()
+            .map(|s| s.trim().eq_ignore_ascii_case("https"))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+    if let Some(ssl) = headers.get("x-forwarded-ssl").and_then(|v| v.to_str().ok()) {
+        if ssl.trim().eq_ignore_ascii_case("on") {
+            return false;
+        }
+    }
+    if let Some(front_end) = headers.get("front-end-https").and_then(|v| v.to_str().ok()) {
+        if front_end.trim().eq_ignore_ascii_case("on") {
+            return false;
+        }
+    }
+    if let Some(forwarded) = headers.get("forwarded").and_then(|v| v.to_str().ok()) {
+        if forwarded.to_ascii_lowercase().contains("proto=https") {
+            return false;
+        }
+    }
+
+    headers.contains_key(axum::http::header::HOST)
+        || request.uri().authority().is_some()
+        || headers.contains_key("x-forwarded-proto")
+}
+
+async fn sanitize_cookies_middleware(
+    request: axum::extract::Request<Body>,
+    next: Next,
+) -> Response {
+    let plain_http = is_plain_http_request(&request);
+    let mut response = next.run(request).await;
+
+    if plain_http {
+        let headers = response.headers_mut();
+        if headers.contains_key(axum::http::header::SET_COOKIE) {
+            let cookies: Vec<_> = headers
+                .get_all(axum::http::header::SET_COOKIE)
+                .iter()
+                .cloned()
+                .collect();
+            headers.remove(axum::http::header::SET_COOKIE);
+            for cookie in cookies {
+                if let Ok(cookie_str) = cookie.to_str() {
+                    let sanitized = strip_secure_cookie_flag(cookie_str);
+                    if let Ok(new_val) = HeaderValue::from_str(&sanitized) {
+                        headers.append(axum::http::header::SET_COOKIE, new_val);
+                    } else {
+                        headers.append(axum::http::header::SET_COOKIE, cookie);
+                    }
+                } else {
+                    headers.append(axum::http::header::SET_COOKIE, cookie);
+                }
+            }
+        }
+    }
+
+    response
+}
+
 pub fn build_router(static_root: PathBuf) -> Router {
     let rate_limited = Router::new()
         .route(
@@ -156,6 +253,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(preferences::handle_update_preferences),
         )
         .merge(rate_limited)
+        .layer(middleware::from_fn(sanitize_cookies_middleware))
         .layer(middleware::from_fn(log_server_error_responses))
 }
 

@@ -74,12 +74,14 @@ public class NativeSecureKeyPlugin extends Plugin {
     private String resolveServerUrl() {
         String url = null;
         try {
-            url = getContext().getString(R.string.server_url);
-        } catch (Exception ignored) {}
-        if (url == null || url.isEmpty()) {
-            if (getBridge() != null && getBridge().getServerUrl() != null) {
+            if (getBridge() != null && getBridge().getServerUrl() != null && !getBridge().getServerUrl().isEmpty()) {
                 url = getBridge().getServerUrl();
             }
+        } catch (Exception ignored) {}
+        if (url == null || url.isEmpty()) {
+            try {
+                url = getContext().getString(R.string.server_url);
+            } catch (Exception ignored) {}
         }
         if (url == null || url.isEmpty()) {
             url = "http://localhost";

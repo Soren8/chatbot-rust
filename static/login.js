@@ -87,7 +87,7 @@ function showLoginError(message) {
 /// lands back on /login, is a failure and must never cache the key.
 /// Never set fetch redirect mode to manual: browsers turn that into an
 /// opaque response (status 0), so a successful login looks like invalid credentials.
-async function postLogin(form, onSuccess) {
+async function postLogin(form, onSuccess, isRetry = false) {
   try {
     const body = new URLSearchParams(new FormData(form)).toString();
     const resp = await fetch('/login', {
@@ -115,7 +115,26 @@ async function postLogin(form, onSuccess) {
     }
     let message = 'Invalid credentials';
     if (resp.ok && dest === '/login') {
-      message = 'Session expired. Reload and try again.';
+      try {
+        const text = await resp.text();
+        const match =
+          text.match(/name=["']csrf_token["']\s+value=["']([^"']+)["']/i) ||
+          text.match(/value=["']([^"']+)["']\s+name=["']csrf_token["']/i);
+        if (match && match[1]) {
+          const freshToken = match[1];
+          const $csrf = $(form).find('input[name="csrf_token"]');
+          if ($csrf.length) {
+            $csrf.val(freshToken);
+          }
+          $('input[name="csrf_token"]').val(freshToken);
+          if (!isRetry) {
+            return await postLogin(form, onSuccess, true);
+          }
+        }
+      } catch (e) {
+        console.error('failed to extract fresh csrf token', e);
+      }
+      message = 'Session expired. Please try signing in again.';
     } else {
       try {
         const data = await resp.json();

@@ -204,3 +204,35 @@ fn mobile_cached_login_requires_biometric_unlock() {
     );
 }
 
+#[test]
+fn login_js_does_not_ask_user_to_reload() {
+    let src = include_str!("../../static/login.js");
+    assert!(
+        !src.to_lowercase().contains("reload and try again"),
+        "login.js must never tell users to reload (Capacitor apps have no reload button)"
+    );
+    assert!(
+        !src.contains("Session expired. Reload"),
+        "login.js must not mention 'Reload' when session expires"
+    );
+    assert!(
+        src.contains("Session expired. Please try signing in again."),
+        "login.js must suggest signing in again instead of reloading"
+    );
+    assert!(
+        src.contains("postLogin(form, onSuccess, true)"),
+        "login.js must auto-retry postLogin with refreshed CSRF token"
+    );
+
+    let main_activity_src = include_str!("../../android/app/src/main/java/com/chatbot/app/MainActivity.java");
+    assert!(
+        !main_activity_src.contains("trimmed.startsWith(\"session=\")"),
+        "MainActivity must not treat guest session cookie as logged in"
+    );
+    assert!(
+        main_activity_src.contains("remember=") && main_activity_src.contains("enc_key="),
+        "MainActivity must check authenticated remember and enc_key cookies"
+    );
+}
+
+

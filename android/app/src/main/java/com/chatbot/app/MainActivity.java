@@ -123,14 +123,35 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    private String resolveServerUrl() {
+        String url = null;
+        try {
+            if (getBridge() != null && getBridge().getServerUrl() != null && !getBridge().getServerUrl().isEmpty()) {
+                url = getBridge().getServerUrl();
+            }
+        } catch (Exception ignored) {}
+        if (url == null || url.isEmpty()) {
+            try {
+                url = getString(R.string.server_url);
+            } catch (Exception ignored) {}
+        }
+        if (url == null || url.isEmpty()) {
+            url = "http://localhost";
+        }
+        return url;
+    }
+
     private boolean isUserLoggedIn() {
         try {
-            String serverUrl = getString(R.string.server_url);
+            String serverUrl = resolveServerUrl();
             String cookieHeader = CookieManager.getInstance().getCookie(serverUrl);
             if (cookieHeader != null) {
                 for (String part : cookieHeader.split(";")) {
                     String trimmed = part.trim();
-                    if (trimmed.startsWith("session=") && trimmed.length() > "session=".length()) {
+                    if ((trimmed.startsWith("remember=") && trimmed.length() > "remember=".length())
+                            || trimmed.startsWith("remember-")
+                            || (trimmed.startsWith("enc_key=") && trimmed.length() > "enc_key=".length())
+                            || trimmed.startsWith("enc_key-")) {
                         return true;
                     }
                 }
@@ -208,7 +229,7 @@ public class MainActivity extends BridgeActivity {
         switchBtn.setOnClickListener(v -> {
             unlockApp();
             if (getBridge() != null && getBridge().getWebView() != null) {
-                getBridge().getWebView().loadUrl(getString(R.string.server_url) + "/login");
+                getBridge().getWebView().loadUrl(resolveServerUrl() + "/login");
             }
         });
         layout.addView(switchBtn);

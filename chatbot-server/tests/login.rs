@@ -1,7 +1,9 @@
 use std::{
     env,
+    net::SocketAddr,
     sync::{Mutex, OnceLock},
 };
+use tokio::net::TcpListener;
 
 use axum::{
     body::{to_bytes, Body},
@@ -424,3 +426,269 @@ async fn logout_clears_session_username() {
         "username should be cleared after logout"
     );
 }
+
+async fn spawn_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    let app = build_app();
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+    (addr, handle)
+}
+
+#[tokio::test]
+async fn real_http_webserver_login_omits_secure_flag_for_plain_http_and_authenticates() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+
+    let username = "dummy_http_user";
+    let password = "DummyPassword123!";
+    seed_user(username, password);
+
+    let (addr, server_handle) = spawn_test_server().await;
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest client");
+
+    let base_url = format!("http://{addr}");
+
+    // 1. Plain HTTP GET /login: cookies MUST NOT have Secure flag (RFC 6265bis Android WebView compatibility)
+    let get_resp = client
+        .get(format!("{base_url}/login"))
+        .send()
+        .await
+        .expect("GET /login");
+    assert_eq!(get_resp.status(), reqwest::StatusCode::OK);
+
+    let get_cookies: Vec<String> = get_resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(String::from))
+        .collect();
+
+    let session_cookie = get_cookies
+        .iter()
+        .find(|c| c.starts_with("session="))
+        .expect("session cookie on GET /login");
+    assert!(
+        !session_cookie.contains("Secure"),
+        "Plain HTTP session cookie must NOT contain Secure flag, got: {session_cookie}"
+    );
+    assert!(
+        session_cookie.contains("HttpOnly"),
+        "Session cookie must be HttpOnly"
+    );
+
+    let body_text = get_resp.text().await.expect("read login HTML");
+    let csrf_token = common::extract_csrf_token(&body_text).expect("extract csrf token");
+    let session_pair = common::extract_cookie(session_cookie);
+
+    // 2. Plain HTTP POST /login with dummy account and remember_me
+    let post_resp = client
+        .post(format!("{base_url}/login"))
+        .header(reqwest::header::COOKIE, &session_pair)
+        .form(&[
+            ("username", username),
+            ("password", password),
+            ("csrf_token", &csrf_token),
+            ("remember_me", "on"),
+        ])
+        .send()
+        .await
+        .expect("POST /login");
+
+    assert_eq!(
+        post_resp.status(),
+        reqwest::StatusCode::FOUND,
+        "POST /login should redirect to / on success"
+    );
+
+    let post_cookies: Vec<String> = post_resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(String::from))
+        .collect();
+
+    let mut auth_cookie_pairs = Vec::new();
+    for c in &post_cookies {
+        assert!(
+            !c.contains("Secure"),
+            "Plain HTTP POST /login cookie must NOT contain Secure flag, got: {c}"
+        );
+        auth_cookie_pairs.push(common::extract_cookie(c));
+    }
+
+    let remember_cookie = post_cookies
+        .iter()
+        .find(|c| c.starts_with("remember="))
+        .expect("remember cookie issued on successful login");
+    assert!(!remember_cookie.contains("Secure"));
+
+    let enc_key_cookie = post_cookies
+        .iter()
+        .find(|c| c.starts_with("enc_key="))
+        .expect("enc_key cookie issued on successful login");
+    assert!(!enc_key_cookie.contains("Secure"));
+
+    // 3. Authenticated GET / using the plain-HTTP cookies
+    let cookie_header_val = auth_cookie_pairs.join("; ");
+    let home_resp = client
+        .get(format!("{base_url}/"))
+        .header(reqwest::header::COOKIE, &cookie_header_val)
+        .send()
+        .await
+        .expect("GET /");
+
+    assert_eq!(home_resp.status(), reqwest::StatusCode::OK);
+    let home_html = home_resp.text().await.expect("home HTML");
+    assert!(
+        home_html.contains("data-logged-in=\"true\""),
+        "Home page should indicate user is logged in"
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn real_http_webserver_retains_secure_flag_when_proxied_over_https() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+
+    let (addr, server_handle) = spawn_test_server().await;
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest client");
+
+    let base_url = format!("http://{addr}");
+
+    let get_resp = client
+        .get(format!("{base_url}/login"))
+        .header("X-Forwarded-Proto", "https")
+        .send()
+        .await
+        .expect("GET /login with HTTPS proxy header");
+
+    assert_eq!(get_resp.status(), reqwest::StatusCode::OK);
+
+    let get_cookies: Vec<String> = get_resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(String::from))
+        .collect();
+
+    let session_cookie = get_cookies
+        .iter()
+        .find(|c| c.starts_with("session="))
+        .expect("session cookie on GET /login");
+    assert!(
+        session_cookie.contains("Secure"),
+        "Proxied HTTPS session cookie must retain Secure flag, got: {session_cookie}"
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn real_http_webserver_csrf_mismatch_redirects_with_fresh_token_and_cookie() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+
+    let username = "dummy_csrf_user";
+    let password = "DummyPassword123!";
+    seed_user(username, password);
+
+    let (addr, server_handle) = spawn_test_server().await;
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest client");
+
+    let base_url = format!("http://{addr}");
+
+    // Post with an invalid / stale CSRF token (like the mobile app bug after dropped cookie)
+    let post_fail_resp = client
+        .post(format!("{base_url}/login"))
+        .form(&[
+            ("username", username),
+            ("password", password),
+            ("csrf_token", "invalid_stale_token"),
+        ])
+        .send()
+        .await
+        .expect("POST /login with bad CSRF");
+
+    assert_eq!(
+        post_fail_resp.status(),
+        reqwest::StatusCode::SEE_OTHER,
+        "Failed CSRF validation should redirect 303 to /login"
+    );
+    let location = post_fail_resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .expect("Location header on 303");
+    assert_eq!(location, "/login");
+
+    // Follow redirect to GET /login
+    let get_resp = client
+        .get(format!("{base_url}{location}"))
+        .send()
+        .await
+        .expect("GET /login after redirect");
+    assert_eq!(get_resp.status(), reqwest::StatusCode::OK);
+
+    let get_cookies: Vec<String> = get_resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(String::from))
+        .collect();
+
+    let fresh_session_cookie = get_cookies
+        .iter()
+        .find(|c| c.starts_with("session="))
+        .expect("fresh session cookie on GET /login");
+    assert!(!fresh_session_cookie.contains("Secure"));
+    let fresh_session_pair = common::extract_cookie(fresh_session_cookie);
+
+    let body_text = get_resp.text().await.expect("read login HTML");
+    let fresh_csrf_token = common::extract_csrf_token(&body_text).expect("extract fresh csrf token");
+
+    // Retry login with fresh CSRF token and fresh session cookie
+    let retry_resp = client
+        .post(format!("{base_url}/login"))
+        .header(reqwest::header::COOKIE, &fresh_session_pair)
+        .form(&[
+            ("username", username),
+            ("password", password),
+            ("csrf_token", &fresh_csrf_token),
+        ])
+        .send()
+        .await
+        .expect("retry POST /login");
+
+    assert_eq!(
+        retry_resp.status(),
+        reqwest::StatusCode::FOUND,
+        "Retry with fresh CSRF token should succeed"
+    );
+
+    server_handle.abort();
+}
+
