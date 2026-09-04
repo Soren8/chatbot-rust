@@ -73,7 +73,7 @@ ENV CHATBOT_STATIC_ROOT="/app/static"
 ENV CARGO_TARGET_DIR=/app/.cargo/target
 
 # Production image with Axum binary
-FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS prod
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS prod
 ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 # Minimum config schema version this image requires; read by the deploy
