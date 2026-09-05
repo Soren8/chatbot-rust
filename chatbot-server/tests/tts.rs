@@ -1286,3 +1286,162 @@ async fn fish_tts_via_presign_generates_wav_audio() {
     shutdown.send(()).ok();
     handle.join().expect("join fish stub thread");
 }
+
+fn slow_kokoro_voice_router(pcm: Arc<Vec<u8>>) -> Router {
+    Router::new().route(
+        "/v1/tts/kokoro",
+        post({
+            let pcm = pcm.clone();
+            move |Json(_payload): Json<Value>| {
+                let pcm = pcm.clone();
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    (
+                        StatusCode::OK,
+                        [
+                            (header::CONTENT_TYPE, "application/octet-stream"),
+                            (
+                                header::HeaderName::from_static("x-sample-rate"),
+                                VOICE_SERVICE_SAMPLE_RATE,
+                            ),
+                        ],
+                        pcm.as_slice().to_vec(),
+                    )
+                }
+            }
+        }),
+    )
+}
+
+#[tokio::test]
+async fn kokoro_tts_cancelled_stream_resets_generating_state() {
+    common::init_tracing();
+    let _lock = tts_test_lock();
+
+    let pcm = Arc::new(vec![0_u8; 100]);
+    let router = slow_kokoro_voice_router(pcm);
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = begin_kokoro_workspace(&addr.ip().to_string(), addr.port());
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+    let (cookie, csrf) = guest_session(&app).await;
+
+    let tts_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tts")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf)
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": "Cancellation test"})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /tts");
+    assert_eq!(tts_response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(tts_response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let token = serde_json::from_slice::<Value>(&body).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // First stream request is dropped/cancelled early while backend synthesis is pending
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        app.clone().oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{token}"))
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await;
+
+    // Second stream request (client retry after drop) must not be rejected with 429
+    let stream_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream retry");
+    assert_eq!(
+        stream_response.status(),
+        StatusCode::OK,
+        "cancelled in-flight stream must reset generating flag and allow client retry"
+    );
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}
+
+#[tokio::test]
+async fn kokoro_tts_punctuation_only_chunk_streams_silence() {
+    common::init_tracing();
+    let _lock = tts_test_lock();
+
+    // Voice stub errors if called; punctuation-only chunk must never call upstream
+    let router = kokoro_error_router();
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = begin_kokoro_workspace(&addr.ip().to_string(), addr.port());
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+    let (cookie, csrf) = guest_session(&app).await;
+
+    let tts_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/tts")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf)
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"text": " : - ) "})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /tts");
+    assert_eq!(tts_response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(tts_response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let token = serde_json::from_slice::<Value>(&body).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let stream_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/tts_stream/{token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /tts_stream");
+    assert_eq!(
+        stream_response.status(),
+        StatusCode::OK,
+        "punctuation-only chunks must stream silence instead of failing via 502"
+    );
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}
+

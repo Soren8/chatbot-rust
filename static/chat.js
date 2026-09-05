@@ -1968,15 +1968,20 @@ function handleStopClick() {
   syncSendButtonState();
 }
 
-// Sanitize raw markdown text for TTS: strip URLs, citations, and formatting
+// Sanitize raw markdown text for TTS: strip URLs, citations, code blocks, and formatting
 function sanitizeForTTS(text) {
-  return String(text || '')
+  const cleaned = String(text || '')
+    // Strip code fences: ```lang ... ``` or standalone ```
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/```[a-zA-Z0-9_-]*/g, '')
     // Strip URLs (must come before citation removal)
     .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
     // Strip markdown citation links: [[1]](url) or [[1]]() -> empty
     .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
     // Strip remaining markdown links: [text](url) -> text
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    // Strip HTML tags: <...>
+    .replace(/<[^>]+>/g, '')
     // Strip bold/italic: ***text***, **text**, *text*
     .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
     // Strip underline bold/italic: ___text___, __text__, _text_
@@ -1987,9 +1992,19 @@ function sanitizeForTTS(text) {
     .replace(/`([^`]*)`/g, '$1')
     // Strip heading markers: ### heading
     .replace(/^#{1,6}\s+/gm, '')
+    // Strip blockquote markers: > quote
+    .replace(/^>\s*/gm, '')
+    // Strip horizontal rules: --- or *** or ___
+    .replace(/^[-*_]{3,}\s*$/gm, '')
     // Collapse multiple spaces into one
-    .replace(/  +/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
+
+  // If there are no alphanumeric characters, there is nothing speakable
+  if (!/[0-9\p{L}]/u.test(cleaned)) {
+    return '';
+  }
+  return cleaned;
 }
 
 /** Full TTS source text for an AI message (data-original preferred, then visible DOM). */
@@ -2068,6 +2083,12 @@ function splitSentences(text) {
           const prev = end > 0 ? text.charAt(end - 1) : '';
           const next = end + 1 < n ? text.charAt(end + 1) : '';
           if (isAsciiDigit(prev) && isAsciiDigit(next)) {
+            end++;
+            continue;
+          }
+          // Numbered list item marker: "1. ", "2. ", "10. " where the sentence chunk
+          // so far is purely digits → not a terminator, attach to the item text.
+          if (/^\d+$/.test(text.slice(start, end)) && end + 1 < n && /\s/.test(next)) {
             end++;
             continue;
           }
@@ -2293,7 +2314,7 @@ function highlightSentenceInElement(element, text, caretOffset, isPlaying) {
  */
 function playOneTtsUtterance(sessionId, text) {
   if (!desktopTtsIsLive(sessionId)) return Promise.resolve(false);
-  const cleaned = (sanitizeForTTS(text) || String(text || '')).trim();
+  const cleaned = sanitizeForTTS(text);
   if (!cleaned) return Promise.resolve(true);
 
   const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
@@ -2392,17 +2413,39 @@ function playOneTtsUtterance(sessionId, text) {
  * Sentences are already split from DOM text; we only sanitize per item for the API.
  */
 function playFixedSentenceList(sessionId, button, sentences) {
-  let chain = Promise.resolve(true);
-  sentences.forEach(function (sentenceText) {
-    chain = chain.then(function (still) {
-      if (!still || !desktopTtsIsLive(sessionId)) return false;
-      return playOneTtsUtterance(sessionId, sentenceText);
-    });
-  });
-  chain.then(function () {
+  const queue = (sentences || []).slice();
+  let sentenceRetries = 0;
+
+  function pump() {
     if (!desktopTtsIsLive(sessionId)) return;
-    completeDesktopTtsPlayback(button);
-  });
+    if (!queue.length) {
+      completeDesktopTtsPlayback(button);
+      return;
+    }
+    const next = queue.shift();
+    playOneTtsUtterance(sessionId, next).then(function (ok) {
+      if (!desktopTtsIsLive(sessionId)) return;
+      if (!ok) {
+        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES) {
+          sentenceRetries += 1;
+          queue.unshift(next);
+          setTimeout(function () {
+            if (!desktopTtsIsLive(sessionId)) return;
+            pump();
+          }, 400 * sentenceRetries);
+          return;
+        }
+        sentenceRetries = 0;
+        console.error('Desktop TTS sentence failed; skipping after retries');
+        pump();
+        return;
+      }
+      sentenceRetries = 0;
+      pump();
+    });
+  }
+
+  pump();
 }
 
 /**
@@ -2615,6 +2658,9 @@ function playMessageTts(button, options) {
 window.playMessageTts = playMessageTts;
 
 window.regenerateMessage = function regenerateMessage(button) {
+  if (window.APP_DATA && (window.APP_DATA.autoplayTTS || window.voiceModeActive)) {
+    primeDesktopTtsAudioFromGesture();
+  }
   const $aiMessageElement = $(button).closest('.message');
   const $previousUserMessage = $aiMessageElement.prev('.message.user-message');
   if ($previousUserMessage.length === 0) return;
@@ -3799,6 +3845,9 @@ $(document).ready(function() {
 
   function sendMessage(opts) {
     opts = opts || {};
+    if (window.APP_DATA && (window.APP_DATA.autoplayTTS || window.voiceModeActive)) {
+      primeDesktopTtsAudioFromGesture();
+    }
     const $systemPromptElement = $('#user-system-prompt');
     const $userInputElement = $('#user-input');
     if ($systemPromptElement.length === 0 || $userInputElement.length === 0) {
@@ -4719,11 +4768,12 @@ $(document).ready(function() {
     const $messageElement = $(button).closest('.message');
     const pendingNativeTtsTokens = new Set();
     let stopped = false;
-    let processedText = '';
+    let consumedSentences = 0;
     let sentenceQueue = [];
     let endRequested = false;
     let sentenceRetries = 0;
     let retryScheduled = false;
+    const isFixedList = !!(options.sentences && options.sentences.length);
 
     voiceModeTtsSessionActive = true;
     voiceModeTtsPlaying = false;
@@ -4758,19 +4808,16 @@ $(document).ready(function() {
     }
 
     function discoverSentences() {
-      if (!live()) return;
+      if (!live() || isFixedList) return;
       const fullText = getMessageTtsText($messageElement);
-      if (!fullText || fullText.length <= processedText.length) return;
-      const pending = fullText.substring(processedText.length);
-      const parts = splitSentences(pending);
-      let advancedTo = 0;
-      for (let i = 0; i < parts.length; i++) {
+      if (!fullText) return;
+      const parts = splitSentences(fullText);
+      for (let i = consumedSentences; i < parts.length; i++) {
         const part = parts[i];
         if (!sentenceEndsWithTerminator(part.text) && isStillGenerating()) break;
         sentenceQueue.push(part.text);
-        advancedTo = part.end;
+        consumedSentences++;
       }
-      if (advancedTo > 0) processedText += pending.substring(0, advancedTo);
     }
 
     function ensureSession() {
@@ -4840,7 +4887,7 @@ $(document).ready(function() {
       if (pumpInFlight) return;
       discoverSentences();
       if (sentenceQueue.length > 0) {
-        const text = String(sentenceQueue.shift() || '').trim();
+        const text = sanitizeForTTS(sentenceQueue.shift() || '').trim();
         if (!text) { pump(); return; }
         pumpInFlight = true;
         ensureSession().then(function () {
@@ -4918,10 +4965,8 @@ $(document).ready(function() {
         }, 80);
         return;
       }
-      const remaining = getMessageTtsText($messageElement).substring(processedText.length).trim();
-      if (remaining) {
-        sentenceQueue.push(remaining);
-        processedText += getMessageTtsText($messageElement).substring(processedText.length);
+      discoverSentences();
+      if (sentenceQueue.length > 0) {
         pump();
         return;
       }
@@ -4929,11 +4974,10 @@ $(document).ready(function() {
       markEndOfQueue();
     }
 
-    if (options.sentences && options.sentences.length) {
+    if (isFixedList) {
       options.sentences.forEach(function (sentence) {
         if (sentence && String(sentence).trim()) sentenceQueue.push(String(sentence));
       });
-      processedText = getMessageTtsText($messageElement) || '';
     }
 
     // React immediately to streaming text updates so TTS starts on the first

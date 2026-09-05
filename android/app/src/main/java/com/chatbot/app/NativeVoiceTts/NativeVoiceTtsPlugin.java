@@ -518,6 +518,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
             }
             track.release();
             audioTrack = null;
+            bytesWritten.set(0);
         }
         trackSampleRate = sampleRate;
         AudioAttributes attrs = new AudioAttributes.Builder()
@@ -540,6 +541,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 .build();
         track.setVolume(1.0f);
         audioTrack = track;
+        bytesWritten.set(0);
         track.play();
         if (playbackStartedNotified.compareAndSet(false, true)) {
             notifyStarted();
@@ -558,14 +560,25 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
         long durationMs = (written / 2 * 1000L) / trackSampleRate;
         long deadline = System.currentTimeMillis() + Math.min(durationMs + 200, 30000);
+        long lastPlayedBytes = -1;
+        int stalledTicks = 0;
         while (System.currentTimeMillis() < deadline) {
             if (stopRequested.get()) {
                 return;
             }
             int head = track.getPlaybackHeadPosition();
             long playedBytes = (long) head * 2;
-            if (playedBytes >= written - 4096) {
+            if (playedBytes >= written) {
                 break;
+            }
+            if (playedBytes == lastPlayedBytes) {
+                stalledTicks++;
+                if (stalledTicks >= 15 && playedBytes >= written - 512) {
+                    break;
+                }
+            } else {
+                lastPlayedBytes = playedBytes;
+                stalledTicks = 0;
             }
             Thread.sleep(20);
         }
@@ -627,6 +640,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
         AudioTrack track = audioTrack;
         audioTrack = null;
+        bytesWritten.set(0);
         if (track == null) {
             return;
         }

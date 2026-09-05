@@ -27,7 +27,7 @@ use crate::http_error::{
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const MAX_TTS_AUDIO_BYTES: usize = 8 * 1024 * 1024;
-const MAX_PENDING_TTS: usize = 32;
+const MAX_PENDING_TTS: usize = 128;
 const TTS_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_TTS_REPLAYS: u8 = 2;
 const SAMPLE_RATE_HZ: u32 = 25_200;
@@ -191,11 +191,6 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
             "sanitized /tts payload is empty; streaming silence instead of failing the sentence"
         );
     }
-    let (entry_text, entry_audio) = if cleaned.is_empty() {
-        (String::new(), Some(SILENT_WAV.clone()))
-    } else {
-        (cleaned, None)
-    };
 
     // Generate a temporary token and store the cleaned text
     let mut token_bytes = [0u8; 16];
@@ -208,8 +203,8 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
             &mut map,
             token.clone(),
             PendingTts {
-                text: entry_text,
-                audio: entry_audio,
+                text: cleaned,
+                audio: None,
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
@@ -234,6 +229,23 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .header("X-TTS-Token", token.as_str())
         .body(Body::from(body))
         .map_err(|err| map_response_build_err(err, "tts::post::token_response"))
+}
+
+struct GeneratingGuard<'a> {
+    token: &'a str,
+    active: bool,
+}
+
+impl<'a> Drop for GeneratingGuard<'a> {
+    fn drop(&mut self) {
+        if self.active {
+            if let Ok(mut map) = PENDING_TTS.write() {
+                if let Some(pending) = map.get_mut(self.token) {
+                    pending.generating = false;
+                }
+            }
+        }
+    }
 }
 
 pub async fn handle_tts_stream(
@@ -270,6 +282,11 @@ pub async fn handle_tts_stream(
         return build_audio_response(audio);
     }
 
+    let mut generating_guard = GeneratingGuard {
+        token: &token,
+        active: true,
+    };
+
     let result = synthesize_tts_stream(cleaned.clone()).await;
     match result {
         Ok(response) => {
@@ -277,6 +294,7 @@ pub async fn handle_tts_stream(
             let audio = match body::to_bytes(body, MAX_TTS_AUDIO_BYTES).await {
                 Ok(bytes) => bytes.to_vec(),
                 Err(err) => {
+                    generating_guard.active = false;
                     let mapped = map_body_read_err(err, "tts::stream::cache");
                     let mut map = PENDING_TTS.write().expect("tts lock");
                     if let Some(pending) = map.get_mut(&token) {
@@ -285,6 +303,7 @@ pub async fn handle_tts_stream(
                     return Err(mapped);
                 }
             };
+            generating_guard.active = false;
             let mut map = PENDING_TTS.write().expect("tts lock");
             if let Some(pending) = map.get_mut(&token) {
                 pending.text.clear();
@@ -295,6 +314,7 @@ pub async fn handle_tts_stream(
             Ok(Response::from_parts(parts, Body::from(audio)))
         }
         Err(err) => {
+            generating_guard.active = false;
             let mut map = PENDING_TTS.write().expect("tts lock");
             if let Some(pending) = map.get_mut(&token) {
                 pending.generating = false;
@@ -355,7 +375,20 @@ fn insert_pending_tts(
         if let Some(oldest) = oldest_cached {
             map.remove(&oldest);
         } else {
-            return false;
+            let stale_ungenerated = map
+                .iter()
+                .filter(|(_, pending)| {
+                    pending.audio.is_none()
+                        && !pending.generating
+                        && pending.created_at.elapsed() >= Duration::from_secs(60)
+                })
+                .min_by_key(|(_, pending)| pending.created_at)
+                .map(|(token, _)| token.clone());
+            if let Some(stale) = stale_ungenerated {
+                map.remove(&stale);
+            } else {
+                return false;
+            }
         }
     }
     map.insert(token, pending);
@@ -363,6 +396,9 @@ fn insert_pending_tts(
 }
 
 async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpError> {
+    if cleaned.is_empty() {
+        return build_audio_response(SILENT_WAV.clone());
+    }
     let config = config::app_config();
     debug!(provider = %config.tts_provider, "handling /tts_stream request");
     if config.tts_provider == "kokoro" {
@@ -721,6 +757,9 @@ fn sanitize_text(input: &str) -> String {
     
     let result = collapsed.trim().to_string();
     debug!(result_preview = ?result.get(..100.min(result.len())), "sanitize_text: final result");
+    if !result.chars().any(|c| c.is_alphanumeric()) {
+        return String::new();
+    }
     result
 }
 
@@ -920,7 +959,7 @@ mod tests {
     /// must treat these as silence, not as a 500 the client cannot fix.
     #[test]
     fn test_sanitize_text_empties_for_marker_only_chunks() {
-        for input in ["---", "***", "___", "#", ">", "<!-- note -->", "&nbsp;"] {
+        for input in ["---", "***", "___", "#", ">", "<!-- note -->", "&nbsp;", ")", ":", ": - )", "... "] {
             assert!(
                 sanitize_text(input).is_empty(),
                 "{input:?} should sanitize to empty"
