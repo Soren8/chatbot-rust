@@ -4522,14 +4522,9 @@ $(document).ready(function() {
     this.speechLikeMs = startChunks.length * 20;
     this.voicedMs = NativeAudio.pcm16VoicedMsFromChunks(startChunks, 20);
     this.voicedWindow = startChunks.slice(-NativeAudio.SPEECH_VOICED_WINDOW_FRAMES);
-    if (skipPreRoll) {
-      // Keep the speech-like start-gate frames; drop earlier pre-roll (TTS leak).
-      this.utteranceChunks = startChunks;
-      nativeLog('VAD', 'utterance begin (during TTS, start-gate frames=' + startChunks.length + ')');
-    } else {
-      this.utteranceChunks = this.preRollBuffer.snapshotChunks();
-      nativeLog('VAD', 'utterance begin preRollChunks=' + this.utteranceChunks.length);
-    }
+    const preRoll = this.preRollBuffer.snapshotChunks();
+    this.utteranceChunks = preRoll.length ? preRoll : startChunks;
+    nativeLog('VAD', 'utterance begin (startChunks=' + startChunks.length + ' preRoll=' + this.utteranceChunks.length + ')');
     this._maybeBargeIn();
   };
 

@@ -8,8 +8,8 @@
   const NATIVE_MIC_SAMPLE_RATE = 16000;
   /** Minimum buffered audio before starting Silero VAD (avoids initial underruns). */
   const VAD_PREFETCH_SAMPLES = 4800; // 300 ms @ 16 kHz
-  /** Pre-roll so unvoiced onsets before the speech-like gate reach STT. 600 ms sent noise. */
-  const SPEECH_PREROLL_SAMPLES = 4800; // 300 ms @ 16 kHz
+  /** Pre-roll so unvoiced onsets before the speech-like gate reach STT. */
+  const SPEECH_PREROLL_SAMPLES = 8000; // 500 ms @ 16 kHz
   /**
    * Two-phase native VAD (desktop Silero analog). Do not collapse these gates.
    * Phase 1 SPEECH_START_FRAMES: start *recording*. Coughs may enter this. Do
