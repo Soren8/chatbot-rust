@@ -1364,3 +1364,46 @@ fn java_method_body<'a>(src: &'a str, signature: &str) -> Option<&'a str> {
 fn native_tts_uses_voice_communication_playback(tts: &str) -> bool {
     tts.contains("setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)")
 }
+
+/// Voice mode TTS audio must be queued ahead in an audio queue rather than
+/// streaming directly to AudioTrack with minimal preroll. On an unreliable
+/// connection:
+/// 1. A dropped connection during playback must not halt an already playing
+///    sentence mid-sentence;
+/// 2. A dropped connection during clip fetch must retry without dropping the
+///    sentence or skipping ahead to the next sentence;
+/// 3. The audio queue must decouple downloading from playback so network
+///    drops cause only a temporary pause rather than audio skipping.
+#[test]
+fn native_voice_tts_queues_audio_ahead_without_skipping_sentences() {
+    let tts = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+
+    assert!(
+        tts.contains("audioQueue")
+            && tts.contains("AudioClip")
+            && tts.contains("downloaderThread"),
+        "native TTS must queue decoded audio clips ahead of playback using a dedicated downloader"
+    );
+    assert!(
+        !tts.contains("STREAM_ATTEMPTS")
+            && !tts.contains("attempt < STREAM_ATTEMPTS"),
+        "clip fetching must not give up after a fixed 3-attempt cap and drop the sentence; it must retry while the session is active"
+    );
+    let worker = java_method_body(tts, "private void workerLoop(long generation)")
+        .expect("workerLoop must be declared");
+    assert!(
+        worker.contains("audioQueue.poll")
+            && worker.contains("writePcmToTrack"),
+        "workerLoop must play from the decoded audio queue, not stream directly from network URLs"
+    );
+    let downloader = java_method_body(tts, "private void downloaderLoop(long generation)")
+        .expect("downloaderLoop must be declared");
+    assert!(
+        downloader.contains("urlQueue.poll")
+            && downloader.contains("playUrlToTrack"),
+        "downloaderLoop must fetch URLs from urlQueue into the audio queue"
+    );
+}
+
