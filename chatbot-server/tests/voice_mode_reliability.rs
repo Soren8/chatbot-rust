@@ -1407,3 +1407,41 @@ fn native_voice_tts_queues_audio_ahead_without_skipping_sentences() {
     );
 }
 
+/// Desktop voice mode must achieve parity with native Android reliability:
+/// 1. Audio must be fetched into in-memory Blobs and played via blob URLs so
+///    network drops cannot halt playback mid-sentence.
+/// 2. Audio must be prefetched ahead so consecutive sentences transition without
+///    network latency gaps.
+/// 3. While voice mode is active, transient failures must retry persistently
+///    rather than giving up after 3 attempts and skipping the sentence.
+/// 4. Silero VAD must configure preSpeechPadFrames for pre-roll speech onset parity.
+#[test]
+fn desktop_voice_tts_queues_audio_ahead_and_prevents_mid_sentence_cutoffs() {
+    let chat_js = include_str!("../../static/chat.js");
+
+    assert!(
+        chat_js.contains("createObjectURL")
+            && chat_js.contains("revokeObjectURL"),
+        "desktop TTS must buffer audio into in-memory blobs via object URLs to prevent mid-sentence network cutoffs"
+    );
+    assert!(
+        chat_js.contains("preloadDesktopTtsSentence"),
+        "desktop TTS must prefetch/preload upcoming sentences ahead of playback"
+    );
+    let body = function_body(chat_js, "playMessageBodyTts")
+        .expect("playMessageBodyTts must be declared");
+    let pump_start = body
+        .find("function pump(")
+        .expect("playMessageBodyTts must contain a sentence pump");
+    let pump = &body[pump_start..];
+    assert!(
+        pump.contains("window.voiceModeActive"),
+        "desktop sentence pump must distinguish voice mode to persist retries during network drops without skipping"
+    );
+    assert!(
+        function_contains(chat_js, "createVAD", "preSpeechPadFrames"),
+        "desktop Silero VAD must configure preSpeechPadFrames to capture speech onset pre-roll"
+    );
+}
+
+

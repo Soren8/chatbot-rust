@@ -1298,6 +1298,8 @@ let CURRENT_AUDIO_BUTTON = null;
 let desktopTtsSession = 0;
 let desktopTtsAudio = null;
 let desktopTtsAbort = null;
+let desktopTtsPreloadCache = new Map();
+let desktopTtsCurrentBlobUrl = null;
 /** True while voice-mode TTS session is active (queued sentences). */
 let voiceModeTtsSessionActive = false;
 /** True while TTS audio is actively playing. */
@@ -1311,6 +1313,20 @@ const MAX_TTS_SENTENCE_RETRIES = 3;
 const MAX_TTS_CLIP_ATTEMPTS = 2;
 /** Backoff between clip GET retries; grows with the attempt number. */
 const TTS_CLIP_RETRY_BACKOFF_MS = 400;
+
+function clearDesktopTtsPreloads() {
+  if (desktopTtsCurrentBlobUrl) {
+    try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
+    desktopTtsCurrentBlobUrl = null;
+  }
+  desktopTtsPreloadCache.forEach(function (promise) {
+    Promise.resolve(promise).then(function (clip) {
+      if (clip && clip.cleanUp) clip.cleanUp();
+    }).catch(function () {});
+  });
+  desktopTtsPreloadCache.clear();
+}
+
 
 function armTtsListenCooldown() {
   voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
@@ -1398,6 +1414,7 @@ function stopCurrentDesktopTts() {
     try { desktopTtsAbort.abort(); } catch (e) { /* ignore */ }
     desktopTtsAbort = null;
   }
+  clearDesktopTtsPreloads();
   resetDesktopTtsAudioElement();
   const prevBtn = CURRENT_AUDIO_BUTTON;
   CURRENT_AUDIO = null;
@@ -1412,6 +1429,7 @@ function stopCurrentDesktopTts() {
 }
 
 function completeDesktopTtsPlayback(button) {
+  clearDesktopTtsPreloads();
   CURRENT_AUDIO = null;
   CURRENT_AUDIO_BUTTON = null;
   resetPlayButtonUi(button);
@@ -1426,6 +1444,7 @@ function completeDesktopTtsPlayback(button) {
     syncSendButtonState();
   }
 }
+
 
 function desktopTtsIsLive(sessionId) {
   return sessionId === desktopTtsSession && CURRENT_AUDIO && CURRENT_AUDIO.sessionId === sessionId;
@@ -2308,17 +2327,18 @@ function highlightSentenceInElement(element, text, caretOffset, isPlaying) {
   return sentence;
 }
 
-/**
- * Fetch one TTS token and play it on the shared HTMLAudioElement.
- * Resolves true when that clip finished while the session is still live.
- */
-function playOneTtsUtterance(sessionId, text) {
-  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(false);
+function fetchDesktopTtsClip(sessionId, text) {
+  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(null);
   const cleaned = sanitizeForTTS(text);
-  if (!cleaned) return Promise.resolve(true);
+  if (!cleaned) return Promise.resolve(null);
+
+  const cacheKey = sessionId + ':' + cleaned;
+  if (desktopTtsPreloadCache.has(cacheKey)) {
+    return desktopTtsPreloadCache.get(cacheKey);
+  }
 
   const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
-  return fetchVoiceRetry('/tts', {
+  const promise = fetchVoiceRetry('/tts', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ text: cleaned }),
@@ -2329,21 +2349,90 @@ function playOneTtsUtterance(sessionId, text) {
     return r.json();
   })
   .then(function (data) {
-    if (!desktopTtsIsLive(sessionId) || !data || !data.token) return false;
+    if (!desktopTtsIsLive(sessionId) || !data || !data.token) return null;
+    const clipUrl = '/tts_stream/' + encodeURIComponent(data.token);
+    return fetchVoiceRetry(clipUrl, {
+      method: 'GET',
+      headers: withCsrf({}),
+      signal: signal
+    }, MAX_TTS_CLIP_ATTEMPTS);
+  })
+  .then(function (res) {
+    if (!res || !desktopTtsIsLive(sessionId)) return null;
+    return res.blob();
+  })
+  .then(function (blob) {
+    if (!blob || !desktopTtsIsLive(sessionId)) return null;
+    const blobUrl = URL.createObjectURL(blob);
+    return {
+      blobUrl: blobUrl,
+      cleanUp: function () {
+        try { URL.revokeObjectURL(blobUrl); } catch (e) { /* ignore */ }
+      }
+    };
+  })
+  .catch(function (err) {
+    desktopTtsPreloadCache.delete(cacheKey);
+    throw err;
+  });
+
+  desktopTtsPreloadCache.set(cacheKey, promise);
+  return promise;
+}
+
+function preloadDesktopTtsSentence(sessionId, text) {
+  if (!desktopTtsIsLive(sessionId) || !text) return;
+  const cleaned = sanitizeForTTS(text);
+  if (!cleaned) return;
+  const cacheKey = sessionId + ':' + cleaned;
+  if (desktopTtsPreloadCache.has(cacheKey)) return;
+  fetchDesktopTtsClip(sessionId, text).catch(function () {});
+}
+
+/**
+ * Fetch one TTS token and play it on the shared HTMLAudioElement.
+ * Resolves true when that clip finished while the session is still live.
+ */
+function playOneTtsUtterance(sessionId, text) {
+  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(false);
+  const cleaned = sanitizeForTTS(text);
+  if (!cleaned) return Promise.resolve(true);
+
+  const cacheKey = sessionId + ':' + cleaned;
+  const cached = desktopTtsPreloadCache.get(cacheKey);
+  desktopTtsPreloadCache.delete(cacheKey);
+
+  // Retries token fetch and clip GET via fetchVoiceRetry
+  const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
+  const getClipPromise = cached
+    ? Promise.resolve(cached)
+    : fetchDesktopTtsClip(sessionId, text);
+
+  return getClipPromise.then(function (clip) {
+    if (!desktopTtsIsLive(sessionId) || !clip || !clip.blobUrl) return false;
     const audio = getDesktopTtsAudio();
     return new Promise(function (resolve) {
       if (!desktopTtsIsLive(sessionId)) {
+        clip.cleanUp();
         resolve(false);
         return;
       }
       let settled = false;
       let clipAttempt = 0;
-      const clipUrl = '/tts_stream/' + encodeURIComponent(data.token);
+      if (desktopTtsCurrentBlobUrl && desktopTtsCurrentBlobUrl !== clip.blobUrl) {
+        try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
+      }
+      desktopTtsCurrentBlobUrl = clip.blobUrl;
+
       const finish = function (ok) {
         if (settled) return;
         settled = true;
         audio.onended = null;
         audio.onerror = null;
+        clip.cleanUp();
+        if (desktopTtsCurrentBlobUrl === clip.blobUrl) {
+          desktopTtsCurrentBlobUrl = null;
+        }
         if (window.voiceModeActive) {
           voiceModeTtsPlaying = false;
           if (typeof window.notifyVoiceModeTtsEnded === 'function') {
@@ -2352,11 +2441,7 @@ function playOneTtsUtterance(sessionId, text) {
         }
         resolve(!!ok && desktopTtsIsLive(sessionId));
       };
-      // A dropped clip GET fires the media element's error event (browsers do
-      // not retry media requests). The server retains a generated WAV for
-      // bounded replays and re-arms a failed generation, so retry the same
-      // token with backoff before failing the sentence. An autoplay-blocked
-      // play() (NotAllowedError) is not transient and stays fatal.
+
       const startClip = function () {
         if (settled) return;
         clipAttempt += 1;
@@ -2381,8 +2466,7 @@ function playOneTtsUtterance(sessionId, text) {
         };
         audio.onended = function () { finish(true); };
         audio.onerror = function () { failAttempt(null); };
-        // Always assign a fresh absolute URL; prior load() cleared the element.
-        audio.src = clipUrl;
+        audio.src = clip.blobUrl;
         if (window.voiceModeActive) {
           voiceModeTtsPlaying = true;
           if (typeof window.notifyVoiceModeTtsStarted === 'function') {
@@ -2398,8 +2482,7 @@ function playOneTtsUtterance(sessionId, text) {
       };
       startClip();
     });
-  })
-  .catch(function (err) {
+  }).catch(function (err) {
     if (err && (err.name === 'AbortError' || (err.message && err.message.indexOf('aborted') !== -1))) {
       return false;
     }
@@ -2423,16 +2506,22 @@ function playFixedSentenceList(sessionId, button, sentences) {
       return;
     }
     const next = queue.shift();
+    if (queue.length > 0) {
+      preloadDesktopTtsSentence(sessionId, queue[0]);
+    }
     playOneTtsUtterance(sessionId, next).then(function (ok) {
       if (!desktopTtsIsLive(sessionId)) return;
       if (!ok) {
-        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES) {
+        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (window.voiceModeActive && desktopTtsIsLive(sessionId))) {
           sentenceRetries += 1;
           queue.unshift(next);
+          const delay = window.voiceModeActive
+            ? Math.min(400 * sentenceRetries, 3000)
+            : 400 * sentenceRetries;
           setTimeout(function () {
             if (!desktopTtsIsLive(sessionId)) return;
             pump();
-          }, 400 * sentenceRetries);
+          }, delay);
           return;
         }
         sentenceRetries = 0;
@@ -2445,8 +2534,12 @@ function playFixedSentenceList(sessionId, button, sentences) {
     });
   }
 
+  if (queue.length > 0) {
+    preloadDesktopTtsSentence(sessionId, queue[0]);
+  }
   pump();
 }
+
 
 /**
  * Play from message body (play button). Supports streaming generation.
@@ -2481,6 +2574,9 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
       if (!sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
       queue.push(s.text);
       consumedLen = s.end;
+    }
+    if (queue.length > 0) {
+      preloadDesktopTtsSentence(sessionId, queue[0]);
     }
   }
 
@@ -2540,6 +2636,9 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     }
     running = true;
     const next = queue.shift();
+    if (queue.length > 0) {
+      preloadDesktopTtsSentence(sessionId, queue[0]);
+    }
     playOneTtsUtterance(sessionId, next).then(function (ok) {
       running = false;
       if (!desktopTtsIsLive(sessionId)) {
@@ -2550,15 +2649,19 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
         // Transient failure (token fetch, clip GET, playback): requeue with
         // backoff like the native sentence pump so a spotty link delays the
         // sentence instead of ending speech after the last good one. Bounded
-        // so a dead sentence cannot churn forever; after that, skip it.
-        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES) {
+        // so a dead sentence cannot churn forever; during active voice mode,
+        // persist retries so remote link drops pause rather than skip sentences.
+        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (window.voiceModeActive && desktopTtsIsLive(sessionId))) {
           sentenceRetries += 1;
           queue.unshift(next);
           retryScheduled = true;
+          const delay = window.voiceModeActive
+            ? Math.min(400 * sentenceRetries, 3000)
+            : 400 * sentenceRetries;
           setTimeout(function () {
             retryScheduled = false;
             pump();
-          }, 400 * sentenceRetries);
+          }, delay);
           return;
         }
         sentenceRetries = 0;
@@ -2570,6 +2673,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
       pump();
     });
   }
+
 
   // Hook into the visible text node so we can start TTS on the first sentence
   // the moment it lands, without waiting for the 60 ms poll cycle. This is
@@ -5200,6 +5304,7 @@ $(document).ready(function() {
       negativeSpeechThreshold: 0.4,
       redemptionMs: 1500,
       minSpeechMs: 400,
+      preSpeechPadFrames: 16,
       getStream: async () => stream,
       onSpeechStart: hooks.onSpeechStart || function () {
         nativeLog('VAD', 'onSpeechStart');
