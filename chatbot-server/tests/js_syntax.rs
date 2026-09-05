@@ -235,4 +235,29 @@ fn login_js_does_not_ask_user_to_reload() {
     );
 }
 
+#[test]
+fn main_activity_allows_screenshots_when_unlocked_and_hides_recents_overview() {
+    let main_activity_src =
+        include_str!("../../android/app/src/main/java/com/chatbot/app/MainActivity.java");
+
+    assert!(
+        main_activity_src.contains("clearFlags(WindowManager.LayoutParams.FLAG_SECURE)"),
+        "MainActivity must clear FLAG_SECURE when the app is focused and unlocked so screenshots work"
+    );
+    assert!(
+        main_activity_src.contains("setRecentsScreenshotEnabled(false)"),
+        "MainActivity must disable recents screenshots on Android 13+ via setRecentsScreenshotEnabled"
+    );
+    assert!(
+        main_activity_src.contains("onWindowFocusChanged"),
+        "MainActivity must monitor window focus to re-enable FLAG_SECURE when leaving the foreground"
+    );
+    assert!(
+        main_activity_src.contains("isLocked")
+            && main_activity_src.contains("updateWindowSecurity"),
+        "MainActivity must maintain window security based on lock state and focus"
+    );
+}
+
+
 

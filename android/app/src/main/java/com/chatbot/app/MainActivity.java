@@ -39,16 +39,17 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         FileLogger.init(getApplicationContext());
-        getWindow().setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        );
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setRecentsScreenshotEnabled(false);
+        }
+        updateWindowSecurity(false);
         registerPlugin(NativeMicPlugin.class);
         registerPlugin(NativeVoiceTtsPlugin.class);
         registerPlugin(NativeSecureKeyPlugin.class);
         registerPlugin(LoggerPlugin.class);
         super.onCreate(savedInstanceState);
     }
+
 
     @Override
     protected void load() {
@@ -93,16 +94,25 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
         checkResumeLock();
+        updateWindowSecurity(hasWindowFocus());
     }
 
     @Override
     public void onPause() {
         super.onPause();
+        updateWindowSecurity(false);
         keepVoiceWebViewRunning();
         if (!isFinishing()) {
             backgroundedAt = SystemClock.elapsedRealtime();
         }
     }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        updateWindowSecurity(hasFocus);
+    }
+
 
     @Override
     public void onStop() {
@@ -168,6 +178,7 @@ public class MainActivity extends BridgeActivity {
         }
         isLocked = true;
         runOnUiThread(() -> {
+            updateWindowSecurity(hasWindowFocus());
             ensureLockOverlay();
             if (lockOverlay != null) {
                 lockOverlay.setVisibility(View.VISIBLE);
@@ -175,6 +186,7 @@ public class MainActivity extends BridgeActivity {
             promptResumeUnlock();
         });
     }
+
 
     private void ensureLockOverlay() {
         if (lockOverlay != null) {
@@ -295,7 +307,22 @@ public class MainActivity extends BridgeActivity {
         if (lockOverlay != null) {
             lockOverlay.setVisibility(View.GONE);
         }
+        updateWindowSecurity(hasWindowFocus());
     }
+
+    private void updateWindowSecurity(boolean hasFocus) {
+        runOnUiThread(() -> {
+            if (isLocked || !hasFocus) {
+                getWindow().setFlags(
+                    WindowManager.LayoutParams.FLAG_SECURE,
+                    WindowManager.LayoutParams.FLAG_SECURE
+                );
+            } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            }
+        });
+    }
+
 
     public void keepVoiceWebViewRunning() {
         if (!VoiceModeForegroundSession.get().isActive()) {
