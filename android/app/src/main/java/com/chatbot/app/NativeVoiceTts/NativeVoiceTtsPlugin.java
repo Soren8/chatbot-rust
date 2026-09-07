@@ -590,7 +590,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
     }
 
     private AudioTrack ensureTrackPlaying(int sampleRate, long generation) {
-        requestAudioFocus();
         AudioTrack track = audioTrack;
         if (track != null && trackSampleRate == sampleRate) {
             if (track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
@@ -598,6 +597,10 @@ public class NativeVoiceTtsPlugin extends Plugin {
             }
             return track;
         }
+        // New track (or rate change): (re)acquire focus once here, not per
+        // sentence, so steady playback avoids per-sentence binder churn and
+        // mixer ducking. The reuse path above keeps held focus.
+        requestAudioFocus();
         if (track != null) {
             try {
                 track.stop();

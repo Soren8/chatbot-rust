@@ -1689,3 +1689,26 @@ fn native_tts_downloader_bounds_clip_retries_to_avoid_head_of_line_stalls() {
         "bounded retries must still back off between attempts for brief blips"
     );
 }
+
+#[test]
+fn native_tts_requests_audio_focus_once_per_track_not_per_sentence() {
+    let tts_plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    let ensure = java_method_body(tts_plugin, "private AudioTrack ensureTrackPlaying(")
+        .expect("ensureTrackPlaying must be declared");
+    let reuse = ensure
+        .find("trackSampleRate == sampleRate")
+        .expect("reuse path must check for matching sample rate");
+    let focus = ensure
+        .find("requestAudioFocus()")
+        .expect("track creation must still acquire audio focus");
+    assert!(
+        focus > reuse,
+        "reusing the active AudioTrack must not re-request focus, reset volume, or rescan devices per sentence"
+    );
+    assert!(
+        ensure.contains("setPreferredDevice"),
+        "track creation must still route to the speaker when appropriate"
+    );
+}
