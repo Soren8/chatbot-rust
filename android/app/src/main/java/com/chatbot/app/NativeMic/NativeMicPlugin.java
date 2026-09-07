@@ -87,16 +87,30 @@ public class NativeMicPlugin extends Plugin {
     private boolean pausedForPhoneCall;
     private boolean modeListenerRegistered;
     private AudioManager.OnModeChangedListener modeChangedListener;
+    private static volatile NativeMicPlugin instance;
 
     @Override
     public void load() {
         super.load();
+        instance = this;
         FileLogger.init(getContext().getApplicationContext());
         FileLogger.log(TAG, "NativeMicPlugin.load()");
         audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
         VoiceModeNativeHooks.setHandler(this::stopFromNotification);
         VoiceModeNativeHooks.setKeepAliveHandler(this::keepVoiceWebViewRunning);
         registerModeListener();
+    }
+
+    public static void reclaimAudioFocusIfPresent() {
+        NativeMicPlugin plugin = instance;
+        if (plugin != null) {
+            plugin.reclaimAudioFocus();
+        }
+    }
+
+    public static boolean hasBluetoothAudioPresent() {
+        NativeMicPlugin plugin = instance;
+        return plugin != null && plugin.voiceAudioBackend != null && plugin.voiceAudioBackend.hasBluetoothAudio();
     }
 
     @PluginMethod
@@ -328,7 +342,9 @@ public class NativeMicPlugin extends Plugin {
                     } else if (change == AudioManager.AUDIOFOCUS_GAIN) {
                         hasAudioFocus = true;
                     }
-                    onAudioModeOrFocusChanged();
+                    if (!NativeVoiceTtsPlugin.isSessionActive()) {
+                        onAudioModeOrFocusChanged();
+                    }
                 })
                 .build();
         int result = audioManager.requestAudioFocus(audioFocusRequest);
@@ -541,6 +557,9 @@ public class NativeMicPlugin extends Plugin {
             return;
         }
         if (hasAudioFocus) {
+            return;
+        }
+        if (NativeVoiceTtsPlugin.isSessionActive()) {
             return;
         }
         requestAudioFocus();

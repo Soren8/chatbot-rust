@@ -2,6 +2,7 @@ package com.chatbot.app;
 
 import android.content.Context;
 import android.media.AudioAttributes;
+import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
 import android.media.AudioManager;
@@ -84,6 +85,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private final Object connectionLock = new Object();
     private volatile int trackSampleRate = DEFAULT_SAMPLE_RATE;
     private static volatile NativeVoiceTtsPlugin instance;
+    private AudioFocusRequest currentFocusRequest;
 
     @Override
     public void load() {
@@ -96,6 +98,11 @@ public class NativeVoiceTtsPlugin extends Plugin {
         if (plugin != null) {
             plugin.stopPlaybackInternal(true);
         }
+    }
+
+    public static boolean isSessionActive() {
+        NativeVoiceTtsPlugin plugin = instance;
+        return plugin != null && plugin.sessionActive.get();
     }
 
     @PluginMethod
@@ -537,7 +544,32 @@ public class NativeVoiceTtsPlugin extends Plugin {
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build())
                 .build();
+        currentFocusRequest = req;
         am.requestAudioFocus(req);
+    }
+
+    private AudioDeviceInfo findBuiltInSpeaker() {
+        Context ctx = getContext();
+        if (ctx == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return null;
+        }
+        AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) {
+            return null;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            for (AudioDeviceInfo device : am.getAvailableCommunicationDevices()) {
+                if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    return device;
+                }
+            }
+        }
+        for (AudioDeviceInfo device : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+            if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                return device;
+            }
+        }
+        return null;
     }
 
     private AudioTrack ensureTrackPlaying(int sampleRate, long generation) {
@@ -577,6 +609,14 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 .setBufferSizeInBytes(Math.max(minBuf * 4, 1024 * 256))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!NativeMicPlugin.hasBluetoothAudioPresent()) {
+                AudioDeviceInfo speaker = findBuiltInSpeaker();
+                if (speaker != null) {
+                    track.setPreferredDevice(speaker);
+                }
+            }
+        }
         track.setVolume(1.0f);
         audioTrack = track;
         bytesWritten.set(0);
@@ -679,6 +719,18 @@ public class NativeVoiceTtsPlugin extends Plugin {
 
         playbackStartedNotified.set(false);
         bytesWritten.set(0);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && currentFocusRequest != null) {
+            Context ctx = getContext();
+            if (ctx != null) {
+                AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+                if (am != null) {
+                    am.abandonAudioFocusRequest(currentFocusRequest);
+                }
+            }
+            currentFocusRequest = null;
+        }
+        NativeMicPlugin.reclaimAudioFocusIfPresent();
 
         if (notifyStopped && wasActive) {
             notifySessionEnded();

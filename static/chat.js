@@ -4917,6 +4917,8 @@ $(document).ready(function() {
         invalidateNativeVoiceTts();
         voiceModeTtsSessionActive = false;
         voiceModeTtsPlaying = false;
+        resetPlayButtonUi(button);
+        clearMessageTtsPlayingUi();
         window.NativeVoiceTts.stop().catch(function () {});
       }
     };
@@ -5411,6 +5413,11 @@ $(document).ready(function() {
         window.NativeVoiceTts.stop().catch(function () {});
       }
       stopCurrentDesktopTts();
+      if (CURRENT_AUDIO_BUTTON) {
+        resetPlayButtonUi(CURRENT_AUDIO_BUTTON);
+        CURRENT_AUDIO_BUTTON = null;
+      }
+      clearMessageTtsPlayingUi();
       syncSendButtonState();
     } finally {
       stopAllTtsPlayback._busy = false;

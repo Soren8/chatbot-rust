@@ -1509,5 +1509,49 @@ fn manual_tts_play_in_voice_mode_reliably_coexists_on_android_and_desktop() {
     );
 }
 
+#[test]
+fn native_tts_audio_focus_and_speaker_routing_during_voice_mode() {
+    let chat_js = include_str!("../../static/chat.js");
+    let tts_plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    let mic_plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
+    );
+
+    // 1. NativeMicPlugin does not steal audio focus while NativeVoiceTts session is active
+    let reclaim = java_method_body(mic_plugin, "void reclaimAudioFocus(")
+        .expect("reclaimAudioFocus must be declared");
+    assert!(
+        reclaim.contains("isSessionActive"),
+        "reclaimAudioFocus must not steal focus while NativeVoiceTtsPlugin session is active"
+    );
+
+    // 2. NativeVoiceTtsPlugin abandons audio focus and re-enables mic focus on stop
+    let stop_internal = java_method_body(tts_plugin, "private void stopPlaybackInternal(")
+        .expect("stopPlaybackInternal must be declared");
+    assert!(
+        stop_internal.contains("abandonAudioFocusRequest")
+            && stop_internal.contains("reclaimAudioFocusIfPresent"),
+        "stopPlaybackInternal must release audio focus and notify NativeMic to reclaim focus"
+    );
+
+    // 3. NativeVoiceTtsPlugin sets preferred device to speaker so media audio is not sent to earpiece
+    let ensure_track = java_method_body(tts_plugin, "private AudioTrack ensureTrackPlaying(")
+        .expect("ensureTrackPlaying must be declared");
+    assert!(
+        ensure_track.contains("setPreferredDevice"),
+        "ensureTrackPlaying must route AudioTrack to speaker via setPreferredDevice in MODE_IN_COMMUNICATION"
+    );
+
+    // 4. CURRENT_AUDIO.stop in playNativeVoiceModeTts resets button UI
+    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
+        .expect("playNativeVoiceModeTts must be declared");
+    assert!(
+        native_tts.contains("resetPlayButtonUi") || native_tts.contains("clearMessageTtsPlayingUi"),
+        "playNativeVoiceModeTts CURRENT_AUDIO.stop must reset play button UI so stopped audio does not stay playing in UI"
+    );
+}
+
 
 
