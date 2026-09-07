@@ -2015,8 +2015,12 @@ function sanitizeForTTS(text) {
     .replace(/^>\s*/gm, '')
     // Strip horizontal rules: --- or *** or ___
     .replace(/^[-*_]{3,}\s*$/gm, '')
-    // Collapse multiple spaces into one
-    .replace(/\s+/g, ' ')
+    // Normalize CRLF to LF
+    .replace(/\r\n/g, '\n')
+    // Collapse horizontal whitespace (preserve newlines for paragraph/list sentence discovery)
+    .replace(/[^\S\r\n]+/g, ' ')
+    // Collapse 3+ newlines into 2
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 
   // If there are no alphanumeric characters, there is nothing speakable
@@ -2054,13 +2058,14 @@ function getDomPlainText(element) {
 }
 
 /**
- * Whether a sentence string already ends with a terminator (incl. ellipsis).
+ * Whether a sentence string already ends with a terminator (incl. ellipsis, colon, or newline).
  * Used when streaming: do not enqueue an unfinished trailing fragment.
  */
 function sentenceEndsWithTerminator(sentenceText) {
-  const s = String(sentenceText || '');
-  // Terminator is . ! ? … or a run of periods (...), then optional closers.
-  return /(?:\.{1,}|[!?…])["'”’)\]]*$/.test(s);
+  const s = String(sentenceText || '').trim();
+  // Terminator is . ! ? … or a run of periods (...), optional closers,
+  // or a colon (:), or line terminator.
+  return /(?:\.{1,}|[!?…:]|[\r\n])["'”’)\]]*\s*$/.test(s);
 }
 
 /** True if `ch` is an ASCII digit (0-9). */
@@ -2095,6 +2100,20 @@ function splitSentences(text) {
     let end = i;
     while (end < n) {
       const c = text.charAt(end);
+      // Paragraph break (\n\n or \r\n\r\n) or newline before list marker / heading
+      if (c === '\n' || c === '\r') {
+        const rest = text.slice(end);
+        const isParagraphBreak = /^\r?\n\s*[\r\n]/.test(rest);
+        const isListOrHeadingBreak = /^\r?\n\s*(?:[-*]\s+|\d+\.\s+|#{1,6}\s+)/.test(rest);
+        if (isParagraphBreak || isListOrHeadingBreak) {
+          break;
+        }
+      }
+      // Colon before newline (e.g. "Here are the steps:\n")
+      if (c === ':' && end + 1 < n && /^\s*[\r\n]/.test(text.slice(end + 1))) {
+        end++;
+        break;
+      }
       if (c === '.' || c === '!' || c === '?' || c === '\u2026' /* … */) {
         if (c === '.') {
           // Decimal/version dot: digit on BOTH sides → not a terminator.
@@ -2574,7 +2593,8 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     for (let i = 0; i < sentences.length; i++) {
       const s = sentences[i];
       if (s.end <= consumedLen) continue;
-      if (!sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
+      const isTrailingFragment = (i === sentences.length - 1);
+      if (isTrailingFragment && !sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
       queue.push(s.text);
       consumedLen = s.end;
     }
@@ -4946,7 +4966,8 @@ $(document).ready(function() {
       const parts = splitSentences(fullText);
       for (let i = consumedSentences; i < parts.length; i++) {
         const part = parts[i];
-        if (!sentenceEndsWithTerminator(part.text) && isStillGenerating()) break;
+        const isTrailingFragment = (i === parts.length - 1);
+        if (isTrailingFragment && !sentenceEndsWithTerminator(part.text) && isStillGenerating()) break;
         sentenceQueue.push(part.text);
         consumedSentences++;
       }

@@ -1553,5 +1553,65 @@ fn native_tts_audio_focus_and_speaker_routing_during_voice_mode() {
     );
 }
 
+#[test]
+fn streaming_tts_starts_on_first_sentence_without_waiting_for_generation_complete() {
+    let chat_js = include_str!("../../static/chat.js");
+    let tts_plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+
+    // 1. sentenceEndsWithTerminator must match terminators with trailing whitespace/newlines
+    let term_body = function_body(chat_js, "sentenceEndsWithTerminator")
+        .expect("sentenceEndsWithTerminator must be declared");
+    assert!(
+        term_body.contains("\\s*$") || term_body.contains(".trim()"),
+        "sentenceEndsWithTerminator must handle trailing whitespace/newlines so sentences followed by whitespace or line breaks are recognized as terminated"
+    );
+    assert!(
+        term_body.contains(":") || term_body.contains("[\\r\\n]"),
+        "sentenceEndsWithTerminator must recognize colons or line terminators as sentence boundaries"
+    );
+
+    // 2. splitSentences must recognize paragraph breaks (\n\n) as sentence boundaries
+    let split_body = function_body(chat_js, "splitSentences")
+        .expect("splitSentences must be declared");
+    assert!(
+        split_body.contains("\\n\\n") || split_body.contains("\\n") || split_body.contains("newline"),
+        "splitSentences must recognize paragraph breaks or newlines as sentence boundaries"
+    );
+
+    // 3. discoverSentences in playNativeVoiceModeTts must not stall preceding completed sentences
+    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
+        .expect("playNativeVoiceModeTts must be declared");
+    assert!(
+        native_tts.contains("isTrailingFragment") || native_tts.contains("parts.length - 1"),
+        "discoverSentences must distinguish trailing in-flight fragments from completed sentences so early sentences stream immediately"
+    );
+
+    // 4. playMessageBodyTts desktop path must also distinguish trailing in-flight fragments
+    let desktop_tts = function_body(chat_js, "playMessageBodyTts")
+        .expect("playMessageBodyTts must be declared");
+    assert!(
+        desktop_tts.contains("isTrailingFragment") || desktop_tts.contains("sentences.length - 1"),
+        "playMessageBodyTts discoverAbsolute must distinguish trailing in-flight fragments from completed sentences"
+    );
+
+    // 5. sanitizeForTTS must not destroy paragraph breaks by collapsing newlines into spaces
+    let sanitize_body = function_body(chat_js, "sanitizeForTTS")
+        .expect("sanitizeForTTS must be declared");
+    assert!(
+        !sanitize_body.contains(".replace(/\\s+/g, ' ')"),
+        "sanitizeForTTS must not unconditionally collapse newlines into spaces, which destroys paragraph boundaries"
+    );
+
+    // 6. NativeVoiceTtsPlugin AudioTrack buffer must not exceed 64KB to ensure prompt playback on first sample
+    let ensure_track = java_method_body(tts_plugin, "private AudioTrack ensureTrackPlaying(")
+        .expect("ensureTrackPlaying must be declared");
+    assert!(
+        !ensure_track.contains("1024 * 256"),
+        "AudioTrack buffer should not be 256KB which can delay initial hardware playback threshold"
+    );
+}
+
 
 

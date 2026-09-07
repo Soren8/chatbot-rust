@@ -606,7 +606,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
         track = new AudioTrack.Builder()
                 .setAudioAttributes(attrs)
                 .setAudioFormat(format)
-                .setBufferSizeInBytes(Math.max(minBuf * 4, 1024 * 256))
+                .setBufferSizeInBytes(Math.max(minBuf * 4, 1024 * 64))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
