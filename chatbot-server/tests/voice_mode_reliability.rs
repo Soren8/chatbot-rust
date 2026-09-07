@@ -1672,3 +1672,20 @@ fn unified_android_audio_output_and_reliable_routing() {
         "stopPlaybackInternal must only notify NativeMic to reclaim focus when notifyStopped is true, not during beginSession(false)"
     );
 }
+
+#[test]
+fn native_tts_downloader_bounds_clip_retries_to_avoid_head_of_line_stalls() {
+    let tts_plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    let retry_body = java_method_body(tts_plugin, "private void playUrlToTrack(String urlStr")
+        .expect("playUrlToTrack must be declared");
+    assert!(
+        retry_body.contains("MAX_CLIP_ATTEMPTS") && retry_body.contains("attempt <"),
+        "playUrlToTrack must bound attempts so one failing clip skips instead of retrying forever and head-blocking later sentences"
+    );
+    assert!(
+        retry_body.contains("CLIP_RETRY_BACKOFF_MS"),
+        "bounded retries must still back off between attempts for brief blips"
+    );
+}
