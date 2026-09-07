@@ -689,7 +689,11 @@ public class NativeVoiceTtsPlugin extends Plugin {
         // on the listener of a session begun right after it (cold app start
         // after a relaunch) and kill that session at birth.
         boolean wasActive = sessionActive.getAndSet(false);
-        long stoppedGen = playbackGeneration.incrementAndGet();
+        // Do not increment playbackGeneration until after the ended event:
+        // the no-arg notify carries get, which must still be the ending
+        // session's generation so the JS listener accepts it. Incrementing
+        // first would send the teardown generation and the ended event would
+        // be discarded, wedging TTS in playing state.
         stopRequested.set(true);
         endOfQueueMarked.set(false);
         urlQueue.clear();
@@ -758,6 +762,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
         if (notifyStopped && wasActive) {
             notifySessionEnded();
         }
+        playbackGeneration.incrementAndGet();
     }
 
     private void releaseAudioTrack(long generation) {

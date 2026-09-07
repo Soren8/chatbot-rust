@@ -1989,7 +1989,7 @@ function handleStopClick() {
 
 // Sanitize raw markdown text for TTS: strip URLs, citations, code blocks, and formatting
 function sanitizeForTTS(text) {
-  const cleaned = String(text || '')
+  let cleaned = String(text || '')
     // Strip code fences: ```lang ... ``` or standalone ```
     .replace(/```[\s\S]*?```/g, '')
     .replace(/```[a-zA-Z0-9_-]*/g, '')
@@ -2823,7 +2823,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
  * Without options: speak full message from data-original / DOM (play button).
  */
 window.playTTS = function playTTS(button, options) {
-  if (window.nativeVoiceTtsAvailable
+  if (window.nativeVoiceTtsAvailable && window.NativeVoiceTts
       && typeof window.playNativeVoiceModeTts === 'function') {
     window.playNativeVoiceModeTts(button, options);
     return;
@@ -2881,7 +2881,7 @@ window.playTTS = function playTTS(button, options) {
 }
 
 window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
-  if (window.nativeVoiceTtsAvailable
+  if (window.nativeVoiceTtsAvailable && window.NativeVoiceTts
       && typeof window.playNativeVoiceModeTts === 'function') {
     window.playNativeVoiceModeTts(button, options);
     return;
@@ -2891,7 +2891,7 @@ window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
 
 /** Voice mode uses the same playTTS / HTML Audio path as the play button. */
 function playMessageTts(button, options) {
-  if (window.nativeVoiceTtsAvailable
+  if (window.nativeVoiceTtsAvailable && window.NativeVoiceTts
       && typeof window.playNativeVoiceModeTts === 'function') {
     window.playNativeVoiceModeTts(button, options);
     return;
