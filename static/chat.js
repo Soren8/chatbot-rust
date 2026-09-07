@@ -2823,6 +2823,11 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
  * Without options: speak full message from data-original / DOM (play button).
  */
 window.playTTS = function playTTS(button, options) {
+  if (window.nativeVoiceTtsAvailable
+      && typeof window.playNativeVoiceModeTts === 'function') {
+    window.playNativeVoiceModeTts(button, options);
+    return;
+  }
   options = options || {};
 
   // Toggle stop when this control is already the active speaker.
@@ -2876,7 +2881,7 @@ window.playTTS = function playTTS(button, options) {
 }
 
 window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
-  if (window.voiceModeActive && window.nativeVoiceTtsAvailable
+  if (window.nativeVoiceTtsAvailable
       && typeof window.playNativeVoiceModeTts === 'function') {
     window.playNativeVoiceModeTts(button, options);
     return;
@@ -2886,6 +2891,11 @@ window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
 
 /** Voice mode uses the same playTTS / HTML Audio path as the play button. */
 function playMessageTts(button, options) {
+  if (window.nativeVoiceTtsAvailable
+      && typeof window.playNativeVoiceModeTts === 'function') {
+    window.playNativeVoiceModeTts(button, options);
+    return;
+  }
   if (window.voiceModeActive && typeof window.playTTSVoiceMode === 'function') {
     window.playTTSVoiceMode(button, options);
     return;
@@ -4984,7 +4994,9 @@ $(document).ready(function() {
       }).catch(function () {});
     }
     nativeVoiceTtsSessionPromise = null;
-    armTtsListenCooldown();
+    if (window.voiceModeActive) {
+      armTtsListenCooldown();
+    }
     syncSendButtonState();
   }
 
@@ -5053,7 +5065,7 @@ $(document).ready(function() {
     syncSendButtonState();
 
     function live() {
-      return !stopped && generation === nativeVoiceTtsGeneration && window.voiceModeActive;
+      return !stopped && generation === nativeVoiceTtsGeneration;
     }
 
     function isStillGenerating() {

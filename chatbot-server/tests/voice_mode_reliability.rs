@@ -1613,5 +1613,62 @@ fn streaming_tts_starts_on_first_sentence_without_waiting_for_generation_complet
     );
 }
 
+#[test]
+fn unified_android_audio_output_and_reliable_routing() {
+    let chat_js = include_str!("../../static/chat.js");
+    let tts_plugin = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
 
+    // 1. Android unifies all TTS playback on NativeVoiceTts
+    let play_msg = function_body(chat_js, "playMessageTts")
+        .expect("playMessageTts must be declared");
+    assert!(
+        play_msg.contains("nativeVoiceTtsAvailable") && play_msg.contains("playNativeVoiceModeTts"),
+        "playMessageTts must route to playNativeVoiceModeTts when nativeVoiceTtsAvailable is true"
+    );
 
+    let play_tts = function_body(chat_js, "playTTS")
+        .expect("playTTS must be declared");
+    assert!(
+        play_tts.contains("nativeVoiceTtsAvailable") && play_tts.contains("playNativeVoiceModeTts"),
+        "playTTS must route to playNativeVoiceModeTts when nativeVoiceTtsAvailable is true"
+    );
+
+    let play_voice_mode = function_body(chat_js, "playTTSVoiceMode")
+        .expect("playTTSVoiceMode must be declared");
+    assert!(
+        play_voice_mode.contains("nativeVoiceTtsAvailable") && play_voice_mode.contains("playNativeVoiceModeTts"),
+        "playTTSVoiceMode must route to playNativeVoiceModeTts when nativeVoiceTtsAvailable is true"
+    );
+
+    // 2. playNativeVoiceModeTts live() check does not require window.voiceModeActive
+    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
+        .expect("playNativeVoiceModeTts must be declared");
+    let live_fn = function_body(native_tts, "live")
+        .expect("live() function inside playNativeVoiceModeTts must be declared");
+    assert!(
+        !live_fn.contains("window.voiceModeActive"),
+        "playNativeVoiceModeTts live() must not require window.voiceModeActive so unified native TTS works outside voice mode"
+    );
+
+    // 3. findBuiltInSpeaker must not use getAvailableCommunicationDevices on AudioTrack
+    let find_speaker = java_method_body(tts_plugin, "private AudioDeviceInfo findBuiltInSpeaker(")
+        .expect("findBuiltInSpeaker must be declared");
+    assert!(
+        !find_speaker.contains("getAvailableCommunicationDevices"),
+        "findBuiltInSpeaker must not pass communication devices to AudioTrack.setPreferredDevice"
+    );
+    assert!(
+        find_speaker.contains("GET_DEVICES_OUTPUTS"),
+        "findBuiltInSpeaker must query AudioManager.GET_DEVICES_OUTPUTS for AudioTrack output routing"
+    );
+
+    // 4. stopPlaybackInternal must not prematurely reclaim audio focus when starting a new session
+    let stop_internal = java_method_body(tts_plugin, "private void stopPlaybackInternal(")
+        .expect("stopPlaybackInternal must be declared");
+    assert!(
+        stop_internal.contains("if (notifyStopped)") || stop_internal.contains("if (!sessionActive.get() && notifyStopped)"),
+        "stopPlaybackInternal must only notify NativeMic to reclaim focus when notifyStopped is true, not during beginSession(false)"
+    );
+}

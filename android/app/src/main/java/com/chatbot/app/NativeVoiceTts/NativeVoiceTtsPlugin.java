@@ -11,6 +11,7 @@ import android.os.Build;
 import android.util.Log;
 import android.webkit.CookieManager;
 
+import com.chatbot.app.audio.VoiceAudioRoute;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -197,8 +198,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                         if (!isGenerationActive(generation)) {
                             return;
                         }
-                        notifySessionEnded(generation);
-                        stopPlaybackInternal(false);
+                        stopPlaybackInternal(true);
                         return;
                     }
                     writePcmToTrack(clip.sampleRate, clip.pcm, generation);
@@ -548,6 +548,28 @@ public class NativeVoiceTtsPlugin extends Plugin {
         am.requestAudioFocus(req);
     }
 
+    private boolean hasHeadsetOrBluetoothConnected(AudioManager am) {
+        if (am == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return false;
+        }
+        if (NativeMicPlugin.hasBluetoothAudioPresent()) {
+            return true;
+        }
+        try {
+            for (AudioDeviceInfo device : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                int type = device.getType();
+                if (VoiceAudioRoute.isBluetoothOutputType(type)
+                        || type == AudioDeviceInfo.TYPE_WIRED_HEADSET
+                        || type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                        || type == AudioDeviceInfo.TYPE_USB_HEADSET) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     private AudioDeviceInfo findBuiltInSpeaker() {
         Context ctx = getContext();
         if (ctx == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
@@ -556,13 +578,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
         AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
         if (am == null) {
             return null;
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            for (AudioDeviceInfo device : am.getAvailableCommunicationDevices()) {
-                if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                    return device;
-                }
-            }
         }
         for (AudioDeviceInfo device : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
             if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
@@ -610,10 +625,16 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!NativeMicPlugin.hasBluetoothAudioPresent()) {
+            Context ctx = getContext();
+            AudioManager am = ctx != null ? (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE) : null;
+            if (am != null && am.getMode() == AudioManager.MODE_IN_COMMUNICATION && !hasHeadsetOrBluetoothConnected(am)) {
                 AudioDeviceInfo speaker = findBuiltInSpeaker();
                 if (speaker != null) {
-                    track.setPreferredDevice(speaker);
+                    try {
+                        track.setPreferredDevice(speaker);
+                    } catch (Exception e) {
+                        Log.w(TAG, "setPreferredDevice failed", e);
+                    }
                 }
             }
         }
@@ -720,17 +741,19 @@ public class NativeVoiceTtsPlugin extends Plugin {
         playbackStartedNotified.set(false);
         bytesWritten.set(0);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && currentFocusRequest != null) {
-            Context ctx = getContext();
-            if (ctx != null) {
-                AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
-                if (am != null) {
-                    am.abandonAudioFocusRequest(currentFocusRequest);
+        if (notifyStopped) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && currentFocusRequest != null) {
+                Context ctx = getContext();
+                if (ctx != null) {
+                    AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+                    if (am != null) {
+                        am.abandonAudioFocusRequest(currentFocusRequest);
+                    }
                 }
+                currentFocusRequest = null;
             }
-            currentFocusRequest = null;
+            NativeMicPlugin.reclaimAudioFocusIfPresent();
         }
-        NativeMicPlugin.reclaimAudioFocusIfPresent();
 
         if (notifyStopped && wasActive) {
             notifySessionEnded();
