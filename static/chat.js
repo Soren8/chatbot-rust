@@ -2023,6 +2023,88 @@ function sanitizeForTTS(text) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+  // Expand currency with magnitude: $12.6 billion, $12.6B, $12.6 billion dollars
+  cleaned = cleaned.replace(/([\$€£])\s*(\d[\d,]*(?:\.\d+)?)\s*(trillion|billion|million|thousand|bn|b|m|k)\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, amt, mag) => {
+    const magLower = mag.toLowerCase();
+    const magWord = (magLower === 'k' || magLower === 'thousand') ? 'thousand'
+      : (magLower === 'm' || magLower === 'million') ? 'million'
+      : (magLower === 'b' || magLower === 'bn' || magLower === 'billion') ? 'billion'
+      : (magLower === 'trillion') ? 'trillion' : mag;
+    const curr = sym === '€' ? 'euros' : (sym === '£' ? 'pounds' : 'dollars');
+    return `${amt} ${magWord} ${curr}`;
+  });
+
+  // Expand cents-only: $0.50, $0.01
+  cleaned = cleaned.replace(/([\$€£])\s*0\.(\d{1,2})\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, centsStr) => {
+    let cents = parseInt(centsStr, 10) || 0;
+    if (centsStr.length === 1) cents *= 10;
+    if (sym === '£') return cents === 1 ? '1 penny' : `${cents} pence`;
+    return cents === 1 ? '1 cent' : `${cents} cents`;
+  });
+
+  // Expand dollars and cents: $12.50, $1.00
+  cleaned = cleaned.replace(/([\$€£])\s*(\d[\d,]*)\.(\d{1,2})\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, intStr, centsStr) => {
+    let cents = parseInt(centsStr, 10) || 0;
+    if (centsStr.length === 1) cents *= 10;
+    const intVal = parseInt(intStr.replace(/,/g, ''), 10) || 0;
+    const unit = sym === '€' ? (intVal === 1 ? 'euro' : 'euros')
+      : (sym === '£' ? (intVal === 1 ? 'pound' : 'pounds')
+      : (intVal === 1 ? 'dollar' : 'dollars'));
+    if (cents === 0) return `${intStr} ${unit}`;
+    const centsSpoken = sym === '£' ? (cents === 1 ? '1 penny' : `${cents} pence`)
+      : (cents === 1 ? '1 cent' : `${cents} cents`);
+    return `${intStr} ${unit} and ${centsSpoken}`;
+  });
+
+  // Expand integer currency: $5, $1, $100,000
+  cleaned = cleaned.replace(/([\$€£])\s*(\d[\d,]*)\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, amt) => {
+    const val = parseInt(amt.replace(/,/g, ''), 10) || 0;
+    const unit = sym === '€' ? (val === 1 ? 'euro' : 'euros')
+      : (sym === '£' ? (val === 1 ? 'pound' : 'pounds')
+      : (val === 1 ? 'dollar' : 'dollars'));
+    return `${amt} ${unit}`;
+  });
+
+  // Expand Latin abbreviations
+  cleaned = cleaned
+    .replace(/\be\.g\.,?\s*/gi, 'for example ')
+    .replace(/\bi\.e\.,?\s*/gi, 'that is ')
+    .replace(/\betc\.\s*$/gim, 'etcetera.')
+    .replace(/\betc\.\b/gi, 'etcetera')
+    .replace(/\bvs\.?\b/gi, 'versus');
+
+  // Expand titles / honorifics
+  cleaned = cleaned.replace(/\b(Dr|Mr|Mrs|Ms|Prof|Sr|Jr|Gen|Col|Sgt|Lt|Capt)\.\s*/g, (m, t) => {
+    const map = { Dr: 'Doctor', Mr: 'Mister', Mrs: 'Missus', Ms: 'Ms', Prof: 'Professor', Sr: 'Senior', Jr: 'Junior', Gen: 'General', Col: 'Colonel', Sgt: 'Sergeant', Lt: 'Lieutenant', Capt: 'Captain' };
+    return (map[t] || t) + ' ';
+  });
+
+  // Common shortened words
+  cleaned = cleaned.replace(/\b(approx|dept|apt|est|govt|corp|inc|ltd|co)\.\s*/gi, (m, w) => {
+    const map = { approx: 'approximately', dept: 'department', apt: 'apartment', est: 'established', govt: 'government', corp: 'corporation', inc: 'incorporated', ltd: 'limited', co: 'company' };
+    return (map[w.toLowerCase()] || w) + ' ';
+  });
+
+  // Time: 10 a.m. / 10 p.m.
+  cleaned = cleaned.replace(/\b(\d+)\s*([ap])\.m\.\b/gi, '$1 $2M');
+
+  // Symbols
+  cleaned = cleaned
+    .replace(/(\d+(?:\.\d+)?)\s*°C\b/g, '$1 degrees Celsius')
+    .replace(/(\d+(?:\.\d+)?)\s*°F\b/g, '$1 degrees Fahrenheit')
+    .replace(/(\d+(?:\.\d+)?)\s*°\b/g, '$1 degrees')
+    .replace(/(\d+(?:\.\d+)?)\s*%/g, '$1 percent')
+    .replace(/(\w+)\s*&\s*(\w+)/g, '$1 and $2')
+    .replace(/#(\d+)\b/g, 'number $1');
+
+  // Dotted initialisms: U.S., U.S.A., A.I., D.C., Ph.D.
+  cleaned = cleaned.replace(/\b([A-Z][a-z]?)\.([A-Z][a-z]?)\.(?:([A-Z][a-z]?)\.)*/g, (m, p1, p2, p3, offset, fullStr) => {
+    const letters = m.replace(/[^a-zA-Z]/g, '');
+    const rest = fullStr.slice(offset + m.length).replace(/^["')\]}”’\s]+/, '');
+    const atEnd = !rest || /^[A-Z]/.test(rest);
+    return atEnd ? `${letters}.` : letters;
+  });
+
   // If there are no alphanumeric characters, there is nothing speakable
   if (!/[0-9\p{L}]/u.test(cleaned)) {
     return '';
@@ -2124,9 +2206,32 @@ function splitSentences(text) {
             end++;
             continue;
           }
+          // Letter on BOTH sides: "U.S", "e.g", "a.m", "i.e", "domain.com" → not a terminator.
+          if (/[a-zA-Z]/.test(prev) && /[a-zA-Z]/.test(next)) {
+            end++;
+            continue;
+          }
           // Numbered list item marker: "1. ", "2. ", "10. " where the sentence chunk
           // so far is purely digits → not a terminator, attach to the item text.
           if (/^\d+$/.test(text.slice(start, end)) && end + 1 < n && /\s/.test(next)) {
+            end++;
+            continue;
+          }
+          // Honorific / Title: "Dr. Smith", "Mr. Jones", "Mrs. White" → not a terminator.
+          const wordSoFar = text.slice(start, end);
+          if (/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|Gen|Col|Sgt|Lt|Capt|St)$/i.test(wordSoFar) && end + 1 < n && /\s/.test(next)) {
+            end++;
+            continue;
+          }
+          // Common abbreviation followed by comma or space and lowercase letter/digit:
+          // "e.g. apples", "i.e. that", "vs. team", "approx. 50" → not a terminator.
+          const restAfter = text.slice(end + 1);
+          if (/\b(?:e\.g|i\.e|vs|etc|approx|dept|est|apt)$/i.test(wordSoFar) && (/^,\s*/.test(restAfter) || /^\s+[a-z0-9]/.test(restAfter))) {
+            end++;
+            continue;
+          }
+          // Dotted initialism followed by lowercase letter: "in the U.S. economy" → not a terminator.
+          if (/\b(?:[A-Za-z]\.){1,}[A-Za-z]$/.test(wordSoFar) && /^\s+[a-z]/.test(restAfter)) {
             end++;
             continue;
           }

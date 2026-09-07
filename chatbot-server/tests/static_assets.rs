@@ -347,6 +347,27 @@ fn split_sentences_keeps_version_numbers_together() {
     );
 }
 
+/// Initialisms (U.S., A.I., e.g.) and honorifics (Dr., Mr.) must NOT be split as separate sentences.
+#[test]
+fn split_sentences_keeps_initialisms_and_abbreviations_together() {
+    let chat_js = include_str!("../../static/chat.js");
+    let body = function_body(chat_js, "splitSentences").expect("splitSentences body");
+    assert!(
+        body.contains("Letter on BOTH sides")
+            && body.contains("Honorific / Title")
+            && body.contains("Common abbreviation"),
+        "splitSentences must not split on initialisms or abbreviations; got: {body}"
+    );
+
+    let sanitize_body = function_body(chat_js, "sanitizeForTTS").expect("sanitizeForTTS body");
+    assert!(
+        sanitize_body.contains("Expand currency with magnitude")
+            && sanitize_body.contains("Expand Latin abbreviations")
+            && sanitize_body.contains("Dotted initialisms"),
+        "sanitizeForTTS must expand currency, abbreviations, and initialisms; got: {sanitize_body}"
+    );
+}
+
 /// Streaming TTS must react to new visible text quickly. After the web-search /
 /// tool-calling change the final answer only streams once the search + second
 /// LLM hop completes — a 120 ms poll cycle on top of that felt high latency.

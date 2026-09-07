@@ -45,6 +45,15 @@ Payloads that sanitize to nothing (markdown rules like `---`, marker-only chunks
 **Issue:** Initial attempts included artificial delays (100ms-300ms) to buffer data against network jitter.
 **Resolution:** With the robust `AudioContext` scheduling, these artificial delays were removed. The scheduler detects if the "next start time" is in the past (i.e., we are buffering) and plays the audio immediately, ensuring the lowest possible latency.
 
+### 5. Text Sanitization & Neural TTS Normalization
+**Issue:** Neural TTS engines (such as Kokoro / espeak-ng) mispronounce currency symbols (`$` -> "dollar sign"), split decimals awkwardly (`12.6` -> "one two point six"), and treat internal periods in dotted initialisms (`U.S.`, `U.S.A.`, `A.I.`, `D.C.`, `Ph.D.`) or abbreviations (`e.g.`, `i.e.`) as sentence boundaries, causing jarring pauses, pitch drops, and broken sentence segmentation.
+
+**Resolution:**
+- **Sentence Splitting (`splitSentences`):** Preserves dotted initialisms, abbreviations, and titles (`Dr.`, `Mr.`, `Mrs.`, etc.) within a single sentence, ensuring `.` followed by letters or lowercase continuation does not prematurely end a sentence.
+- **Currency Translation:** Pre-processes `$`, `€`, and `£` with magnitudes (`$12.6 billion` -> `"twelve point six billion dollars"`, `$12.6B` -> `"twelve point six billion dollars"`), dollars and cents (`$12.50` -> `"twelve dollars and fifty cents"`, `$0.50` -> `"fifty cents"`, `$0.01` -> `"one cent"`), and integer amounts (`$5` -> `"5 dollars"`), without duplicating trailing currency words if already present.
+- **Decimal Whole Units:** Speaks the whole-number part of single-decimal values as words up to trillions (`12.6` -> `"twelve point six"`, rather than digit-by-digit `"one two point six"`).
+- **Initialisms & Abbreviations:** Strips internal periods from dotted initialisms (`U.S.` -> `US`, `U.S.A.` -> `USA`, `A.I.` -> `AI`, `D.C.` -> `DC`, `Ph.D.` -> `PhD`) while preserving sentence-ending period when terminating a sentence; expands common Latin abbreviations (`e.g.` -> `for example`, `i.e.` -> `that is`, `etc.` -> `etcetera`, `vs.` -> `versus`), honorific titles (`Dr.` -> `Doctor`, `Mr.` -> `Mister`), and symbols (`58%` -> `58 percent`, `AT&T` -> `AT and T`, `#1` -> `number 1`).
+
 ## Final Architecture
 
 1.  **Frontend:** Splits text into sentences.
