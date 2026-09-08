@@ -57,6 +57,20 @@ struct RenameSetRequest {
     expected_version: Option<u64>,
 }
 
+#[derive(Deserialize, Default)]
+struct ForkSetRequest {
+    #[serde(default)]
+    set_id: Option<String>,
+    #[serde(default)]
+    set_name: Option<String>,
+    #[serde(default)]
+    expected_version: Option<u64>,
+    #[serde(default)]
+    pair_index: Option<i32>,
+    #[serde(default)]
+    new_name: Option<String>,
+}
+
 pub async fn handle_get_sets(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
@@ -136,8 +150,6 @@ pub async fn handle_create_set(
             .map_err(|err| map_json_parse_err(err, "sets::create_set"))?
     };
 
-    let set_name_raw = payload.set_name.unwrap_or_default();
-
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(cookie_header.as_deref(), csrf_token)?;
@@ -163,16 +175,23 @@ pub async fn handle_create_set(
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
 
-    let set_name = match history::normalise_custom_set_name(&set_name_raw) {
-        Ok(value) => value,
-        Err(_) => {
-            return build_json_response(
-                StatusCode::OK,
-                json!({
-                    "status": "error",
-                    "error": "Set already exists or invalid name"
-                }),
-            );
+    // Empty name = auto placeholder (`New Chat`, `New Chat 2`, ...). The first
+    // chat message replaces it with a contextual name server-side.
+    let set_name_raw = payload.set_name.unwrap_or_default();
+    let set_name = if set_name_raw.trim().is_empty() {
+        String::new()
+    } else {
+        match history::normalise_custom_set_name(&set_name_raw) {
+            Ok(value) => value,
+            Err(_) => {
+                return build_json_response(
+                    StatusCode::OK,
+                    json!({
+                        "status": "error",
+                        "error": "Set already exists or invalid name"
+                    }),
+                );
+            }
         }
     };
 
@@ -776,6 +795,108 @@ fn resolve_set_id(
         return SetId::parse(id_str).map_err(|_| "invalid set_id");
     }
     Ok(resolve_set(history, username, None, set_name, key)?.set_id)
+}
+
+/// Fork a prefix of a set (inclusive `pair_index`) into a new set.
+///
+/// Copies memory, system prompt, and history with full fidelity. The source
+/// set is untouched. Empty `new_name` auto-derives `<source> - branch`.
+pub async fn handle_fork_set(
+    request: Request<Body>,
+) -> Result<Response<Body>, HttpError> {
+    if request.method() != Method::POST {
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
+    }
+
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+
+    let body_bytes = body::to_bytes(body, 128 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "sets::fork_set"))?;
+
+    let payload = if body_bytes.is_empty() {
+        ForkSetRequest::default()
+    } else {
+        serde_json::from_slice::<ForkSetRequest>(&body_bytes)
+            .map_err(|err| map_json_parse_err(err, "sets::fork_set"))?
+    };
+
+    let pair_index = match payload.pair_index {
+        Some(i) if i >= 0 => i as usize,
+        _ => {
+            return build_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"status": "error", "error": "pair_index is required"}),
+            );
+        }
+    };
+
+    let cookie_header = extract_cookie(&headers);
+    let csrf_token = extract_csrf(&headers);
+    validate_csrf(cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+
+    let session = session::session_context(cookie_header.as_deref())
+        .map_err(|err| map_session_err(err, "sets::fork_set::session"))?;
+
+    let username = match session.username.as_deref() {
+        Some(value) => value,
+        None => {
+            return build_json_response(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": "Not authenticated"}),
+            );
+        }
+    };
+
+    if let Err(response) =
+        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+    {
+        return build_service_response(response);
+    }
+    let key = encryption_key.as_ref().expect("validated encryption key");
+    let history = HistoryService::global().map_err(history_error_to_http)?;
+
+    let source_id = match resolve_set_id(
+        &history,
+        username,
+        payload.set_id.as_deref(),
+        payload.set_name.as_deref(),
+        key,
+    ) {
+        Ok(id) => id,
+        Err(msg) => {
+            return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
+        }
+    };
+    let expected = payload.expected_version.map(SetVersion);
+    let new_name = payload.new_name.as_deref().filter(|s| !s.trim().is_empty());
+
+    match history.fork_set(username, source_id, expected, pair_index, new_name, key) {
+        Ok(summary) => build_json_response(
+            StatusCode::OK,
+            json!({
+                "status": "success",
+                "set_id": summary.set_id.to_string(),
+                "name": summary.display_name,
+                "version": summary.version.get(),
+            }),
+        ),
+        Err(HistoryError::Conflict { current_version }) => build_json_response(
+            StatusCode::CONFLICT,
+            crate::chat_utils::version_conflict_json(source_id, current_version),
+        ),
+        Err(HistoryError::InvalidInput("pair_index out of range")) => build_json_response(
+            StatusCode::NOT_FOUND,
+            json!({"status": "error", "error": "pair_index out of range"}),
+        ),
+        Err(HistoryError::InvalidInput(msg)) => build_json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"status": "error", "error": msg}),
+        ),
+        Err(err) => Err(history_error_to_http(err)),
+    }
 }
 
 fn resolve_set(

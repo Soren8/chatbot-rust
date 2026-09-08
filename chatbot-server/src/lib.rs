@@ -259,6 +259,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
         .route("/reset_chat", post(reset_chat::handle_reset_chat))
         .route("/get_sets", get(sets::handle_get_sets))
         .route("/create_set", post(sets::handle_create_set))
+        .route("/fork_set", post(sets::handle_fork_set))
         .route("/delete_set", post(sets::handle_delete_set))
         .route("/rename_set", post(sets::handle_rename_set))
         .route("/load_set", post(sets::handle_load_set))

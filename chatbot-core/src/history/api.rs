@@ -413,10 +413,6 @@ impl HistoryService {
     ) -> Result<SetSummary, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        let name = display_name.trim();
-        if name.is_empty() {
-            return Err(HistoryError::InvalidInput("empty set name"));
-        }
 
         let lock_entry = name_mutation_locks()
             .entry(user.clone())
@@ -425,15 +421,33 @@ impl HistoryService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
+        // Empty name = low-friction auto placeholder (`New Chat`, `New Chat 2`, ...).
+        let name = display_name.trim();
+        let effective: String = if name.is_empty() {
+            let existing = self
+                .list_sets(&user, key)?
+                .into_iter()
+                .map(|s| s.display_name)
+                .collect::<Vec<_>>();
+            ops::dedup_name(ops::AUTO_NEW_CHAT_PREFIX, |c| {
+                existing.iter().any(|e| e == c)
+            })
+        } else {
+            if name.is_empty() {
+                return Err(HistoryError::InvalidInput("empty set name"));
+            }
+            name.to_owned()
+        };
+
         // Uniqueness among decrypted names (under per-user lock to close concurrent races).
-        self.ensure_display_name_available(&user, name, None, key)?;
+        self.ensure_display_name_available(&user, &effective, None, key)?;
 
         let set_id = SetId::new();
-        let is_default = name == "default";
+        let is_default = effective == "default";
         let summary = self.store.create_set(
             &user,
             set_id,
-            name,
+            &effective,
             &self.default_system_prompt,
             is_default,
             key,
@@ -452,6 +466,101 @@ impl HistoryService {
         self.remember(&user, &snap);
         self.cache.put_summary(&user, &summary);
         Ok(summary)
+    }
+
+    /// Fork a prefix of `source_set_id` (inclusive `up_to_pair_index`) into a new set.
+    ///
+    /// Copies memory, system prompt, and history pairs with full fidelity (images
+    /// re-sealed under the new set id). The source set is untouched. `new_name`
+    /// empty/None auto-derives `<source> - branch` (deduped). CAS-checked against
+    /// `expected` when supplied.
+    pub fn fork_set(
+        &self,
+        user: &str,
+        source_set_id: SetId,
+        expected: Option<SetVersion>,
+        up_to_pair_index: usize,
+        new_name: Option<&str>,
+        key: &EncryptionKey,
+    ) -> Result<SetSummary, HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        // Materialized (full-res data URLs) so the fork re-seals its own image blobs.
+        let source = self.load(&user, source_set_id, key)?;
+        if let Some(exp) = expected {
+            if source.version != exp {
+                return Err(HistoryError::Conflict {
+                    current_version: source.version,
+                });
+            }
+        }
+        if source.history.is_empty() || up_to_pair_index >= source.history.len() {
+            return Err(HistoryError::InvalidInput("pair_index out of range"));
+        }
+        let prefix: Vec<(String, String)> = source.history[..=up_to_pair_index].to_vec();
+
+        let lock_entry = name_mutation_locks()
+            .entry(user.clone())
+            .or_insert_with(|| Mutex::new(()));
+        let _guard = lock_entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let existing = self
+            .list_sets(&user, key)?
+            .into_iter()
+            .map(|s| s.display_name)
+            .collect::<Vec<_>>();
+        let requested = new_name.map(str::trim).filter(|s| !s.is_empty());
+        let base = match requested {
+            Some(n) => {
+                let clean = n.trim().to_owned();
+                if clean.is_empty() || clean.eq_ignore_ascii_case("default") {
+                    return Err(HistoryError::InvalidInput("empty set name"));
+                }
+                if clean.chars().count() > ops::MAX_DISPLAY_NAME_CHARS {
+                    return Err(HistoryError::InvalidInput("set name too large"));
+                }
+                clean
+            }
+            None => ops::branch_name_for(&source.display_name),
+        };
+        let effective = ops::dedup_name(&base, |c| existing.iter().any(|e| e == c));
+
+        let new_id = SetId::new();
+        let summary = self.store.create_set(
+            &user,
+            new_id,
+            &effective,
+            &source.system_prompt,
+            false,
+            key,
+        )?;
+        // Fresh pair ids: image blobs are bound to the new set id in AAD.
+        let pair_ids = (0..prefix.len())
+            .map(|_| super::types::PairId::new())
+            .collect::<Vec<_>>();
+        let snap = SetSnapshot {
+            set_id: new_id,
+            version: summary.version,
+            display_name: effective,
+            memory: source.memory.clone(),
+            system_prompt: source.system_prompt.clone(),
+            history: prefix,
+            pair_ids,
+            is_default: false,
+        };
+        let v = self.store.commit_snapshot(&user, summary.version, &snap, key)?;
+        let final_summary = SetSummary {
+            set_id: new_id,
+            version: v,
+            display_name: snap.display_name.clone(),
+            updated_at: summary.updated_at,
+            is_default: false,
+        };
+        self.remember_committed(&user, snap, v);
+        self.cache.put_summary(&user, &final_summary);
+        Ok(final_summary)
     }
 
     /// Ensure a default set exists (empty history). Returns its snapshot.
@@ -592,7 +701,26 @@ impl HistoryService {
                 current_version: snap.version,
             });
         }
-        let next = ops::append_pair(&snap, user_msg, assistant_msg)?;
+        let mut next = ops::append_pair(&snap, user_msg, assistant_msg)?;
+        if snap.history.is_empty() && ops::is_auto_placeholder_name(&snap.display_name) {
+            let derived = ops::derive_chat_name_from_message(user_msg);
+            if derived != snap.display_name
+                && !derived.eq_ignore_ascii_case("default")
+                && !ops::is_auto_placeholder_name(&derived)
+            {
+                let existing = self
+                    .list_sets(&user, key)?
+                    .into_iter()
+                    .filter(|s| s.set_id != snap.set_id)
+                    .map(|s| s.display_name)
+                    .collect::<Vec<_>>();
+                next.display_name = if existing.iter().any(|e| e == &derived) {
+                    ops::dedup_name(&derived, |c| existing.iter().any(|e| e == c))
+                } else {
+                    derived
+                };
+            }
+        }
         let v = self.store.commit_snapshot(&user, expected, &next, key)?;
         self.remember_committed(&user, next, v);
         Ok(v)
@@ -609,7 +737,29 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        let next = ops::apply_chat_append(capture, user_msg, assistant_msg)?;
+        let mut next = ops::apply_chat_append(capture, user_msg, assistant_msg)?;
+        // First message in an auto placeholder (`New Chat`) adopts a contextual
+        // name in the same CAS commit — one version bump, no extra round-trip.
+        if capture.history.is_empty() && ops::is_auto_placeholder_name(&capture.display_name) {
+            let derived = ops::derive_chat_name_from_message(user_msg);
+            if derived != capture.display_name
+                && !derived.eq_ignore_ascii_case("default")
+                && !ops::is_auto_placeholder_name(&derived)
+            {
+                let existing = self
+                    .list_sets(&user, key)?
+                    .into_iter()
+                    .filter(|s| s.set_id != capture.set_id)
+                    .map(|s| s.display_name)
+                    .collect::<Vec<_>>();
+                if !existing.iter().any(|e| e == &derived) {
+                    next.display_name = derived;
+                } else {
+                    next.display_name =
+                        ops::dedup_name(&derived, |c| existing.iter().any(|e| e == c));
+                }
+            }
+        }
         let v = self
             .store
             .commit_snapshot(&user, capture.version, &next, key)?;
@@ -1298,5 +1448,81 @@ mod tests {
         assert_eq!(wins, 1, "exactly one create should succeed");
         assert_eq!(dups, 1, "the other create must see set already exists");
         assert_eq!(svc.list_sets("raceuser", &key).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn empty_create_gets_new_chat_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let a = svc.create_set("auto", "", &key).unwrap();
+        assert_eq!(a.display_name, "New Chat");
+        let b = svc.create_set("auto", "   ", &key).unwrap();
+        assert_eq!(b.display_name, "New Chat 2");
+    }
+
+    #[test]
+    fn first_chat_append_adopts_contextual_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("auto", "", &key).unwrap();
+        assert_eq!(created.display_name, "New Chat");
+        let snap = svc.load("auto", created.set_id, &key).unwrap();
+        let capture = PrepareCapture::from_snapshot(&snap);
+        svc.commit_chat_append("auto", &capture, "Plan my trip to Tokyo", "ok", &key)
+            .unwrap();
+        let after = svc.load("auto", created.set_id, &key).unwrap();
+        assert_eq!(after.display_name, "Plan my trip to Tokyo");
+        assert_eq!(after.history.len(), 1);
+        // Second message keeps the adopted name.
+        let cap2 = PrepareCapture::from_snapshot(&after);
+        svc.commit_chat_append("auto", &cap2, "and more", "ok2", &key)
+            .unwrap();
+        let again = svc.load("auto", created.set_id, &key).unwrap();
+        assert_eq!(again.display_name, "Plan my trip to Tokyo");
+    }
+
+    #[test]
+    fn fork_copies_prefix_and_leaves_source_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("forker", "trip", &key).unwrap();
+        let mut v = created.version;
+        for (u, a) in [("one", "a1"), ("two", "a2"), ("three", "a3")] {
+            v = svc.append_pair("forker", created.set_id, v, u, a, &key).unwrap();
+        }
+        let forked = svc
+            .fork_set("forker", created.set_id, Some(v), 1, None, &key)
+            .unwrap();
+        assert_eq!(forked.display_name, "trip - branch");
+        let fork_snap = svc.load("forker", forked.set_id, &key).unwrap();
+        assert_eq!(fork_snap.history.len(), 2);
+        assert_eq!(fork_snap.history[0].0, "one");
+        assert_eq!(fork_snap.history[1].0, "two");
+        // Memory and prompt carry over.
+        assert_eq!(fork_snap.memory, "");
+        let source = svc.load("forker", created.set_id, &key).unwrap();
+        assert_eq!(source.history.len(), 3);
+        assert_eq!(source.display_name, "trip");
+        // Second fork dedups.
+        let forked2 = svc
+            .fork_set("forker", created.set_id, None, 1, None, &key)
+            .unwrap();
+        assert_eq!(forked2.display_name, "trip - branch 2");
+        // Stale expected version conflicts.
+        let err = svc
+            .fork_set("forker", created.set_id, Some(created.version), 0, None, &key)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            HistoryError::Conflict { .. }
+        ));
+        // Out of range.
+        let err = svc
+            .fork_set("forker", created.set_id, None, 9, None, &key)
+            .unwrap_err();
+        assert!(matches!(err, HistoryError::InvalidInput(_)));
     }
 }

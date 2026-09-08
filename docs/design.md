@@ -18,7 +18,8 @@ This document captures the current architecture of the project and the potential
 - [x] **Rust Refactor:** All Flask routes, bridge helpers, and provider integrations have been ported to Rust.
 
 - **UI/UX Improvements**
-  - [ ] Lower friction for new chats by assigning a temporary title (e.g., "New Chat") that is automatically replaced with a contextual name based on chat content.
+  - [x] Lower friction for new chats by assigning a temporary title (e.g., "New Chat") that is automatically replaced with a contextual name based on chat content.
+  - [x] Branch a conversation at any saved turn: fork copies history up to that point (inclusive) into a new chat (`POST /fork_set`, auto-named `<source> - branch`) and switches to it; the source is untouched.
   - [x] Ability to delete chats from history (`/delete_message` requires `pair_index` + matching `user_message` at that index; content mismatch → 409. `ai_message` may be sent by the client but is not used for the server-side match). Image payload bytes are ignored in the match so UI thumbnails still delete the stored full-resolution attachment.
   - [x] Ability to edit old chat entries.
   - [x] Lazy-load long chats: `/load_set` accepts `limit`/`before` and returns the most recent **text** page first (`history_start` / `history_total` / `has_more`). `thumbnails: true` strips image bytes (`[IMAGE:]` markers only); the client then GETs `/history_image/...?size=thumb` newest-first after paint. Expand uses `GET /history_image/...` (full res, browser HTTP cache); `POST /history_pair` returns the full pair for edit/regenerate. Durable storage is **chunked**; see [design-history-chunks.md](design-history-chunks.md).

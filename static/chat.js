@@ -191,6 +191,7 @@ window.fetch = function(input, init) {
         url.includes('/get_sets') ||
         url.includes('/load_set') ||
         url.includes('/create_set') ||
+        url.includes('/fork_set') ||
         url.includes('/delete_set') ||
         url.includes('/rename_set') ||
         url.includes('/update_memory') ||
@@ -1885,7 +1886,17 @@ function appendMessage(message, className, pairIndex, mountOpts) {
       delWrap.appendChild(delIcon);
       deleteBtn.appendChild(delWrap);
 
+      const branchBtn = document.createElement('button');
+      branchBtn.type = 'button';
+      branchBtn.className = 'branch-button';
+      branchBtn.title = 'Branch from here';
+      branchBtn.setAttribute('aria-label', 'Branch conversation from here');
+      const branchIcon = document.createElement('i');
+      branchIcon.className = 'bi bi-diagram-2';
+      branchBtn.appendChild(branchIcon);
+
       deleteContainer.appendChild(editBtn);
+      deleteContainer.appendChild(branchBtn);
       deleteContainer.appendChild(deleteBtn);
       host.appendChild(deleteContainer);
     } catch (e) { console.debug('Failed to add buttons:', e); }
@@ -3248,6 +3259,51 @@ function handleDeleteMessage(buttonElement, isRetry) {
   });
 }
 
+// Fork the conversation at a user turn: copies history up to and including
+// that pair into a new chat and switches to it. Source stays untouched.
+function handleForkMessage(buttonElement, isRetry) {
+  const $user = $(buttonElement).closest('.message.user-message');
+  if (!$user.length) return;
+  if ($user.attr('data-local-only') === '1' || isLocalOnlyTurn($user)) {
+    appendMessage('Send this message first — only saved turns can be branched.', 'error-message');
+    return;
+  }
+  const pairIndex = liveUserPairIndex($user);
+  if (pairIndex < 0) return;
+  const $btn = $(buttonElement).prop('disabled', true);
+  fetch('/fork_set', {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(activeSetPayload({ pair_index: pairIndex }))
+  })
+  .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
+  .then(result => {
+    if (result.data && result.data.error === 'version_conflict') {
+      applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
+      if (!isRetry) return handleForkMessage(buttonElement, true);
+      return handleVersionConflict(null, result.data);
+    }
+    if (result.ok && result.data && result.data.status === 'success') {
+      window.APP_DATA.lastSetId = result.data.set_id;
+      window.APP_DATA.lastSet = result.data.name;
+      if (typeof loadSets === 'function') {
+        loadSets(false).then(function() {
+          $('#set-selector').val(result.data.set_id);
+          $('#set-selector').trigger('change');
+        });
+      }
+      appendMessage('Branched to ' + (result.data.name || 'new chat') + '.', 'system-message');
+      return;
+    }
+    const errMsg = (result.data && (result.data.error || result.data.message)) || ('fork failed (' + result.status + ')');
+    appendMessage('Failed to branch: ' + errMsg, 'error-message');
+  })
+  .catch(err => {
+    appendMessage('Failed to branch: ' + (err && err.message ? err.message : String(err)), 'error-message');
+  })
+  .then(function() { $btn.prop('disabled', false); });
+}
+
 // Long press logic for delete button
 let deleteTimer = null;
 const LONG_PRESS_DURATION = 800;
@@ -3727,6 +3783,7 @@ $(document).ready(function() {
 
   // Delegated handlers replacing inline onclicks
   $(document).on('click', '.regenerate-button', function() { window.regenerateMessage(this); });
+  $(document).on('click', '.branch-button', function() { handleForkMessage(this, false); });
   $(document).on('click', '.toggle-thinking', function() { window.toggleThinking(this); });
 
   // Copy code block logic
@@ -3895,25 +3952,24 @@ $(document).ready(function() {
     });
 
     $('#new-set').on('click', function() {
-      const setName = prompt('Enter name for new set:');
-      if (setName) {
-        fetch('/create_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({ set_name: setName }) })
-          .then(r => r.json())
-          .then(data => {
-            if (data.status === 'success') {
-              const newId = data.set_id;
-              window.APP_DATA.lastSetId = newId;
-              window.APP_DATA.lastSet = data.name || setName;
-              loadSets(false).then(() => {
-                if (newId) $('#set-selector').val(newId);
-                $('#set-selector').trigger('change');
-              });
-              appendMessage('Created new set: ' + setName, 'system-message');
-            } else {
-              appendMessage(data.error || 'Failed to create set', 'error-message');
-            }
-          });
-      }
+      // One click: server assigns `New Chat` / `New Chat 2` and renames it
+      // from the first message. Rename button still covers manual names.
+      fetch('/create_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({}) })
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'success') {
+            const newId = data.set_id;
+            window.APP_DATA.lastSetId = newId;
+            window.APP_DATA.lastSet = data.name || 'New Chat';
+            loadSets(false).then(() => {
+              if (newId) $('#set-selector').val(newId);
+              $('#set-selector').trigger('change');
+            });
+            appendMessage('Created new set: ' + (data.name || 'New Chat'), 'system-message');
+          } else {
+            appendMessage(data.error || 'Failed to create set', 'error-message');
+          }
+        });
     });
 
     $('#rename-set').on('click', function() {

@@ -128,7 +128,7 @@
 }
 
 /* Delete (trash) button for user messages */
-.delete-button, .edit-button {
+.delete-button, .edit-button, .branch-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -168,7 +168,7 @@
 }
 
 /* Hover state for delete and edit buttons */
-.delete-button:hover, .edit-button:hover {
+.delete-button:hover, .edit-button:hover, .branch-button:hover {
     background-color: #4a4a4a;
     transform: scale(1.05);
 }
@@ -434,12 +434,11 @@ a:hover, a:focus {
         gap: 5px;
     }
     
-    .delete-button, .play-button, .regenerate-button {
+    .delete-button, .play-button, .regenerate-button, .branch-button, .edit-button {
         min-width: 40px;
         padding: 6px 10px;
         font-size: 12px;
     }
-    
     .delete-icon {
         font-size: 20px !important;
     }
@@ -455,7 +454,7 @@ a:hover, a:focus {
         width: 100%;
     }
 
-    .regenerate-button, .play-button, .delete-button, .edit-button {
+    .regenerate-button, .play-button, .delete-button, .edit-button, .branch-button {
         padding: 10px 14px !important;
         min-width: 72px !important;
         font-size: 16px !important;
@@ -477,7 +476,7 @@ a:hover, a:focus {
         gap: 5px;
     }
     
-    .delete-button, .play-button, .regenerate-button {
+    .delete-button, .play-button, .regenerate-button, .branch-button, .edit-button {
         min-width: 36px;
         padding: 5px 8px;
         font-size: 11px;

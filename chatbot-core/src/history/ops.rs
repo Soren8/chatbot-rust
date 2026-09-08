@@ -146,6 +146,117 @@ pub fn rename(snapshot: &SetSnapshot, new_name: &str) -> Result<SetSnapshot, Ops
     Ok(next)
 }
 
+/// Placeholder prefix for low-friction new chats. The first successful chat
+/// append replaces it with a contextual name; the user can rename anytime.
+pub const AUTO_NEW_CHAT_PREFIX: &str = "New Chat";
+/// Storage display names are limited by `SET_NAME_RE` to 64 chars.
+pub const MAX_AUTO_NAME_CHARS: usize = 64;
+
+/// True for auto placeholder names (`New Chat`, `New Chat 2`, ...).
+pub fn is_auto_placeholder_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed == AUTO_NEW_CHAT_PREFIX {
+        return true;
+    }
+    if let Some(rest) = trimmed.strip_prefix("New Chat ") {
+        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+    }
+    false
+}
+
+/// Sanitize a candidate into the `SET_NAME_RE` alphabet (`A-Za-z0-9 _-`, ≤64).
+fn sanitize_name_candidate(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_space = false;
+    for c in raw.chars() {
+        let ok = c.is_ascii_alphanumeric() || c == ' ' || c == '_' || c == '-' || c == '\'';
+        if c.is_whitespace() || !ok {
+            if !out.is_empty() && !last_space {
+                out.push(' ');
+                last_space = true;
+            }
+            continue;
+        }
+        if c == '\'' {
+            if !out.is_empty() && !last_space {
+                out.push(' ');
+                last_space = true;
+            }
+            continue;
+        }
+        out.push(c);
+        last_space = false;
+    }
+    let trimmed = out.trim().to_string();
+    if trimmed.chars().count() <= MAX_AUTO_NAME_CHARS {
+        return trimmed;
+    }
+    trimmed.chars().take(MAX_AUTO_NAME_CHARS).collect::<String>().trim().to_string()
+}
+
+/// Derive a contextual chat name from the first user message.
+///
+/// Strips `[IMAGE:...]` payloads, collapses whitespace, keeps ~6 words / 48
+/// chars so branch suffixes still fit. Falls back to `New Chat` when empty.
+pub fn derive_chat_name_from_message(user_msg: &str) -> String {
+    let stripped = crate::chat_images::strip_image_payloads(user_msg);
+    let stripped = stripped.replace("[IMAGE:]", " ").replace("[IMAGE]", " ");
+    let collapsed = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    let words: Vec<&str> = collapsed.split_whitespace().take(6).collect();
+    let mut candidate = words.join(" ");
+    if candidate.chars().count() > 48 {
+        candidate = candidate.chars().take(48).collect::<String>();
+        if let Some(pos) = candidate.rfind(' ') {
+            candidate.truncate(pos);
+        }
+    }
+    let clean = sanitize_name_candidate(&candidate);
+    if clean.is_empty() || clean.eq_ignore_ascii_case("default") {
+        return AUTO_NEW_CHAT_PREFIX.to_string();
+    }
+    clean
+}
+
+/// Candidate branch name for a fork (`<source> - branch`). Caller dedups.
+pub fn branch_name_for(source: &str) -> String {
+    let suffix = " - branch";
+    let max_base = MAX_AUTO_NAME_CHARS.saturating_sub(suffix.len());
+    let mut base = sanitize_name_candidate(source);
+    if base.is_empty() {
+        base = "Chat".to_string();
+    }
+    if base.chars().count() > max_base {
+        base = base.chars().take(max_base).collect::<String>().trim().to_string();
+    }
+    format!("{base}{suffix}")
+}
+
+/// Append ` 2`, ` 3`, ... until `exists` is false. Truncates the base to fit.
+pub fn dedup_name(base: &str, exists: impl Fn(&str) -> bool) -> String {
+    let base = sanitize_name_candidate(base);
+    let base = if base.is_empty() {
+        AUTO_NEW_CHAT_PREFIX.to_string()
+    } else {
+        base
+    };
+    if !exists(&base) {
+        return base;
+    }
+    for n in 2..10000 {
+        let suffix = format!(" {n}");
+        let max_base = MAX_AUTO_NAME_CHARS.saturating_sub(suffix.len());
+        let mut stem = base.clone();
+        if stem.chars().count() > max_base {
+            stem = stem.chars().take(max_base).collect::<String>().trim().to_string();
+        }
+        let candidate = format!("{stem}{suffix}");
+        if !exists(&candidate) {
+            return candidate;
+        }
+    }
+    base
+}
+
 /// Apply a successful regenerate/edit onto the **prepare capture** history.
 ///
 /// Does not mutate shared state; caller commits the result via CAS.
@@ -337,6 +448,55 @@ mod tests {
             append_pair(&s, "  ", "a"),
             Err(OpsError::EmptyUserMessage)
         ));
+    }
+
+    #[test]
+    fn auto_placeholder_detection() {
+        assert!(is_auto_placeholder_name("New Chat"));
+        assert!(is_auto_placeholder_name("New Chat 2"));
+        assert!(is_auto_placeholder_name("  New Chat 12  "));
+        assert!(!is_auto_placeholder_name("New Chat X"));
+        assert!(!is_auto_placeholder_name("My Chat"));
+        assert!(!is_auto_placeholder_name("New Chatty"));
+    }
+
+    #[test]
+    fn derive_name_from_first_message() {
+        assert_eq!(
+            derive_chat_name_from_message("Plan my trip to Tokyo please"),
+            "Plan my trip to Tokyo please"
+        );
+        assert_eq!(
+            derive_chat_name_from_message("What's the weather like today?"),
+            "What s the weather like today"
+        );
+        assert_eq!(
+            derive_chat_name_from_message("see this\n[IMAGE:data:image/jpeg;base64,AAAA]"),
+            "see this"
+        );
+        assert_eq!(derive_chat_name_from_message("   "), "New Chat");
+        assert_eq!(derive_chat_name_from_message("😀🎉"), "New Chat");
+        let long = "word ".repeat(30);
+        let derived = derive_chat_name_from_message(&long);
+        assert!(derived.chars().count() <= MAX_AUTO_NAME_CHARS);
+    }
+
+    #[test]
+    fn branch_and_dedup_names_fit_storage_alphabet() {
+        let b = branch_name_for("Trip planning!!!");
+        assert_eq!(b, "Trip planning - branch");
+        let existing = vec!["New Chat".to_string()];
+        assert_eq!(
+            dedup_name("New Chat", |c| existing.iter().any(|e| e == c)),
+            "New Chat 2"
+        );
+        let long_base = "x".repeat(100);
+        let d = dedup_name(&long_base, |_| false);
+        assert!(d.chars().count() <= MAX_AUTO_NAME_CHARS);
+        let re = regex::Regex::new(r"^[A-Za-z0-9 _-]{1,64}$").unwrap();
+        assert!(re.is_match(&b));
+        assert!(re.is_match(&d));
+        assert!(re.is_match(&derive_chat_name_from_message("Hello, world!")));
     }
 
     #[test]
