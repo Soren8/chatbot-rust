@@ -62,7 +62,7 @@ Agents using **Read/grep** never see real secrets. **Compose** invoked from `/wo
 docker compose run --rm tests
 ```
 
-Compose bind mounts are resolved by the host daemon. The sandbox sets `HOST_PROJECT_DIR` to this repo’s host path. Default is `.` on a normal host checkout. Do not hardcode machine-specific paths.
+Compose bind mounts resolve relative to this repo (compose project directory). Do not hardcode machine-specific paths.
 
 Logs land under `temp/test-logs/`.
 
