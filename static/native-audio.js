@@ -276,6 +276,32 @@
   }
 
   /**
+   * One log line per STT encode decision (codec choice and any fallback
+   * reason). Goes to the browser console and, on Android, to adb logcat via
+   * the Logger plugin (window.nativeLog is defined by chat.js, which loads
+   * after this file — encodeAudioForStt only runs after page load, so it is
+   * always present by call time there; guard anyway for other embedders).
+   * Machine-readable tags (`reason=...`) let server-side grep / adb filters
+   * reveal whether compression is actually engaged or we silently sent WAV.
+   */
+  function sttCodecLog(message) {
+    if (typeof console !== 'undefined' && console.info) {
+      console.info('[VAD] ' + message);
+    }
+    if (typeof globalThis.nativeLog === 'function') {
+      try { globalThis.nativeLog('VAD', message); } catch (_) { /* ignore */ }
+    }
+  }
+
+  /** Wire size of the raw sample buffer, for compression-ratio logging. */
+  function sampleBufferBytes(samples) {
+    if (samples && samples.byteLength != null) {
+      return samples.byteLength;
+    }
+    return (samples ? samples.length : 0) * 2;
+  }
+
+  /**
    * Encode PCM audio samples using WebCodecs AudioEncoder into ADTS AAC.
    */
   function encodeAacAdts(samples, sampleRate, aacConfig) {
@@ -365,10 +391,26 @@
       };
     }
 
+    const pcmBytes = sampleBufferBytes(samples);
+    let webcodecsAvailable = false;
     if (typeof globalThis !== 'undefined'
         && typeof globalThis.AudioEncoder === 'function'
-        && typeof globalThis.AudioData === 'function'
-        && (typeof window === 'undefined' || window.isSecureContext !== false)) {
+        && typeof globalThis.AudioData === 'function') {
+      if (typeof window !== 'undefined' && window.isSecureContext === false) {
+        // WebCodecs is gated to secure contexts. Plain HTTP origins (the
+        // Android production flavor is http://<tailscale-host>:80) can never
+        // compress — say so instead of failing silently every utterance.
+        sttCodecLog('STT codec fallback: reason=insecure-context'
+          + ' (plain HTTP disables WebCodecs; sending WAV bytes=' + pcmBytes + ')');
+      } else {
+        webcodecsAvailable = true;
+      }
+    } else {
+      sttCodecLog('STT codec fallback: reason=no-webcodecs'
+        + ' (AudioEncoder unavailable; sending WAV bytes=' + pcmBytes + ')');
+    }
+
+    if (webcodecsAvailable) {
       try {
         const aacConfig = {
           codec: 'mp4a.40.2',
@@ -380,14 +422,25 @@
         if (support && support.supported) {
           const encodedBlob = await encodeAacAdts(samples, rate, aacConfig);
           if (encodedBlob && encodedBlob.size > 0) {
+            const ratio = pcmBytes > 0 ? (pcmBytes / encodedBlob.size).toFixed(1) : '0.0';
+            sttCodecLog('STT codec: aac bytes=' + encodedBlob.size
+              + ' pcmBytes=' + pcmBytes + ' ratio=' + ratio + 'x');
             return {
               blob: encodedBlob,
               filename: 'recording.aac',
               mimeType: 'audio/aac'
             };
           }
+          sttCodecLog('STT codec fallback: reason=empty-output'
+            + ' (encoder produced 0 bytes; sending WAV bytes=' + pcmBytes + ')');
+        } else {
+          sttCodecLog('STT codec fallback: reason=unsupported-config'
+            + ' (AudioEncoder.isConfigSupported rejected mp4a.40.2 @' + rate
+            + 'Hz; sending WAV bytes=' + pcmBytes + ')');
         }
       } catch (err) {
+        sttCodecLog('STT codec fallback: reason=encoder-error err=' + (err && err.message ? err.message : String(err))
+          + '; sending WAV bytes=' + pcmBytes);
         if (typeof console !== 'undefined' && console.warn) {
           console.warn('AudioEncoder STT compression failed, falling back to WAV:', err);
         }

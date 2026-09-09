@@ -375,3 +375,30 @@ async fn stt_rejects_audio_exceeding_max_audio_bytes() {
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");
 }
+
+/// The server must always report which audio codec arrived (info level, so it
+/// survives production RUST_LOG=info) with an explicit `compressed` flag, and
+/// the push-to-talk client path must log its encoded payload like the
+/// voice-mode path does — otherwise a silent client-side WAV fallback is
+/// invisible in both adb and host logs.
+#[test]
+fn stt_reports_received_audio_codec_and_compression_flag() {
+    let stt_src = include_str!("../src/stt.rs");
+    assert!(
+        stt_src.contains("tracing::info!(")
+            && stt_src.contains("compressed")
+            && stt_src.contains("STT audio received"),
+        "handle_stt must log received audio at info level with an explicit compressed flag"
+    );
+    assert!(
+        stt_src.contains("audio_file_name.ends_with(\".wav\")"),
+        "the compressed flag must derive from the received filename/content type"
+    );
+
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        chat_js.contains("STT push-to-talk encoded format=")
+            && chat_js.contains("STT native encoded format="),
+        "both STT client paths (push-to-talk and voice mode) must log the encoded format and byte size"
+    );
+}

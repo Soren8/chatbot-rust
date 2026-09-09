@@ -89,3 +89,49 @@ fn adts_header_16khz_mono_structure() {
         | (((header[5] & 0xE0) as usize) >> 5);
     assert_eq!(frame_len, 107);
 }
+
+/// Every WAV fallback in encodeAudioForStt must be reported with a
+/// machine-readable reason; a successful AAC encode must also be logged with
+/// sizes so operators can confirm compression actually engages (and spot the
+/// plain-HTTP Android case where WebCodecs is unavailable).
+#[test]
+fn stt_codec_choice_and_fallbacks_are_logged_with_reasons() {
+    let js = include_str!("../../static/native-audio.js");
+    let start = js
+        .find("async function encodeAudioForStt(")
+        .expect("encodeAudioForStt must be declared");
+    let end = js[start..]
+        .find("function PcmSampleBuffer(")
+        .map(|i| start + i)
+        .unwrap_or(js.len());
+    let body = &js[start..end];
+
+    assert!(
+        body.contains("sttCodecLog('STT codec: aac"),
+        "a successful AAC encode must be logged with sizes (STT codec: aac bytes=... pcmBytes=...)"
+    );
+    assert!(
+        body.contains("reason=no-webcodecs"),
+        "missing AudioEncoder/AudioData must log reason=no-webcodecs, not fail silently"
+    );
+    assert!(
+        body.contains("reason=insecure-context"),
+        "plain HTTP (Android production flavor) can never use WebCodecs; the fallback must log reason=insecure-context every utterance"
+    );
+    assert!(
+        body.contains("reason=unsupported-config"),
+        "an isConfigSupported rejection must log reason=unsupported-config, not fail silently"
+    );
+    assert!(
+        body.contains("reason=empty-output"),
+        "an empty encoder output must log reason=empty-output, not fail silently"
+    );
+    assert!(
+        body.contains("reason=encoder-error"),
+        "an encoder exception must log reason=encoder-error in addition to the console.warn"
+    );
+    assert!(
+        js.contains("function sttCodecLog(") && js.contains("nativeLog('VAD'"),
+        "codec logs must also reach adb logcat via window.nativeLog, not only the browser console"
+    );
+}

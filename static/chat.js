@@ -4539,6 +4539,7 @@ $(document).ready(function() {
           _nativeMicPcmChunks = [];
 
           const audioPayload = await NativeAudio.encodeAudioForStt(pcm16, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
+          nativeLog('VAD', 'STT push-to-talk encoded format=' + audioPayload.filename + ' bytes=' + audioPayload.blob.size);
 
           fetchVoiceRetry('/stt', function () {
             const retryForm = new FormData();

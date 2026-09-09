@@ -9,7 +9,7 @@ use chatbot_core::{config, session};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde_json::Value;
-use tracing::{debug, error};
+use tracing::error;
 
 use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
@@ -94,7 +94,18 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         return Err(api_error(StatusCode::BAD_REQUEST, "No audio data provided"));
     }
 
-    debug!(bytes = audio_bytes.len(), content_type = %audio_content_type, "forwarding audio to voice service");
+    // Info level (production RUST_LOG) so host logs always show which codec
+    // arrived. If `compressed=false` the client fell back to PCM WAV (missing
+    // WebCodecs, insecure context, unsupported encoder config, or encoder
+    // error) — that is the signal that wire compression is not engaging.
+    let compressed = !(audio_file_name.ends_with(".wav") || audio_content_type == "audio/wav");
+    tracing::info!(
+        bytes = audio_bytes.len(),
+        content_type = %audio_content_type,
+        file = %audio_file_name,
+        compressed,
+        "STT audio received"
+    );
 
     let config = config::app_config();
     let base = config.voice_service_base_url.trim_end_matches('/');
