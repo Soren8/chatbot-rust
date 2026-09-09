@@ -16,7 +16,7 @@ use crate::http_error::{
     map_serialization_err, map_session_err, HttpError,
 };
 
-const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+pub const MAX_AUDIO_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()

@@ -244,6 +244,169 @@
     return pcm16ToWavBlob(pcm16, rate);
   }
 
+  const AAC_SAMPLE_RATES = [
+    96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350
+  ];
+
+  function getAacSampleRateIndex(rate) {
+    for (let i = 0; i < AAC_SAMPLE_RATES.length; i++) {
+      if (AAC_SAMPLE_RATES[i] === rate) return i;
+    }
+    return 8; // default to 16000 Hz
+  }
+
+  /**
+   * 7-byte ADTS framing header for raw AAC-LC access units.
+   * Enables standard ffmpeg/browser demuxing of WebCodecs audio chunks.
+   */
+  function createAdtsHeader(dataLength, sampleRate, channelConfig) {
+    const frameLength = 7 + dataLength;
+    const rateIdx = getAacSampleRateIndex(sampleRate);
+    const channels = channelConfig || 1;
+    const header = new Uint8Array(7);
+
+    header[0] = 0xFF;
+    header[1] = 0xF1;
+    header[2] = ((1 << 6) | ((rateIdx & 0x0F) << 2) | ((channels >> 2) & 1)) & 0xFF;
+    header[3] = (((channels & 3) << 6) | ((frameLength >> 11) & 0x03)) & 0xFF;
+    header[4] = (frameLength >> 3) & 0xFF;
+    header[5] = (((frameLength & 7) << 5) | 0x1F) & 0xFF;
+    header[6] = 0xFC;
+    return header;
+  }
+
+  /**
+   * Encode PCM audio samples using WebCodecs AudioEncoder into ADTS AAC.
+   */
+  function encodeAacAdts(samples, sampleRate, aacConfig) {
+    return new Promise(function (resolve, reject) {
+      let f32;
+      if (samples instanceof Float32Array) {
+        f32 = samples;
+      } else if (samples instanceof Int16Array) {
+        f32 = new Float32Array(samples.length);
+        for (let i = 0; i < samples.length; i++) {
+          f32[i] = samples[i] < 0 ? samples[i] / 32768 : samples[i] / 32767;
+        }
+      } else {
+        f32 = new Float32Array(samples);
+      }
+
+      const chunks = [];
+      const encoder = new AudioEncoder({
+        output: function (chunk) {
+          const buf = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(buf);
+          const adts = createAdtsHeader(chunk.byteLength, sampleRate, 1);
+          chunks.push(adts);
+          chunks.push(buf);
+        },
+        error: function (e) {
+          reject(e);
+        }
+      });
+
+      encoder.configure(aacConfig);
+
+      const frameSize = 1024;
+      let offset = 0;
+      let timestampMicros = 0;
+      const microsPerFrame = Math.round((frameSize * 1000000) / sampleRate);
+
+      while (offset < f32.length) {
+        const remaining = f32.length - offset;
+        let frameData;
+        if (remaining >= frameSize) {
+          frameData = f32.subarray(offset, offset + frameSize);
+        } else {
+          frameData = new Float32Array(frameSize);
+          frameData.set(f32.subarray(offset));
+        }
+
+        const audioData = new AudioData({
+          format: 'f32',
+          sampleRate: sampleRate,
+          numberOfFrames: frameSize,
+          numberOfChannels: 1,
+          timestamp: timestampMicros,
+          data: frameData
+        });
+
+        encoder.encode(audioData);
+        audioData.close();
+
+        offset += frameSize;
+        timestampMicros += microsPerFrame;
+      }
+
+      encoder.flush().then(function () {
+        encoder.close();
+        resolve(new Blob(chunks, { type: 'audio/aac' }));
+      }).catch(function (err) {
+        try { encoder.close(); } catch (_) {}
+        reject(err);
+      });
+    });
+  }
+
+  /**
+   * Encode audio samples for STT upload.
+   * Uses hardware-accelerated WebCodecs (AAC-LC with ADTS) when available for wire
+   * compression (8-10x bandwidth reduction over spotty connections), falling back
+   * to PCM16 WAV.
+   */
+  async function encodeAudioForStt(samples, sampleRate) {
+    const rate = sampleRate || NATIVE_MIC_SAMPLE_RATE;
+    if (!samples || samples.length === 0) {
+      return {
+        blob: new Blob([], { type: 'audio/wav' }),
+        filename: 'recording.wav',
+        mimeType: 'audio/wav'
+      };
+    }
+
+    if (typeof globalThis !== 'undefined'
+        && typeof globalThis.AudioEncoder === 'function'
+        && typeof globalThis.AudioData === 'function'
+        && (typeof window === 'undefined' || window.isSecureContext !== false)) {
+      try {
+        const aacConfig = {
+          codec: 'mp4a.40.2',
+          sampleRate: rate,
+          numberOfChannels: 1,
+          bitrate: 32000
+        };
+        const support = await AudioEncoder.isConfigSupported(aacConfig);
+        if (support && support.supported) {
+          const encodedBlob = await encodeAacAdts(samples, rate, aacConfig);
+          if (encodedBlob && encodedBlob.size > 0) {
+            return {
+              blob: encodedBlob,
+              filename: 'recording.aac',
+              mimeType: 'audio/aac'
+            };
+          }
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('AudioEncoder STT compression failed, falling back to WAV:', err);
+        }
+      }
+    }
+
+    let wavBlob;
+    if (samples instanceof Float32Array) {
+      wavBlob = float32ToWavBlob(samples, rate);
+    } else {
+      wavBlob = pcm16ToWavBlob(samples, rate);
+    }
+    return {
+      blob: wavBlob,
+      filename: 'recording.wav',
+      mimeType: 'audio/wav'
+    };
+  }
+
   /**
    * FIFO of float32 samples for feeding a ScriptProcessor / AudioWorklet clock.
    * Partial chunk consumption avoids dropping samples at chunk boundaries.
@@ -335,6 +498,8 @@
     mergePcm16Chunks: mergePcm16Chunks,
     pcm16ToWavBlob: pcm16ToWavBlob,
     float32ToWavBlob: float32ToWavBlob,
+    createAdtsHeader: createAdtsHeader,
+    encodeAudioForStt: encodeAudioForStt,
     PcmSampleBuffer: PcmSampleBuffer,
     Pcm16RingBuffer: Pcm16RingBuffer,
     waitForSamples: waitForSamples,

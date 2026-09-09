@@ -1,5 +1,6 @@
 use axum::{
     body::Body,
+    extract::DefaultBodyLimit,
     http::{header, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::Response,
@@ -30,7 +31,7 @@ mod reset_chat;
 mod search;
 mod sets;
 mod signup;
-mod stt;
+pub mod stt;
 pub mod test_instrumentation;
 mod tools;
 mod tts;
@@ -244,7 +245,11 @@ pub fn build_router(static_root: PathBuf) -> Router {
             "/tts_stream/{token}",
             get(tts::handle_tts_stream).delete(tts::handle_tts_cancel),
         )
-        .route("/stt", post(stt::handle_stt))
+        .route(
+            "/stt",
+            post(stt::handle_stt)
+                .layer(DefaultBodyLimit::max(stt::MAX_AUDIO_BYTES + 2 * 1024 * 1024)),
+        )
         .route("/regenerate", post(regenerate::handle_regenerate))
         .layer(middleware::from_fn(rate_limit_middleware::middleware));
 

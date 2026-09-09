@@ -174,3 +174,204 @@ async fn stt_returns_clean_error_when_voice_service_fails() {
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");
 }
+
+fn stt_success_router() -> (Router, Arc<std::sync::Mutex<usize>>) {
+    let received_bytes = Arc::new(std::sync::Mutex::new(0));
+    let bytes_clone = received_bytes.clone();
+    (
+        Router::new().route(
+            "/v1/stt",
+            post(move |mut multipart: axum::extract::Multipart| {
+                let bytes_clone = bytes_clone.clone();
+                async move {
+                    while let Ok(Some(field)) = multipart.next_field().await {
+                        if field.name() == Some("audio") {
+                            if let Ok(bytes) = field.bytes().await {
+                                *bytes_clone.lock().unwrap() = bytes.len();
+                            }
+                        }
+                    }
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        serde_json::to_vec(&json!({ "text": "transcribed speech" })).unwrap(),
+                    )
+                }
+            })
+            .layer(axum::extract::DefaultBodyLimit::disable()),
+        ),
+        received_bytes,
+    )
+}
+
+#[tokio::test]
+async fn stt_accepts_audio_larger_than_two_megabytes() {
+    common::init_tracing();
+    let _lock = STT_TEST_MUTEX.lock().unwrap();
+
+    let (router, received) = stt_success_router();
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = TestWorkspace::with_config(&stt_test_config(
+        &addr.ip().to_string(),
+        addr.port(),
+    ));
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let home_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /");
+
+    let set_cookie = home_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie")
+        .to_owned();
+    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
+        .await
+        .expect("home body");
+    let body_text = std::str::from_utf8(&body_bytes).expect("utf8");
+    let csrf = META_TOKEN_RE
+        .captures(body_text)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+        .expect("csrf token");
+    let cookie = common::extract_cookie(&set_cookie);
+
+    // Audio payload larger than Axum's default 2MB (2,097,152 bytes) limit: 3.5 MB
+    let large_audio_size = 3500 * 1024;
+    let fake_audio = vec![b'a'; large_audio_size];
+
+    let boundary = "----sttboundarylarge";
+    let header_part = format!(
+        "--{b}\r\ncontent-disposition: form-data; name=\"audio\"; filename=\"recording.wav\"\r\ncontent-type: audio/wav\r\n\r\n",
+        b = boundary
+    );
+    let footer_part = format!("\r\n--{b}--\r\n", b = boundary);
+
+    let mut body_vec = Vec::with_capacity(header_part.len() + fake_audio.len() + footer_part.len());
+    body_vec.extend_from_slice(header_part.as_bytes());
+    body_vec.extend_from_slice(&fake_audio);
+    body_vec.extend_from_slice(footer_part.as_bytes());
+
+    let stt_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/stt")
+                .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+                .header("X-CSRF-Token", &csrf)
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(body_vec))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /stt response");
+
+    assert_eq!(stt_response.status(), StatusCode::OK, "STT must accept audio > 2MB without 400 error");
+    assert_eq!(*received.lock().unwrap(), large_audio_size, "voice service must receive the full audio payload");
+
+    let body_bytes = axum::body::to_bytes(stt_response.into_body(), 128 * 1024)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body_bytes).expect("json body");
+    assert_eq!(payload["text"], "transcribed speech");
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}
+
+#[tokio::test]
+async fn stt_rejects_audio_exceeding_max_audio_bytes() {
+    common::init_tracing();
+    let _lock = STT_TEST_MUTEX.lock().unwrap();
+
+    let (router, _received) = stt_success_router();
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = TestWorkspace::with_config(&stt_test_config(
+        &addr.ip().to_string(),
+        addr.port(),
+    ));
+
+    let static_root = resolve_static_root();
+    let app = build_router(static_root);
+
+    let home_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /");
+
+    let set_cookie = home_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie")
+        .to_owned();
+    let body_bytes = axum::body::to_bytes(home_response.into_body(), 256 * 1024)
+        .await
+        .expect("home body");
+    let body_text = std::str::from_utf8(&body_bytes).expect("utf8");
+    let csrf = META_TOKEN_RE
+        .captures(body_text)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
+        .expect("csrf token");
+    let cookie = common::extract_cookie(&set_cookie);
+
+    let over_limit_size = chatbot_server::stt::MAX_AUDIO_BYTES + 1024;
+    let fake_audio = vec![b'x'; over_limit_size];
+
+    let boundary = "----sttboundaryoverlimit";
+    let header_part = format!(
+        "--{b}\r\ncontent-disposition: form-data; name=\"audio\"; filename=\"recording.wav\"\r\ncontent-type: audio/wav\r\n\r\n",
+        b = boundary
+    );
+    let footer_part = format!("\r\n--{b}--\r\n", b = boundary);
+
+    let mut body_vec = Vec::with_capacity(header_part.len() + fake_audio.len() + footer_part.len());
+    body_vec.extend_from_slice(header_part.as_bytes());
+    body_vec.extend_from_slice(&fake_audio);
+    body_vec.extend_from_slice(footer_part.as_bytes());
+
+    let stt_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/stt")
+                .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+                .header("X-CSRF-Token", &csrf)
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(body_vec))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /stt response");
+
+    assert_eq!(stt_response.status(), StatusCode::BAD_REQUEST);
+
+    let body_bytes = axum::body::to_bytes(stt_response.into_body(), 128 * 1024)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body_bytes).expect("json body");
+    assert_eq!(payload["error"], "audio file too large");
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}

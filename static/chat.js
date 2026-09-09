@@ -4533,16 +4533,16 @@ $(document).ready(function() {
           _nativeMicListener = null;
         }
 
-        window.NativeMic.stop().then(function () {
+        window.NativeMic.stop().then(async function () {
           if (_nativeMicPcmChunks.length === 0) return;
           const pcm16 = NativeAudio.mergePcm16Chunks(_nativeMicPcmChunks);
-          const wavBlob = NativeAudio.pcm16ToWavBlob(pcm16);
-
           _nativeMicPcmChunks = [];
+
+          const audioPayload = await NativeAudio.encodeAudioForStt(pcm16, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
 
           fetchVoiceRetry('/stt', function () {
             const retryForm = new FormData();
-            retryForm.append('audio', wavBlob, 'recording.wav');
+            retryForm.append('audio', audioPayload.blob, audioPayload.filename);
             return { method: 'POST', headers: withCsrf({}), body: retryForm };
           })
             .then(function (res) {
@@ -4853,9 +4853,14 @@ $(document).ready(function() {
     handleSpeechEnd();
   };
 
-  NativeMicUtteranceVAD.prototype.takeSpeechWavBlob = function () {
+  NativeMicUtteranceVAD.prototype.takeSpeechPcm16 = function () {
     const pcm16 = NativeAudio.mergePcm16Chunks(this.utteranceChunks);
     this.utteranceChunks = [];
+    return pcm16;
+  };
+
+  NativeMicUtteranceVAD.prototype.takeSpeechWavBlob = function () {
+    const pcm16 = this.takeSpeechPcm16();
     return NativeAudio.pcm16ToWavBlob(pcm16);
   };
 
@@ -5971,22 +5976,24 @@ $(document).ready(function() {
     if (voiceModeVAD) voiceModeVAD.pause();
 
     try {
-      let wavBlob;
+      let audioPayload;
       if (nativeMicBridge && nativeMicBridge.hasSpeechCapture()) {
-        wavBlob = nativeMicBridge.takeSpeechWavBlob();
-        nativeLog('VAD', 'STT native PCM wavBytes=' + wavBlob.size);
-        if (wavBlob.size < 44 + NativeAudio.SPEECH_MIN_PCM_BYTES) {
-          nativeLog('VAD', 'STT skipped: utterance too short bytes=' + wavBlob.size);
+        const pcm16 = nativeMicBridge.takeSpeechPcm16 ? nativeMicBridge.takeSpeechPcm16() : null;
+        if (!pcm16 || pcm16.length * 2 < NativeAudio.SPEECH_MIN_PCM_BYTES) {
+          nativeLog('VAD', 'STT skipped: utterance too short bytes=' + (pcm16 ? pcm16.length * 2 : 0));
           return;
         }
+        audioPayload = await NativeAudio.encodeAudioForStt(pcm16, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
+        nativeLog('VAD', 'STT native encoded format=' + audioPayload.filename + ' bytes=' + audioPayload.blob.size);
       } else if (vadAudio && vadAudio.length) {
-        wavBlob = NativeAudio.float32ToWavBlob(vadAudio, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
+        audioPayload = await NativeAudio.encodeAudioForStt(vadAudio, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
+        nativeLog('VAD', 'STT desktop encoded format=' + audioPayload.filename + ' bytes=' + audioPayload.blob.size);
       } else {
         return;
       }
       const res = await fetchVoiceRetry('/stt', function () {
         const retryForm = new FormData();
-        retryForm.append('audio', wavBlob, 'recording.wav');
+        retryForm.append('audio', audioPayload.blob, audioPayload.filename);
         return {
           method: 'POST',
           headers: withCsrf({}),

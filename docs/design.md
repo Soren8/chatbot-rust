@@ -126,7 +126,7 @@ This document captures the current architecture of the project and the potential
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml`. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.
   - [ ] Fish Speech S2 — natively supports low TTFA streaming; evaluate for production use (code path exists; not production default).
-  - [x] Parakeet STT — NVIDIA Parakeet TDT 0.6B v2 for speech-to-text, vertically integrated into `chatbot-cuda` voice-service.
+  - [x] Parakeet STT — NVIDIA Parakeet TDT 0.6B v2 for speech-to-text, vertically integrated into `chatbot-cuda` voice-service. Supports compressed audio over the wire (hardware-accelerated AAC-LC with ADTS via WebCodecs, or WebM/Opus) and PCM16 WAV. Webserver overrides default body limit up to 50MB for arbitrarily long voice utterances.
   - **Webserver TTS surface (not a public API product):** browsers and native clients use only `POST /tts` (CSRF + deploy-time access policy) then `GET /tts_stream/{token}` for playback. There is no unauthenticated `/api/tts*` on the webserver; the GPU voice-service HTTP API is for the webserver to call as a backend client only. Gate who may use TTS with `tts_access` in `.config.yml` (or `TTS_ACCESS`): `anyone` (default, guests OK — good for LAN/local models), `authenticated` (logged-in only), or `premium` (premium tier only).
 
 - **Documentation**
