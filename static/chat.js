@@ -11,6 +11,30 @@ window.nativeLog = function(tag, msg) {
   }
 };
 
+// Ship uncaught JS errors to the Android app (ClientLogReporter -> server
+// /client_logs) so field failures are visible in host logs, not only adb.
+// Native side no-ops outside debug builds; web browsers have no Logger plugin.
+function reportClientErrorToNative(kind, message) {
+  try {
+    if (!window.Capacitor || !window.Capacitor.nativePromise) return;
+    window.Capacitor.nativePromise('Logger', 'report', {
+      level: kind,
+      message: String(message || '').slice(0, 4000)
+    }).catch(function () {});
+  } catch (e) { /* ignore */ }
+}
+window.addEventListener('error', function (event) {
+  var where = event && event.filename ? ' @' + event.filename + ':' + (event.lineno || 0) : '';
+  reportClientErrorToNative('ERROR', 'window.onerror: '
+    + (event && event.message ? event.message : 'unknown') + where);
+});
+window.addEventListener('unhandledrejection', function (event) {
+  var reason = event && event.reason
+    ? (event.reason && event.reason.message ? event.reason.message : String(event.reason))
+    : 'unknown';
+  reportClientErrorToNative('ERROR', 'unhandledrejection: ' + reason);
+});
+
 function ttHtml(html) {
   if (html == null || typeof html !== 'string') {
     return html;

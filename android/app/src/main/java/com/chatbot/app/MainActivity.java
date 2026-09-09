@@ -25,6 +25,7 @@ import java.util.concurrent.Executor;
 import com.chatbot.app.Logger.LoggerPlugin;
 import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
+import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.CapConfig;
@@ -39,6 +40,8 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         FileLogger.init(getApplicationContext());
+        ClientLogReporter.init(getApplicationContext());
+        installCrashReporter();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             setRecentsScreenshotEnabled(false);
         }
@@ -50,6 +53,31 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
     }
 
+
+    /**
+     * Debug builds upload the crash plus recent FileLogger lines to the
+     * webserver (POST /client_logs) before chaining to the previous
+     * handler. Every step is exception-guarded so a reporter failure can
+     * never break normal crash handling.
+     */
+    private void installCrashReporter() {
+        final Thread.UncaughtExceptionHandler previous =
+                Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            try {
+                FileLogger.log(TAG, "uncaught exception on thread "
+                        + (thread != null ? thread.getName() : "unknown"), throwable);
+            } catch (Throwable ignored) {
+            }
+            try {
+                ClientLogReporter.reportCrash(thread, throwable);
+            } catch (Throwable ignored) {
+            }
+            if (previous != null) {
+                previous.uncaughtException(thread, throwable);
+            }
+        });
+    }
 
     @Override
     protected void load() {

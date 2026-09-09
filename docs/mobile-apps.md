@@ -201,6 +201,15 @@ The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies. Pag
 
 5. **Desktop/browser**: Silero VAD remains. `preSpeechPadFrames: 16` (~500 ms) provides speech onset pre-roll parity with native's 500 ms pre-roll buffer. Barge-in uses `onSpeechRealStart` and high-confidence `onFrameProcessed` (`isSpeech > 0.85` for ~128 ms), not first-frame `onSpeechStart`. `redemptionMs` is 1500 (same end-silence as native). After `onSpeechEnd`, leave Silero running or reinitialize carefully; `pause()`/`start()` is OK on desktop. Do not rely on Silero restart behavior inside Android WebView.
 
+### Client log reporting (debug builds only)
+
+Android errors are visible in host logs instead of only opaque adb logcat:
+
+- **`util/ClientLogReporter.java`** — POSTs error/crash reports to the webserver's `POST /client_logs`. **`BuildConfig.DEBUG`-gated** (release builds stay silent; `buildFeatures.buildConfig` is enabled in `android/app/build.gradle`). Crashes upload synchronously (bounded to ~3s) from the uncaught-exception handler installed in `MainActivity.installCrashReporter`, including the crash stack plus the last ~150 `FileLogger` ring lines; `Logger.report` bridge calls (non-fatal) upload asynchronously. Authorization uses the session cookie — the native side cannot obtain the page's CSRF token, and the endpoint is log-only (no state mutation), rate limited, and capped (64KB body, 64 lines).
+- **Server** (`chatbot-server/src/client_logs.rs`) — sanitizes every line before it reaches host logs (defense in depth beyond client-side redaction): emails → `[EMAIL]`, IPv4 → `[IP]`, long hex/opaque tokens (session/CSRF/TTS tokens, cookies, bearers) → `[HEX]`/`[REDACTED]`, URL query strings → `?[REDACTED]`, truncation at 512 chars. Each line logs at warn level with `source=android` and `client_log=...`; grep host logs with `grep "client log"`.
+- **JS bridge** (`static/chat.js`) — `window.onerror` / `unhandledrejection` forward to `Logger.report` via Capacitor; gated on `window.Capacitor` so desktop browsers never invoke it.
+- Useful checks: `adb logcat -s ClientLogReporter` shows upload attempts and result codes; server side shows the sanitized payload. Reports are sent only when something actually fails — there is no periodic heartbeat.
+
 ### TTS barge-in dual invariant (do not oscillate)
 
 Handheld native VAD has no Silero. Energy-only start stops TTS on coughs; extra ANDs on *start* kill table-distance speech. Both of these must stay true at once:

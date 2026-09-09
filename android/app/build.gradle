@@ -16,6 +16,11 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    buildFeatures {
+        // ClientLogReporter gates on BuildConfig.DEBUG (AGP 8 disables the
+        // generated BuildConfig class by default).
+        buildConfig true
+    }
     buildTypes {
         release {
             minifyEnabled false

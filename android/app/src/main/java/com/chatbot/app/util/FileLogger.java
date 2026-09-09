@@ -7,13 +7,19 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 public class FileLogger {
     private static final String TAG = "FileLogger";
     private static volatile File logFile;
     private static final Object lock = new Object();
+    /** Recent lines for the debug-build crash/log reporter (ClientLogReporter). */
+    private static final int RING_MAX_LINES = 150;
+    private static final ArrayDeque<String> ring = new ArrayDeque<>();
 
     public static void init(Context context) {
         if (context == null) {
@@ -48,6 +54,10 @@ public class FileLogger {
         } catch (Throwable ignored) {
         }
         synchronized (lock) {
+            ring.addLast(line);
+            while (ring.size() > RING_MAX_LINES) {
+                ring.removeFirst();
+            }
             if (logFile == null) {
                 return;
             }
@@ -56,6 +66,13 @@ public class FileLogger {
             } catch (Throwable e) {
                 Log.e(TAG, "Failed to write log", e);
             }
+        }
+    }
+
+    /** Snapshot of the most recent log lines, oldest first. */
+    public static List<String> snapshotLines() {
+        synchronized (lock) {
+            return new ArrayList<>(ring);
         }
     }
 
