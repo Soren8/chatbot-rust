@@ -17,6 +17,7 @@ mod background;
 mod brave;
 mod chat;
 pub mod chat_utils;
+pub mod client_logs;
 mod health;
 pub mod http_error;
 mod home;
@@ -250,6 +251,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(stt::handle_stt)
                 .layer(DefaultBodyLimit::max(stt::MAX_AUDIO_BYTES + 2 * 1024 * 1024)),
         )
+        .route("/client_logs", post(client_logs::handle_client_logs))
         .route("/regenerate", post(regenerate::handle_regenerate))
         .layer(middleware::from_fn(rate_limit_middleware::middleware));
 
