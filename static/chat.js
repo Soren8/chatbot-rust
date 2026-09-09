@@ -5215,12 +5215,132 @@ $(document).ready(function() {
     let observer = null;
     let pollTimer = null;
     let pumpInFlight = false;
+    let batchAttempted = false;
+
+    // POST one sentence's text and resolve its stream token (no enqueue).
+    // Mirrors the serial pump's token handling so the batch prefetch below
+    // stays consistent: header token preferred, JSON fallback, live checks.
+    function postOneToken(rawText) {
+      const cleaned = sanitizeForTTS(rawText || '').trim();
+      if (!cleaned) return Promise.resolve(null);
+      return ensureSession().then(function () {
+        if (!live()) return null;
+        return fetchVoiceRetry('/tts', {
+          method: 'POST',
+          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ text: cleaned }),
+          signal: ttsSignal
+        });
+      }).then(function (response) {
+        if (!response) return null;
+        const responseToken = response.headers && response.headers.get('X-TTS-Token');
+        if (responseToken) {
+          const token = String(responseToken);
+          pendingNativeTtsTokens.add(token);
+          if (!live()) {
+            pendingNativeTtsTokens.delete(token);
+            cancelNativeTtsToken(token);
+            return null;
+          }
+        }
+        return response.json().catch(function () {
+          if (responseToken) return { token: String(responseToken) };
+          throw new Error('TTS token response unreadable');
+        });
+      }).then(function (data) {
+        if (!data || !data.token) return null;
+        const token = String(data.token);
+        pendingNativeTtsTokens.add(token);
+        if (!live()) {
+          pendingNativeTtsTokens.delete(token);
+          cancelNativeTtsToken(token);
+          return null;
+        }
+        return token;
+      });
+    }
+
+    // When the full text is already known (not still generating), fetch the
+    // remaining sentences' tokens concurrently (bounded) and enqueue their
+    // stream URLs in sentence order. The native downloader still downloads
+    // serially in order, and synthesis stays serial server-side; this only
+    // removes the per-sentence POST + bridge round-trips so a spotty link
+    // has the whole queue waiting instead of idling on JS turnarounds.
+    // Any failure falls back to the serial pump for the unconfirmed tail.
+    function prefetchRemainingTokens() {
+      const texts = sentenceQueue.splice(0, sentenceQueue.length);
+      pumpInFlight = true;
+      const results = new Array(texts.length);
+      let nextIdx = 0;
+      // First index not yet confirmed enqueued; the fallback below requeues
+      // texts from here on and cancels only never-enqueued tokens, so already
+      // queued sentences still play exactly once.
+      let enqueueIdx = 0;
+      const CONCURRENCY = 4;
+      function worker() {
+        if (!live()) return Promise.resolve();
+        const idx = nextIdx++;
+        if (idx >= texts.length) return Promise.resolve();
+        return postOneToken(texts[idx]).then(function (tok) {
+          results[idx] = tok || null;
+          return worker();
+        });
+      }
+      const starters = [];
+      for (let w = 0; w < Math.min(CONCURRENCY, texts.length); w++) starters.push(worker());
+      Promise.all(starters).then(function () {
+        if (!live()) return;
+        function enqueueOrdered() {
+          if (!live() || enqueueIdx >= texts.length) return Promise.resolve();
+          const idx = enqueueIdx;
+          const tok = results[idx];
+          if (!tok) {
+            enqueueIdx++;
+            return enqueueOrdered();
+          }
+          return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(tok)).catch(function (err) {
+            pendingNativeTtsTokens.delete(tok);
+            cancelNativeTtsToken(tok);
+            nativeVoiceTtsSessionPromise = null;
+            throw err;
+          }).then(function () {
+            enqueueIdx++;
+            return enqueueOrdered();
+          });
+        }
+        return enqueueOrdered().then(function () {
+          return enqueueIdx;
+        });
+      }).then(function () {
+        pumpInFlight = false;
+        if (live()) pump();
+      }).catch(function () {
+        pumpInFlight = false;
+        if (!live()) return;
+        // Cancel prefetched-but-never-enqueued tokens (the failed one was
+        // already cancelled by its own handler; re-cancelling is harmless).
+        // Already-enqueued indexes below enqueueIdx are left alone to play.
+        for (let i = enqueueIdx; i < results.length; i++) {
+          if (results[i]) {
+            pendingNativeTtsTokens.delete(results[i]);
+            cancelNativeTtsToken(results[i]);
+          }
+        }
+        for (let i = texts.length - 1; i >= enqueueIdx; i--) sentenceQueue.unshift(texts[i]);
+        pump();
+      });
+    }
 
     function pump() {
       if (!live()) return;
       if (pumpInFlight) return;
       discoverSentences();
       if (sentenceQueue.length > 0) {
+        if (!batchAttempted && !isStillGenerating() && sentenceQueue.length > 1) {
+          batchAttempted = true;
+          prefetchRemainingTokens();
+          return;
+        }
         const text = sanitizeForTTS(sentenceQueue.shift() || '').trim();
         if (!text) { pump(); return; }
         pumpInFlight = true;

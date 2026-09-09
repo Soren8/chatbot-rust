@@ -1712,3 +1712,22 @@ fn native_tts_requests_audio_focus_once_per_track_not_per_sentence() {
         "track creation must still route to the speaker when appropriate"
     );
 }
+
+#[test]
+fn native_tts_prefetches_remaining_tokens_when_text_is_complete() {
+    let chat_js = include_str!("../../static/chat.js");
+    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
+        .expect("playNativeVoiceModeTts must be declared");
+    assert!(
+        native_tts.contains("prefetchRemainingTokens") && native_tts.contains("batchAttempted"),
+        "completed text must prefetch remaining sentence tokens up front so a spotty link has the queue waiting"
+    );
+    assert!(
+        native_tts.contains("Promise.all"),
+        "token prefetch must overlap requests instead of one POST per bridge round-trip"
+    );
+    assert!(
+        native_tts.contains("enqueueOrdered") || native_tts.contains("in sentence order"),
+        "prefetched tokens must still enqueue in sentence order to keep server synthesis and native download ordered"
+    );
+}
