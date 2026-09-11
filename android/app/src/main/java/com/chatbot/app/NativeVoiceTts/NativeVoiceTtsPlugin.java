@@ -12,6 +12,7 @@ import android.util.Log;
 import android.webkit.CookieManager;
 
 import com.chatbot.app.audio.VoiceAudioRoute;
+import com.chatbot.app.util.ClientLogReporter;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -211,6 +212,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 return;
             } catch (Exception e) {
                 Log.e(TAG, "playback loop error; continuing", e);
+                ClientLogReporter.report("VOICE-ERROR", "voice: tts playback loop error, continuing");
                 releaseAudioTrack(generation);
             }
         }
@@ -270,6 +272,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
             }
         }
         if (last != null) {
+            ClientLogReporter.report("VOICE-ERROR", "voice: tts clip failed after retries");
             throw last;
         }
     }
@@ -298,6 +301,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
             Log.d(TAG, "GET " + urlStr + " code=" + code);
             if (code == 404 || code == 401 || code == 403) {
                 Log.e(TAG, "GET " + urlStr + " non-retryable code=" + code);
+                ClientLogReporter.report("VOICE-ERROR", "voice: tts clip non-retryable code=" + code);
                 return;
             }
             if (code < 200 || code >= 300) {

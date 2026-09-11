@@ -23,6 +23,29 @@ function reportClientErrorToNative(kind, message) {
     }).catch(function () {});
   } catch (e) { /* ignore */ }
 }
+
+// Voice-pipeline telemetry for field debugging (Android debug builds only).
+// reportVoice() mirrors nativeLog(): always console, plus an async upload to
+// the webserver's POST /client_logs via the Logger plugin. The native side
+// no-ops outside debug builds and the server rate-limits + sanitizes, so:
+// - call it on lifecycle/failure events, never per-audio-frame,
+// - metadata only: counts, sizes, durations, status codes. Never transcripts,
+//   audio bytes, cookies, tokens, or URLs.
+function reportVoice(kind, message) {
+  try {
+    console.log('[VOICE-REPORT ' + kind + ']', message);
+  } catch (e) { /* ignore */ }
+  reportClientErrorToNative(kind, 'voice: ' + message);
+}
+// Throttled voice reports for hot paths (e.g. dropped PCM frames): at most
+// one upload per window per key; quiet periods stay fully silent.
+var _voiceReportThrottle = {};
+function reportVoiceThrottled(key, windowMs, kind, message) {
+  var now = Date.now();
+  if (_voiceReportThrottle[key] && now - _voiceReportThrottle[key] < windowMs) return;
+  _voiceReportThrottle[key] = now;
+  reportVoice(kind, message);
+}
 window.addEventListener('error', function (event) {
   var where = event && event.filename ? ' @' + event.filename + ':' + (event.lineno || 0) : '';
   reportClientErrorToNative('ERROR', 'window.onerror: '
@@ -4718,6 +4741,7 @@ $(document).ready(function() {
     this.nativeListener = null;
     this.isRecording = false;
     this.chunkCount = 0;
+    this._firstFrameReported = false;
   }
 
   NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
@@ -4798,7 +4822,19 @@ $(document).ready(function() {
   };
 
   NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16) {
-    if (!this.isRecording || !window.voiceModeActive) return;
+    if (!this.isRecording || !window.voiceModeActive) {
+      // Button-green-but-deaf detector: frames arrive yet the session drops
+      // them (stale listener after restart, flag mismatch). Throttled.
+      reportVoiceThrottled('pcm-dropped', 10000, 'VOICE-ERROR',
+        'dropping PCM frames isRecording=' + this.isRecording
+        + ' voiceModeActive=' + !!window.voiceModeActive
+        + ' chunks=' + this.chunkCount);
+      return;
+    }
+    if (!this._firstFrameReported) {
+      this._firstFrameReported = true;
+      reportVoice('VOICE', 'first PCM frame received, capture live');
+    }
     const copy = pcm16.slice();
     const rms = NativeAudio.pcm16Rms(copy);
     const frameMs = 20;
@@ -4869,11 +4905,14 @@ $(document).ready(function() {
     if (this.speechActiveMs < NativeAudio.SPEECH_MIN_ACTIVE_MS) {
       nativeLog('VAD', 'utterance rejected: speechActiveMs=' + this.speechActiveMs
         + ' min=' + NativeAudio.SPEECH_MIN_ACTIVE_MS);
+      reportVoice('VOICE', 'utterance rejected too short speechMs=' + this.speechActiveMs);
       this.utteranceChunks = [];
       this.speechActiveMs = 0;
       return;
     }
     nativeLog('VAD', 'utterance end chunks=' + this.utteranceChunks.length
+      + ' speechMs=' + this.speechActiveMs);
+    reportVoice('VOICE', 'utterance end chunks=' + this.utteranceChunks.length
       + ' speechMs=' + this.speechActiveMs);
     handleSpeechEnd();
   };
@@ -4910,6 +4949,7 @@ $(document).ready(function() {
       this.inSpeech = false;
       this._resetSpeechCounters();
       this.chunkCount = 0;
+      this._firstFrameReported = false;
 
       if (nativeMicBridge !== this) {
         throw new Error('native VAD start superseded');
@@ -4963,8 +5003,10 @@ $(document).ready(function() {
         }
       });
       this.isRecording = true;
+      reportVoice('VOICE', 'native VAD capture started');
     } catch (err) {
       nativeLog('VAD', 'NativeMicUtteranceVAD start failed: ' + (err && err.message ? err.message : err));
+      reportVoice('VOICE-ERROR', 'native VAD start failed: ' + (err && err.message ? err.message : err));
       throw err;
     }
   };
@@ -5545,6 +5587,8 @@ $(document).ready(function() {
     let candidateVAD = null;
     try {
       const useNativeMicVAD = window.nativeMicAvailable && isMobile;
+      reportVoice('VOICE', 'startVoiceMode attempt=' + attempt + ' gen=' + sessionGeneration
+        + ' native=' + (!!useNativeMicVAD));
 
       if (useNativeMicVAD) {
         if (nativeMicBridge) {
@@ -5557,7 +5601,10 @@ $(document).ready(function() {
         }
         await ensureNativeMicPermission();
         if (window.NativeMic && window.NativeMic.enterVoiceRoute) {
-          await window.NativeMic.enterVoiceRoute();
+          const routeRes = await window.NativeMic.enterVoiceRoute();
+          reportVoice('VOICE', 'enterVoiceRoute ok active=' + (routeRes && routeRes.active)
+            + ' bluetooth=' + (routeRes && routeRes.bluetooth)
+            + ' foreground=' + (routeRes && routeRes.foreground));
         }
         startingNativeBridge = new NativeMicUtteranceVAD(function (err) {
           nativeLog('VAD', err == null ? 'Native mic error' : String(err));
@@ -5580,6 +5627,7 @@ $(document).ready(function() {
       }
 
       if (sessionGeneration !== voiceModeSessionGeneration || !voiceModeWanted()) {
+        reportVoice('VOICE', 'startVoiceMode gen=' + sessionGeneration + ' superseded, tearing down');
         if (startingNativeBridge && nativeMicBridge === startingNativeBridge) {
           try { await startingNativeBridge.stop(); } catch (e) { /* ignore */ }
           if (nativeMicBridge === startingNativeBridge) nativeMicBridge = null;
@@ -5619,12 +5667,15 @@ $(document).ready(function() {
         candidateStream = null;
       }
       window.voiceModeActive = true;
+      reportVoice('VOICE', 'voice session active gen=' + sessionGeneration);
       $voiceModeBtn.addClass('active');
       $micBtn.prop('disabled', true);
       acquireVoiceScreenWakeLock();
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       nativeLog('VAD', 'startVoiceMode failed attempt=' + attempt + ' ' + msg);
+      reportVoice('VOICE-ERROR', 'startVoiceMode failed attempt=' + attempt + ' gen='
+        + sessionGeneration + ' ' + msg);
       if (candidateVAD) {
         try { candidateVAD.pause(); } catch (e) { /* ignore */ }
         try { candidateVAD.destroy(); } catch (e) { /* ignore */ }
@@ -5775,6 +5826,7 @@ $(document).ready(function() {
 
   function stopVoiceMode() {
     voiceModeSessionGeneration += 1;
+    reportVoice('VOICE', 'voice session stopped');
     if (voiceSttAbortController) {
       try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
       voiceSttAbortController = null;
@@ -5985,8 +6037,17 @@ $(document).ready(function() {
 
   async function handleSpeechEnd(vadAudio) {
     console.log('[VAD] handleSpeechEnd called, vadSttInProgress=', vadSttInProgress);
-    if (vadSttInProgress) return;
-    if (!window.voiceModeActive) return;
+    if (vadSttInProgress) {
+      // A stuck flag deadlocks voice with the button green; make it visible.
+      reportVoiceThrottled('stt-overlap', 30000, 'VOICE',
+        'handleSpeechEnd skipped: STT already in flight');
+      return;
+    }
+    if (!window.voiceModeActive) {
+      reportVoiceThrottled('stt-inactive', 30000, 'VOICE',
+        'handleSpeechEnd skipped: voice mode inactive');
+      return;
+    }
     const sessionGeneration = voiceModeSessionGeneration;
     const sttSignal = voiceSttAbortController ? voiceSttAbortController.signal : undefined;
     vadSttInProgress = true;
@@ -6006,14 +6067,21 @@ $(document).ready(function() {
         const pcm16 = nativeMicBridge.takeSpeechPcm16 ? nativeMicBridge.takeSpeechPcm16() : null;
         if (!pcm16 || pcm16.length * 2 < NativeAudio.SPEECH_MIN_PCM_BYTES) {
           nativeLog('VAD', 'STT skipped: utterance too short bytes=' + (pcm16 ? pcm16.length * 2 : 0));
+          reportVoice('VOICE', 'STT skipped: utterance too short bytes='
+            + (pcm16 ? pcm16.length * 2 : 0));
           return;
         }
         audioPayload = await NativeAudio.encodeAudioForStt(pcm16, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
         nativeLog('VAD', 'STT native encoded format=' + audioPayload.filename + ' bytes=' + audioPayload.blob.size);
+        reportVoice('VOICE', 'STT upload start format=' + audioPayload.filename
+          + ' bytes=' + audioPayload.blob.size);
       } else if (vadAudio && vadAudio.length) {
         audioPayload = await NativeAudio.encodeAudioForStt(vadAudio, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
         nativeLog('VAD', 'STT desktop encoded format=' + audioPayload.filename + ' bytes=' + audioPayload.blob.size);
+        reportVoice('VOICE', 'STT upload start format=' + audioPayload.filename
+          + ' bytes=' + audioPayload.blob.size);
       } else {
+        reportVoice('VOICE-ERROR', 'STT skipped: no speech captured');
         return;
       }
       const res = await fetchVoiceRetry('/stt', function () {
@@ -6026,19 +6094,26 @@ $(document).ready(function() {
           signal: sttSignal
         };
       });
-      if (!window.voiceModeActive || sessionGeneration !== voiceModeSessionGeneration) return;
+      if (!window.voiceModeActive || sessionGeneration !== voiceModeSessionGeneration) {
+        reportVoice('VOICE', 'STT response discarded: session ended mid-upload');
+        return;
+      }
       const data = await res.json();
       const text = (data.text || '').trim();
 
       if (text && window.voiceModeActive
           && sessionGeneration === voiceModeSessionGeneration) {
+        reportVoice('VOICE', 'STT ok textLen=' + text.length);
         submitVoiceUtterance(text, {
           lastSpeechEndedAt: prevSpeechEndedAt,
           utteranceStartedAt: utteranceStartedAt
         });
+      } else if (!text) {
+        reportVoice('VOICE', 'STT empty result (heard nothing / unintelligible)');
       }
     } catch (err) {
       nativeLog('VAD', 'STT failed: ' + (err && err.message ? err.message : err));
+      reportVoice('VOICE-ERROR', 'STT failed: ' + (err && err.message ? err.message : err));
     } finally {
       if (sessionGeneration === voiceModeSessionGeneration) {
         vadSttInProgress = false;

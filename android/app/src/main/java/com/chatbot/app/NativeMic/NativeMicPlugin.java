@@ -30,6 +30,7 @@ import com.chatbot.app.audio.VoiceModeForegroundService;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.audio.VoiceModeNativeHooks;
 import com.chatbot.app.audio.VoiceSessionKeepAwake;
+import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -131,6 +132,9 @@ public class NativeMicPlugin extends Plugin {
         boolean granted = hasMicPermission();
         Log.d(TAG, "onMicrophonePermission granted=" + granted);
         FileLogger.log(TAG, "onMicrophonePermission granted=" + granted);
+        if (!granted) {
+            ClientLogReporter.report("VOICE-ERROR", "voice: microphone permission denied");
+        }
         resolvePermission(call, granted);
     }
 
@@ -178,6 +182,7 @@ public class NativeMicPlugin extends Plugin {
         if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             Log.e(TAG, "Permission not granted for recording");
+            ClientLogReporter.report("VOICE-ERROR", "voice: mic start rejected, no permission");
             call.reject("Microphone permission not granted");
             return;
         }
@@ -185,6 +190,7 @@ public class NativeMicPlugin extends Plugin {
         int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
         if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
             Log.e(TAG, "Invalid buffer size: " + bufferSize);
+            ClientLogReporter.report("VOICE-ERROR", "voice: mic start rejected, bad buffer size");
             call.reject("Unable to get minimum buffer size");
             return;
         }
@@ -204,6 +210,7 @@ public class NativeMicPlugin extends Plugin {
             audioRecord = recording;
 
             if (recording.getState() != AudioRecord.STATE_INITIALIZED) {
+                ClientLogReporter.report("VOICE-ERROR", "voice: AudioRecord failed to initialize");
                 call.reject("AudioRecord failed to initialize");
                 recording.release();
                 audioRecord = null;
@@ -247,10 +254,13 @@ public class NativeMicPlugin extends Plugin {
 
             JSObject result = new JSObject();
             result.put("started", true);
+            ClientLogReporter.report("VOICE", "voice: mic capture started routeActive="
+                    + voiceAudioRoute.isActive());
             call.resolve(result);
 
         } catch (Exception e) {
             FileLogger.log(TAG, "ERROR start: " + e.getMessage(), e);
+            ClientLogReporter.report("VOICE-ERROR", "voice: mic start threw");
             stopRecording();
             call.reject("Failed to start recording: " + e.getMessage());
         }
@@ -259,6 +269,7 @@ public class NativeMicPlugin extends Plugin {
     @PluginMethod
     public void stop(PluginCall call) {
         FileLogger.log(TAG, "stop called");
+        ClientLogReporter.report("VOICE", "voice: mic stopped");
         stopRecording();
         JSObject result = new JSObject();
         result.put("stopped", true);
@@ -291,6 +302,9 @@ public class NativeMicPlugin extends Plugin {
         requestUnrestrictedBattery();
         keepVoiceWebViewRunning();
         FileLogger.log(TAG, "enterVoiceRoute applied=" + applied
+                + " active=" + voiceAudioRoute.isActive() + " bluetooth=" + bluetooth
+                + " keepAwake=" + keepAwake + " foreground=" + foreground);
+        ClientLogReporter.report("VOICE", "voice: enterVoiceRoute applied=" + applied
                 + " active=" + voiceAudioRoute.isActive() + " bluetooth=" + bluetooth
                 + " keepAwake=" + keepAwake + " foreground=" + foreground);
         JSObject result = new JSObject();
