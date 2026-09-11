@@ -116,7 +116,7 @@ fn stt_codec_choice_and_fallbacks_are_logged_with_reasons() {
     );
     assert!(
         body.contains("reason=insecure-context"),
-        "plain HTTP (Android production flavor) can never use WebCodecs; the fallback must log reason=insecure-context every utterance"
+        "plain HTTP (Android physical flavor) can never use WebCodecs; the fallback must log reason=insecure-context every utterance"
     );
     assert!(
         body.contains("reason=unsupported-config"),

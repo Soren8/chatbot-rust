@@ -407,7 +407,7 @@
         && typeof globalThis.AudioData === 'function') {
       if (typeof window !== 'undefined' && window.isSecureContext === false) {
         // WebCodecs is gated to secure contexts. Plain HTTP origins (the
-        // Android production flavor is http://<tailscale-host>:80) can never
+        // Android physical flavor is http://<tailscale-host>:80) can never
         // compress — say so instead of failing silently every utterance.
         sttCodecLog('STT codec fallback: reason=insecure-context'
           + ' (plain HTTP disables WebCodecs; sending WAV bytes=' + pcmBytes + ')');

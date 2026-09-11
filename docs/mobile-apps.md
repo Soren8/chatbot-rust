@@ -164,7 +164,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 - Web UI updates (chat.js, CSS, templates) do not require rebuilding the APK; rebuild `webserver` to pick up static changes in the running server.
 - The device must have network access to the server (same WiFi or port-forwarded)
 - For car use, the server URL should point to the machine running `chatbot-server`
-- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for production flavor. These http URLs are for the native app (password login derives the key via the OS plugin; the data key then lives in HttpOnly cookies). For any browser-based testing, use http://localhost or a https URL. Under RFC 6265bis §5.4, Chromium / Android WebView drops cookies with the `Secure` flag over non-localhost plain HTTP; the server cookie sanitization middleware automatically strips `Secure` from `Set-Cookie` on plain HTTP requests so the WebView stores session, remember, and enc-key cookies without requiring `csrf: false`.
+- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for physical flavor. These http URLs are for the native app (password login derives the key via the OS plugin; the data key then lives in HttpOnly cookies). For any browser-based testing, use http://localhost or a https URL. Under RFC 6265bis §5.4, Chromium / Android WebView drops cookies with the `Secure` flag over non-localhost plain HTTP; the server cookie sanitization middleware automatically strips `Secure` from `Set-Cookie` on plain HTTP requests so the WebView stores session, remember, and enc-key cookies without requiring `csrf: false`.
 - Server URL resolution in `MainActivity` and `NativeSecureKeyPlugin` prioritizes the active Bridge configuration (`getBridge().getServerUrl()`) before falling back to flavor string resources (`R.string.server_url`), ensuring consistent cookie jar origin mapping across flavors.
 - `MainActivity.isUserLoggedIn()` detects authenticated sessions by checking for `remember=` or `enc_key=` cookies (ignoring guest `session=` cookies) so the 1-minute resume lock only triggers for logged-in users.
 - `static/login.js` handles mobile login gracefully: if a session expires or CSRF token fails (303 redirect to `/login`), it automatically extracts the fresh CSRF token from the redirect response, updates the form, and auto-retries once. If still failing, it displays "Session expired. Please try signing in again." rather than asking the user to reload (as Capacitor apps have no reload control).
@@ -254,7 +254,7 @@ Per [Test Android apps for cars](https://developer.android.com/training/cars/tes
 | Setup | Where DHU runs | Where Android Auto + your APK run | APK flavor | Connection |
 |-------|----------------|-----------------------------------|------------|------------|
 | **A. AVD + DHU** (recommended dev loop) | Dev PC | Same Android emulator | `emulator` (`10.0.2.2`) | `adb forward tcp:5277 tcp:5277` (no USB to phone) |
-| **B. Physical phone + DHU** | Dev PC | Physical phone | `production` (or dev server URL) | Wireless `adb connect` + `adb forward` — USB not required; avoid DHU `--usb` (libusb) |
+| **B. Physical phone + DHU** | Dev PC | Physical phone | `physical` (or dev server URL) | Wireless `adb connect` + `adb forward` — USB not required; avoid DHU `--usb` (libusb) |
 | **C. Real car / phone AA UI** | N/A (real head unit or AA on phone) | Physical phone | Any | Wired AA; install via **Play internal**, not `adb install` |
 
 **DHU architecture (clarification):** DHU emulates the **head unit on the PC**. Android Auto still runs on the **phone or AVD** (head-unit server on port 5277). Your **Chatbot APK must be installed on that device** — you are not installing DHU on the phone. Default connection is **ADB tunneling** (`adb forward`), not USB accessory mode.
@@ -279,7 +279,7 @@ Open Chatbot from the **DHU launcher window on the PC**, not the phone launcher.
 1. Install/update **Android Auto** on the phone (on GrapheneOS: **Sandboxed Google Play**).
 2. Enable AA developer mode; optionally **Start head unit server** for ADB tunneling.
 3. `adb connect <phone-ip>:5555` (wireless ADB is sufficient — no working USB cable needed).
-4. `adb install` production/debug APK.
+4. `adb install` physical/debug APK.
 5. `adb forward tcp:5277 tcp:5277`
 6. Run `desktop-head-unit` on the PC (default `--adb`, not `--usb`).
 
@@ -316,27 +316,27 @@ Pinned versions (do not bump casually — library compatibility breaks on newer 
 
 ```bash
 # Recommended: wrapper script picks JDK 21 automatically
-cd android && ./build-apk.sh production
+cd android && ./build-apk.sh physical
 
 # Or explicit JDK + Gradle
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 export ANDROID_HOME=/home/malakar/Android/Sdk
-cd android && ./gradlew assembleProductionDebug
+cd android && ./gradlew assemblePhysicalDebug
 
 # Build Android APK (emulator flavor)
 cd android && ./build-apk.sh emulator
 
 # APK locations
-android/app/build/outputs/apk/production/debug/app-production-debug.apk
+android/app/build/outputs/apk/physical/debug/app-physical-debug.apk
 android/app/build/outputs/apk/emulator/debug/app-emulator-debug.apk
 
 # Install via adb
-/home/malakar/Android/Sdk/platform-tools/adb install -r android/app/build/outputs/apk/production/debug/app-production-debug.apk
+/home/malakar/Android/Sdk/platform-tools/adb install -r android/app/build/outputs/apk/physical/debug/app-physical-debug.apk
 ```
 
 Product flavors configure `server_url` string resource:
 - **emulator**: `http://10.0.2.2:80` (Android emulator's host loopback)
-- **production**: `http://desktop-1.tailfc0df0.ts.net:80`
+- **physical**: `http://desktop-1.tailfc0df0.ts.net:80`
 
 `network_security_config.xml` allows cleartext HTTP for emulator IP and tailscale domains (required for native; the app does not use Web Crypto secure context paths on mobile). For browser dev against the server, prefer localhost or https (e.g. Tailscale Serve).
 
@@ -363,7 +363,7 @@ Product flavors configure `server_url` string resource:
 | `android/.../car/VoiceSession.java` | Create — Android Auto session |
 | `android/.../car/VoiceScreen.java` | Create — Android Auto UI, reads server URL from flavor string |
 | `android/.../Logger/LoggerPlugin.java` | Create — native logging to adb logcat |
-| `android/.../build.gradle` | Modify — product flavors (emulator/production) |
+| `android/.../build.gradle` | Modify — product flavors (emulator/physical) |
 | `android/.../res/xml/network_security_config.xml` | Create — allow cleartext for emulator + tailscale |
 | `android/.../res/values/arrays.xml` | Create — `car_app_supported_types` |
 | `android/.../res/values/strings.xml` | Modify — `server_url` per flavor |

@@ -5,16 +5,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-FLAVOR="${1:-production}"
+FLAVOR="${1:-physical}"
 # The first arg is the product flavor (build type is always Debug).
 # Validate before any env checks so a typo fails fast anywhere with usage,
 # instead of a confusing "Task 'assembleXxxDebug' not found" from Gradle.
 if [[ "${FLAVOR}" == "-h" || "${FLAVOR}" == "--help" ]]; then
-  echo "Usage: $(basename "$0") [emulator|production] [gradle args...]" >&2
+  echo "Usage: $(basename "$0") [emulator|physical] [gradle args...]" >&2
   exit 0
 fi
-if [[ "${FLAVOR}" != "emulator" && "${FLAVOR}" != "production" ]]; then
-  echo "ERROR: unknown flavor '${FLAVOR}'. Usage: $(basename "$0") [emulator|production] [gradle args...]" >&2
+if [[ "${FLAVOR}" != "emulator" && "${FLAVOR}" != "physical" ]]; then
+  echo "ERROR: unknown flavor '${FLAVOR}'. Usage: $(basename "$0") [emulator|physical] [gradle args...]" >&2
   exit 2
 fi
 
