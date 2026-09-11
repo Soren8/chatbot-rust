@@ -6112,8 +6112,15 @@ $(document).ready(function() {
         reportVoice('VOICE', 'STT empty result (heard nothing / unintelligible)');
       }
     } catch (err) {
-      nativeLog('VAD', 'STT failed: ' + (err && err.message ? err.message : err));
-      reportVoice('VOICE-ERROR', 'STT failed: ' + (err && err.message ? err.message : err));
+      const sttErr = (err && err.message ? err.message : String(err));
+      nativeLog('VAD', 'STT failed: ' + sttErr);
+      reportVoice('VOICE-ERROR', 'STT failed: ' + sttErr);
+      // A user-initiated stop aborts the upload; that is not a failure.
+      // Anything else (truncated upload, timeout, 4xx/5xx) must be visible:
+      // a silent green button is the failure mode being eliminated.
+      if (!(sttSignal && sttSignal.aborted)) {
+        appendMessage('Voice input failed (' + sttErr + '). Try again.', 'error-message');
+      }
     } finally {
       if (sessionGeneration === voiceModeSessionGeneration) {
         vadSttInProgress = false;

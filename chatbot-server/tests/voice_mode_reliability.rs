@@ -650,6 +650,24 @@ fn stt_upload_wire_bitrate_stays_at_or_under_500kbps() {
     );
 }
 
+/// STT upload failures must be visible in the chat, not a silent green
+/// button: over a slow link the multipart upload can stall and fail while
+/// voice mode looks alive. User-initiated stops abort the same fetch and
+/// must stay silent.
+#[test]
+fn stt_upload_failure_is_visible_unless_user_stopped() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        function_contains(chat_js, "handleSpeechEnd", "appendMessage")
+            && function_contains(chat_js, "handleSpeechEnd", "Voice input failed"),
+        "handleSpeechEnd must surface STT failures in the chat"
+    );
+    assert!(
+        function_contains(chat_js, "handleSpeechEnd", "sttSignal.aborted"),
+        "user-initiated stops abort the upload and must not report a failure"
+    );
+}
+
 /// Voice transcripts append a user bubble then send /chat. Checking
 /// isAtBottom() after insert unpins (bubble > 30px) and leaves the new text
 /// off-screen. Stick must be sampled before insert, and scrollTop must pin.
