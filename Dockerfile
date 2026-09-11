@@ -75,6 +75,23 @@ RUN touch /app/.config.yml
 ENV CHATBOT_STATIC_ROOT="/app/static"
 ENV CARGO_TARGET_DIR=/app/.cargo/target
 
+# Precompile workspace test targets into the image. The executor runs tests
+# in a fresh container with an ephemeral filesystem and no mounts by design,
+# so without this every run recompiles all dependencies from scratch (the
+# old compose path kept a persistent ./temp/.cargo/target bind-mount; the
+# snapshot excludes gitignored temp/ and cannot carry it). Uses the same
+# persistent BuildKit caches as rust-build, so only changed crates rebuild
+# across runs; the run phase then finds everything fresh and just executes.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/cargo/target \
+    sh -ec '\
+      export CARGO_TARGET_DIR=/usr/local/cargo/target; \
+      cargo test --workspace --locked --no-run --manifest-path /app/Cargo.toml; \
+      mkdir -p /app/.cargo/target; \
+      cp -a /usr/local/cargo/target/. /app/.cargo/target/; \
+    '
+
 # Production image with Axum binary
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS prod
 ARG RUST_BUILD_PROFILE=debug
