@@ -67,6 +67,9 @@ COPY chatbot-core /app/chatbot-core
 COPY chatbot-server /app/chatbot-server
 COPY chatbot-test-support /app/chatbot-test-support
 COPY static /app/static
+# Integration tests inspect Android sources with compile-time include_str! calls.
+COPY android/app/src /app/android/app/src
+COPY .config.yml.example /app/.config.yml.example
 RUN mkdir -p /app/data
 RUN touch /app/.config.yml
 ENV CHATBOT_STATIC_ROOT="/app/static"

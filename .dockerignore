@@ -1,6 +1,8 @@
 .env
 .config.yml
 *.example
+# The Rust test suite validates the shipped configuration fixture.
+!.config.yml.example
 # Build context hygiene: never hashed/transferred on image builds. The tests
 # bind-mount temp/ at runtime, and no Dockerfile COPY needs these paths.
 temp/
