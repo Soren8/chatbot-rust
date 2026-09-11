@@ -5,6 +5,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+FLAVOR="${1:-production}"
+# The first arg is the product flavor (build type is always Debug).
+# Validate before any env checks so a typo fails fast anywhere with usage,
+# instead of a confusing "Task 'assembleXxxDebug' not found" from Gradle.
+if [[ "${FLAVOR}" == "-h" || "${FLAVOR}" == "--help" ]]; then
+  echo "Usage: $(basename "$0") [emulator|production] [gradle args...]" >&2
+  exit 0
+fi
+if [[ "${FLAVOR}" != "emulator" && "${FLAVOR}" != "production" ]]; then
+  echo "ERROR: unknown flavor '${FLAVOR}'. Usage: $(basename "$0") [emulator|production] [gradle args...]" >&2
+  exit 2
+fi
+
 if [[ -z "${JAVA_HOME:-}" ]]; then
   for candidate in \
     /usr/lib/jvm/java-21-openjdk-amd64 \
@@ -31,6 +44,5 @@ if [[ -z "${ANDROID_HOME:-}" && -d "${HOME}/Android/Sdk" ]]; then
   export ANDROID_HOME="${HOME}/Android/Sdk"
 fi
 
-FLAVOR="${1:-production}"
 TASK="assemble$(tr '[:lower:]' '[:upper:]' <<< "${FLAVOR:0:1}")${FLAVOR:1}Debug"
 exec ./gradlew "$TASK" "${@:2}"
