@@ -35,7 +35,7 @@ android {
         }
         physical {
             dimension "environment"
-            resValue "string", "server_url", "http://desktop-1.tailfc0df0.ts.net:80"
+            resValue "string", "server_url", "https://desktop-1.tailfc0df0.ts.net"
         }
     }
 }

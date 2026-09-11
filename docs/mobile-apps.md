@@ -164,7 +164,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 - Web UI updates (chat.js, CSS, templates) do not require rebuilding the APK; rebuild `webserver` to pick up static changes in the running server.
 - The device must have network access to the server (same WiFi or port-forwarded)
 - For car use, the server URL should point to the machine running `chatbot-server`
-- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `http://desktop-1.tailfc0df0.ts.net:80` for physical flavor. These http URLs are for the native app (password login derives the key via the OS plugin; the data key then lives in HttpOnly cookies). For any browser-based testing, use http://localhost or a https URL. Under RFC 6265bis §5.4, Chromium / Android WebView drops cookies with the `Secure` flag over non-localhost plain HTTP; the server cookie sanitization middleware automatically strips `Secure` from `Set-Cookie` on plain HTTP requests so the WebView stores session, remember, and enc-key cookies without requiring `csrf: false`.
+- Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `https://desktop-1.tailfc0df0.ts.net` (Tailscale Serve) for physical flavor. The physical URL must stay https: the WebView origin needs a secure context or WebCodecs STT compression never engages (every utterance falls back to WAV). These URLs are for the native app (password login derives the key via the OS plugin; the data key then lives in HttpOnly cookies). For any browser-based testing, use http://localhost or a https URL. Under RFC 6265bis §5.4, Chromium / Android WebView drops cookies with the `Secure` flag over non-localhost plain HTTP; the server cookie sanitization middleware automatically strips `Secure` from `Set-Cookie` on plain HTTP requests so the WebView stores session, remember, and enc-key cookies without requiring `csrf: false`.
 - Server URL resolution in `MainActivity` and `NativeSecureKeyPlugin` prioritizes the active Bridge configuration (`getBridge().getServerUrl()`) before falling back to flavor string resources (`R.string.server_url`), ensuring consistent cookie jar origin mapping across flavors.
 - `MainActivity.isUserLoggedIn()` detects authenticated sessions by checking for `remember=` or `enc_key=` cookies (ignoring guest `session=` cookies) so the 1-minute resume lock only triggers for logged-in users.
 - `static/login.js` handles mobile login gracefully: if a session expires or CSRF token fails (303 redirect to `/login`), it automatically extracts the fresh CSRF token from the redirect response, updates the form, and auto-retries once. If still failing, it displays "Session expired. Please try signing in again." rather than asking the user to reload (as Capacitor apps have no reload control).
@@ -336,7 +336,7 @@ android/app/build/outputs/apk/emulator/debug/app-emulator-debug.apk
 
 Product flavors configure `server_url` string resource:
 - **emulator**: `http://10.0.2.2:80` (Android emulator's host loopback)
-- **physical**: `http://desktop-1.tailfc0df0.ts.net:80`
+- **physical**: `https://desktop-1.tailfc0df0.ts.net` (Tailscale Serve; https keeps the WebView a secure context so WebCodecs compression engages)
 
 `network_security_config.xml` allows cleartext HTTP for emulator IP and tailscale domains (required for native; the app does not use Web Crypto secure context paths on mobile). For browser dev against the server, prefer localhost or https (e.g. Tailscale Serve).
 
