@@ -668,6 +668,23 @@ fn stt_upload_failure_is_visible_unless_user_stopped() {
     );
 }
 
+/// STT codec engagement must be visible server-side: field logs showed WAV
+/// uploads with no explanation because sttCodecLog only reached console and
+/// logcat. The fallback reason (or AAC success) must ride reportVoice.
+#[test]
+fn stt_codec_reason_reaches_server_logs() {
+    let chat_js = include_str!("../../static/chat.js");
+    let native_audio = include_str!("../../static/native-audio.js");
+    assert!(
+        chat_js.contains("window.reportVoice = reportVoice"),
+        "chat.js must expose reportVoice for the earlier-loaded native-audio.js"
+    );
+    assert!(
+        function_contains(native_audio, "sttCodecLog", "globalThis.reportVoice"),
+        "sttCodecLog must forward codec decisions to the server via reportVoice"
+    );
+}
+
 /// Voice transcripts append a user bubble then send /chat. Checking
 /// isAtBottom() after insert unpins (bubble > 30px) and leaves the new text
 /// off-screen. Stick must be sampled before insert, and scrollTop must pin.

@@ -46,6 +46,9 @@ function reportVoiceThrottled(key, windowMs, kind, message) {
   _voiceReportThrottle[key] = now;
   reportVoice(kind, message);
 }
+// Explicit global: native-audio.js (loaded earlier, separate scope) forwards
+// STT codec decisions here so compression engagement is visible server-side.
+window.reportVoice = reportVoice;
 window.addEventListener('error', function (event) {
   var where = event && event.filename ? ' @' + event.filename + ':' + (event.lineno || 0) : '';
   reportClientErrorToNative('ERROR', 'window.onerror: '

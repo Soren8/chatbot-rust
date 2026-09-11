@@ -300,6 +300,12 @@
     if (typeof globalThis.nativeLog === 'function') {
       try { globalThis.nativeLog('VAD', message); } catch (_) { /* ignore */ }
     }
+    // Codec engagement (or the reason it fell back) must reach the server:
+    // without this the field logs show WAV uploads with no explanation.
+    // chat.js exposes window.reportVoice; guarded for standalone loads.
+    if (typeof globalThis.reportVoice === 'function') {
+      try { globalThis.reportVoice('VOICE', message); } catch (_) { /* ignore */ }
+    }
   }
 
   /** Wire size of the raw sample buffer, for compression-ratio logging. */
