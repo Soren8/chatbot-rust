@@ -615,6 +615,41 @@ fn native_vad_rms_threshold_accepts_speakerphone_distance() {
     );
 }
 
+/// Voice-mode STT uploads must stay at or under 500 kbps on the wire,
+/// compressed or not: the AAC leg is clamped to STT_WIRE_BITRATE_CAP_BPS and
+/// the WAV fallback is NATIVE_MIC_SAMPLE_RATE * 16-bit mono. A quality bump
+/// that breaks the budget would stall uploads on spotty links.
+#[test]
+fn stt_upload_wire_bitrate_stays_at_or_under_500kbps() {
+    let native_audio = include_str!("../../static/native-audio.js");
+    let cap = parse_js_int_const(native_audio, "STT_WIRE_BITRATE_CAP_BPS")
+        .expect("STT_WIRE_BITRATE_CAP_BPS must be declared in native-audio.js");
+    assert!(
+        cap <= 500_000,
+        "STT_WIRE_BITRATE_CAP_BPS={cap} exceeds the 500 kbps voice-mode budget"
+    );
+    let aac = parse_js_int_const(native_audio, "STT_AAC_BITRATE_BPS")
+        .expect("STT_AAC_BITRATE_BPS must be declared in native-audio.js");
+    assert!(
+        aac <= cap,
+        "STT_AAC_BITRATE_BPS={aac} exceeds the declared wire cap {cap}"
+    );
+    assert!(
+        function_contains(
+            native_audio,
+            "encodeAudioForStt",
+            "Math.min(STT_AAC_BITRATE_BPS, STT_WIRE_BITRATE_CAP_BPS)"
+        ),
+        "encodeAudioForStt must clamp the AAC bitrate to the wire cap"
+    );
+    let rate = parse_js_int_const(native_audio, "NATIVE_MIC_SAMPLE_RATE")
+        .expect("NATIVE_MIC_SAMPLE_RATE must be declared in native-audio.js");
+    assert!(
+        rate * 16 <= cap,
+        "WAV fallback at {rate} Hz mono 16-bit is over the {cap} bps wire cap"
+    );
+}
+
 /// Voice transcripts append a user bubble then send /chat. Checking
 /// isAtBottom() after insert unpins (bubble > 30px) and leaves the new text
 /// off-screen. Stick must be sampled before insert, and scrollTop must pin.

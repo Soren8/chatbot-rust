@@ -45,6 +45,15 @@
   const SPEECH_MIN_ACTIVE_MS = 350;
   /** Min PCM bytes (excl. WAV header), aligned with VoiceScreen (~125 ms floor). */
   const SPEECH_MIN_PCM_BYTES = 4000;
+  /**
+   * Voice-mode STT wire budget: no upload leg may exceed 500 kbps, compressed
+   * or not. The AAC leg below runs far under it; the WAV fallback is exactly
+   * NATIVE_MIC_SAMPLE_RATE * 16-bit mono = 256 kbps. Clamp here so a future
+   * quality bump cannot silently blow the budget on spotty links.
+   */
+  const STT_WIRE_BITRATE_CAP_BPS = 500000;
+  /** AAC-LC target for STT uploads when WebCodecs is available. */
+  const STT_AAC_BITRATE_BPS = 32000;
 
   function decodeNativePcmBase64(b64) {
     const binary = atob(b64);
@@ -416,7 +425,7 @@
           codec: 'mp4a.40.2',
           sampleRate: rate,
           numberOfChannels: 1,
-          bitrate: 32000
+          bitrate: Math.min(STT_AAC_BITRATE_BPS, STT_WIRE_BITRATE_CAP_BPS)
         };
         const support = await AudioEncoder.isConfigSupported(aacConfig);
         if (support && support.supported) {
