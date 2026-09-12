@@ -1065,6 +1065,37 @@ fn native_voice_tts_decodes_opus_clips() {
     );
 }
 
+/// Desktop `playTTS` is invoked from the ready block but is itself top-level,
+/// and it aborts the in-flight Voice Mode STT upload for barge-in. That
+/// controller and the barge-in counter must be top-level bindings: a `let`
+/// inside the ready closure is invisible to `playTTS`, which threw
+/// ReferenceError before every desktop voice-mode play and made TTS silent.
+#[test]
+fn desktop_play_tts_shared_voice_state_is_top_level() {
+    let chat_js = include_str!("../../static/chat.js");
+    let ready_at = chat_js
+        .find("$(document).ready(function()")
+        .expect("chat.js must keep the main ready block");
+    let (top_level, _ready_block) = chat_js.split_at(ready_at);
+    for name in ["voiceSttAbortController", "bargeInFrames"] {
+        let decl_prefix = format!("let {name} ");
+        let indented_prefix = format!("  let {name} ");
+        assert!(
+            top_level.lines().any(|line| line.starts_with(&decl_prefix)),
+            "{name} must be declared at top level so top-level playTTS can read it"
+        );
+        assert!(
+            !chat_js.lines().any(|line| line.starts_with(&indented_prefix)),
+            "{name} must not be redeclared inside the ready block (ReferenceError in playTTS)"
+        );
+    }
+    assert!(
+        function_contains(chat_js, "playTTS", "voiceSttAbortController")
+            && function_contains(chat_js, "playTTS", "bargeInFrames"),
+        "playTTS must keep aborting in-flight STT and resetting barge-in state"
+    );
+}
+
 #[test]
 fn voice_http_retries_stt_and_tts_on_spotty_links() {
     let chat_js = include_str!("../../static/chat.js");
@@ -1895,5 +1926,49 @@ fn native_tts_prefetches_remaining_tokens_when_text_is_complete() {
     assert!(
         native_tts.contains("enqueueOrdered") || native_tts.contains("in sentence order"),
         "prefetched tokens must still enqueue in sentence order to keep server synthesis and native download ordered"
+    );
+}
+
+/// Desktop TTS blob-404ed forever: playOneTtsUtterance deleted the
+/// preload-cache key BEFORE fetching, but a cache miss re-caches the new
+/// promise — so the playing clip stayed cached. Any stop then revoked its
+/// URL mid-play via clearDesktopTtsPreloads, and finish()'s own revoke let
+/// the pump retry replay the same dead URL instead of fetching fresh.
+#[test]
+fn desktop_tts_playing_clip_is_owned_not_cached() {
+    let chat_js = include_str!("../../static/chat.js");
+    let play_one = function_body(chat_js, "playOneTtsUtterance")
+        .expect("playOneTtsUtterance must be declared");
+    let fetch_pos = play_one
+        .find("fetchDesktopTtsClip(sessionId, text)")
+        .expect("playOneTtsUtterance must fetch on a cache miss");
+    let delete_pos = play_one
+        .rfind("desktopTtsPreloadCache.delete(cacheKey)")
+        .expect("playOneTtsUtterance must take the clip out of the preload cache");
+    assert!(
+        delete_pos > fetch_pos,
+        "the preload-cache delete must come AFTER the fetch call so a cache-miss \
+         re-add cannot leave the playing clip cached (revoked mid-play, replayed dead)"
+    );
+}
+
+/// Retries must never replay an object URL: any earlier stop/finish may have
+/// revoked it, and the element 404s a revoked blob:. Each attempt mints a
+/// fresh URL from the retained blob.
+#[test]
+fn desktop_tts_retry_mints_fresh_blob_url_from_retained_blob() {
+    let chat_js = include_str!("../../static/chat.js");
+    let fetch_clip = function_body(chat_js, "fetchDesktopTtsClip")
+        .expect("fetchDesktopTtsClip must be declared");
+    assert!(
+        fetch_clip.contains("blob: blob"),
+        "the fetched clip must retain its blob so play attempts can mint fresh object URLs"
+    );
+    let play_one = function_body(chat_js, "playOneTtsUtterance")
+        .expect("playOneTtsUtterance must be declared");
+    assert!(
+        play_one.contains("URL.createObjectURL(clip.blob)"),
+        "each play attempt must mint its object URL from the retained blob, \
+         never replay a possibly-revoked URL"
     );
 }

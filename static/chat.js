@@ -1455,6 +1455,14 @@ let desktopTtsCurrentBlobUrl = null;
 let voiceModeTtsSessionActive = false;
 /** True while TTS audio is actively playing. */
 let voiceModeTtsPlaying = false;
+/**
+ * In-flight desktop Voice Mode STT upload. Kept top-level because playTTS
+ * (also top-level) aborts it for barge-in; a ready-block `let` is invisible
+ * there and threw ReferenceError before every desktop voice-mode play.
+ */
+let voiceSttAbortController = null;
+/** High-confidence Silero frames (~32 ms each) counted toward desktop barge-in. */
+let bargeInFrames = 0;
 /** Do not start utterances until this timestamp (ms) — lets AEC settle after TTS. */
 let voiceModeListenCooldownUntil = 0;
 const TTS_LISTEN_COOLDOWN_MS = 400;
@@ -2648,13 +2656,21 @@ function fetchDesktopTtsClip(sessionId, text) {
   })
   .then(function (blob) {
     if (!blob || !desktopTtsIsLive(sessionId)) return null;
-    const blobUrl = URL.createObjectURL(blob);
-    return {
-      blobUrl: blobUrl,
+    // Retain the blob and mint object URLs lazily at play time: a cached
+    // (preloaded but not yet played) clip holds no URL, so an abandoned
+    // preload cleanup cannot revoke anything, and every play attempt gets
+    // a fresh URL no earlier stop could have revoked (blob 404s).
+    const clip = {
+      blobUrl: null,
+      blob: blob,
       cleanUp: function () {
-        try { URL.revokeObjectURL(blobUrl); } catch (e) { /* ignore */ }
+        if (clip.blobUrl) {
+          try { URL.revokeObjectURL(clip.blobUrl); } catch (e) { /* ignore */ }
+          clip.blobUrl = null;
+        }
       }
     };
+    return clip;
   })
   .catch(function (err) {
     desktopTtsPreloadCache.delete(cacheKey);
@@ -2685,16 +2701,21 @@ function playOneTtsUtterance(sessionId, text) {
 
   const cacheKey = sessionId + ':' + cleaned;
   const cached = desktopTtsPreloadCache.get(cacheKey);
-  desktopTtsPreloadCache.delete(cacheKey);
 
   // Retries token fetch and clip GET via fetchVoiceRetry
   const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
   const getClipPromise = cached
     ? Promise.resolve(cached)
     : fetchDesktopTtsClip(sessionId, text);
+  // Take ownership AFTER the fetch above: on a cache miss it re-caches the
+  // new promise, and a playing clip must never stay cached — otherwise
+  // clearDesktopTtsPreloads can revoke its URL mid-play, and finish()'s
+  // revoke lets a later pump retry replay the same dead URL (blob 404s).
+  // finish()/cleanUp owns the URL from here on.
+  desktopTtsPreloadCache.delete(cacheKey);
 
   return getClipPromise.then(function (clip) {
-    if (!desktopTtsIsLive(sessionId) || !clip || !clip.blobUrl) return false;
+    if (!desktopTtsIsLive(sessionId) || !clip || !clip.blob) return false;
     const audio = getDesktopTtsAudio();
     return new Promise(function (resolve) {
       if (!desktopTtsIsLive(sessionId)) {
@@ -2704,18 +2725,15 @@ function playOneTtsUtterance(sessionId, text) {
       }
       let settled = false;
       let clipAttempt = 0;
-      if (desktopTtsCurrentBlobUrl && desktopTtsCurrentBlobUrl !== clip.blobUrl) {
-        try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
-      }
-      desktopTtsCurrentBlobUrl = clip.blobUrl;
 
       const finish = function (ok) {
         if (settled) return;
         settled = true;
         audio.onended = null;
         audio.onerror = null;
+        const playedUrl = clip.blobUrl;
         clip.cleanUp();
-        if (desktopTtsCurrentBlobUrl === clip.blobUrl) {
+        if (playedUrl && desktopTtsCurrentBlobUrl === playedUrl) {
           desktopTtsCurrentBlobUrl = null;
         }
         if (window.voiceModeActive) {
@@ -2749,6 +2767,29 @@ function playOneTtsUtterance(sessionId, text) {
             startClip();
           }, TTS_CLIP_RETRY_BACKOFF_MS * clipAttempt);
         };
+        // Mint a fresh object URL for EVERY attempt from the retained blob.
+        // The previous attempt's URL may have been revoked after its load
+        // failed (stop-while-loading, an abandoned-preload cleanup, or the
+        // finished clip's own cleanUp); replaying it 404s the element, so
+        // retries must never reuse a URL. Revoking first is safe — the old
+        // load already failed — and createObjectURL failure falls through
+        // to failAttempt so the pump can never hang on an unsettled play.
+        clip.cleanUp();
+        let freshUrl = null;
+        try {
+          if (desktopTtsIsLive(sessionId) && clip.blob) {
+            freshUrl = URL.createObjectURL(clip.blob);
+          }
+        } catch (e) { /* fall through to failAttempt */ }
+        if (!freshUrl) {
+          failAttempt(null);
+          return;
+        }
+        clip.blobUrl = freshUrl;
+        if (desktopTtsCurrentBlobUrl && desktopTtsCurrentBlobUrl !== clip.blobUrl) {
+          try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
+        }
+        desktopTtsCurrentBlobUrl = clip.blobUrl;
         audio.onended = function () { finish(true); };
         audio.onerror = function () { failAttempt(null); };
         audio.src = clip.blobUrl;
@@ -4788,9 +4829,7 @@ $(document).ready(function() {
   let voiceModeStream = null;
   let vadSttInProgress = false;
   let voiceModeSessionGeneration = 0;
-  let voiceSttAbortController = null;
   // High-confidence Silero frames (~32 ms each) before desktop barge-in.
-  let bargeInFrames = 0;
   const BARGE_IN_FRAMES_DESKTOP = 4;
   const BARGE_IN_SPEECH_PROB = 0.85;
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
