@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use base64::engine::general_purpose::STANDARD;
@@ -21,7 +22,8 @@ use sha2::Sha256;
 use crate::config;
 
 pub const DEFAULT_TIER: &str = "free";
-const SALT_LEN: usize = 16;
+/// Monotonic suffix so concurrent saves never share a temp file.
+static SAVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);const SALT_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const PBKDF2_ITERATIONS: u32 = 100_000;
 const KEY_VERIFIER_LABEL: &[u8] = b"chatbot-enc-key-v1";
@@ -424,10 +426,38 @@ impl UserStore {
     }
 
     fn save_users(&self, users: &HashMap<String, UserRecord>) -> Result<(), UserStoreError> {
-        let mut file = File::create(&self.users_file)?;
         let json = serde_json::to_string_pretty(users)?;
-        file.write_all(json.as_bytes())?;
-        Ok(())
+        // Write to a unique temp file on the same filesystem, fsync it, then
+        // atomically rename over users.json. Readers only ever observe the
+        // old or the new complete document — never a torn file. Every server
+        // handler constructs its own UserStore per request with no mutual
+        // exclusion, so the temp name must be unique per save: concurrent
+        // writers sharing one temp path (or truncating users.json in place)
+        // produced the "trailing characters" corruption seen in the field.
+        let tmp_path = self.users_file.with_extension(format!(
+            "json.tmp.{}-{}",
+            std::process::id(),
+            SAVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let result = (|| -> Result<(), UserStoreError> {
+            {
+                let mut file = File::create(&tmp_path)?;
+                file.write_all(json.as_bytes())?;
+                file.sync_all()?;
+            }
+            fs::rename(&tmp_path, &self.users_file)?;
+            // Best-effort directory fsync so the rename itself survives a crash.
+            if let Some(parent) = self.users_file.parent() {
+                if let Ok(dir) = File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp_path);
+        }
+        result
     }
 }
 
