@@ -63,6 +63,22 @@ ENV CARGO_HOME=/opt/cargo
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml /app/
+COPY chatbot-core/Cargo.toml /app/chatbot-core/
+COPY chatbot-server/Cargo.toml /app/chatbot-server/
+COPY chatbot-test-support/Cargo.toml /app/chatbot-test-support/
+# Seed the run-phase cargo home (/opt/cargo) from the persistent build
+# caches. The executor prepare step runs `cargo fetch` with
+# CARGO_HOME=/opt/cargo and network; with a warm builder this is already
+# complete, so prepare downloads nothing. Keyed on manifests only, so this
+# layer survives source changes. If the builder caches are cold (first-ever
+# build) the seed copies nothing and prepare falls back to downloading.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    sh -ec '\
+      mkdir -p /opt/cargo; \
+      cp -a /usr/local/cargo/registry /opt/cargo/ 2>/dev/null || true; \
+      cp -a /usr/local/cargo/git /opt/cargo/ 2>/dev/null || true; \
+    '
 COPY chatbot-core /app/chatbot-core
 COPY chatbot-server /app/chatbot-server
 COPY chatbot-test-support /app/chatbot-test-support

@@ -10,7 +10,7 @@ chatbot-cuda/model_cache/
 provider-test.yml
 .config.yml
 !chatbot-server/.config.yml
-temp/
+/temp
 target/
 .cargo/
 .docker/
