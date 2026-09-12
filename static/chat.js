@@ -424,6 +424,106 @@ function fetchVoiceRetry(url, buildOptions, attempts) {
   return attempt(attempts);
 }
 
+function postVoiceSttXhr(url, buildOptions, attempts) {
+  attempts = attempts || 3;
+  function attempt(n) {
+    var options = typeof buildOptions === 'function' ? buildOptions() : (buildOptions || {});
+    var userSignal = options.signal;
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      function finish(fn, arg) {
+        if (!settled) {
+          settled = true;
+          fn(arg);
+        }
+      }
+      var abortErr = function () {
+        var err = new Error('aborted');
+        err.name = 'AbortError';
+        return err;
+      };
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      var headers = options.headers || {};
+      Object.keys(headers).forEach(function (name) {
+        xhr.setRequestHeader(name, headers[name]);
+      });
+      xhr.timeout = 60000;
+      var tSend = Date.now();
+      var tLastProgress = 0;
+      var lastLoaded = 0;
+      xhr.upload.onprogress = function (ev) {
+        if (!ev || !ev.lengthComputable) return;
+        tLastProgress = Date.now();
+        lastLoaded = ev.loaded;
+      };
+      xhr.onload = function () {
+        var tDone = Date.now();
+        var upMs = tLastProgress > tSend ? tLastProgress - tSend : tDone - tSend;
+        var net = {
+          bytes: lastLoaded || options.bodyBytes || 0,
+          upMs: Math.max(1, Math.round(upMs))
+        };
+        if (xhr.status === 401) {
+          redirectHomeOnAuthFailure();
+          finish(reject, new Error('Session expired'));
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          finish(resolve, { status: xhr.status, responseText: xhr.responseText, net: net });
+          return;
+        }
+        var err = new Error('request failed (' + xhr.status + ')');
+        err.retryableVoice = isRetryableVoiceStatus(xhr.status);
+        err.net = net;
+        finish(reject, err);
+      };
+      xhr.onerror = function () {
+        var err = new Error('network error');
+        err.retryableVoice = true;
+        finish(reject, err);
+      };
+      xhr.ontimeout = function () {
+        var err = new Error('timeout');
+        err.name = 'TimeoutError';
+        err.retryableVoice = true;
+        finish(reject, err);
+      };
+      xhr.onabort = function () {
+        finish(reject, abortErr());
+      };
+      var onUserAbort = function () {
+        try {
+          xhr.abort();
+        } catch (_) {
+          finish(reject, abortErr());
+        }
+      };
+      if (userSignal) {
+        if (userSignal.aborted) {
+          finish(reject, abortErr());
+          return;
+        }
+        userSignal.addEventListener('abort', onUserAbort);
+      }
+      try {
+        xhr.send(options.body);
+      } catch (sendErr) {
+        var serr = new Error(sendErr && sendErr.message ? sendErr.message : 'send failed');
+        serr.retryableVoice = true;
+        finish(reject, serr);
+      }
+    }).catch(function (err) {
+      if (err && (err.message === 'Session expired' || err.name === 'AbortError')) throw err;
+      if (n <= 1 || (err && err.retryableVoice === false)) throw err;
+      return sleepMs(400 * Math.pow(2, attempts - n)).then(function () {
+        return attempt(n - 1);
+      });
+    });
+  }
+  return attempt(attempts);
+}
+
 function withCsrf(headers) {
   var result = headers ? Object.assign({}, headers) : {};
   if (window.CSRF_TOKEN) {
@@ -6087,21 +6187,26 @@ $(document).ready(function() {
         reportVoice('VOICE-ERROR', 'STT skipped: no speech captured');
         return;
       }
-      const res = await fetchVoiceRetry('/stt', function () {
+      const sttOut = await postVoiceSttXhr('/stt', function () {
         const retryForm = new FormData();
         retryForm.append('audio', audioPayload.blob, audioPayload.filename);
         return {
           method: 'POST',
           headers: withCsrf({}),
           body: retryForm,
+          bodyBytes: audioPayload.blob.size,
           signal: sttSignal
         };
       });
+      const sttNet = sttOut.net || { bytes: audioPayload.blob.size, upMs: 0 };
+      reportVoice('VOICE', 'STT net: bytes=' + sttNet.bytes
+        + ' upMs=' + sttNet.upMs
+        + ' upKbps=' + (sttNet.upMs > 0 ? ((sttNet.bytes * 8) / sttNet.upMs).toFixed(1) : 'n/a'));
       if (!window.voiceModeActive || sessionGeneration !== voiceModeSessionGeneration) {
         reportVoice('VOICE', 'STT response discarded: session ended mid-upload');
         return;
       }
-      const data = await res.json();
+      const data = JSON.parse(sttOut.responseText);
       const text = (data.text || '').trim();
 
       if (text && window.voiceModeActive

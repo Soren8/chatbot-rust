@@ -1039,9 +1039,26 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
     );
     assert!(
         chat_js.contains("function fetchVoiceRetry")
-            && function_contains(chat_js, "handleSpeechEnd", "fetchVoiceRetry")
+            && function_contains(chat_js, "handleSpeechEnd", "postVoiceSttXhr")
             && function_contains(chat_js, "playOneTtsUtterance", "fetchVoiceRetry"),
-        "STT and TTS fetches must retry transient failures on desktop and mobile"
+        "STT uploads must use the progress-reporting XHR helper (uplink metrics) and TTS fetches must retry transient failures on desktop and mobile"
+    );
+    let stt_post =
+        function_body(chat_js, "postVoiceSttXhr").expect("postVoiceSttXhr must be declared");
+    assert!(
+        stt_post.contains("xhr.upload.onprogress") && stt_post.contains("upMs"),
+        "the STT XHR helper must time the true uplink from progress events"
+    );
+    assert!(
+        stt_post.contains("xhr.timeout = 60000")
+            && stt_post.contains("isRetryableVoiceStatus")
+            && stt_post.contains("Session expired")
+            && stt_post.contains("AbortError"),
+        "the STT XHR helper must preserve the retry contract: 60s stall timeout, retried server errors, re-login on 401, abort passthrough on user stop"
+    );
+    assert!(
+        function_contains(chat_js, "handleSpeechEnd", "STT net:"),
+        "each STT upload must log its measured uplink bytes/ms/kbps"
     );
     assert!(
         tts.contains("playUrlToTrackOnce")
