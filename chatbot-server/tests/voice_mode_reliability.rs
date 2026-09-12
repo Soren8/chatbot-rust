@@ -685,6 +685,51 @@ fn stt_codec_reason_reaches_server_logs() {
     );
 }
 
+/// The device — not our assumptions — decides the STT codec: AAC encoding
+/// rides the hardware MediaCodec path and varies by device/WebView (stock
+/// Chrome vs GrapheneOS Vanadium diverge here), while opus is Chromium's
+/// built-in software encoder. The client must probe candidates at runtime,
+/// log the full support matrix to the server, and use the first encoder the
+/// device accepts; opus packets need an Ogg container for ffmpeg.
+#[test]
+fn stt_encoder_probe_uses_first_device_supported_codec() {
+    let native_audio = include_str!("../../static/native-audio.js");
+    assert!(
+        native_audio.contains("mp4a.40.2") && native_audio.contains("codec: 'opus'"),
+        "STT encoder candidates must include both AAC and opus"
+    );
+    assert!(
+        function_contains(native_audio, "encodeAudioForStt", "probeSttEncoders"),
+        "encodeAudioForStt must probe device encoder support instead of assuming AAC"
+    );
+    // The probe reports the per-device matrix via sttCodecLog (console +
+    // logcat + server); asserted structurally below, not by log text.
+    let cap = parse_js_int_const(native_audio, "STT_WIRE_BITRATE_CAP_BPS")
+        .expect("STT_WIRE_BITRATE_CAP_BPS must be declared in native-audio.js");
+    let opus = parse_js_int_const(native_audio, "STT_OPUS_BITRATE_BPS")
+        .expect("STT_OPUS_BITRATE_BPS must be declared in native-audio.js");
+    assert!(
+        opus <= cap,
+        "STT_OPUS_BITRATE_BPS={opus} exceeds the declared wire cap {cap}"
+    );
+    assert!(
+        function_contains(
+            native_audio,
+            "encodeAudioForStt",
+            "Math.min(STT_OPUS_BITRATE_BPS, STT_WIRE_BITRATE_CAP_BPS)"
+        ),
+        "encodeAudioForStt must clamp the opus bitrate to the wire cap"
+    );
+    assert!(
+        native_audio.contains("OpusHead") && native_audio.contains("OggS"),
+        "opus packets must be muxed into an Ogg container the server can demux"
+    );
+    assert!(
+        native_audio.contains("recording.opus"),
+        "the opus leg must upload under its own filename so the server marks it compressed"
+    );
+}
+
 /// Voice transcripts append a user bubble then send /chat. Checking
 /// isAtBottom() after insert unpins (bubble > 30px) and leaves the new text
 /// off-screen. Stick must be sampled before insert, and scrollTop must pin.

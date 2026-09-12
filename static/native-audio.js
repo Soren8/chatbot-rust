@@ -54,6 +54,8 @@
   const STT_WIRE_BITRATE_CAP_BPS = 500000;
   /** AAC-LC target for STT uploads when WebCodecs is available. */
   const STT_AAC_BITRATE_BPS = 32000;
+  /** Opus target for STT uploads (the guaranteed Chromium software encoder). */
+  const STT_OPUS_BITRATE_BPS = 32000;
 
   function decodeNativePcmBase64(b64) {
     const binary = atob(b64);
@@ -391,10 +393,248 @@
   }
 
   /**
+   * Ordered STT encoder candidates probed at runtime via
+   * AudioEncoder.isConfigSupported. The device — not our assumptions —
+   * decides: AAC encoding rides the hardware MediaCodec path and varies by
+   * device/WebView (stock Chrome vs GrapheneOS Vanadium diverge here),
+   * while opus is Chromium's built-in software encoder and works wherever
+   * AudioEncoder exists. First supported candidate wins.
+   */
+  function sttEncoderCandidates(rate, aacCap, opusCap) {
+    return [
+      {
+        label: 'aac-32k', filename: 'recording.aac', mimeType: 'audio/aac', frame: 'adts',
+        config: { codec: 'mp4a.40.2', sampleRate: rate, numberOfChannels: 1, bitrate: aacCap }
+      },
+      {
+        label: 'aac-default', filename: 'recording.aac', mimeType: 'audio/aac', frame: 'adts',
+        config: { codec: 'mp4a.40.2', sampleRate: rate, numberOfChannels: 1 }
+      },
+      {
+        label: 'aac-64k', filename: 'recording.aac', mimeType: 'audio/aac', frame: 'adts',
+        config: {
+          codec: 'mp4a.40.2', sampleRate: rate, numberOfChannels: 1,
+          bitrate: Math.min(64000, aacCap)
+        }
+      },
+      {
+        label: 'opus-32k', filename: 'recording.opus', mimeType: 'audio/ogg;codecs=opus',
+        frame: 'ogg',
+        config: { codec: 'opus', sampleRate: rate, numberOfChannels: 1, bitrate: opusCap }
+      }
+    ];
+  }
+
+  /** First-supported probe result, cached: device codecs don't change at runtime. */
+  let sttEncoderProbeCache = null;
+  let sttEncoderProbePending = null;
+
+  /**
+   * Probe every STT encoder candidate and log the full support matrix via
+   * sttCodecLog (console + logcat + server). This is the line that answers
+   * "what codecs does this actual device support" in field logs.
+   */
+  async function probeSttEncoders(rate, aacCap, opusCap) {
+    if (sttEncoderProbeCache && sttEncoderProbeCache.rate === rate) {
+      return sttEncoderProbeCache.selected;
+    }
+    if (sttEncoderProbePending) return sttEncoderProbePending;
+    sttEncoderProbePending = (async function () {
+      const matrix = [];
+      let selected = null;
+      const candidates = sttEncoderCandidates(rate, aacCap, opusCap);
+      for (let i = 0; i < candidates.length; i++) {
+        const cand = candidates[i];
+        let ok = false;
+        try {
+          const support = await AudioEncoder.isConfigSupported(cand.config);
+          ok = !!(support && support.supported);
+        } catch (err) {
+          ok = false;
+        }
+        matrix.push(cand.label + '=' + (ok ? 'yes' : 'no'));
+        if (ok && !selected) selected = cand;
+      }
+      sttCodecLog('STT codec probe @' + rate + 'Hz: ' + matrix.join(' ')
+        + ' selected=' + (selected ? selected.label : 'wav-fallback'));
+      sttEncoderProbeCache = { rate: rate, selected: selected };
+      sttEncoderProbePending = null;
+      return selected;
+    })();
+    return sttEncoderProbePending;
+  }
+
+  /** CRC-32 table for Ogg page checksums (poly 0x04C11DB7). */
+  const OGG_CRC_TABLE = (function () {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = (n << 24) >>> 0;
+      for (let k = 0; k < 8; k++) {
+        c = (c & 0x80000000) ? (((c << 1) ^ 0x04C11DB7) >>> 0) : (((c << 1) >>> 0));
+      }
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function oggCrc32(bytes) {
+    let crc = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      crc = (((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ bytes[i]) & 0xFF]) >>> 0);
+    }
+    return crc >>> 0;
+  }
+
+  /**
+   * One Ogg page wrapping a single packet (header_type 2=BOS, 0=body, 4=EOS).
+   * Granule position counts 48 kHz samples for Opus regardless of input rate.
+   */
+  function createOggPage(packet, headerType, granulePos, serial, seq) {
+    const segCount = Math.max(1, Math.ceil(packet.length / 255));
+    const headerLen = 27 + segCount;
+    const page = new Uint8Array(headerLen + packet.length);
+    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
+    page[0] = 0x4F; page[1] = 0x67; page[2] = 0x67; page[3] = 0x53; // OggS
+    page[4] = 0; // stream structure version
+    page[5] = headerType;
+    view.setUint32(6, granulePos % 4294967296, true);
+    view.setUint32(10, Math.floor(granulePos / 4294967296), true);
+    view.setUint32(14, serial, true);
+    view.setUint32(18, seq >>> 0, true);
+    view.setUint32(22, 0, true); // checksum placeholder
+    page[26] = segCount;
+    let remaining = packet.length;
+    for (let i = 0; i < segCount; i++) {
+      const take = Math.min(255, remaining);
+      page[27 + i] = take;
+      remaining -= take;
+    }
+    page.set(packet, headerLen);
+    view.setUint32(22, oggCrc32(page), true);
+    return page;
+  }
+
+  /** 19-byte OpusHead identification header (mono, mapping family 0). */
+  function createOpusHeadPacket(sampleRate) {
+    const pkt = new Uint8Array(19);
+    const magic = 'OpusHead';
+    for (let i = 0; i < magic.length; i++) pkt[i] = magic.charCodeAt(i);
+    pkt[8] = 1; // version
+    pkt[9] = 1; // channel count
+    pkt[10] = 0; pkt[11] = 0; // pre-skip
+    const view = new DataView(pkt.buffer, pkt.byteOffset, pkt.byteLength);
+    view.setUint32(12, sampleRate, true); // input sample rate
+    view.setInt16(16, 0, true); // output gain
+    pkt[18] = 0; // channel mapping family
+    return pkt;
+  }
+
+  /** OpusTags comment header with an empty user-comment list. */
+  function createOpusTagsPacket() {
+    const vendor = 'chatbot-stt';
+    const pkt = new Uint8Array(8 + 4 + vendor.length + 4);
+    const magic = 'OpusTags';
+    for (let i = 0; i < magic.length; i++) pkt[i] = magic.charCodeAt(i);
+    const view = new DataView(pkt.buffer, pkt.byteOffset, pkt.byteLength);
+    view.setUint32(8, vendor.length, true);
+    for (let i = 0; i < vendor.length; i++) pkt[12 + i] = vendor.charCodeAt(i);
+    view.setUint32(12 + vendor.length, 0, true); // zero user comments
+    return pkt;
+  }
+
+  /**
+   * Encode PCM samples with the WebCodecs opus encoder into Ogg-Opus.
+   * Raw opus packets need a container for ffmpeg; Ogg framing is small and
+   * self-describing (OpusHead + OpusTags + one page per packet).
+   */
+  function encodeOpusOgg(samples, sampleRate, opusConfig) {
+    return new Promise(function (resolve, reject) {
+      let f32;
+      if (samples instanceof Float32Array) {
+        f32 = samples;
+      } else if (samples instanceof Int16Array) {
+        f32 = new Float32Array(samples.length);
+        for (let i = 0; i < samples.length; i++) {
+          f32[i] = samples[i] < 0 ? samples[i] / 32768 : samples[i] / 32767;
+        }
+      } else {
+        f32 = new Float32Array(samples);
+      }
+
+      const packets = [];
+      const encoder = new AudioEncoder({
+        output: function (chunk) {
+          const buf = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(buf);
+          packets.push({ data: buf, durationMicros: chunk.duration || 20000 });
+        },
+        error: function (e) {
+          reject(e);
+        }
+      });
+
+      encoder.configure(opusConfig);
+
+      const frameSize = 960; // 60 ms @ 16 kHz input frames; encoder emits ~20 ms packets
+      let offset = 0;
+      let timestampMicros = 0;
+      const microsPerFrame = Math.round((frameSize * 1000000) / sampleRate);
+
+      while (offset < f32.length) {
+        const remaining = f32.length - offset;
+        let frameData;
+        if (remaining >= frameSize) {
+          frameData = f32.subarray(offset, offset + frameSize);
+        } else {
+          frameData = new Float32Array(frameSize);
+          frameData.set(f32.subarray(offset));
+        }
+
+        const audioData = new AudioData({
+          format: 'f32',
+          sampleRate: sampleRate,
+          numberOfFrames: frameSize,
+          numberOfChannels: 1,
+          timestamp: timestampMicros,
+          data: frameData
+        });
+
+        encoder.encode(audioData);
+        audioData.close();
+
+        offset += frameSize;
+        timestampMicros += microsPerFrame;
+      }
+
+      encoder.flush().then(function () {
+        encoder.close();
+        if (packets.length === 0) {
+          resolve(new Blob([], { type: 'audio/ogg;codecs=opus' }));
+          return;
+        }
+        const serial = (((Math.random() * 0x7FFFFFFE) | 0) + 1) >>> 0;
+        const pages = [];
+        let seq = 0;
+        pages.push(createOggPage(createOpusHeadPacket(sampleRate), 2, 0, serial, seq++));
+        pages.push(createOggPage(createOpusTagsPacket(), 0, 0, serial, seq++));
+        let granule = 0;
+        for (let i = 0; i < packets.length; i++) {
+          granule += Math.max(1, Math.round((packets[i].durationMicros * 48000) / 1000000));
+          const last = (i === packets.length - 1);
+          pages.push(createOggPage(packets[i].data, last ? 4 : 0, granule, serial, seq++));
+        }
+        resolve(new Blob(pages, { type: 'audio/ogg;codecs=opus' }));
+      }).catch(function (err) {
+        try { encoder.close(); } catch (_) {}
+        reject(err);
+      });
+    });
+  }
+
+  /**
    * Encode audio samples for STT upload.
-   * Uses hardware-accelerated WebCodecs (AAC-LC with ADTS) when available for wire
-   * compression (8-10x bandwidth reduction over spotty connections), falling back
-   * to PCM16 WAV.
+   * Probes the device's actual encoders (AAC variants, then opus) and uses
+   * the first one the device accepts, falling back to PCM16 WAV.
    */
   async function encodeAudioForStt(samples, sampleRate) {
     const rate = sampleRate || NATIVE_MIC_SAMPLE_RATE;
@@ -426,39 +666,50 @@
     }
 
     if (webcodecsAvailable) {
-      try {
-        const aacConfig = {
-          codec: 'mp4a.40.2',
-          sampleRate: rate,
-          numberOfChannels: 1,
-          bitrate: Math.min(STT_AAC_BITRATE_BPS, STT_WIRE_BITRATE_CAP_BPS)
-        };
-        const support = await AudioEncoder.isConfigSupported(aacConfig);
-        if (support && support.supported) {
-          const encodedBlob = await encodeAacAdts(samples, rate, aacConfig);
+      // Device codecs don't change at runtime; the probe logs the matrix once.
+      const cap = Math.min(STT_AAC_BITRATE_BPS, STT_WIRE_BITRATE_CAP_BPS);
+      const opusCap = Math.min(STT_OPUS_BITRATE_BPS, STT_WIRE_BITRATE_CAP_BPS);
+      const selected = await probeSttEncoders(rate, cap, opusCap);
+      if (selected) {
+        try {
+          const encodedBlob = selected.frame === 'ogg'
+            ? await encodeOpusOgg(samples, rate, selected.config)
+            : await encodeAacAdts(samples, rate, selected.config);
           if (encodedBlob && encodedBlob.size > 0) {
             const ratio = pcmBytes > 0 ? (pcmBytes / encodedBlob.size).toFixed(1) : '0.0';
-            sttCodecLog('STT codec: aac bytes=' + encodedBlob.size
-              + ' pcmBytes=' + pcmBytes + ' ratio=' + ratio + 'x');
+            // Stable log contract: AAC success keeps the legacy
+            // `STT codec: aac bytes=...` shape; the variant (which AAC
+            // candidate won) rides along as a suffix. Opus mirrors it.
+            if (selected.frame === 'ogg') {
+              sttCodecLog('STT codec: opus bytes=' + encodedBlob.size
+                + ' pcmBytes=' + pcmBytes + ' ratio=' + ratio + 'x'
+                + ' variant=' + selected.label);
+            } else {
+              sttCodecLog('STT codec: aac bytes=' + encodedBlob.size
+                + ' pcmBytes=' + pcmBytes + ' ratio=' + ratio + 'x'
+                + ' variant=' + selected.label);
+            }
             return {
               blob: encodedBlob,
-              filename: 'recording.aac',
-              mimeType: 'audio/aac'
+              filename: selected.filename,
+              mimeType: selected.mimeType
             };
           }
           sttCodecLog('STT codec fallback: reason=empty-output'
-            + ' (encoder produced 0 bytes; sending WAV bytes=' + pcmBytes + ')');
-        } else {
-          sttCodecLog('STT codec fallback: reason=unsupported-config'
-            + ' (AudioEncoder.isConfigSupported rejected mp4a.40.2 @' + rate
-            + 'Hz; sending WAV bytes=' + pcmBytes + ')');
+            + ' (encoder ' + selected.label + ' produced 0 bytes; sending WAV bytes='
+            + pcmBytes + ')');
+        } catch (err) {
+          sttCodecLog('STT codec fallback: reason=encoder-error encoder=' + selected.label
+            + ' err=' + (err && err.message ? err.message : String(err))
+            + '; sending WAV bytes=' + pcmBytes);
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn('AudioEncoder STT compression failed, falling back to WAV:', err);
+          }
         }
-      } catch (err) {
-        sttCodecLog('STT codec fallback: reason=encoder-error err=' + (err && err.message ? err.message : String(err))
-          + '; sending WAV bytes=' + pcmBytes);
-        if (typeof console !== 'undefined' && console.warn) {
-          console.warn('AudioEncoder STT compression failed, falling back to WAV:', err);
-        }
+      } else {
+        sttCodecLog('STT codec fallback: reason=unsupported-config'
+          + ' (device rejected all STT encoder candidates @' + rate
+          + 'Hz; sending WAV bytes=' + pcmBytes + ')');
       }
     }
 
@@ -567,6 +818,11 @@
     pcm16ToWavBlob: pcm16ToWavBlob,
     float32ToWavBlob: float32ToWavBlob,
     createAdtsHeader: createAdtsHeader,
+    createOggPage: createOggPage,
+    createOpusHeadPacket: createOpusHeadPacket,
+    createOpusTagsPacket: createOpusTagsPacket,
+    sttEncoderCandidates: sttEncoderCandidates,
+    probeSttEncoders: probeSttEncoders,
     encodeAudioForStt: encodeAudioForStt,
     PcmSampleBuffer: PcmSampleBuffer,
     Pcm16RingBuffer: Pcm16RingBuffer,
