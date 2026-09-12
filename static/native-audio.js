@@ -54,8 +54,11 @@
   const STT_WIRE_BITRATE_CAP_BPS = 500000;
   /** AAC-LC target for STT uploads when WebCodecs is available. */
   const STT_AAC_BITRATE_BPS = 32000;
-  /** Opus target for STT uploads (the guaranteed Chromium software encoder). */
-  const STT_OPUS_BITRATE_BPS = 32000;
+  /** Opus target for STT uploads (the guaranteed Chromium software encoder).
+   * 16k keeps uploads viable over relayed/degraded links; opus stays
+   * STT-grade for speech at this rate. Actual wire rate runs higher
+   * (~1.4x) due to one Ogg page per packet framing overhead. */
+  const STT_OPUS_BITRATE_BPS = 16000;
 
   function decodeNativePcmBase64(b64) {
     const binary = atob(b64);
@@ -418,7 +421,7 @@
         }
       },
       {
-        label: 'opus-32k', filename: 'recording.opus', mimeType: 'audio/ogg;codecs=opus',
+        label: 'opus-16k', filename: 'recording.opus', mimeType: 'audio/ogg;codecs=opus',
         frame: 'ogg',
         config: { codec: 'opus', sampleRate: rate, numberOfChannels: 1, bitrate: opusCap }
       }
@@ -672,22 +675,30 @@
       const selected = await probeSttEncoders(rate, cap, opusCap);
       if (selected) {
         try {
+          const encodeStartMs = (typeof performance !== 'undefined'
+            && typeof performance.now === 'function')
+            ? performance.now() : Date.now();
           const encodedBlob = selected.frame === 'ogg'
             ? await encodeOpusOgg(samples, rate, selected.config)
             : await encodeAacAdts(samples, rate, selected.config);
+          const encodeNowMs = (typeof performance !== 'undefined'
+            && typeof performance.now === 'function')
+            ? performance.now() : Date.now();
+          const encodeMs = Math.max(0, Math.round(encodeNowMs - encodeStartMs));
           if (encodedBlob && encodedBlob.size > 0) {
             const ratio = pcmBytes > 0 ? (pcmBytes / encodedBlob.size).toFixed(1) : '0.0';
             // Stable log contract: AAC success keeps the legacy
             // `STT codec: aac bytes=...` shape; the variant (which AAC
             // candidate won) rides along as a suffix. Opus mirrors it.
+            // encodeMs profiles the on-phone WebCodecs pass.
             if (selected.frame === 'ogg') {
               sttCodecLog('STT codec: opus bytes=' + encodedBlob.size
                 + ' pcmBytes=' + pcmBytes + ' ratio=' + ratio + 'x'
-                + ' variant=' + selected.label);
+                + ' variant=' + selected.label + ' encodeMs=' + encodeMs);
             } else {
               sttCodecLog('STT codec: aac bytes=' + encodedBlob.size
                 + ' pcmBytes=' + pcmBytes + ' ratio=' + ratio + 'x'
-                + ' variant=' + selected.label);
+                + ' variant=' + selected.label + ' encodeMs=' + encodeMs);
             }
             return {
               blob: encodedBlob,
