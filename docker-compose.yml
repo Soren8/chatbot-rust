@@ -87,8 +87,14 @@ services:
       context: .
       target: test
       cache_from:
-        # Repo-relative (resolved by the sandbox's compose engine). No host
-        # daemon is involved.
+        # Local BuildKit cache dirs under ./temp/. The host must bind-mount
+        # temp/ to the data drive, otherwise these (plus the ./temp/.cargo
+        # bind-mounts below) still live on the snapshotted volume.
+        # NOTE: this only applies to `docker compose build/run`. The testctl
+        # executor builds with plain `docker build` (no cache-from/to) and
+        # the Dockerfile's `RUN --mount=type=cache` layers, so its cache
+        # lives in the daemon data-root (/var/lib/docker) regardless — keep
+        # the daemon data-root on the data drive too (host daemon config).
         - type=local,src=./temp/.docker/tests
       cache_to:
         - type=local,dest=./temp/.docker/tests,mode=max
