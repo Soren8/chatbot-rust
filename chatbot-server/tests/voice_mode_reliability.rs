@@ -1031,6 +1031,40 @@ fn native_voice_tts_streams_wav_instead_of_buffering_the_clip() {
     );
 }
 
+/// /tts_stream serves Ogg-Opus by default; the native AudioTrack sink takes
+/// raw PCM, so the plugin must sniff the content type and decode Opus clips
+/// through the streaming decoder (same truncate-rejects-clip contract as WAV).
+#[test]
+fn native_voice_tts_decodes_opus_clips() {
+    let tts = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+    );
+    let opus = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/OggOpusStreamDecoder.java"
+    );
+    assert!(
+        tts.contains("streamOpusToClip") && tts.contains("getContentType"),
+        "opus clips must be routed to the opus decoder by content type"
+    );
+    assert!(
+        tts.contains("sawOpusHead") && tts.contains("hasIncompleteData"),
+        "truncated opus clips must be rejected like truncated WAV clips"
+    );
+    assert!(
+        opus.contains("concentus")
+            && opus.contains("OggS")
+            && opus.contains("OpusHead")
+            && opus.contains("takePcm"),
+        "the opus decoder must demux Ogg, decode via concentus, and stream PCM"
+    );
+    assert!(
+        opus.contains("io.github.jaredmdobson.concentus"),
+        "the decoder must import the published concentus package matching \
+         the io.github.jaredmdobson:concentus Gradle coordinates (org.concentus \
+         does not exist in that artifact and breaks the Android build)"
+    );
+}
+
 #[test]
 fn voice_http_retries_stt_and_tts_on_spotty_links() {
     let chat_js = include_str!("../../static/chat.js");
