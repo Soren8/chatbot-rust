@@ -5,6 +5,7 @@ FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    libopus-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup component add rustfmt
@@ -86,27 +87,14 @@ COPY static /app/static
 # Integration tests inspect Android sources with compile-time include_str! calls.
 COPY android/app/src /app/android/app/src
 COPY .config.yml.example /app/.config.yml.example
-RUN mkdir -p /app/data
-RUN touch /app/.config.yml
 ENV CHATBOT_STATIC_ROOT="/app/static"
 ENV CARGO_TARGET_DIR=/app/.cargo/target
 
-# Precompile workspace test targets into the image. The executor runs tests
-# in a fresh container with an ephemeral filesystem and no mounts by design,
-# so without this every run recompiles all dependencies from scratch (the
-# old compose path kept a persistent ./temp/.cargo/target bind-mount; the
-# snapshot excludes gitignored temp/ and cannot carry it). Uses the same
-# persistent BuildKit caches as rust-build, so only changed crates rebuild
-# across runs; the run phase then finds everything fresh and just executes.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/usr/local/cargo/target \
-    sh -ec '\
-      export CARGO_TARGET_DIR=/usr/local/cargo/target; \
-      cargo test --workspace --locked --no-run --manifest-path /app/Cargo.toml; \
-      mkdir -p /app/.cargo/target; \
-      cp -a /usr/local/cargo/target/. /app/.cargo/target/; \
-    '
+# The test run mounts an executor-managed persistent Cargo target cache at
+# $CARGO_TARGET_DIR, so compiled artifacts survive between jobs without being
+# exported in the image. Keep this stage to sources and toolchain only.
+RUN mkdir -p /app/.cargo/target /app/data
+RUN touch /app/.config.yml
 
 # Production image with Axum binary
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS prod
@@ -117,7 +105,7 @@ ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 ARG CONFIG_VERSION=1
 LABEL chat.config_version=${CONFIG_VERSION}
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl libopus0 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=rust-build /build/target/${RUST_BUILD_PROFILE}/chatbot-server /usr/local/bin/chatbot-server

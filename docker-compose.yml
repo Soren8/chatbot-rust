@@ -92,9 +92,12 @@ services:
         # bind-mounts below) still live on the snapshotted volume.
         # NOTE: this only applies to `docker compose build/run`. The testctl
         # executor builds with plain `docker build` (no cache-from/to) and
-        # the Dockerfile's `RUN --mount=type=cache` layers, so its cache
-        # lives in the daemon data-root (/var/lib/docker) regardless — keep
-        # the daemon data-root on the data drive too (host daemon config).
+        # the Dockerfile's `RUN --mount=type=cache` layers, so its registry/git
+        # caches live in the daemon data-root (/var/lib/docker or the moved
+        # data-root) regardless — keep the daemon data-root on the data drive
+        # too (host daemon config). The testctl runtime Cargo target is a
+        # trusted host bind (see test-executor/projects/chatbot-rust.json),
+        # not an exported image layer.
         - type=local,src=./temp/.docker/tests
       cache_to:
         - type=local,dest=./temp/.docker/tests,mode=max
