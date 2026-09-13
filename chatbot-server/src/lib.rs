@@ -36,6 +36,7 @@ pub mod stt;
 pub mod test_instrumentation;
 mod tools;
 mod tts;
+mod tts_opus;
 
 pub async fn run() -> anyhow::Result<()> {
     logging::init_logging();

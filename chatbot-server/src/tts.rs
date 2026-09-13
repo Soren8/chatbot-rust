@@ -24,6 +24,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
     map_serialization_err, map_session_err, map_user_store_err, HttpError,
 };
+use crate::tts_opus;
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const MAX_TTS_AUDIO_BYTES: usize = 8 * 1024 * 1024;
@@ -159,18 +160,27 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .expect("http client")
 });
 
-/// ~0.1 s of silence as a valid WAV. Served for payloads that sanitize to
+/// ~0.1 s of raw PCM silence. Served for payloads that sanitize to
 /// nothing (e.g. a trailing `---` rule, marker-only chunks, raw HTML): a 500
 /// there is deterministic, so the client retry storm cannot fix it — the
 /// sentence must become a brief silence instead of a failure.
-static SILENT_WAV: Lazy<Vec<u8>> = Lazy::new(|| {
+static SILENT_PCM: Lazy<Vec<u8>> = Lazy::new(|| {
     let silent_samples = (SAMPLE_RATE_HZ as usize) / 10;
-    pcm_to_wav(&vec![0_u8; silent_samples * 2], SAMPLE_RATE_HZ)
+    vec![0_u8; silent_samples * 2]
 });
+
+/// Final wire bytes for one TTS clip, in whatever codec the config selects.
+/// Cached verbatim for replays so synthesis and encoding both happen once.
+#[derive(Debug, Clone)]
+struct TtsWireAudio {
+    bytes: Vec<u8>,
+    content_type: String,
+    filename: String,
+}
 
 struct PendingTts {
     text: String,
-    audio: Option<Vec<u8>>,
+    audio: Option<TtsWireAudio>,
     created_at: Instant,
     replay_count: u8,
     generating: bool,
@@ -362,7 +372,7 @@ pub async fn handle_tts_stream(
     };
 
     if let Some(audio) = cached_audio {
-        return build_audio_response(audio);
+        return build_tts_audio_response(audio);
     }
 
     let mut generating_guard = GeneratingGuard {
@@ -374,8 +384,23 @@ pub async fn handle_tts_stream(
     match result {
         Ok(response) => {
             let (parts, body) = response.into_parts();
+            let content_type = parts
+                .headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("audio/ogg;codecs=opus")
+                .to_string();
+            let filename = if content_type.contains("opus") {
+                "tts.opus".to_string()
+            } else {
+                "tts.wav".to_string()
+            };
             let audio = match body::to_bytes(body, MAX_TTS_AUDIO_BYTES).await {
-                Ok(bytes) => bytes.to_vec(),
+                Ok(bytes) => TtsWireAudio {
+                    bytes: bytes.to_vec(),
+                    content_type,
+                    filename,
+                },
                 Err(err) => {
                     generating_guard.active = false;
                     let mapped = map_body_read_err(err, "tts::stream::cache");
@@ -394,7 +419,7 @@ pub async fn handle_tts_stream(
                 pending.replay_count = 0;
                 pending.generating = false;
             }
-            Ok(Response::from_parts(parts, Body::from(audio)))
+            Ok(Response::from_parts(parts, Body::from(audio.bytes)))
         }
         Err(err) => {
             generating_guard.active = false;
@@ -480,7 +505,7 @@ fn insert_pending_tts(
 
 async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpError> {
     if cleaned.is_empty() {
-        return build_audio_response(SILENT_WAV.clone());
+        return build_tts_audio_response(encode_tts_wire_audio(&SILENT_PCM, SAMPLE_RATE_HZ)?);
     }
     let config = config::app_config();
     debug!(provider = %config.tts_provider, "handling /tts_stream request");
@@ -528,9 +553,7 @@ async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpEr
     // Apply a tiny fade to the PCM data to eliminate clicks
     apply_pcm_fade(&mut bytes, SAMPLE_RATE_HZ);
 
-    let wav_bytes = pcm_to_wav(&bytes, SAMPLE_RATE_HZ);
-
-    build_audio_response(wav_bytes)
+    build_tts_audio_response(encode_tts_wire_audio(&bytes, SAMPLE_RATE_HZ)?)
 }
 
 fn apply_pcm_fade(pcm: &mut [u8], sample_rate: u32) {
@@ -642,7 +665,8 @@ async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
         api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
     })?;
 
-    build_audio_response(bytes.to_vec())
+    let (pcm, rate) = wav_pcm_and_rate(&bytes);
+    build_tts_audio_response(encode_tts_wire_audio(pcm, rate)?)
 }
 
 async fn handle_kokoro_tts(
@@ -691,8 +715,7 @@ async fn handle_kokoro_tts(
     }
 
     apply_pcm_fade(&mut bytes, sample_rate);
-    let wav_bytes = pcm_to_wav(&bytes, sample_rate);
-    build_audio_response(wav_bytes)
+    build_tts_audio_response(encode_tts_wire_audio(&bytes, sample_rate)?)
 }
 
 const DIGIT_WORDS: [&str; 10] = [
@@ -1509,13 +1532,57 @@ fn pcm_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
     header
 }
 
-fn build_audio_response(bytes: Vec<u8>) -> Result<Response<Body>, HttpError> {
+/// Split backend WAV bytes into raw PCM plus its declared rate. Passes
+/// headerless PCM through with the default rate.
+fn wav_pcm_and_rate(bytes: &[u8]) -> (&[u8], u32) {
+    if bytes.len() >= 44 && &bytes[0..4] == b"RIFF" {
+        let rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
+        let rate = if rate > 0 { rate } else { SAMPLE_RATE_HZ };
+        (&bytes[44..], rate)
+    } else {
+        (bytes, SAMPLE_RATE_HZ)
+    }
+}
+
+/// Encode raw mono 16-bit PCM (`sample_rate` Hz) into the configured wire
+/// codec: Ogg-Opus by default, WAV when `tts_codec: wav` is set for players
+/// without an Opus decoder.
+fn encode_tts_wire_audio(pcm: &[u8], sample_rate: u32) -> Result<TtsWireAudio, HttpError> {
+    if config::app_config().tts_codec == "opus" {
+        // chunks_exact drops a trailing odd byte; backends emit whole
+        // 16-bit samples so there is never one.
+        let samples: Vec<i16> = pcm
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let ogg = tts_opus::encode_pcm_to_opus_ogg(&samples, sample_rate).map_err(|err| {
+            error!(?err, "opus encode of TTS clip failed");
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS encoding failed")
+        })?;
+        Ok(TtsWireAudio {
+            bytes: ogg,
+            content_type: "audio/ogg;codecs=opus".to_string(),
+            filename: "tts.opus".to_string(),
+        })
+    } else {
+        Ok(TtsWireAudio {
+            bytes: pcm_to_wav(pcm, sample_rate),
+            content_type: "audio/wav".to_string(),
+            filename: "tts.wav".to_string(),
+        })
+    }
+}
+
+fn build_tts_audio_response(audio: TtsWireAudio) -> Result<Response<Body>, HttpError> {
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "audio/wav")
-        .header(header::CONTENT_DISPOSITION, "inline; filename=tts.wav")
+        .header(header::CONTENT_TYPE, audio.content_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("inline; filename={}", audio.filename),
+        )
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from(bytes))
+        .body(Body::from(audio.bytes))
         .map_err(|err| map_response_build_err(err, "tts::audio_response"))
 }
 

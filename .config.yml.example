@@ -7,6 +7,9 @@ vars:
 # TTS / Voice configuration
 tts_provider: "kokoro"  # Options: kokoro, fish
 tts_voice: "bf_emma"   # Voice for Kokoro. Other options: af_heart, af_bella, am_adam, bm_george
+# Wire codec for /tts_stream responses: opus (Ogg-Opus, ~11x smaller, default)
+# or wav (uncompressed PCM fallback for players without an Opus decoder).
+tts_codec: "opus"
 stt_enabled: true
 # Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
 # Default is anyone — suitable for LAN / local-models deploys. Use authenticated or

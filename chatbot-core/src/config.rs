@@ -128,6 +128,9 @@ pub struct AppConfig {
     pub tts_base_url: String,
     pub tts_provider: String,
     pub tts_voice: Option<String>,
+    /// Wire codec for /tts_stream responses: "opus" (Ogg-Opus, default) or
+    /// "wav" (uncompressed PCM fallback for players without an Opus decoder).
+    pub tts_codec: String,
     pub voice_service_base_url: String,
     pub stt_enabled: bool,
     /// Policy for who may use TTS on the webserver.
@@ -236,6 +239,8 @@ struct RawConfig {
     send_thoughts: Option<bool>,
     #[serde(default)]
     tts_provider: Option<String>,
+    #[serde(default)]
+    tts_codec: Option<String>,
     #[serde(default)]
     tts_voice: Option<String>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
@@ -425,6 +430,15 @@ fn load_app_config() -> AppConfig {
     let save_thoughts = raw_config.save_thoughts.unwrap_or(true);
     let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
     let tts_voice = raw_config.tts_voice;
+    let tts_codec = if let Ok(env_value) = env::var("TTS_CODEC") {
+        validate_tts_codec(&env_value);
+        env_value.trim().to_ascii_lowercase()
+    } else if let Some(ref value) = raw_config.tts_codec {
+        validate_tts_codec(value);
+        value.trim().to_ascii_lowercase()
+    } else {
+        "opus".to_string()
+    };
     let stt_enabled = raw_config.stt_enabled.unwrap_or(true);
     let tts_access = if let Ok(env_value) = env::var("TTS_ACCESS") {
         TtsAccess::parse(&env_value)
@@ -474,6 +488,7 @@ fn load_app_config() -> AppConfig {
         tts_base_url,
         tts_provider,
         tts_voice,
+        tts_codec,
         voice_service_base_url,
         stt_enabled,
         tts_access,
@@ -567,6 +582,7 @@ const ALLOWED_PROVIDER_TIERS: &[&str] = &["free", "premium"];
 /// pathological config hammering an upstream that is already rejecting us.
 const MAX_PROVIDER_RATE_LIMIT_RETRIES: u32 = 10;
 const ALLOWED_TTS_PROVIDERS: &[&str] = &["kokoro", "fish"];
+const ALLOWED_TTS_CODECS: &[&str] = &["opus", "wav"];
 
 fn validate_tts_provider(value: &str) {
     let normalized = value.trim().to_lowercase();
@@ -574,6 +590,16 @@ fn validate_tts_provider(value: &str) {
         panic!(
             "invalid tts_provider '{value}'; expected one of {}",
             ALLOWED_TTS_PROVIDERS.join(", ")
+        );
+    }
+}
+
+fn validate_tts_codec(value: &str) {
+    let normalized = value.trim().to_lowercase();
+    if !ALLOWED_TTS_CODECS.contains(&normalized.as_str()) {
+        panic!(
+            "invalid tts_codec '{value}'; expected one of {}",
+            ALLOWED_TTS_CODECS.join(", ")
         );
     }
 }

@@ -11,6 +11,7 @@ import android.os.Build;
 import android.util.Log;
 import android.webkit.CookieManager;
 
+import com.chatbot.app.audio.OggOpusStreamDecoder;
 import com.chatbot.app.audio.VoiceAudioRoute;
 import com.chatbot.app.util.ClientLogReporter;
 import com.getcapacitor.JSObject;
@@ -308,7 +309,13 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 throw new IOException("HTTP " + code);
             }
             try (InputStream is = conn.getInputStream()) {
-                AudioClip clip = streamWavToTrack(is, generation);
+                String contentType = conn.getContentType();
+                AudioClip clip;
+                if (contentType != null && contentType.contains("opus")) {
+                    clip = streamOpusToClip(is, generation);
+                } else {
+                    clip = streamWavToTrack(is, generation);
+                }
                 if (clip != null && isGenerationActive(generation)) {
                     audioQueue.put(clip);
                 }
@@ -365,6 +372,48 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
         byte[] fullPcm = preroll.toByteArray();
         Log.d(TAG, "queued pcm bytes=" + fullPcm.length + " rate=" + decoder.sampleRate());
+        return new AudioClip(decoder.sampleRate(), fullPcm);
+    }
+
+    private AudioClip streamOpusToClip(InputStream is, long generation) throws IOException {
+        OggOpusStreamDecoder decoder = new OggOpusStreamDecoder();
+        ByteArrayOutputStream preroll = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int total = 0;
+        int n;
+        try {
+            while ((n = is.read(buf)) != -1) {
+                if (!isGenerationActive(generation)) {
+                    return null;
+                }
+                total += n;
+                if (total > MAX_WAV_BYTES) {
+                    throw new IOException("Opus response too large");
+                }
+                decoder.feed(buf, n);
+                byte[] pcm = decoder.takePcm();
+                if (pcm.length > 0) {
+                    preroll.write(pcm);
+                }
+            }
+        } catch (IOException e) {
+            // Same contract as WAV: a truncated clip is never queued; the
+            // caller retries the complete URL.
+            throw e;
+        }
+        decoder.finish();
+        byte[] tail = decoder.takePcm();
+        if (tail.length > 0) {
+            preroll.write(tail);
+        }
+        if (!decoder.sawOpusHead()) {
+            throw new IOException("Opus stream missing identification header");
+        }
+        if (decoder.hasIncompleteData()) {
+            throw new IOException("Opus stream ended before end-of-stream page");
+        }
+        byte[] fullPcm = preroll.toByteArray();
+        Log.d(TAG, "queued opus pcm bytes=" + fullPcm.length + " rate=" + decoder.sampleRate());
         return new AudioClip(decoder.sampleRate(), fullPcm);
     }
 

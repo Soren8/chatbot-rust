@@ -21,6 +21,7 @@ import androidx.car.app.model.Row;
 import androidx.car.app.model.Template;
 
 import com.chatbot.app.R;
+import com.chatbot.app.audio.OggOpusStreamDecoder;
 import com.chatbot.app.util.FileLogger;
 
 import java.io.ByteArrayOutputStream;
@@ -432,12 +433,35 @@ public class VoiceScreen extends Screen {
         }
 
         long total = 0;
+        String contentType = conn.getContentType();
+        boolean isOpus = contentType != null && contentType.contains("opus");
+        OggOpusStreamDecoder opusDecoder = isOpus ? new OggOpusStreamDecoder() : null;
         try (InputStream is = conn.getInputStream()) {
             byte[] buf = new byte[2048];
             int n;
             while ((n = is.read(buf)) != -1) {
-                track.write(buf, 0, n);
-                total += n;
+                if (opusDecoder != null) {
+                    opusDecoder.feed(buf, n);
+                    byte[] pcm = opusDecoder.takePcm();
+                    if (pcm.length > 0) {
+                        track.write(pcm, 0, pcm.length);
+                        total += pcm.length;
+                    }
+                } else {
+                    track.write(buf, 0, n);
+                    total += n;
+                }
+            }
+            if (opusDecoder != null) {
+                opusDecoder.finish();
+                byte[] tail = opusDecoder.takePcm();
+                if (tail.length > 0) {
+                    track.write(tail, 0, tail.length);
+                    total += tail.length;
+                }
+                if (!opusDecoder.sawOpusHead() || opusDecoder.hasIncompleteData()) {
+                    FileLogger.log(TAG, "playTts opus stream incomplete");
+                }
             }
         } catch (IOException e) {
             FileLogger.log(TAG, "playTts stream read error", e);

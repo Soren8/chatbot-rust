@@ -272,8 +272,26 @@ fn kokoro_voice_router(captured: Arc<AsyncMutex<Vec<Value>>>, pcm: Arc<Vec<u8>>)
     )
 }
 
-fn fish_speech_router(captured: Arc<AsyncMutex<Vec<Value>>>, wav_body: Arc<Vec<u8>>) -> Router {
-    Router::new().route(
+/// Minimal valid mono 16-bit WAV of `samples` silent frames at `rate` Hz.
+fn tiny_silence_wav(rate: u32, samples: u32) -> Vec<u8> {
+    let mut wav = Vec::with_capacity(44 + samples as usize * 2);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&((36 + samples * 2) as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(samples * 2).to_le_bytes());
+    wav.extend(std::iter::repeat(0).take(samples as usize * 2));
+    wav
+}
+
+fn fish_speech_router(captured: Arc<AsyncMutex<Vec<Value>>>, wav_body: Arc<Vec<u8>>) -> Router {    Router::new().route(
         "/v1/tts",
         post({
             let captured = captured.clone();
@@ -441,7 +459,7 @@ async fn kokoro_tts_returns_wav_audio_and_allows_retry_after_transport_failure()
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()),
-        Some("audio/wav"),
+        Some("audio/ogg;codecs=opus"),
     );
     assert_eq!(
         stream_response
@@ -456,12 +474,17 @@ async fn kokoro_tts_returns_wav_audio_and_allows_retry_after_transport_failure()
         .get("Content-Disposition")
         .and_then(|value| value.to_str().ok())
         .expect("content disposition header");
-    assert!(disposition.contains("tts.wav"));
+    assert!(disposition.contains("tts.opus"));
 
-    let wav_bytes = axum::body::to_bytes(stream_response.into_body(), 512 * 1024)
+    let opus_bytes = axum::body::to_bytes(stream_response.into_body(), 512 * 1024)
         .await
-        .expect("read wav body");
-    assert!(!wav_bytes.is_empty(), "wav body should not be empty");
+        .expect("read opus body");
+    assert!(!opus_bytes.is_empty(), "opus body should not be empty");
+    assert_eq!(
+        &opus_bytes[0..4],
+        b"OggS",
+        "default tts_codec must serve Ogg-Opus"
+    );
 
     // NativeVoiceTts retries the same GET when a spotty link truncates an
     // otherwise successful response. The token must remain replayable for a
@@ -478,10 +501,10 @@ async fn kokoro_tts_returns_wav_audio_and_allows_retry_after_transport_failure()
         .await
         .expect("GET /tts_stream retry response");
     assert_eq!(retry_response.status(), StatusCode::OK);
-    let retry_wav = axum::body::to_bytes(retry_response.into_body(), 512 * 1024)
+    let retry_opus = axum::body::to_bytes(retry_response.into_body(), 512 * 1024)
         .await
-        .expect("read retry wav body");
-    assert_eq!(retry_wav, wav_bytes, "retry should reuse the generated clip");
+        .expect("read retry opus body");
+    assert_eq!(retry_opus, opus_bytes, "retry should reuse the generated clip");
 
     let cancel_response = app
         .clone()
@@ -752,8 +775,8 @@ async fn empty_after_sanitize_streams_silence_instead_of_failing_the_sentence() 
     // A 500 here was deterministic (marker-only sentences sanitize to empty),
     // so the client retry storm could never fix it and each such sentence
     // burned 9 POST /tts requests plus backoff before being skipped. The
-    // handler must return a token that streams a short silent WAV and must
-    // not call the voice-service backend at all.
+    // handler must return a token that streams a short silent Opus clip and
+    // must not call the voice-service backend at all.
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
     let pcm = Arc::new(vec![0_u8; 100]);
     let router = kokoro_voice_router(captured.clone(), pcm);
@@ -807,16 +830,15 @@ async fn empty_after_sanitize_streams_silence_instead_of_failing_the_sentence() 
                 .headers()
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok()),
-            Some("audio/wav"),
+            Some("audio/ogg;codecs=opus"),
         );
-        let wav_bytes = axum::body::to_bytes(stream_response.into_body(), 512 * 1024)
+        let opus_bytes = axum::body::to_bytes(stream_response.into_body(), 512 * 1024)
             .await
-            .expect("read silent wav body");
-        assert!(wav_bytes.len() > 44, "silent clip must be a valid WAV");
-        assert_eq!(&wav_bytes[0..4], b"RIFF", "silent clip must be a WAV");
-        assert!(
-            wav_bytes[44..].iter().all(|&b| b == 0),
-            "clip content must be silence"
+            .expect("read silent opus body");
+        assert_eq!(
+            &opus_bytes[0..4],
+            b"OggS",
+            "silent clip must be Ogg-Opus"
         );
     }
 
@@ -1219,12 +1241,14 @@ async fn http_5xx_responses_log_error_level_with_request_context() {
 }
 
 #[tokio::test]
-async fn fish_tts_via_presign_generates_wav_audio() {
+async fn fish_tts_via_presign_generates_opus_audio() {
     common::init_tracing();
     let _lock = tts_test_lock();
 
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
-    let wav_data = Arc::new(vec![b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'A', b'V', b'E']);
+    // One opus frame of silence as a valid WAV: the fish backend still
+    // speaks WAV; the server transcodes to Ogg-Opus for the wire.
+    let wav_data = Arc::new(tiny_silence_wav(25_200, 480));
     let router = fish_speech_router(captured.clone(), wav_data.clone());
 
     let (addr, shutdown, handle) = spawn_voice_stub(router).await;
@@ -1271,10 +1295,14 @@ async fn fish_tts_via_presign_generates_wav_audio() {
         .expect("GET /tts_stream");
     assert_eq!(stream_response.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(stream_response.into_body(), 1024)
+    let body_bytes = axum::body::to_bytes(stream_response.into_body(), 4096)
         .await
         .expect("read body");
-    assert_eq!(body_bytes.as_ref(), wav_data.as_slice());
+    assert_eq!(
+        &body_bytes[0..4],
+        b"OggS",
+        "fish clip must be transcoded to Ogg-Opus"
+    );
 
     let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("fish payload captured");
