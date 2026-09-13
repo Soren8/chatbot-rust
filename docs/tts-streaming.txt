@@ -62,3 +62,17 @@ Payloads that sanitize to nothing (markdown rules like `---`, marker-only chunks
 4.  **Backend:** Fetches audio from upstream, strips headers, applies fades, prepends a new valid WAV header, and streams it.
 5. **Frontend:** Desktop plays `GET /tts_stream/{token}` through the shared `playTTS` / `playOneTtsUtterance` HTML `Audio` path, buffering complete clips into in-memory `Blob` object URLs and prefetching upcoming sentences (`preloadDesktopTtsSentence`) to eliminate latency and prevent mid-sentence drops. Android voice mode uses the ordered `NativeVoiceTts` `AudioTrack` queue so playback survives screen lock; it decouples downloading from playback using an in-memory `audioQueue` of decoded `AudioClip`s, retrying interrupted clip GETs with backoff while active without writing partial PCM to `AudioTrack` or skipping sentences. When the message text is fully known, the native pump prefetches the remaining sentences' tokens concurrently (bounded) and enqueues their stream URLs in sentence order, so the downloader queue is full up front on spotty links; synthesis itself stays serial server-side and any prefetch failure falls back to the serial pump. Voice-mode tap primes the desktop element when needed. `POST /tts` and `POST /stt` retry transient failures (a request stalled long enough to hit the internal 60s abort is retried; a user-initiated abort is not). A failed `/tts_stream` generation puts the token back, and a successful clip is retained for bounded transport retries. The native sentence pump requeues a sentence on any transient failure with bounded attempts (or persistent retries during active voice mode), so a spotty link delays speech instead of skipping sentences. The desktop HTML-audio pump does the same (bounded requeue with backoff for play button, persistent retries during active voice mode), and retries a failed clip GET on the same token within the server's replay budget; an autoplay-blocked play() stays fatal. Desktop sentence discovery is end-based (`s.end > consumed`): sanitizeForTTS can shrink already-consumed text later (a markdown emphasis/inline-code pair closing after the boundary sentence), so start offsets may drift left of the boundary — the end guard alone keeps a spoken sentence from replaying while drifted sentences still play instead of being skipped. Reliability outranks first-byte latency.
 
+## Ogg-Opus framing (RFC 7845)
+
+When `tts_codec: opus` (default), each clip is a complete Ogg-Opus logical
+bitstream. The muxer keeps the OpusHead identification header alone on the
+first (BOS) page and the OpusTags comment header on the second page, with the
+granule position of both header pages zero; audio packets follow on later
+pages. Packing the two header packets with audio onto one page — what the `ogg`
+crate's `NormalPacket` does by default — violates RFC 7845 sections 3 and 4 and
+is rejected by strict demuxers, even though the lenient Android
+`OggOpusStreamDecoder` still parses it. `tts_opus::mux_ogg_opus` writes both
+headers with `PacketWriteEndInfo::EndPage`, and
+`ogg_opus_headers_are_isolated_on_their_own_pages` pins the page layout
+(header pages alone, granule 0) independently of the muxing library.
+

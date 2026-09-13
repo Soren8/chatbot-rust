@@ -122,11 +122,17 @@ fn mux_ogg_opus(packets: &[Vec<u8>]) -> Result<Vec<u8>> {
         .unwrap_or(0xC0FFEE);
     let mut writer = ogg::PacketWriter::new(Vec::new());
     let head = opus_head_packet();
+    // RFC 7845 section 3 requires the OpusHead ID header to sit alone on the
+    // first page and the OpusTags comment header to begin on the second page
+    // and finish it; NormalPacket would leave both buffered and pack them onto
+    // the audio page (a layout strict browser demuxers reject). EndPage forces
+    // each header onto its own complete page. Section 4 requires the granule
+    // position of both header pages to be zero, which the absgp below sets.
     writer
         .write_packet(
             &head[..],
             serial,
-            ogg::PacketWriteEndInfo::NormalPacket,
+            ogg::PacketWriteEndInfo::EndPage,
             0,
         )
         .context("write OpusHead")?;
@@ -134,7 +140,7 @@ fn mux_ogg_opus(packets: &[Vec<u8>]) -> Result<Vec<u8>> {
         .write_packet(
             opus_tags_packet(),
             serial,
-            ogg::PacketWriteEndInfo::NormalPacket,
+            ogg::PacketWriteEndInfo::EndPage,
             0,
         )
         .context("write OpusTags")?;
@@ -466,6 +472,136 @@ mod tests {
             *granules.last().unwrap(),
             960 * audio.len() as u64,
             "final granule must account every audio frame"
+        );
+    }
+
+    /// One Ogg page reduced to the framing facts Opus cares about.
+    struct ParsedOggPage {
+        header_type: u8,
+        granule: u64,
+        /// Packets that complete on this page, in page order.
+        packets: Vec<Vec<u8>>,
+    }
+
+    /// Split a complete Ogg stream into pages, independent of the muxing
+    /// library so a mux bug is visible exactly as a strict demuxer sees it.
+    /// Our clips never split a packet across pages, so a page that does not
+    /// end on a packet boundary is itself a framing bug.
+    fn parse_ogg_pages(ogg: &[u8]) -> Vec<ParsedOggPage> {
+        let mut pages = Vec::new();
+        let mut pos = 0usize;
+        while pos < ogg.len() {
+            assert!(ogg.len() - pos >= 27, "truncated page header at {pos}");
+            assert_eq!(&ogg[pos..pos + 4], b"OggS", "page magic at {pos}");
+            let header_type = ogg[pos + 5];
+            let granule = u64::from_le_bytes(ogg[pos + 6..pos + 14].try_into().unwrap());
+            let seg_count = ogg[pos + 26] as usize;
+            assert!(ogg.len() - pos >= 27 + seg_count, "truncated lacing at {pos}");
+            let lacing = &ogg[pos + 27..pos + 27 + seg_count];
+            let body_len: usize = lacing.iter().map(|&s| s as usize).sum();
+            assert!(
+                ogg.len() - pos >= 27 + seg_count + body_len,
+                "truncated page body at {pos}"
+            );
+            let body = &ogg[pos + 27 + seg_count..pos + 27 + seg_count + body_len];
+
+            let mut packets = Vec::new();
+            let mut packet_start = 0usize;
+            let mut body_pos = 0usize;
+            for &seg in lacing {
+                body_pos += seg as usize;
+                if seg < 255 {
+                    packets.push(body[packet_start..body_pos].to_vec());
+                    packet_start = body_pos;
+                }
+            }
+            assert_eq!(
+                packet_start, body_pos,
+                "packet must not continue across pages for these small clips"
+            );
+
+            pages.push(ParsedOggPage {
+                header_type,
+                granule,
+                packets,
+            });
+            pos += 27 + seg_count + body_len;
+        }
+        pages
+    }
+
+    /// RFC 7845 Section 3 requires the OpusHead ID header to be "placed alone
+    /// (without any other packet data) on the first page" and to complete
+    /// there, and the OpusTags comment header to begin on the second page and
+    /// "MUST finish the page on which it completes" (no audio packet shares
+    /// it). Section 4 requires the granule position to be zero on both the ID
+    /// header page and the page where the comment header completes.
+    ///
+    /// Packet-order and CRC checks alone cannot establish these required
+    /// page boundaries.
+    #[test]
+    fn ogg_opus_headers_are_isolated_on_their_own_pages() {
+        let pcm: Vec<i16> = (0..12_000)
+            .map(|i| ((i as f32 * 0.05).sin() * 8000.0) as i16)
+            .collect();
+        let ogg = encode_pcm_to_opus_ogg(&pcm, 24_000).expect("encode must succeed");
+        let pages = parse_ogg_pages(&ogg);
+
+        assert!(
+            pages.len() >= 3,
+            "OpusHead, OpusTags, and audio each need their own page boundary, got {} page(s)",
+            pages.len()
+        );
+
+        let head_page = &pages[0];
+        assert!(head_page.header_type & 0x02 != 0, "first page must set BOS");
+        assert_eq!(
+            head_page.packets.len(),
+            1,
+            "OpusHead must be alone on the first page (RFC 7845 section 3)"
+        );
+        assert!(head_page.packets[0].starts_with(b"OpusHead"));
+        assert_eq!(head_page.granule, 0, "ID header page granule must be zero");
+
+        let tags_page = &pages[1];
+        assert!(
+            tags_page.header_type & 0x02 == 0,
+            "second page must not set BOS"
+        );
+        assert!(
+            tags_page.header_type & 0x04 == 0,
+            "second page must not set EOS"
+        );
+        assert_eq!(
+            tags_page.packets.len(),
+            1,
+            "OpusTags must finish its page; no audio packet may share it (RFC 7845 section 3)"
+        );
+        assert!(tags_page.packets[0].starts_with(b"OpusTags"));
+        assert_eq!(
+            tags_page.granule, 0,
+            "comment header page granule must be zero"
+        );
+
+        for (i, page) in pages.iter().enumerate().skip(2) {
+            assert!(
+                page.header_type & 0x02 == 0,
+                "only the first page may set BOS (page {i})"
+            );
+            assert!(
+                !page.packets.is_empty(),
+                "audio page {i} must carry audio packets"
+            );
+            for packet in &page.packets {
+                assert!(
+                    !packet.starts_with(b"OpusHead") && !packet.starts_with(b"OpusTags"),
+                    "audio page {i} must not carry a header packet"
+                );
+            }
+        }
+        assert!(
+            pages.last().unwrap().header_type & 0x04 != 0,
+            "final page must set EOS"
         );
     }
 }
