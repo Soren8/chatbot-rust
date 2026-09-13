@@ -344,4 +344,128 @@ mod tests {
             "pitch must survive the round trip, got {freq} Hz"
         );
     }
+
+    /// Bit-by-bit Ogg CRC32 (poly 0x04C11DB7, init 0) so framing is checked
+    /// without trusting the muxing library's own reader.
+    fn ogg_crc32(data: &[u8]) -> u32 {
+        let mut crc = 0u32;
+        for &b in data {
+            crc ^= u32::from(b) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04C1_1DB7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        crc
+    }
+
+    #[test]
+    fn ogg_opus_framing_satisfies_strict_parsers() {
+        // The decode round trip demuxes with the same crate that muxes, so
+        // it cannot catch framing a strict third-party parser (browser
+        // <audio>, phone decoder) would reject. Walk the pages by hand:
+        // magic, BOS/EOS placement, serial/sequence, CRC, head/tags/audio
+        // order, and granule accounting per RFC 7845.
+        let pcm: Vec<i16> = (0..12_000)
+            .map(|i| ((i as f32 * 0.05).sin() * 8000.0) as i16)
+            .collect();
+        let ogg = encode_pcm_to_opus_ogg(&pcm, 24_000).expect("encode must succeed");
+
+        let mut pos = 0usize;
+        let mut serial = None;
+        let mut seq = 0u32;
+        let mut packets: Vec<Vec<u8>> = Vec::new();
+        let mut pending: Vec<u8> = Vec::new();
+        let mut granules: Vec<u64> = Vec::new();
+        let mut page_count = 0u32;
+        while pos < ogg.len() {
+            assert!(ogg.len() - pos >= 27, "truncated Ogg page header at {pos}");
+            assert_eq!(&ogg[pos..pos + 4], b"OggS", "page magic at {pos}");
+            assert_eq!(ogg[pos + 4], 0, "Ogg version at {pos}");
+            let flags = ogg[pos + 5];
+            let granule = u64::from_le_bytes(ogg[pos + 6..pos + 14].try_into().unwrap());
+            let page_serial =
+                u32::from_le_bytes(ogg[pos + 14..pos + 18].try_into().unwrap());
+            let page_seq = u32::from_le_bytes(ogg[pos + 18..pos + 22].try_into().unwrap());
+            let stored_crc =
+                u32::from_le_bytes(ogg[pos + 22..pos + 26].try_into().unwrap());
+            let seg_count = ogg[pos + 26] as usize;
+            assert!(
+                ogg.len() - pos >= 27 + seg_count,
+                "truncated lacing at {pos}"
+            );
+            let lacing = &ogg[pos + 27..pos + 27 + seg_count];
+            let body_len: usize = lacing.iter().map(|&s| s as usize).sum();
+            let page_len = 27 + seg_count + body_len;
+            assert!(ogg.len() - pos >= page_len, "truncated page body at {pos}");
+            let mut page = ogg[pos..pos + page_len].to_vec();
+            page[22..26].copy_from_slice(&[0, 0, 0, 0]);
+            assert_eq!(ogg_crc32(&page), stored_crc, "page CRC at {pos}");
+
+            if page_count == 0 {
+                assert!(flags & 0x02 != 0, "first page must set BOS");
+            } else {
+                assert!(flags & 0x02 == 0, "only the first page may set BOS");
+            }
+            let is_last = pos + page_len == ogg.len();
+            assert_eq!(
+                flags & 0x04 != 0,
+                is_last,
+                "EOS must sit on the final page only"
+            );
+            match serial {
+                None => serial = Some(page_serial),
+                Some(s) => assert_eq!(s, page_serial, "serial stable"),
+            }
+            assert_eq!(page_seq, seq, "sequence numbers increase by one");
+            seq += 1;
+
+            // Reassemble packets across the page (handles continuations).
+            let mut body_pos = 0;
+            for &seg in lacing {
+                pending.extend_from_slice(
+                    &ogg[pos + 27 + seg_count + body_pos..][..seg as usize],
+                );
+                body_pos += seg as usize;
+                if seg < 255 {
+                    packets.push(std::mem::take(&mut pending));
+                }
+            }
+            granules.push(granule);
+            pos += page_len;
+            page_count += 1;
+        }
+        assert!(page_count > 0, "stream must contain pages");
+        assert!(pending.is_empty(), "no packet may span past EOS");
+
+        assert!(packets.len() >= 3, "need head, tags, and audio");
+        let head = &packets[0];
+        assert_eq!(head.len(), 19, "OpusHead is 19 bytes");
+        assert_eq!(&head[0..8], b"OpusHead");
+        assert!(head[8] <= 1, "OpusHead version");
+        assert_eq!(head[9], 1, "mono channel count");
+        assert_eq!(
+            u32::from_le_bytes(head[12..16].try_into().unwrap()),
+            OPUS_SAMPLE_RATE_HZ
+        );
+        assert!(packets[1].starts_with(b"OpusTags"), "tags packet second");
+        let audio = &packets[2..];
+        assert!(!audio.is_empty(), "stream must carry audio packets");
+        assert!(
+            audio.iter().all(|p| !p.is_empty()),
+            "audio packets non-empty"
+        );
+        // Granule counts 48 kHz samples: one 20 ms frame adds 960.
+        for w in granules.windows(2) {
+            assert!(w[1] >= w[0], "granule positions monotonic");
+        }
+        assert_eq!(
+            *granules.last().unwrap(),
+            960 * audio.len() as u64,
+            "final granule must account every audio frame"
+        );
+    }
 }

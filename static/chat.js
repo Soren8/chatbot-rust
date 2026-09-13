@@ -2791,7 +2791,17 @@ function playOneTtsUtterance(sessionId, text) {
         }
         desktopTtsCurrentBlobUrl = clip.blobUrl;
         audio.onended = function () { finish(true); };
-        audio.onerror = function () { failAttempt(null); };
+        audio.onerror = function () {
+          // Never swallow the cause: the sentence pump only reports the
+          // skip, so the MediaError code is the only record of WHY a clip
+          // was unplayable (1 aborted, 2 network, 3 decode, 4 unsupported).
+          try {
+            const mediaErr = audio.error;
+            console.error('TTS clip media error:',
+              mediaErr && mediaErr.code, mediaErr && mediaErr.message);
+          } catch (e) { /* ignore */ }
+          failAttempt(null);
+        };
         audio.src = clip.blobUrl;
         if (window.voiceModeActive) {
           voiceModeTtsPlaying = true;
@@ -2802,6 +2812,13 @@ function playOneTtsUtterance(sessionId, text) {
         const playPromise = audio.play();
         if (playPromise && typeof playPromise.then === 'function') {
           playPromise.catch(function (err) {
+            // NotAllowedError already logs inside failAttempt; any OTHER
+            // rejection (e.g. NotSupportedError on unplayable bytes) must
+            // be recorded or every attempt fails with no visible cause.
+            if (!err || err.name !== 'NotAllowedError') {
+              console.error('TTS audio.play() rejected:',
+                err && err.name, err && err.message);
+            }
             failAttempt(err);
           });
         }

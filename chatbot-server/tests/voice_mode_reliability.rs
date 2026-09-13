@@ -1972,3 +1972,23 @@ fn desktop_tts_retry_mints_fresh_blob_url_from_retained_blob() {
          never replay a possibly-revoked URL"
     );
 }
+
+/// The sentence pump only reports the skip; without the MediaError code and
+/// the play() rejection reason every systematic playback failure is silent.
+/// Both must be logged at the failure site.
+#[test]
+fn desktop_tts_logs_playback_failure_causes() {
+    let chat_js = include_str!("../../static/chat.js");
+    assert!(
+        function_contains(chat_js, "playOneTtsUtterance", "TTS clip media error"),
+        "audio element errors must log the MediaError code, not just fail the attempt"
+    );
+    assert!(
+        function_contains(
+            chat_js,
+            "playOneTtsUtterance",
+            "TTS audio.play() rejected"
+        ),
+        "non-NotAllowedError play() rejections (e.g. unplayable bytes) must be logged"
+    );
+}
