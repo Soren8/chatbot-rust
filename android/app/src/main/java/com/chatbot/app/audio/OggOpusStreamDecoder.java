@@ -14,9 +14,26 @@ import io.github.jaredmdobson.concentus.OpusException;
  * Ogg pages are parsed incrementally, audio packets decode via the pure-Java
  * concentus decoder (no NDK, no OEM MediaCodec variance), and decoded PCM is
  * drained with takePcm(). Mono only — the server always encodes mono.
+ *
+ * <p><b>Why decode at 48 kHz and then downsample.</b> Concentus 1.0.2's CELT
+ * de-emphasis ignores its {@code accum} flag when the decoder resamples
+ * ({@code Fs < 48000}): it overwrites the output buffer instead of adding to
+ * it. libopus instead adds the downsampled CELT signal on top of the SILK
+ * signal that {@code OpusDecoder} already wrote into the same buffer. Hybrid
+ * (SILK+CELT) packets therefore lose their SILK layer and decode to near
+ * silence at 24 kHz, which is what the server's 24 kbps mono hybrid stream
+ * uses. At 48 kHz the decoder does not resample ({@code downsample == 1}), the
+ * {@code accum} branch is correct, and hybrid audio is reconstructed intact.
+ * We decode at 48 kHz and band-limit/downsample to the OpusHead rate with the
+ * FIR below. This is the only output rate supported by the public API that
+ * avoids the library's broken resampling path; it is a workaround for
+ * <a href="https://github.com/lostromb/concentus">Concentus</a>, not a change
+ * to the wire format.
  */
 public class OggOpusStreamDecoder {
-    private static final int MAX_OUTPUT_SAMPLES_120MS_24K = 2880;
+    /** Opus stores and decodes natively at 48 kHz; only this rate avoids the CELT accum bug. */
+    private static final int DECODE_SAMPLE_RATE = 48000;
+    private static final int MAX_OUTPUT_SAMPLES_120MS_48K = 5760;
     /** Ogg page capture pattern: every page starts with these four bytes. */
     private static final String OGG_PAGE_MAGIC = "OggS";
     /** First audio-header packet of an Ogg-Opus stream. */
@@ -34,6 +51,7 @@ public class OggOpusStreamDecoder {
     private boolean sawEndOfStream;
     private boolean truncated;
     private long preskipRemaining;
+    private FirDownsampler downsampler;
 
     /** Decoded PCM16 little-endian sample rate, from OpusHead (24000). */
     public int sampleRate() {
@@ -172,13 +190,15 @@ public class OggOpusStreamDecoder {
             throw new IOException("unsupported Opus input rate " + rate);
         }
         sampleRate = rate;
-        // Pre-skip is counted in 48 kHz samples; convert to output rate.
-        long preskip48 = ((packet[11] & 0xFF) << 8) | (packet[10] & 0xFF);
-        preskipRemaining = (preskip48 * sampleRate) / 48000;
+        // Pre-skip is counted in 48 kHz samples, matching the decode rate.
+        preskipRemaining = ((packet[11] & 0xFF) << 8) | (packet[10] & 0xFF);
         try {
-            decoder = new OpusDecoder(sampleRate, 1);
+            decoder = new OpusDecoder(DECODE_SAMPLE_RATE, 1);
         } catch (OpusException e) {
             throw new IOException("opus decoder init failed: " + e.getMessage());
+        }
+        if (sampleRate != DECODE_SAMPLE_RATE) {
+            downsampler = new FirDownsampler(DECODE_SAMPLE_RATE, sampleRate);
         }
     }
 
@@ -186,21 +206,28 @@ public class OggOpusStreamDecoder {
         if (decoder == null) {
             throw new IOException("audio packet before OpusHead");
         }
-        short[] out = new short[MAX_OUTPUT_SAMPLES_120MS_24K];
+        short[] out = new short[MAX_OUTPUT_SAMPLES_120MS_48K];
         int decoded;
         try {
             decoded = decoder.decode(packet, 0, packet.length, out, 0,
-                    MAX_OUTPUT_SAMPLES_120MS_24K, false);
+                    MAX_OUTPUT_SAMPLES_120MS_48K, false);
         } catch (OpusException e) {
             throw new IOException("opus decode failed: " + e.getMessage());
         }
         int skip = (int) Math.min(preskipRemaining, decoded);
         preskipRemaining -= skip;
-        for (int i = skip; i < decoded; i++) {
-            short s = out[i];
-            pcm.write(s & 0xFF);
-            pcm.write((s >> 8) & 0xFF);
+        if (downsampler == null) {
+            for (int i = skip; i < decoded; i++) {
+                appendPcm(out[i]);
+            }
+        } else {
+            downsampler.process(out, skip, decoded, pcm);
         }
+    }
+
+    private void appendPcm(short s) {
+        pcm.write(s & 0xFF);
+        pcm.write((s >> 8) & 0xFF);
     }
 
     private static boolean startsWithMagic(byte[] packet, String magic) {
@@ -218,5 +245,91 @@ public class OggOpusStreamDecoder {
     private static int readLe32(byte[] b, int off) {
         return (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8)
                 | ((b[off + 2] & 0xFF) << 16) | ((b[off + 3] & 0xFF) << 24);
+    }
+
+    /**
+     * Streaming integer-factor FIR decimator for the Opus output rates, which
+     * all divide 48 kHz evenly (factor 2/3/4/6). Coefficients are a
+     * Blackman-windowed sinc low-pass at the output Nyquist; the filter's
+     * group delay is compensated by sampling the convolution centre. State is
+     * deterministic, so the same bytes decode identically regardless of how
+     * they are chunked across {@code feed()} calls.
+     */
+    private static final class FirDownsampler {
+        private final int factor;
+        private final int taps;
+        private final int delay;
+        private final int[] coefficients;
+        private final short[] history;
+        private int historyPos;
+        private long inputCount;
+        private long nextCenter;
+
+        FirDownsampler(int inRate, int outRate) {
+            if (inRate % outRate != 0) {
+                throw new IllegalArgumentException("rates not integer-divisible: " + inRate + "/" + outRate);
+            }
+            this.factor = inRate / outRate;
+            this.taps = 64 * factor + 1;
+            this.delay = (taps - 1) / 2;
+            this.coefficients = design(taps, factor);
+            this.history = new short[taps];
+            this.nextCenter = delay;
+        }
+
+        void process(short[] in, int from, int to, ByteArrayOutputStream out) {
+            if (from >= to) {
+                return;
+            }
+            for (int i = from; i < to; i++) {
+                history[historyPos] = in[i];
+                historyPos++;
+                if (historyPos == taps) {
+                    historyPos = 0;
+                }
+                if (inputCount == nextCenter) {
+                    long acc = 0;
+                    int idx = historyPos - 1;
+                    for (int k = 0; k < taps; k++) {
+                        if (idx < 0) {
+                            idx += taps;
+                        }
+                        acc += (long) coefficients[k] * history[idx];
+                        idx--;
+                    }
+                    int y = (int) (acc >> 15);
+                    if (y > 32767) {
+                        y = 32767;
+                    } else if (y < -32768) {
+                        y = -32768;
+                    }
+                    out.write(y & 0xFF);
+                    out.write((y >> 8) & 0xFF);
+                    nextCenter += factor;
+                }
+                inputCount++;
+            }
+        }
+
+        /** Q15 Blackman-windowed sinc low-pass at the output Nyquist, DC-normalized. */
+        private static int[] design(int taps, int factor) {
+            int delay = (taps - 1) / 2;
+            double fc = 0.5 / factor;
+            double[] h = new double[taps];
+            double sum = 0.0;
+            for (int n = 0; n < taps; n++) {
+                int x = n - delay;
+                double v = x == 0 ? 2.0 * fc : Math.sin(2.0 * Math.PI * fc * x) / (Math.PI * x);
+                double w = 0.42 - 0.5 * Math.cos(2.0 * Math.PI * n / (taps - 1))
+                        + 0.08 * Math.cos(4.0 * Math.PI * n / (taps - 1));
+                h[n] = v * w;
+                sum += h[n];
+            }
+            int[] coef = new int[taps];
+            for (int n = 0; n < taps; n++) {
+                coef[n] = (int) Math.round(h[n] / sum * 32768.0);
+            }
+            return coef;
+        }
     }
 }
