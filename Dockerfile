@@ -41,10 +41,17 @@ COPY chatbot-server /build/chatbot-server
 COPY chatbot-test-support /build/chatbot-test-support
 COPY static /build/static
 
+# `COPY` preserves source mtimes while the cache-mounted target dir persists
+# compiled artifacts across builds. Cargo's mtime freshness check would then
+# treat a copied source file as older than a stale artifact and skip the
+# recompile (rust-lang/cargo#9312), linking e.g. an old chatbot-core rlib that
+# lacks APIs the rebuilt chatbot-server expects. Advance the workspace source
+# mtimes past any warm cache entry before cargo reads them.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/usr/local/cargo/target \
     sh -ec '\
+      find chatbot-core chatbot-server chatbot-test-support -type f -exec touch {} +; \
       export CARGO_TARGET_DIR=/usr/local/cargo/target; \
       if [ "$RUST_BUILD_PROFILE" = "debug" ]; then \
         cargo build -p chatbot-server; \
@@ -87,6 +94,8 @@ COPY static /app/static
 # Integration tests inspect Android sources with compile-time include_str! calls.
 COPY android/app/src /app/android/app/src
 COPY .config.yml.example /app/.config.yml.example
+# docker_build.rs guards the image build recipe itself.
+COPY Dockerfile /app/Dockerfile
 ENV CHATBOT_STATIC_ROOT="/app/static"
 ENV CARGO_TARGET_DIR=/app/.cargo/target
 
