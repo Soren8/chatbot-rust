@@ -2311,14 +2311,22 @@ function getDomPlainText(element) {
 }
 
 /**
- * Whether a sentence string already ends with a terminator (incl. ellipsis, colon, or newline).
- * Used when streaming: do not enqueue an unfinished trailing fragment.
+ * Speakable-complete trailing fragment while generation continues.
+ * A colon waits for its continuation, a digit period may extend to a
+ * decimal, and all-caps, abbreviation, or honorific periods may merge
+ * with what streams next.
  */
 function sentenceEndsWithTerminator(sentenceText) {
   const s = String(sentenceText || '').trim();
-  // Terminator is . ! ? … or a run of periods (...), optional closers,
-  // or a colon (:), or line terminator.
-  return /(?:\.{1,}|[!?…:]|[\r\n])["'”’)\]]*\s*$/.test(s);
+  if (!s) return false;
+  if (!/(?:\.{1,}|[!?…:]|[\r\n])["'”’)\]]*\s*$/.test(s)) return false;
+  if (/:\s*["'”’)\]]*\s*$/.test(s)) return false;
+  if (/[0-9]\.\s*["'”’)\]]*\s*$/.test(s)) return false;
+  if (/\b[A-Z]{2,4}\.\s*["'”’)\]]*\s*$/.test(s)) return false;
+  if (/\b(?:e\.g|i\.e|vs|etc|approx|dept|est|apt)\.\s*["'”’)\]]*\s*$/i.test(s)) return false;
+  if (/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|Gen|Col|Sgt|Lt|Capt|St)\.\s*["'”’)\]]*\s*$/i.test(s)) return false;
+  if (/\betcetera\.\s*["'”’)\]]*\s*$/i.test(s)) return false;
+  return true;
 }
 
 /** True if `ch` is an ASCII digit (0-9). */
@@ -2870,8 +2878,12 @@ function playFixedSentenceList(sessionId, button, sentences) {
           return;
         }
         sentenceRetries = 0;
-        console.error('Desktop TTS sentence failed; skipping after retries');
-        pump();
+        queue.length = 0;
+        console.error('Desktop TTS sentence failed after retries');
+        reportVoice('VOICE-ERROR', 'TTS sentence failed (fixed list)');
+        appendMessage('Voice output failed. Try again.', 'error-message');
+        // Exhausted retries end the session with a visible error; never advance.
+        completeDesktopTtsPlayback(button);
         return;
       }
       sentenceRetries = 0;
@@ -2919,6 +2931,14 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     for (let i = 0; i < sentences.length; i++) {
       const s = sentences[i];
       if (s.end <= consumedLen) continue;
+      // A later chunk can append only punctuation/closers to a queued sentence
+      // ("Hello." -> "Hello..."); the words are spoken, so ignore the extension
+      // instead of requeueing the whole sentence.
+      if (consumedLen > s.start) {
+        const spoken = full.slice(s.start, consumedLen);
+        const tail = s.text.slice(spoken.length);
+        if (tail && /^[\.\!\?…\"'”’\)\]]+$/.test(tail) && spoken + tail === s.text) continue;
+      }
       const isTrailingFragment = (i === sentences.length - 1);
       if (isTrailingFragment && !sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
       queue.push(s.text);
@@ -3014,8 +3034,13 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
           return;
         }
         sentenceRetries = 0;
-        console.error('Desktop TTS sentence failed; skipping after retries');
-        pump();
+        queue.length = 0;
+        console.error('Desktop TTS sentence failed after retries');
+        reportVoice('VOICE-ERROR', 'TTS sentence failed (desktop)');
+        appendMessage('Voice output failed. Try again.', 'error-message');
+        // Exhausted retries end the session with a visible error; never advance.
+        teardownObserver();
+        completeDesktopTtsPlayback(button);
         return;
       }
       sentenceRetries = 0;
@@ -5557,8 +5582,15 @@ $(document).ready(function() {
           pendingNativeTtsTokens.delete(job.token);
           cancelNativeTtsToken(job.token);
         }
-        if (live()) console.error('Native voice TTS sentence failed; skipping after retries:', err);
-        releaseSlot(job);
+        if (!live()) return;
+        console.error('Native voice TTS sentence failed after retries:', err);
+        reportVoice('VOICE-ERROR', 'TTS sentence failed (native)');
+        appendMessage('Voice output failed. Try again.', 'error-message');
+        // Exhausted retries end the session with a visible error; never advance.
+        stopped = true;
+        teardownObserver();
+        window.NativeVoiceTts.stop().catch(function () {});
+        finishNativeVoiceTts(generation, button);
       }).then(function () {
         pendingEnqueues--;
         if (live()) pump();
