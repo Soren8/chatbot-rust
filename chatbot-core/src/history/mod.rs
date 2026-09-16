@@ -27,13 +27,7 @@ pub use types::{
     SetVersion, ThumbPayloadV1,
 };
 
-/// Display-name validation shared by HTTP handlers (not storage keys).
-pub fn normalise_set_name(set_name: Option<&str>) -> Result<String, crate::persistence::PersistenceError> {
-    crate::persistence::DataPersistence::normalise_set_name(set_name)
-}
+pub use crate::names::SetNameError;
 
-pub fn normalise_custom_set_name(
-    set_name: &str,
-) -> Result<String, crate::persistence::PersistenceError> {
-    crate::persistence::DataPersistence::normalise_custom_set_name(set_name)
-}
+/// Display-name validation shared by HTTP handlers (not storage keys).
+pub use crate::names::{normalise_custom_set_name, normalise_set_name};

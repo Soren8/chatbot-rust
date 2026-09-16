@@ -1,5 +1,7 @@
 # Codebase review program
 
+Latest resume point: [session 003 — first remediation batch](#session-003--first-remediation-batch-2026-09-16). Earlier checkpoints record their original scope and status.
+
 ## Purpose and authority
 
 Review the entire repository across seven separate passes: modularity; simplicity; abstractions, reuse, and duplication; security and privacy; performance and resource use; test coverage and quality; documentation accuracy. The goal is evidence-backed improvements that preserve intended behavior, not a rewrite or a target number of findings.
@@ -64,3 +66,17 @@ The review also found cross-pass issues that deserve early reproduction: native 
 Verification for this documentation-only review consists of tracked-path assignment, finding-ID/link/reference checks, source-boundary checks, and diff/whitespace review. The application suite, GPU service, APK, browser automation and on-device tests were not run. Previously green application commits are not evidence that these new observations have been reproduced.
 
 **Next working session:** inspect changes since `7dc8a23`, read the report's remediation ordering, and select a bounded first remediation batch. Prioritize regression-backed verification of SEC-003/SEC-002/COR-001 over cosmetic moves. For structural work, begin with stable behavioral test seams and shared stream decoding before splitting browser/voice ownership. Worker handoffs must include the finding, reviewed caller chain, invariant list and exclusive files; workers implement, the primary reviewer verifies. If choosing to postpone remediation, the next whole-codebase review is the simplicity pass, with fresh independent coverage.
+
+## Session 003 — first remediation batch, 2026-09-16
+
+The user authorized modularity remediation and preferred implementation subagents with primary review. This first bounded batch addresses MOD-004 and the speech-text boundary within MOD-011. Two workers had exclusive ownership after the primary reviewed the implementations and callers; the primary reviewed their diffs, narrowed the internal crypto module's visibility, and verified the TTS relocation against the original source. This is the first remediation batch, not completion of all seventeen findings.
+
+**MOD-004 is verified:** `names.rs` owns username/set-name rules and typed errors; private `fernet_crypto.rs` owns Fernet operations. Session sealing, history crypto and HTTP naming paths no longer import migration-owned helpers/errors. Legacy wrappers retain their APIs, plaintext mode and error variants. Existing migration support and user-facing name/error behavior are preserved.
+
+**MOD-011 is in progress:** `tts/text.rs` owns normalization with a single parent-visible entry point and all 28 existing normalization tests. The extraction preserves transformation order and output. Token state, backend synthesis and HTTP/codec rendering still share the parent module and require a later batch. Browser/native sentence policy was not part of this change.
+
+Verification used the full supported command, `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`, twice for distinct states: the original implementation plus 16 new characterization tests passed in job `20260916T161549-8201e4a67090`; the refactored implementation passed in job `20260916T163326-652a9002d614` (both `status=passed`, exit 0). The final suite includes seven additional direct helper tests, legacy migration/idempotency/wrong-key coverage, provider configuration validation, session/history HTTP tests, TTS endpoint tests, and existing JS/Java queue regressions. Logs are `temp/test-logs/modularity-batch1-baseline.log` and `temp/test-logs/modularity-batch1-final.log`. No application source changed after the final passing run. No GPU, APK, device or live-deployment validation is claimed.
+
+Implementation and this verification record belong to the local commit titled **“Extract live naming, Fernet, and speech text helpers”**, based on `9b2624b`. Rebuild/restart the webserver on the host to deploy that commit.
+
+**Next entry point:** select the next bounded modularity batch. The shared stream decoder/test seams (MOD-010/016) remain the next browser foundation; finishing the TTS backend-result/HTTP boundary (MOD-011) is another independent slice. Larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements and were not reproduced or corrected in this structural batch. The six later whole-codebase passes remain unstarted.

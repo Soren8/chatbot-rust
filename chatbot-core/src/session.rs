@@ -28,10 +28,10 @@ struct CachedSetPayload {
 use crate::{
     config::{self, ProviderConfig},
     enc_key::EncryptionKey,
+    fernet_crypto::{self, FernetError},
     history::{
         HistoryError, HistoryService, PrepareCapture, SetId, SetSnapshot, SetVersion,
     },
-    persistence::{DataPersistence, EncryptionMode, PersistenceError},
     user_store::{UserStore, UserStoreError, DEFAULT_TIER},
 };
 
@@ -593,8 +593,8 @@ fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), ServiceRe
     };
     let json = serde_json::to_string(&payload)
         .map_err(|_| server_error("internal error while accessing chat history"))?;
-    let encrypted = DataPersistence::encrypt_bytes(json.as_bytes(), EncryptionMode::Fernet(key))
-        .map_err(|err| map_persistence_error("failed to seal session cache", &err))?;
+    let encrypted = fernet_crypto::encrypt_bytes(json.as_bytes(), key)
+        .map_err(|err| map_fernet_error("failed to seal session cache", &err))?;
     data.cipher_blob = Some(encrypted);
     data.memory.clear();
     data.system_prompt.clear();
@@ -616,8 +616,8 @@ fn unseal_session_data(
         }
         return Ok(());
     };
-    let decrypted = DataPersistence::decrypt_bytes(blob, EncryptionMode::Fernet(key))
-        .map_err(|err| map_persistence_error("failed to decrypt session cache", &err))?;
+    let decrypted = fernet_crypto::decrypt_bytes(blob, key)
+        .map_err(|err| map_fernet_error("failed to decrypt session cache", &err))?;
     let payload: CachedSetPayload = serde_json::from_slice(&decrypted)
         .map_err(|_| server_error("internal error while accessing chat history"))?;
     data.memory = payload.memory;
@@ -747,7 +747,7 @@ fn resolve_test_chunks(provider: &ProviderConfig) -> Option<Vec<String>> {
     provider.test_chunks.clone()
 }
 
-fn map_persistence_error(context: &str, err: &PersistenceError) -> ServiceResponse {
+fn map_fernet_error(context: &str, err: &FernetError) -> ServiceResponse {
     error!(?err, "{context}");
     server_error("internal error while accessing chat history")
 }

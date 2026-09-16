@@ -4,11 +4,8 @@
 //! mutating methods except through [`super::migrate`].
 
 use crate::config::app_config;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE};
-use base64::Engine;
-use fernet::Fernet;
-use once_cell::sync::Lazy;
-use regex::Regex;
+use crate::fernet_crypto::{self, FernetError};
+use crate::names::{self, DEFAULT_SET_NAME};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
@@ -17,13 +14,6 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-
-const DEFAULT_SET_NAME: &str = "default";
-
-static USERNAME_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").expect("username regex"));
-static SET_NAME_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[A-Za-z0-9 _-]{1,64}$").expect("set name regex"));
 
 fn current_timestamp() -> f64 {
     SystemTime::now()
@@ -50,6 +40,14 @@ pub enum PersistenceError {
     DecryptionFailed,
     #[error("utf8 error: {0}")]
     Utf8(#[from] std::str::Utf8Error),
+}
+
+fn map_fernet(err: FernetError) -> PersistenceError {
+    match err {
+        FernetError::InvalidEncryptionKey => PersistenceError::InvalidEncryptionKey,
+        FernetError::DecryptionFailed => PersistenceError::DecryptionFailed,
+        FernetError::Utf8(err) => PersistenceError::Utf8(err),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,45 +128,16 @@ impl LegacySetsStore {
     }
 
     pub fn normalise_username(username: &str) -> Result<String, PersistenceError> {
-        let trimmed = username.trim();
-        if trimmed.is_empty() || !USERNAME_RE.is_match(trimmed) {
-            return Err(PersistenceError::InvalidUsername);
-        }
-        Ok(trimmed.to_string())
+        names::normalise_username(username)
+            .map_err(|_| PersistenceError::InvalidUsername)
     }
 
     pub fn normalise_set_name(set_name: Option<&str>) -> Result<String, PersistenceError> {
-        LegacySetsStore::normalise_set_name_inner(set_name.unwrap_or(DEFAULT_SET_NAME), true)
+        names::normalise_set_name(set_name).map_err(|_| PersistenceError::InvalidSetName)
     }
 
     pub fn normalise_custom_set_name(set_name: &str) -> Result<String, PersistenceError> {
-        LegacySetsStore::normalise_set_name_inner(set_name, false)
-    }
-
-    fn normalise_set_name_inner(
-        set_name: &str,
-        allow_default: bool,
-    ) -> Result<String, PersistenceError> {
-        let trimmed = set_name.trim();
-        let candidate = if trimmed.is_empty() {
-            if allow_default {
-                DEFAULT_SET_NAME.to_string()
-            } else {
-                return Err(PersistenceError::InvalidSetName);
-            }
-        } else {
-            trimmed.to_string()
-        };
-
-        if (!allow_default && candidate == DEFAULT_SET_NAME)
-            || candidate == "."
-            || candidate == ".."
-            || !SET_NAME_RE.is_match(&candidate)
-        {
-            return Err(PersistenceError::InvalidSetName);
-        }
-
-        Ok(candidate)
+        names::normalise_custom_set_name(set_name).map_err(|_| PersistenceError::InvalidSetName)
     }
 
     fn ensure_user_dir(&self, username: &str) -> Result<PathBuf, PersistenceError> {
@@ -363,19 +332,6 @@ impl LegacySetsStore {
         Ok(dir.join(format!("{}{}", set_name, suffix)))
     }
 
-    fn build_fernet(key: &[u8]) -> Result<Fernet, PersistenceError> {
-        let key_str = std::str::from_utf8(key)?;
-        if let Some(fernet) = Fernet::new(key_str) {
-            return Ok(fernet);
-        }
-
-        let decoded = STANDARD
-            .decode(key_str)
-            .map_err(|_| PersistenceError::InvalidEncryptionKey)?;
-        let reencoded = URL_SAFE.encode(decoded);
-        Fernet::new(&reencoded).ok_or(PersistenceError::InvalidEncryptionKey)
-    }
-
     fn encrypt(
         &self,
         content: &str,
@@ -391,8 +347,7 @@ impl LegacySetsStore {
         match encryption {
             EncryptionMode::Plaintext => Ok(content.to_vec()),
             EncryptionMode::Fernet(key) => {
-                let fernet = LegacySetsStore::build_fernet(key)?;
-                Ok(fernet.encrypt(content).into_bytes())
+                fernet_crypto::encrypt_bytes(content, key).map_err(map_fernet)
             }
         }
     }
@@ -413,11 +368,7 @@ impl LegacySetsStore {
         match encryption {
             EncryptionMode::Plaintext => Ok(content.to_vec()),
             EncryptionMode::Fernet(key) => {
-                let fernet = LegacySetsStore::build_fernet(key)?;
-                let token = std::str::from_utf8(content)?;
-                fernet
-                    .decrypt(token)
-                    .map_err(|_| PersistenceError::DecryptionFailed)
+                fernet_crypto::decrypt_bytes(content, key).map_err(map_fernet)
             }
         }
     }

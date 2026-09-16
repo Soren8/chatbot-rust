@@ -9,7 +9,7 @@ use chatbot_core::{
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
+    api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
     map_serialization_err, map_session_err, HttpError,
 };
 
@@ -483,17 +483,11 @@ fn history_error_to_tuple(err: HistoryError) -> HttpError {
     crate::chat_utils::history_error_to_http(err)
 }
 
-fn map_name_err(err: chatbot_core::persistence::PersistenceError) -> HttpError {
+fn map_name_err(err: chatbot_core::history::SetNameError) -> HttpError {
     match err {
-        chatbot_core::persistence::PersistenceError::InvalidSetName => {
+        chatbot_core::history::SetNameError::Invalid => {
             api_error(StatusCode::BAD_REQUEST, "invalid set name")
         }
-        other => log_and_api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid request",
-            "memory::normalise_set_name",
-            other,
-        ),
     }
 }
 

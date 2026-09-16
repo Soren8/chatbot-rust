@@ -3,9 +3,11 @@ pub mod chat_images;
 pub mod config;
 pub mod logging;
 pub mod enc_key;
+mod fernet_crypto;
 pub mod history;
 /// Permanent pre-redb `sets.json` migration surface — do not remove casually.
 pub mod legacy_sets_json;
+pub mod names;
 pub mod persistence;
 pub mod rate_limit;
 pub mod remember_store;

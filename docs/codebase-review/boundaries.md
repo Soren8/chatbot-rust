@@ -63,3 +63,9 @@ Cargo owns core/server tests; the server integration tree additionally contains 
 ### Boundaries worth retaining
 
 Keep the existing acyclic Cargo dependency direction, private redb tables/crypto, typed history operations, shared browser product UI, first-party asset delivery, pre-signed TTS transport, independent GPU process, and small native resource/codec/queue units. Their shortcomings are at interfaces and ownership points; another service layer or additional crates are not default remedies.
+
+## Session 003 — remediated helper boundaries
+
+Username validation (`user_store`) and set-name validation (`history` facade → HTTP/session callers) now delegate to `chatbot-core::names`. The legacy store also delegates to that domain module, mapping failures to its existing migration errors. Session mirror sealing and history Fernet payload decoding call private `fernet_crypto` directly; legacy store Fernet wrappers call the same crypto module. Only real history migration and compatibility surfaces retain the legacy-storage dependency.
+
+POST `/tts` calls private `tts::text::sanitize_text` before token insertion. That module owns markup/reasoning/URL/citation removal and currency/abbreviation/number normalization; it has no config, token, network or HTTP dependency. The parent still owns token replay/cancellation, synthesis and response construction, and `tts_opus` retains codec ownership. Browser sentence normalization remains an earlier client stage. These two helper-boundary changes have baseline and post-refactor full-suite evidence in the session-003 checkpoint.

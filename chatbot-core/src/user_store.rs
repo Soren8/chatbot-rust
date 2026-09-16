@@ -11,10 +11,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bcrypt::verify;
 use hmac::{Hmac, KeyInit, Mac};
-use once_cell::sync::Lazy;
 use pbkdf2::pbkdf2_hmac;
 use rand::Rng;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
@@ -33,20 +31,8 @@ struct KeyVerifierRecord {
     verifier: Vec<u8>,
 }
 
-pub static USERNAME_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,64}$").unwrap());
-
 pub fn normalise_username(input: &str) -> Result<String, String> {
-    let candidate = input.trim();
-    if candidate.is_empty() {
-        return Err("Username and password required.".to_string());
-    }
-
-    if !USERNAME_REGEX.is_match(candidate) {
-        return Err("Username may only include letters, numbers, '_' or '-'".to_string());
-    }
-
-    Ok(candidate.to_string())
+    crate::names::normalise_username(input).map_err(|err| err.to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize)]

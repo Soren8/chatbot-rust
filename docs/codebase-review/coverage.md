@@ -25,12 +25,14 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | — | — | — | — | — | — |
 | C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | — | — | — | — | — | — |
 | C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | — | — | — | — | — | — |
+| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | — | — | — | — | — | — |
 | T01 Core integration tests | `chatbot-core/tests/*` | R | — | — | — | — | — | — |
 | S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | — | — | — | — | — | — |
 | S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | — | — | — | — | — | — |
 | S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | R | — | — | — | — | — | — |
 | S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | — | — | — | — | — | — |
 | S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | — | — | — | — | — | — |
+| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | — | — | — | — | — | — |
 | S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | — | — | — | — | — | — |
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | — | — | — | — | — | — |
 | T03 Shared test support | `chatbot-test-support/src/*` | R | — | — | — | — | — | — |
@@ -128,3 +130,11 @@ Relevant seams: duplicated login/bootstrap/cookie helpers and raw users.json see
 The first architectural/modularity pass is complete for handwritten application code and test boundaries, with the seven `B` units explicitly limited to integration/packaging/document interfaces. No dependency binary, protected runtime config, live deployment, GPU execution or on-device behavior is certified. The six later passes remain open and will inspect their own criteria independently. No structural remediation has been implemented yet.
 
 Final inventory check: all 293 tracked paths (288 application-baseline paths plus five review records) map to 35 units: 28 reviewed and seven boundary-only. The MOD-001–017 definitions are unique and consecutive; relative review-document links resolve. Only the five review documents are staged, and application/test/configuration trees match the application baseline. Diff whitespace checks pass. No application test execution is implied by these checks.
+
+## Session 003 remediation coverage
+
+The table now includes C08 and S08 for the extracted modules; the new `chatbot-core/tests/live_helper_contracts.rs` belongs to T01. The inventory grows to 297 paths in 37 units (30 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for R01, C02–C05, T01, S03 and S05 was stale during implementation and was revalidated for the changed naming/Fernet/TTS boundaries through primary source/diff review and the passing full suite. The primary read both new core modules and their tests; verified the exact TTS regex/helper/test relocation against `9b2624b`; reviewed legacy compatibility/error adapters, session/history callers and memory/reset HTTP mappings; and checked that live server/session paths no longer import legacy persistence helpers. C08/S08 are reviewed at the remediation commit recorded in README. Other units retain their baseline review scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
+
+Runtime evidence is now available for this batch: baseline job `20260916T161549-8201e4a67090` and final job `20260916T163326-652a9002d614` passed the full executor suite. This supersedes the earlier no-remediation/no-test-execution statement only for session 003, not the original static review.

@@ -10,7 +10,7 @@ use chatbot_core::{
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
+    api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
     map_session_err, HttpError,
 };
 
@@ -67,15 +67,9 @@ pub async fn handle_reset_chat(
 
     let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(|err| {
         match err {
-            chatbot_core::persistence::PersistenceError::InvalidSetName => {
+            chatbot_core::history::SetNameError::Invalid => {
                 api_error(StatusCode::BAD_REQUEST, "invalid set name")
             }
-            other => log_and_api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "invalid set name",
-                "reset_chat::post::normalise_set_name",
-                other,
-            ),
         }
     })?;
 

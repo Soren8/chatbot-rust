@@ -4,6 +4,8 @@ Review revision: `7dc8a23` (application source unchanged from `4cda303`). Primar
 
 **Status:** first modularity pass complete for handwritten application code and test boundaries, subject to the explicitly scoped external/generated/protected materials in [coverage.md](coverage.md). No runtime tests were executed during the static review.
 
+**Remediation update (session 003):** MOD-004 is verified; MOD-011 has a verified speech-text extraction and remains in progress overall. Other findings retain their recorded dispositions. See the [current checkpoint](README.md#session-003--first-remediation-batch-2026-09-16) for the implementation commit title and passing baseline/final executor jobs. Original source evidence below refers to the review revision, not the refactored line numbers.
+
 ## Overall assessment
 
 The existing crate/process split is broadly sensible. The largest problems are inside components and at lifecycle boundaries, rather than a need for more services or crates. Preserve the private redb implementation, pure history operations, shared browser UI, codec helpers, and small Android policy helpers. Extract cohesive owners from the orchestration code instead of distributing its mutable globals across more files.
@@ -29,6 +31,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 **Correction boundary:** move shared name/identity validation and reusable Fernet operations to narrow current-domain/crypto modules, with legacy readers depending on them. Preserve permanent migration support and old-format decoding. Do not remove the migration module. The unattached `legacy_sets_json/migrate.rs` file is a separate simplicity lead, not justification for deleting the real orchestrator.
 
 **Verification:** identical accepted/rejected names and HTTP responses; Fernet compatibility with both supported base64 forms; legacy import/idempotency and current session sealing. Coordinate type changes with MOD-001.
+
+**Remediation — verified:** `chatbot-core/src/names.rs` owns the shared naming rules and typed `UsernameError`/`SetNameError`; `user_store` preserves its string-error API, and the history facade exports domain validation. `fernet_crypto.rs` is a private core module used directly by session sealing and history crypto. Legacy store wrappers delegate to these helpers and map errors back to their existing variants. Server memory/reset handlers consume `SetNameError` and retain HTTP 400 `invalid set name`. Sixteen pre-extraction characterization tests and seven direct helper tests pass with the full migration/session/HTTP suite. Both base64 alphabets, an independent fixed Fernet token, wrong/malformed keys and plaintext compatibility are covered. The dead unattached migration file remains outside this correction.
 
 ## MOD-005 — History facade exposes bypasses and ambiguous snapshot representations
 
@@ -99,6 +103,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 **Correction boundary:** keep the public POST-token/GET-audio API; separate token-session state, pure speech-text transformation, backend PCM results, codec conversion, and final HTTP rendering. Assign the authoritative normalization stages explicitly. Do not remove the browser stage or add another native pipeline without examining incremental sentence requirements.
 
 **Verification:** replay budget, queue capacity, canceled/in-flight generation, empty sanitized text, backend failures, codec/rate contracts, and sentence boundaries. Preserve access/CSRF policy and captured wire bytes for replays.
+
+**Remediation — in progress:** the pure transformation pipeline and its 28 existing tests now live in private `chatbot-server/src/tts/text.rs`; only `sanitize_text` is visible to the parent. Transformation logic/order and test assertions were preserved by direct source comparison, with the final full suite passing. HTTP/token/backend/codec code stayed in `tts.rs`; separating backend audio results from HTTP responses and assigning token-session lifetime remain open. Normalization debug calls now use the child module's tracing target, `chatbot_server::tts::text`.
 
 ## MOD-012 — Android voice lifecycle is coordinated through plugin cross-calls and duplicate event paths
 
