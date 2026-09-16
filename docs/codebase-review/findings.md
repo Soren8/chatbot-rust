@@ -2,6 +2,8 @@
 
 Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. No finding below is approved for implementation, fixed, or dynamically reproduced. Structural findings are based on inspected source; cross-pass leads explicitly retain uncertainty.
 
+The continued modularity review is in [modularity.md](modularity.md): MOD-003 through MOD-017, extensions to MOD-001/MOD-002, and separately labeled correctness/security/testing/documentation follow-ups. Review coverage and execution limits are in [coverage.md](coverage.md). IDs are global across these records.
+
 ## MOD-001 — Core session APIs own HTTP serialization
 
 **Disposition:** confirmed. **Priority:** P2. **Confidence:** high for boundary coupling. **Units:** C02, R01, S01/S03 consumers.
@@ -15,6 +17,8 @@ Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. N
 **Verification needed:** behavior coverage for invalid/missing key, invalid request, denied model, concurrent generation, history conflicts, and server failures, including chat's saved-error-turn behavior. Inspect existing tests first and add only missing behavioral cases; test typed core outcomes and HTTP mappings at their appropriate layers.
 
 **Dependencies/open questions:** complete C02 and every `ServiceResponse` consumer, especially `chat_utils`, memory/sets/preferences/reset and regeneration. Coordinate with MOD-002 so structural moves and type changes remain separately reviewable. **Fix/verification:** none yet.
+
+**Session 002 update:** C02 and those production consumers have now been read. `chat_utils::service_error_message` deserializes the core response body back into a message, confirming the unnecessary serialization boundary. Existing wire differences are real contracts to characterize before consolidation: session history `NotFound` maps to 400, while the general history HTTP mapper uses 404.
 
 ## MOD-002 — Session module mixes identity lifecycle with chat application orchestration
 
@@ -30,6 +34,8 @@ Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. N
 
 **Dependencies/open questions:** unreviewed regeneration and mutation APIs, stream guards, expiry tests, and history design. MOD-001 can be related without becoming a single large rewrite. **Fix/verification:** none yet.
 
+**Session 002 update:** production regeneration/mutation/guard paths and both history designs have now been read; MOD-006 records the lifecycle issue more precisely. The pure prompt packer in `chatbot-core/src/chat.rs` also depends on the large session-owned `ChatContext`, forcing unrelated identity/provider/capture fields into its fixtures. A small prompt-input value is a useful extraction seam. Expiry behavior and full regression coverage still need characterization before implementation.
+
 ## TEST-001 — Fixture reset and global service lifetime may disagree
 
 **Disposition:** needs investigation. **Priority:** provisional P2. **Confidence:** high for observed lifetime mismatch, unproven test failure. **Units:** T03, C01/C02/C04. Recorded during modularity; not testing-pass completion.
@@ -40,6 +46,8 @@ Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. N
 
 **Next evidence/possible correction:** audit fixture callers, test-process boundaries, environment locks, and reset expectations. If a real isolation problem exists, reproduce it with differing workspace roots/settings before selecting scoped injection, owned services, or explicit process isolation. Do not recommend resetting live global stores indiscriminately. **Fix/verification:** none yet.
 
+**Session 002 update:** Cargo integration files provide process boundaries between binaries; many files also use local mutexes within their process. That limits the claim: globals are not automatically shared across every integration file. However, repeated `TestWorkspace` creation within a binary still resets only some state, and the public fixture itself does not enforce serialization. `client_logs.rs` creates workspaces in two async tests without a local fixture lock. Runtime nondeterminism has not been tested, so this remains an isolation risk rather than a claim that a particular suite is flaky.
+
 ## SEC-001 — Cookie transport classification requires a proxy trust review
 
 **Disposition:** needs investigation. **Priority:** unassigned pending trust-boundary evidence. **Confidence:** source observation only. **Units:** R01, O02, N04. Recorded during modularity; not security-pass completion.
@@ -49,6 +57,8 @@ Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. N
 **Question/consequence:** validate these assumptions against actual ingress/proxy configuration and supported Android/LAN behavior. Header handling is security-sensitive, but this read alone proves neither an exploitable bypass nor an incorrect product requirement.
 
 **Next evidence/possible correction:** inspect deployment ingress trust, cookie issuance, native loading requirements, and behavioral tests for direct HTTP, HTTPS termination, contradictory/untrusted forwarded headers, and multiple Set-Cookie values. Establish the intended trust model before proposing a correction. **Fix/verification:** none yet.
+
+**Session 002 update:** inspected Compose/Helm use host networking by default; the actual TLS proxy configuration is external. `tests/login.rs:430–694` does exercise real local HTTP, HTTPS-forwarded-header cookie behavior, and stale-CSRF recovery. This confirms intended transport compatibility, not validation of the external proxy trust boundary.
 
 ## DOC-001 — Privacy terminology may overstate the implemented trust boundary
 

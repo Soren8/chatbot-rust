@@ -29,3 +29,37 @@ Shared `TestWorkspace` changes process cwd/environment and resets config/rate li
 Password signup/login, remembered login and account switching; authenticated and guest chat including provider errors/cancellation; history load/edit/delete/fork and conflict recovery; browser/native STT and TTS including barge-in/background lifecycle; Android Auto; cleanup and resource limits; configuration/build/deployment; test execution and fixture isolation.
 
 The source inventory also includes browser JavaScript, native Java, the Python GPU voice service, deployment/CI, and vendored runtime artifacts. Their architectural relationships are currently documented intent or inventory observations until their implementation is read.
+
+## Session 002 — expanded implementation map
+
+The earlier partial map above is retained as the session-001 record. Production paths described below have now been read through their implementations at `7dc8a23`; individual test assertions and live platform behavior are not thereby certified.
+
+### Generation and durable data
+
+Browser send/edit → HTTP chat/regenerate handler → cookie/CSRF/key and provider selection → core session prepare → history load and immutable capture → pure prompt packing → concrete provider/search stream → server completion guard → core capture-based commit → private history ops/store/crypto → wire error text and client rendering.
+
+The generation lock is shared by core prepare/finalize and an ID-based server guard. HTTP-session identity and chat working state have different stores; authenticated chat identity is username-based rather than one record per browser cookie. Durable version/capture protects set writes independently of that lock. The default finalizers also retain a name-based, no-capture fallback used by saved-error-turn handling. Refactoring must preserve or explicitly correct each of those paths, not assume the happy-path capture applies everywhere.
+
+Authenticated load/edit/delete/reset/prompt/memory routes use `HistoryService`, then separately synchronize session mirrors. Guest mutation routes use RAM. Private store modules enforce redb ownership/CAS; service methods enforce additional naming/content policy. Chunk storage uses stable pair/image IDs, but caller-facing snapshots can carry either references or materialized images. `chat_images` currently spans provider packing, UI projection and durable-image normalization.
+
+### Browser and native voice
+
+`chat.html` declares script order: Trusted Types/vendor globals, app-data JSON, VAD dependencies, native bridge, account cache, audio helpers, then chat application. No JavaScript module loader is present. `native-bridge.js` provides a plugin facade for login/key operations; `chat.js` separately implements microphone/playback wrappers through direct Capacitor calls. `native-audio.js` is a reusable PCM/VAD-math/codec helper surface, but logs back through globals installed by `chat.js`.
+
+Both browser and handheld native clients use the same `/stt`, `/chat` or `/regenerate`, and POST `/tts` → GET `/tts_stream/{token}` API. Native PCM capture feeds a JS VAD and STT encoding path; browser capture uses MediaRecorder or Silero. These different capture mechanisms have documented platform reasons. Playback policy is split between JS sentence discovery/token scheduling, native ordered downloads, and native AudioTrack state; browser playback uses HTML Audio and blobs. The GPU service's streaming endpoint is not used by the inspected Rust Kokoro adapter: Rust requests full PCM, fades/encodes it, and caches complete wire clips for retries.
+
+Android microphone/playback plugins call each other's static instance helpers. A foreground service invokes static native hooks to keep MainActivity's WebView running. Phone-call/notification lifecycle also crosses back into JS via both events and evaluated function calls. Small resource-policy classes and the pure-Java download/decoder helpers are useful existing seams. Android Auto instead contains its own capture/network/playback loop in `VoiceScreen`, without the handheld auth/CSRF plumbing.
+
+### Authentication and credential lifecycle
+
+Password login derives a key in web crypto/native plugin or on the server, validates password and verifier, rotates the HTTP session, then issues session/remember/key cookies. Cached native login unwraps stored credentials and injects cookies before `/login/remember`; browser JS maintains an account-name list. Home auto-restore and explicit remember-login each compose remember rotation, session creation and key-cookie promotion. Legacy key-returning web/native interfaces still coexist with the newer cookie-only request path (MOD-014/SEC-003).
+
+### Packaging and test boundaries
+
+The runtime Rust image copies browser assets and embeds templates. The GPU voice process is a separately built FastAPI app with model globals and raw-YAML settings. Native APKs pull web content but use separately specified origin resources for Auto/telemetry. Compose, Helm and native build configuration therefore participate in the application's module boundaries; they are not interchangeable launch wrappers.
+
+Cargo owns core/server tests; the server integration tree additionally contains JS/Android source-policy checks and Node/Java behavioral entry points. Shared test support owns temporary cwd/env roots. HTTP voice stubs use local listeners and their own worker runtime. Android Gradle owns JUnit/instrumentation tests; the Rust wrapper for `TtsDownloadQueueTest.java` is a separate executable test path, not execution of the full Gradle or device suite. The documented off-device Opus comparison is another external executor operation. These scopes must stay distinct when reporting verification.
+
+### Boundaries worth retaining
+
+Keep the existing acyclic Cargo dependency direction, private redb tables/crypto, typed history operations, shared browser product UI, first-party asset delivery, pre-signed TTS transport, independent GPU process, and small native resource/codec/queue units. Their shortcomings are at interfaces and ownership points; another service layer or additional crates are not default remedies.

@@ -13,6 +13,7 @@ Complete a pass, consolidate related findings, and agree on a bounded remediatio
 - [Coverage](coverage.md) assigns tracked paths to review units and records independent progress for every pass.
 - [Findings](findings.md) records evidence, uncertainty, disposition, correction proposals, and verification requirements.
 - [Boundary map](boundaries.md) records observed dependencies and flow-tracing progress. It describes implementation evidence separately from intended architecture.
+- [Modularity report](modularity.md) contains the completed first architectural pass, MOD-003–017, cross-pass leads, and remediation ordering.
 
 The baseline is commit `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. Line references refer to that revision unless explicitly superseded. Review records are version-controlled; temporary notes are not required to resume. Review findings are observations, not new application guarantees or approved implementation designs.
 
@@ -42,7 +43,7 @@ Compare claims against current code, configuration definitions, tests, and build
 
 At session start, inspect the working tree and changes since the recorded revision. Assign new paths to units and mark affected previously reviewed cells stale, including dependent flows where appropriate. Do not silently treat coverage at an old revision as current. At session end, record precise read boundaries, unresolved questions, decisions, verification, and the next entry point. Make a local commit for the checkpoint; do not push.
 
-## Current checkpoint — session 001, 2026-09-16
+## Initial checkpoint — session 001, 2026-09-16
 
 Established the seven-pass inventory and reviewed the Rust workspace dependency direction, server startup/router composition, middleware definitions, and HTTP error adapter. Supporting reads followed the home handler, test-workspace construction, and selected core session/config/history boundaries. No full application flow has yet been traced end to end.
 
@@ -51,3 +52,15 @@ The composition unit's modularity review is complete within its stated scope. Co
 Verification: checked inventory assignment against tracked paths, document references, baseline evidence, and `git diff --check`. The application suite was not run for this documentation-only checkpoint. No current application-test result is claimed.
 
 **Next entry point:** continue modularity unit C02 in `chatbot-core/src/session.rs`: read lines 740–759 and 1058–1796, then trace consumers in `chatbot-server/src/chat_utils.rs`, `chat.rs` (remaining lines 231–452), `regenerate.rs`, and relevant state-mutating routes. Consult `docs/design-history-store.md` and `docs/design-history-chunks.md` before evaluating durable-state ownership. Review the existing behavioral tests before proposing any split. Resolve the scope of MOD-001/MOD-002 without broadening into a blanket dependency-injection rewrite.
+
+## Current checkpoint — session 002, 2026-09-16
+
+**The first modularity pass is complete at the application-architecture level.** Direct review covered all handwritten Rust production implementation, all first-party browser JS/templates/styles, all 20 Android production Java files, the Python voice service, all server integration-test files and executable fixtures, all Android tests, shared test support, and deployment/CI/build boundaries. Inline Rust tests were examined selectively for dependencies/setup; their complete assertion audit belongs to pass six. Generated/vendor/protected materials have explicit boundary-only dispositions. See coverage for exact limits; this is not a claim of 100% test coverage or an exhaustive security audit.
+
+Seventeen structural findings are recorded (MOD-001–017). The central recommendation is clearer ownership inside the existing architecture: owned application services; identity versus chat orchestration; typed errors and generation leases; provider dispatch; logical history versus client projections; browser conversation state versus DOM; voice session/resource coordination. Existing crate/process boundaries, private redb internals, codec/queue helpers and shared browser product behavior should be retained.
+
+The review also found cross-pass issues that deserve early reproduction: native plugin key export (SEC-003), log authorization using unverified rate-limit identity (SEC-002), concurrent user-store lost updates (COR-001), and contradictory native/JS TTS exhaustion contracts (COR-002). These are separately tracked so behavior fixes do not disappear into structural refactors. No production or test files were modified, and no workers were used for the review.
+
+Verification for this documentation-only review consists of tracked-path assignment, finding-ID/link/reference checks, source-boundary checks, and diff/whitespace review. The application suite, GPU service, APK, browser automation and on-device tests were not run. Previously green application commits are not evidence that these new observations have been reproduced.
+
+**Next working session:** inspect changes since `7dc8a23`, read the report's remediation ordering, and select a bounded first remediation batch. Prioritize regression-backed verification of SEC-003/SEC-002/COR-001 over cosmetic moves. For structural work, begin with stable behavioral test seams and shared stream decoding before splitting browser/voice ownership. Worker handoffs must include the finding, reviewed caller chain, invariant list and exclusive files; workers implement, the primary reviewer verifies. If choosing to postpone remediation, the next whole-codebase review is the simplicity pass, with fresh independent coverage.
