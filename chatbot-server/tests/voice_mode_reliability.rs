@@ -1151,10 +1151,10 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
             && function_contains(chat_js, "playNativeVoiceModeTts", "responseToken"),
         "native TTS must cancel a token even if abort prevents JSON body parsing"
     );
-    let native_tts_start = java_method_body(tts, "private void playUrlToTrackOnce(")
+    let native_tts_start = java_method_body(tts, "private AudioClip playUrlToTrackOnce(")
         .expect("NativeVoiceTts.playUrlToTrackOnce must be declared");
     let active_connection = native_tts_start
-        .find("activeConnection = conn")
+        .find("activeConnections.add(conn)")
         .expect("native TTS must publish its active connection");
     let generation_check = native_tts_start[active_connection..]
         .find("if (!isGenerationActive(generation))")
@@ -1178,10 +1178,8 @@ fn native_voice_tts_requeues_sentences_on_transient_failures() {
     let chat_js = include_str!("../../static/chat.js");
     let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
         .expect("playNativeVoiceModeTts must be declared");
-    let pump_start = native_tts
-        .find("function pump(")
-        .expect("native TTS pump must be declared");
-    let pump = &native_tts[pump_start..];
+    let pump = function_body(native_tts, "requestToken")
+        .expect("native TTS must retry each token without blocking other token requests");
 
     assert!(
         pump.contains("isRetryableVoiceStatus"),
@@ -1198,8 +1196,8 @@ fn native_voice_tts_requeues_sentences_on_transient_failures() {
         "sentence requeue must be bounded (MAX_TTS_SENTENCE_RETRIES={retries}) so a dead link cannot churn forever"
     );
     assert!(
-        pump.contains("retryScheduled"),
-        "a requeued sentence must wait out its backoff; the trailing pump() must not re-post it immediately"
+        pump.contains("await sleepMs"),
+        "a retried sentence must wait out its backoff"
     );
     assert!(
         pump.contains("Session expired"),
@@ -1332,7 +1330,7 @@ fn native_tts_clip_retries_wait_out_the_blip() {
     let tts = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
     );
-    let body = java_method_body(tts, "private void playUrlToTrack(String urlStr")
+    let body = java_method_body(tts, "private AudioClip playUrlToTrack(String urlStr")
         .expect("playUrlToTrack must be declared");
     assert!(
         body.contains("CLIP_RETRY_BACKOFF_MS"),
@@ -1578,29 +1576,28 @@ fn native_voice_tts_queues_audio_ahead_without_skipping_sentences() {
     );
 
     assert!(
-        tts.contains("audioQueue")
-            && tts.contains("AudioClip")
-            && tts.contains("downloaderThread"),
-        "native TTS must queue decoded audio clips ahead of playback using a dedicated downloader"
+        tts.contains("TtsDownloadQueue<AudioClip>")
+            && tts.contains("DOWNLOAD_CONCURRENCY")
+            && tts.contains("MAX_QUEUED_CLIPS"),
+        "native TTS must bound parallel downloads and buffered clips ahead of playback"
     );
     assert!(
         !tts.contains("STREAM_ATTEMPTS")
             && !tts.contains("attempt < STREAM_ATTEMPTS"),
         "clip fetching must not give up after a fixed 3-attempt cap and drop the sentence; it must retry while the session is active"
     );
-    let worker = java_method_body(tts, "private void workerLoop(long generation)")
+    let worker = java_method_body(tts, "private void workerLoop(long generation,")
         .expect("workerLoop must be declared");
     assert!(
-        worker.contains("audioQueue.poll")
-            && worker.contains("writePcmToTrack"),
-        "workerLoop must play from the decoded audio queue, not stream directly from network URLs"
+        worker.contains("queue.poll") && worker.contains("pending.await()")
+            && worker.contains("writePcmToTrack") && worker.contains("queue.complete(pending)"),
+        "workerLoop must consume complete clips in queue order and release playback capacity"
     );
-    let downloader = java_method_body(tts, "private void downloaderLoop(long generation)")
-        .expect("downloaderLoop must be declared");
+    let enqueue = java_method_body(tts, "public void enqueue(PluginCall call)")
+        .expect("enqueue must be declared");
     assert!(
-        downloader.contains("urlQueue.poll")
-            && downloader.contains("playUrlToTrack"),
-        "downloaderLoop must fetch URLs from urlQueue into the audio queue"
+        enqueue.contains("queue.offer") && enqueue.contains("playUrlToTrack"),
+        "enqueue must schedule fetching through the bounded ordered queue"
     );
 }
 
@@ -1661,8 +1658,9 @@ fn manual_tts_play_in_voice_mode_reliably_coexists_on_android_and_desktop() {
     let stop_internal = java_method_body(plugin, "private void stopPlaybackInternal(")
         .expect("stopPlaybackInternal must be declared");
     assert!(
-        stop_internal.contains("t.interrupt()") && stop_internal.contains("dt.interrupt()"),
-        "stopPlaybackInternal must interrupt worker and downloader threads so stop is prompt"
+        stop_internal.contains("t.interrupt()") && stop_internal.contains("queue.close()")
+            && stop_internal.contains("connection.disconnect()"),
+        "stop must interrupt playback, close the download scheduler, and disconnect every active transfer"
     );
 
     // 2. Chat.js playNativeVoiceModeTts filters stale ended events and resets pre-click VAD state
@@ -1875,7 +1873,7 @@ fn native_tts_downloader_bounds_clip_retries_to_avoid_head_of_line_stalls() {
     let tts_plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
     );
-    let retry_body = java_method_body(tts_plugin, "private void playUrlToTrack(String urlStr")
+    let retry_body = java_method_body(tts_plugin, "private AudioClip playUrlToTrack(String urlStr")
         .expect("playUrlToTrack must be declared");
     assert!(
         retry_body.contains("MAX_CLIP_ATTEMPTS") && retry_body.contains("attempt <"),
@@ -1916,17 +1914,40 @@ fn native_tts_prefetches_remaining_tokens_when_text_is_complete() {
     let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
         .expect("playNativeVoiceModeTts must be declared");
     assert!(
-        native_tts.contains("prefetchRemainingTokens") && native_tts.contains("batchAttempted"),
-        "completed text must prefetch remaining sentence tokens up front so a spotty link has the queue waiting"
+        native_tts.contains("inFlightSentences < lookahead") && native_tts.contains("queueSentence(text)"),
+        "completed text must fill available look-ahead slots without issuing an unbounded tail of tokens"
     );
     assert!(
-        native_tts.contains("Promise.all"),
-        "token prefetch must overlap requests instead of one POST per bridge round-trip"
+        native_tts.contains("const prepared = requestToken(text)")
+            && native_tts.contains("enqueueTail = enqueueTail.then"),
+        "token requests must start independently of ordered enqueueing"
     );
     assert!(
-        native_tts.contains("enqueueOrdered") || native_tts.contains("in sentence order"),
+        native_tts.contains("in sentence order"),
         "prefetched tokens must still enqueue in sentence order to keep server synthesis and native download ordered"
     );
+}
+
+#[test]
+fn native_tts_refills_a_bounded_window_as_clips_are_consumed() {
+    let js = include_str!("../../static/chat.js");
+    let native = function_body(js, "playNativeVoiceModeTts").unwrap();
+    assert!(native.contains("clipConsumed"), "native playback must release look-ahead slots");
+    assert!(native.contains("MAX_NATIVE_TTS_LOOKAHEAD"), "token issuance must be bounded");
+    assert!(!native.contains("Promise.all(starters).then"),
+        "a slow tail token must not block enqueueing an already-ready first sentence");
+}
+
+#[test]
+fn native_tts_body_stalls_timeout_sooner_than_synthesis() {
+    let tts = include_str!("../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java");
+    let fetch = java_method_body(tts, "private AudioClip playUrlToTrackOnce(")
+        .or_else(|| java_method_body(tts, "private void playUrlToTrackOnce("))
+        .unwrap();
+    let headers = fetch.find("conn.getResponseCode()").unwrap();
+    let body_timeout = fetch.find("conn.setReadTimeout(CLIP_BODY_STALL_MS)")
+        .expect("after synthesis, a stalled audio body must trigger a bounded retry");
+    assert!(body_timeout > headers, "synthesis must retain its longer header timeout");
 }
 
 /// Desktop TTS blob-404ed forever: playOneTtsUtterance deleted the

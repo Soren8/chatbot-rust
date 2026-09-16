@@ -1342,6 +1342,50 @@ fn slow_kokoro_voice_router(pcm: Arc<Vec<u8>>) -> Router {
 }
 
 #[tokio::test]
+async fn tts_replays_all_four_native_download_attempts_without_resynthesis() {
+    let _lock = tts_test_lock();
+    let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
+    let (addr, shutdown, handle) = spawn_voice_stub(kokoro_voice_router(
+        captured.clone(), Arc::new(vec![0_u8; 4800]),
+    )).await;
+    let _workspace = begin_kokoro_workspace(&addr.ip().to_string(), addr.port());
+    let app = build_router(resolve_static_root());
+    let (cookie, csrf) = guest_session(&app).await;
+    let response = app.clone().oneshot(
+        Request::builder().method(Method::POST).uri("/tts")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("X-CSRF-Token", csrf).header(header::COOKIE, cookie)
+            .body(Body::from(r#"{"text":"Keep this sentence through three interrupted transfers."}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = response.headers()["X-TTS-Token"].to_str().unwrap().to_owned();
+    let mut first_audio = None;
+
+    for attempt in 1..=4 {
+        let response = app.clone().oneshot(
+            Request::builder().uri(format!("/tts_stream/{token}"))
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "native GET attempt {attempt}");
+        let audio = axum::body::to_bytes(response.into_body(), 512 * 1024).await.unwrap();
+        if let Some(first) = &first_audio {
+            assert_eq!(&audio, first, "retry {attempt} must use the identical cached clip");
+        } else {
+            first_audio = Some(audio);
+        }
+    }
+    let exhausted = app.oneshot(
+        Request::builder().uri(format!("/tts_stream/{token}"))
+            .body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(exhausted.status(), StatusCode::NOT_FOUND, "replay remains bounded");
+    assert_eq!(captured.lock().await.len(), 1, "retries must not resynthesize");
+    shutdown.send(()).ok();
+    handle.join().unwrap();
+}
+
+#[tokio::test]
 async fn kokoro_tts_cancelled_stream_resets_generating_state() {
     common::init_tracing();
     let _lock = tts_test_lock();
@@ -1472,4 +1516,3 @@ async fn kokoro_tts_punctuation_only_chunk_streams_silence() {
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");
 }
-

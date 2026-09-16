@@ -12,6 +12,8 @@ import android.util.Log;
 import android.webkit.CookieManager;
 
 import com.chatbot.app.audio.OggOpusStreamDecoder;
+import com.chatbot.app.audio.TtsDownloadQueue;
+import com.chatbot.app.audio.TtsBodyInputStream;
 import com.chatbot.app.audio.VoiceAudioRoute;
 import com.chatbot.app.util.ClientLogReporter;
 import com.getcapacitor.JSObject;
@@ -28,8 +30,9 @@ import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -40,7 +43,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * still works because it is USAGE_MEDIA). Capture stays VOICE_COMMUNICATION.
  * Routing is held for the whole voice-mode session by {@code NativeMic.enterVoiceRoute};
  * this plugin does not change {@link android.media.AudioManager} mode or the communication device.
- * Each {@code /tts_stream} URL is parsed incrementally and PCM is written as it arrives.
+ * Two downloads overlap synthesis and transfer; complete clips play in sentence order.
  */
 @CapacitorPlugin(name = "NativeVoiceTts")
 public class NativeVoiceTtsPlugin extends Plugin {
@@ -54,27 +57,21 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private static final int CLIP_RETRY_BACKOFF_MS = 700;
     /** Bound clip GET attempts (initial + retries) so one bad sentence skips instead of head-blocking the queue. Parity with JS MAX_TTS_SENTENCE_RETRIES. */
     private static final int MAX_CLIP_ATTEMPTS = 4;
+    private static final int MAX_QUEUED_CLIPS = 4;
+    private static final int DOWNLOAD_CONCURRENCY = 2;
+    private static final int CLIP_BODY_STALL_MS = 15000;
 
     private static final class AudioClip {
         final int sampleRate;
         final byte[] pcm;
-        final boolean isEndOfQueue;
 
         AudioClip(int sampleRate, byte[] pcm) {
             this.sampleRate = sampleRate;
             this.pcm = pcm;
-            this.isEndOfQueue = false;
-        }
-
-        AudioClip(boolean isEndOfQueue) {
-            this.sampleRate = DEFAULT_SAMPLE_RATE;
-            this.pcm = new byte[0];
-            this.isEndOfQueue = isEndOfQueue;
         }
     }
 
-    private final BlockingQueue<String> urlQueue = new LinkedBlockingQueue<>();
-    private final BlockingQueue<AudioClip> audioQueue = new LinkedBlockingQueue<>();
+    private volatile TtsDownloadQueue<AudioClip> audioQueue;
     private final AtomicBoolean sessionActive = new AtomicBoolean(false);
     private final AtomicBoolean endOfQueueMarked = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -84,9 +81,8 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private final AtomicLong playbackGeneration = new AtomicLong(0);
 
     private volatile Thread workerThread;
-    private volatile Thread downloaderThread;
     private volatile AudioTrack audioTrack;
-    private volatile HttpURLConnection activeConnection;
+    private final Set<HttpURLConnection> activeConnections = new HashSet<>();
     private final Object connectionLock = new Object();
     private volatile int trackSampleRate = DEFAULT_SAMPLE_RATE;
     private static volatile NativeVoiceTtsPlugin instance;
@@ -113,8 +109,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
     @PluginMethod
     public void beginSession(PluginCall call) {
         stopPlaybackInternal(false);
-        urlQueue.clear();
-        audioQueue.clear();
         endOfQueueMarked.set(false);
         stopRequested.set(false);
         playbackStartedNotified.set(false);
@@ -124,6 +118,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
         startWorker(gen);
         JSObject ret = new JSObject();
         ret.put("generation", gen);
+        ret.put("maxQueuedClips", MAX_QUEUED_CLIPS);
         call.resolve(ret);
     }
 
@@ -134,11 +129,16 @@ public class NativeVoiceTtsPlugin extends Plugin {
             call.reject("url required");
             return;
         }
-        if (!sessionActive.get()) {
+        TtsDownloadQueue<AudioClip> queue = audioQueue;
+        long generation = playbackGeneration.get();
+        if (!isGenerationActive(generation) || queue == null) {
             call.reject("no active session; call beginSession first");
             return;
         }
-        urlQueue.offer(url.trim());
+        if (!queue.offer(url.trim(), () -> playUrlToTrack(url.trim(), generation))) {
+            call.reject("TTS queue full or stopped");
+            return;
+        }
         call.resolve();
     }
 
@@ -157,17 +157,15 @@ public class NativeVoiceTtsPlugin extends Plugin {
             return;
         }
         stopPlaybackInternal(false);
-        urlQueue.clear();
-        audioQueue.clear();
         endOfQueueMarked.set(false);
         stopRequested.set(false);
         playbackStartedNotified.set(false);
         bytesWritten.set(0);
         sessionActive.set(true);
-        urlQueue.offer(url.trim());
-        endOfQueueMarked.set(true);
         long gen = playbackGeneration.incrementAndGet();
         startWorker(gen);
+        audioQueue.offer(url.trim(), () -> playUrlToTrack(url.trim(), gen));
+        endOfQueueMarked.set(true);
         JSObject ret = new JSObject();
         ret.put("generation", gen);
         call.resolve(ret);
@@ -180,10 +178,10 @@ public class NativeVoiceTtsPlugin extends Plugin {
     }
 
     private void startWorker(long generation) {
-        workerThread = new Thread(() -> workerLoop(generation), "NativeVoiceTts-worker");
-        downloaderThread = new Thread(() -> downloaderLoop(generation), "NativeVoiceTts-downloader");
+        TtsDownloadQueue<AudioClip> queue = new TtsDownloadQueue<>(DOWNLOAD_CONCURRENCY, MAX_QUEUED_CLIPS);
+        audioQueue = queue;
+        workerThread = new Thread(() -> workerLoop(generation, queue), "NativeVoiceTts-worker");
         workerThread.start();
-        downloaderThread.start();
     }
 
     private boolean isGenerationActive(long generation) {
@@ -192,21 +190,34 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 && !stopRequested.get();
     }
 
-    private void workerLoop(long generation) {
+    private void workerLoop(long generation, TtsDownloadQueue<AudioClip> queue) {
         while (isGenerationActive(generation)) {
             try {
-                AudioClip clip = audioQueue.poll(QUEUE_POLL_MS, TimeUnit.MILLISECONDS);
-                if (clip != null) {
-                    if (clip.isEndOfQueue) {
-                        drainPlaybackBuffer();
-                        if (!isGenerationActive(generation)) {
-                            return;
+                TtsDownloadQueue.Clip<AudioClip> pending = queue.poll(QUEUE_POLL_MS, TimeUnit.MILLISECONDS);
+                if (pending != null) {
+                    try {
+                        AudioClip clip = pending.await();
+                        if (clip != null && isGenerationActive(generation)) {
+                            writePcmToTrack(clip.sampleRate, clip.pcm, generation);
                         }
-                        stopPlaybackInternal(true);
-                        return;
+                    } catch (ExecutionException e) {
+                        Log.e(TAG, "clip failed; continuing queue", e.getCause());
+                    } finally {
+                        queue.complete(pending);
+                        if (isGenerationActive(generation)) {
+                            JSObject event = new JSObject();
+                            event.put("type", "clipConsumed");
+                            event.put("generation", generation);
+                            event.put("url", pending.id);
+                            notifyListeners("playbackState", event);
+                        }
                     }
-                    writePcmToTrack(clip.sampleRate, clip.pcm, generation);
                     continue;
+                }
+                if (endOfQueueMarked.get() && queue.isIdle()) {
+                    drainPlaybackBuffer();
+                    if (isGenerationActive(generation)) stopPlaybackInternal(true);
+                    return;
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -219,37 +230,11 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
     }
 
-    private void downloaderLoop(long generation) {
-        while (isGenerationActive(generation)) {
-            try {
-                String url = urlQueue.poll(QUEUE_POLL_MS, TimeUnit.MILLISECONDS);
-                if (url != null) {
-                    try {
-                        playUrlToTrack(url, generation);
-                    } catch (Exception e) {
-                        Log.e(TAG, "clip failed; continuing queue", e);
-                    }
-                    continue;
-                }
-                if (isGenerationActive(generation)
-                        && endOfQueueMarked.get() && urlQueue.isEmpty()) {
-                    audioQueue.offer(new AudioClip(true));
-                    return;
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            } catch (Exception e) {
-                Log.e(TAG, "downloader loop error; continuing", e);
-            }
-        }
-    }
-
-    private void playUrlToTrack(String urlStr, long generation) throws IOException {
+    private AudioClip playUrlToTrack(String urlStr, long generation) throws IOException {
         IOException last = null;
         for (int attempt = 0; attempt < MAX_CLIP_ATTEMPTS && isGenerationActive(generation); attempt++) {
             if (!isGenerationActive(generation)) {
-                return;
+                return null;
             }
             if (attempt > 0) {
                 // Wait out a brief connectivity blip (cell handoff, tunnel
@@ -261,12 +246,11 @@ public class NativeVoiceTtsPlugin extends Plugin {
                     throw last != null ? last : new IOException("playback interrupted");
                 }
                 if (!isGenerationActive(generation)) {
-                    return;
+                    return null;
                 }
             }
             try {
-                playUrlToTrackOnce(urlStr, generation);
-                return;
+                return playUrlToTrackOnce(urlStr, generation);
             } catch (IOException e) {
                 last = e;
                 Log.e(TAG, "playUrlToTrack attempt " + attempt + " failed", e);
@@ -276,23 +260,24 @@ public class NativeVoiceTtsPlugin extends Plugin {
             ClientLogReporter.report("VOICE-ERROR", "voice: tts clip failed after retries");
             throw last;
         }
+        return null;
     }
 
-    private void playUrlToTrackOnce(String urlStr, long generation) throws IOException {
+    private AudioClip playUrlToTrackOnce(String urlStr, long generation) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         synchronized (connectionLock) {
             if (!isGenerationActive(generation)) {
                 conn.disconnect();
-                return;
+                return null;
             }
-            activeConnection = conn;
+            activeConnections.add(conn);
         }
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(120000);
         conn.setRequestMethod("GET");
         try {
             if (!isGenerationActive(generation)) {
-                return;
+                return null;
             }
             String cookie = CookieManager.getInstance().getCookie(urlStr);
             if (cookie != null && !cookie.isEmpty()) {
@@ -303,31 +288,23 @@ public class NativeVoiceTtsPlugin extends Plugin {
             if (code == 404 || code == 401 || code == 403) {
                 Log.e(TAG, "GET " + urlStr + " non-retryable code=" + code);
                 ClientLogReporter.report("VOICE-ERROR", "voice: tts clip non-retryable code=" + code);
-                return;
+                return null;
             }
             if (code < 200 || code >= 300) {
                 throw new IOException("HTTP " + code);
             }
-            try (InputStream is = conn.getInputStream()) {
+            // Headers wait for synthesis; once audio exists, recover a stalled link sooner.
+            conn.setReadTimeout(CLIP_BODY_STALL_MS);
+            try (InputStream is = new TtsBodyInputStream(conn.getInputStream(), CLIP_BODY_STALL_MS, conn::disconnect)) {
                 String contentType = conn.getContentType();
-                AudioClip clip;
                 if (contentType != null && contentType.contains("opus")) {
-                    clip = streamOpusToClip(is, generation);
-                } else {
-                    clip = streamWavToTrack(is, generation);
+                    return streamOpusToClip(is, generation);
                 }
-                if (clip != null && isGenerationActive(generation)) {
-                    audioQueue.put(clip);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("interrupted while queueing audio clip", e);
+                return streamWavToTrack(is, generation);
             }
         } finally {
             synchronized (connectionLock) {
-                if (activeConnection == conn) {
-                    activeConnection = null;
-                }
+                activeConnections.remove(conn);
             }
             conn.disconnect();
         }
@@ -754,14 +731,16 @@ public class NativeVoiceTtsPlugin extends Plugin {
         // be discarded, wedging TTS in playing state.
         stopRequested.set(true);
         endOfQueueMarked.set(false);
-        urlQueue.clear();
-        audioQueue.clear();
+        TtsDownloadQueue<AudioClip> queue = audioQueue;
+        audioQueue = null;
+        if (queue != null) queue.close();
 
-        HttpURLConnection connection;
+        HttpURLConnection[] connections;
         synchronized (connectionLock) {
-            connection = activeConnection;
+            connections = activeConnections.toArray(new HttpURLConnection[0]);
+            activeConnections.clear();
         }
-        if (connection != null) {
+        for (HttpURLConnection connection : connections) {
             connection.disconnect();
         }
 
@@ -787,17 +766,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 Thread.currentThread().interrupt();
             }
             workerThread = null;
-        }
-
-        Thread dt = downloaderThread;
-        if (dt != null && dt != Thread.currentThread()) {
-            dt.interrupt();
-            try {
-                dt.join(1500);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            downloaderThread = null;
         }
 
         playbackStartedNotified.set(false);

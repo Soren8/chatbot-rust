@@ -22,6 +22,38 @@ Capacitor wraps the existing web UI in a native Android shell. The WebView loads
 
 ## Architecture
 
+### TTS buffering on slow links
+
+TTS uses mono Ogg-Opus with a 16 kbps encoder target, matching the STT Opus
+target (container and HTTP overhead are additional). The decoded TTS sample
+rate remains 24 kHz. Desktop and Android retain the same `POST /tts` →
+`GET /tts_stream/{token}` flow and buffer complete sentences before playback,
+so a truncated transfer cannot cut off or repeat a partially played sentence.
+
+Android keeps a rolling window of four sentences, including pending token
+requests, downloads, ready audio, and the clip being written to AudioTrack.
+Completed sentences enter this window during LLM streaming. Token requests
+overlap, and a ready head is enqueued without waiting for later token responses.
+`TtsDownloadQueue` runs two GETs concurrently and presents their results in
+sentence order, allowing the next sentence's synthesis to overlap the current
+sentence's download. `beginSession` advertises `maxQueuedClips`; each
+generation-tagged `clipConsumed` event releases one slot. Older APKs without
+that capability continue using enqueue acknowledgements.
+
+Each native clip allows four GET attempts with backoff. The server caches the
+audio for the initial transfer plus three replays, avoiding resynthesis after
+an interrupted body. Synthesis/header reads retain a 120-second timeout;
+audio-body reads have a separate 15-second idle watchdog that disconnects a
+stalled transfer. Stop closes the scheduler, cancels outstanding clips, and
+disconnects all active downloads. The full test suite executes JS queue
+behavior tests and platform-independent Java scheduler/watchdog tests in the
+test image, in addition to Rust route and Opus tests.
+
+The rolling queue and body watchdog require an updated Android APK. Deploy
+the matching webserver image for the JS window, 16 kbps encoder, and replay
+budget; server-pull assets are applied by rebuilding/restarting webserver on
+the host.
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                        Android Device                         │

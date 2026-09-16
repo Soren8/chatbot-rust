@@ -66,6 +66,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # Test image with cargo available
 FROM rust-tools AS test
+# Execute native scheduler and JS queue behavior tests; js_syntax still uses oxc.
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless nodejs \
+    && rm -rf /var/lib/apt/lists/*
 # Toolchain lives outside /app so the dev bind-mount (./:/app) cannot hide cargo on CI.
 ENV CARGO_HOME=/opt/cargo
 ENV PATH="/usr/local/cargo/bin:${PATH}"

@@ -1468,6 +1468,8 @@ let voiceModeListenCooldownUntil = 0;
 const TTS_LISTEN_COOLDOWN_MS = 400;
 /** Bounded requeue attempts for a native TTS sentence on a spotty link. */
 const MAX_TTS_SENTENCE_RETRIES = 3;
+/** Includes token requests, downloads, ready clips, and the clip being written to AudioTrack. */
+const MAX_NATIVE_TTS_LOOKAHEAD = 4;
 /** Total attempts to fetch one clip from /tts_stream (within the server's replay budget). */
 const MAX_TTS_CLIP_ATTEMPTS = 2;
 /** Backoff between clip GET retries; grows with the attempt number. */
@@ -5322,8 +5324,14 @@ $(document).ready(function() {
     let consumedSentences = 0;
     let sentenceQueue = [];
     let endRequested = false;
-    let sentenceRetries = 0;
-    let retryScheduled = false;
+    let inFlightSentences = 0;
+    let pendingEnqueues = 0;
+    let enqueueTail = Promise.resolve();
+    let sessionReady = false;
+    let sessionStarting = false;
+    let nativeBackpressure = false;
+    let lookahead = MAX_NATIVE_TTS_LOOKAHEAD;
+    const queuedNativeClips = new Map();
     const isFixedList = !!(options.sentences && options.sentences.length);
 
     voiceModeTtsSessionActive = true;
@@ -5333,6 +5341,7 @@ $(document).ready(function() {
       nativeGeneration: generation,
       stop: function () {
         stopped = true;
+        teardownObserver();
         pendingNativeTtsTokens.forEach(function (token) {
           cancelNativeTtsToken(token);
         });
@@ -5385,6 +5394,8 @@ $(document).ready(function() {
       }).then(function (res) {
         if (!live()) return;
         const nativeSessionGen = (res && res.generation) || 0;
+        nativeBackpressure = !!(res && res.maxQueuedClips > 0);
+        if (nativeBackpressure) lookahead = Math.min(MAX_NATIVE_TTS_LOOKAHEAD, res.maxQueuedClips);
         let nativeStarted = false;
         nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
           if (!data || generation !== nativeVoiceTtsGeneration) return;
@@ -5392,6 +5403,13 @@ $(document).ready(function() {
           if (data.type === 'started') {
             nativeStarted = true;
             onVoiceModeTtsStarted();
+          } else if (data.type === 'clipConsumed') {
+            const job = queuedNativeClips.get(data.url);
+            if (job) {
+              queuedNativeClips.delete(data.url);
+              pendingNativeTtsTokens.delete(job.token);
+              releaseSlot(job);
+            }
           } else if (data.type === 'ended') {
             if (!nativeStarted && !endRequested) {
               // Stale ended event from prior stopped session before this session began playing
@@ -5402,6 +5420,7 @@ $(document).ready(function() {
             console.error('Native voice TTS error:', data.message);
           }
         });
+        return Promise.resolve(nativeVoiceTtsSessionListener);
       });
       return nativeVoiceTtsSessionPromise;
     }
@@ -5427,9 +5446,7 @@ $(document).ready(function() {
         return;
       }
       discoverSentences();
-      if (sentenceQueue.length > 0 && !pumpInFlight) {
-        pump();
-      }
+      pump();
     }
 
     function teardownObserver() {
@@ -5445,12 +5462,8 @@ $(document).ready(function() {
 
     let observer = null;
     let pollTimer = null;
-    let pumpInFlight = false;
-    let batchAttempted = false;
 
-    // POST one sentence's text and resolve its stream token (no enqueue).
-    // Mirrors the serial pump's token handling so the batch prefetch below
-    // stays consistent: header token preferred, JSON fallback, live checks.
+    // Token requests overlap, but enqueueing below remains in sentence order.
     function postOneToken(rawText) {
       const cleaned = sanitizeForTTS(rawText || '').trim();
       if (!cleaned) return Promise.resolve(null);
@@ -5473,11 +5486,10 @@ $(document).ready(function() {
             cancelNativeTtsToken(token);
             return null;
           }
+          if (response.body) response.body.cancel().catch(function () {});
+          return { token: token };
         }
-        return response.json().catch(function () {
-          if (responseToken) return { token: String(responseToken) };
-          throw new Error('TTS token response unreadable');
-        });
+        return response.json();
       }).then(function (data) {
         if (!data || !data.token) return null;
         const token = String(data.token);
@@ -5491,172 +5503,100 @@ $(document).ready(function() {
       });
     }
 
-    // When the full text is already known (not still generating), fetch the
-    // remaining sentences' tokens concurrently (bounded) and enqueue their
-    // stream URLs in sentence order. The native downloader still downloads
-    // serially in order, and synthesis stays serial server-side; this only
-    // removes the per-sentence POST + bridge round-trips so a spotty link
-    // has the whole queue waiting instead of idling on JS turnarounds.
-    // Any failure falls back to the serial pump for the unconfirmed tail.
-    function prefetchRemainingTokens() {
-      const texts = sentenceQueue.splice(0, sentenceQueue.length);
-      pumpInFlight = true;
-      const results = new Array(texts.length);
-      let nextIdx = 0;
-      // First index not yet confirmed enqueued; the fallback below requeues
-      // texts from here on and cancels only never-enqueued tokens, so already
-      // queued sentences still play exactly once.
-      let enqueueIdx = 0;
-      const CONCURRENCY = 4;
-      function worker() {
-        if (!live()) return Promise.resolve();
-        const idx = nextIdx++;
-        if (idx >= texts.length) return Promise.resolve();
-        return postOneToken(texts[idx]).then(function (tok) {
-          results[idx] = tok || null;
-          return worker();
-        });
+    async function requestToken(text) {
+      for (let attempt = 0; live(); attempt++) {
+        try {
+          return await postOneToken(text);
+        } catch (err) {
+          if (!live() || (err && err.message === 'Session expired')) throw err;
+          const match = /request failed \((\d+)\)/.exec((err && err.message) || '');
+          const status = match ? Number(match[1]) : 0;
+          if (attempt >= MAX_TTS_SENTENCE_RETRIES || (status && !isRetryableVoiceStatus(status))) throw err;
+          await sleepMs(400 * (attempt + 1));
+        }
       }
-      const starters = [];
-      for (let w = 0; w < Math.min(CONCURRENCY, texts.length); w++) starters.push(worker());
-      Promise.all(starters).then(function () {
+      return null;
+    }
+
+    function releaseSlot(job) {
+      if (job.released) return;
+      job.released = true;
+      inFlightSentences--;
+      if (live()) pump();
+    }
+
+    function queueSentence(text) {
+      const job = { token: null, released: false };
+      inFlightSentences++;
+      pendingEnqueues++;
+      // Settle failures immediately even when an earlier sentence is still pending.
+      const prepared = requestToken(text).then(function (token) {
+        return { token: token };
+      }, function (error) { return { error: error }; });
+      enqueueTail = enqueueTail.then(function () { return prepared; }).then(async function (result) {
         if (!live()) return;
-        function enqueueOrdered() {
-          if (!live() || enqueueIdx >= texts.length) return Promise.resolve();
-          const idx = enqueueIdx;
-          const tok = results[idx];
-          if (!tok) {
-            enqueueIdx++;
-            return enqueueOrdered();
+        if (result.error) throw result.error;
+        if (!result.token) { releaseSlot(job); return; }
+        job.token = result.token;
+        const url = nativeVoiceTtsStreamUrl(job.token);
+        if (nativeBackpressure) queuedNativeClips.set(url, job);
+        for (let attempt = 0; live(); attempt++) {
+          try {
+            await window.NativeVoiceTts.enqueue(url);
+            // Older APKs do not emit clipConsumed; keep their enqueue-ack flow working.
+            if (!nativeBackpressure) releaseSlot(job);
+            return;
+          } catch (err) {
+            if (attempt >= MAX_TTS_SENTENCE_RETRIES) throw err;
+            await sleepMs(400 * (attempt + 1));
           }
-          return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(tok)).catch(function (err) {
-            pendingNativeTtsTokens.delete(tok);
-            cancelNativeTtsToken(tok);
-            nativeVoiceTtsSessionPromise = null;
-            throw err;
-          }).then(function () {
-            enqueueIdx++;
-            return enqueueOrdered();
-          });
         }
-        return enqueueOrdered().then(function () {
-          return enqueueIdx;
-        });
+      }).catch(function (err) {
+        if (job.token) {
+          queuedNativeClips.delete(nativeVoiceTtsStreamUrl(job.token));
+          pendingNativeTtsTokens.delete(job.token);
+          cancelNativeTtsToken(job.token);
+        }
+        if (live()) console.error('Native voice TTS sentence failed; skipping after retries:', err);
+        releaseSlot(job);
       }).then(function () {
-        pumpInFlight = false;
+        pendingEnqueues--;
         if (live()) pump();
-      }).catch(function () {
-        pumpInFlight = false;
-        if (!live()) return;
-        // Cancel prefetched-but-never-enqueued tokens (the failed one was
-        // already cancelled by its own handler; re-cancelling is harmless).
-        // Already-enqueued indexes below enqueueIdx are left alone to play.
-        for (let i = enqueueIdx; i < results.length; i++) {
-          if (results[i]) {
-            pendingNativeTtsTokens.delete(results[i]);
-            cancelNativeTtsToken(results[i]);
-          }
-        }
-        for (let i = texts.length - 1; i >= enqueueIdx; i--) sentenceQueue.unshift(texts[i]);
-        pump();
       });
     }
 
     function pump() {
-      if (!live()) return;
-      if (pumpInFlight) return;
-      discoverSentences();
-      if (sentenceQueue.length > 0) {
-        if (!batchAttempted && !isStillGenerating() && sentenceQueue.length > 1) {
-          batchAttempted = true;
-          prefetchRemainingTokens();
-          return;
-        }
-        const text = sanitizeForTTS(sentenceQueue.shift() || '').trim();
-        if (!text) { pump(); return; }
-        pumpInFlight = true;
+      if (!live() || endRequested) return;
+      if (!sessionReady) {
+        if (sessionStarting) return;
+        sessionStarting = true;
         ensureSession().then(function () {
-          if (!live()) return null;
-          return fetchVoiceRetry('/tts', {
-            method: 'POST',
-            headers: withCsrf({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ text: text }),
-            signal: ttsSignal
-          });
-        }).then(function (response) {
-          if (!response) return null;
-          const responseToken = response.headers && response.headers.get('X-TTS-Token');
-          if (responseToken) {
-            const token = String(responseToken);
-            pendingNativeTtsTokens.add(token);
-            if (!live()) {
-              pendingNativeTtsTokens.delete(token);
-              cancelNativeTtsToken(token);
-              return null;
-            }
-          }
-          return response.json().catch(function (err) {
-            if (responseToken) return { token: String(responseToken) };
-            throw err;
-          });
-        }).then(function (data) {
-          if (!data || !data.token) return null;
-          sentenceRetries = 0;
-          const token = String(data.token);
-          pendingNativeTtsTokens.add(token);
-          if (!live()) {
-            pendingNativeTtsTokens.delete(token);
-            cancelNativeTtsToken(token);
-            return null;
-          }
-          return window.NativeVoiceTts.enqueue(nativeVoiceTtsStreamUrl(token)).catch(function (err) {
-            pendingNativeTtsTokens.delete(token);
-            cancelNativeTtsToken(token);
-            // Drop the cached session so the retry begins a fresh native
-            // session instead of failing every subsequent enqueue too.
-            nativeVoiceTtsSessionPromise = null;
-            throw err;
-          });
+          sessionReady = true;
+          if (live()) pump();
         }).catch(function (err) {
-          if (!live() || !err) return;
-          if (err.message === 'Session expired') return;
-          const statusMatch = /request failed \((\d+)\)/.exec(err.message || '');
-          const status = statusMatch ? Number(statusMatch[1]) : 0;
-          // On a spotty link a dropped sentence is a silent gap: requeue any
-          // transient failure (network error, stall timeout, 429/5xx), not
-          // only 429. Bounded so a dead link cannot churn forever.
-          if ((status === 0 || isRetryableVoiceStatus(status)) && sentenceRetries < MAX_TTS_SENTENCE_RETRIES) {
-            sentenceRetries += 1;
-            sentenceQueue.unshift(text);
-            retryScheduled = true;
-            setTimeout(function () {
-              retryScheduled = false;
-              pump();
-            }, 400 * sentenceRetries);
-          } else {
-            sentenceRetries = 0;
-            console.error('Native voice TTS sentence failed; skipping after retries:', err);
-          }
-        }).then(function () {
-          pumpInFlight = false;
-          if (live() && !retryScheduled) pump();
+          if (!live()) return;
+          stopped = true;
+          teardownObserver();
+          console.error('Native voice TTS session failed:', err);
+          window.NativeVoiceTts.stop().catch(function () {});
+          finishNativeVoiceTts(generation, button);
         });
         return;
       }
-      if (isStillGenerating()) {
-        pollTimer = setTimeout(function () {
+      discoverSentences();
+      while (sentenceQueue.length > 0 && inFlightSentences < lookahead) {
+        const text = sanitizeForTTS(sentenceQueue.shift() || '').trim();
+        if (text) queueSentence(text);
+      }
+      if (!isFixedList && isStillGenerating()) {
+        if (!pollTimer) pollTimer = setTimeout(function () {
           pollTimer = null;
           pump();
         }, 80);
-        return;
+      } else if (sentenceQueue.length === 0 && pendingEnqueues === 0) {
+        teardownObserver();
+        markEndOfQueue();
       }
-      discoverSentences();
-      if (sentenceQueue.length > 0) {
-        pump();
-        return;
-      }
-      teardownObserver();
-      markEndOfQueue();
     }
 
     if (isFixedList) {

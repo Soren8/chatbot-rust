@@ -2,7 +2,7 @@
 //!
 //! TTS backends produce PCM; serving it as WAV costs ~400 kbps, which stalls
 //! voice mode for tens of seconds on relayed/degraded links. Encoding each
-//! clip to Ogg-Opus (~24 kbps mono, ~11x smaller) moves the downlink out of
+//! clip to Ogg-Opus (~16 kbps mono) moves the downlink out of
 //! the critical path. Encode cost is single-digit milliseconds per sentence
 //! (libopus SIMD), negligible next to synthesis itself.
 //!
@@ -17,8 +17,8 @@ use audiopus::coder::Encoder;
 
 /// Opus wire rate: 24 kHz mono, the voice-optimized sweet spot.
 pub const OPUS_SAMPLE_RATE_HZ: u32 = 24_000;
-/// Target bitrate: 24 kbps CBR-ish for clean TTS speech.
-pub const OPUS_BITRATE_BPS: i32 = 24_000;
+/// Same 16 kbps speech target as the client's STT Opus encoder.
+pub const OPUS_BITRATE_BPS: i32 = 16_000;
 /// 20 ms frames at 24 kHz.
 const OPUS_FRAME_SAMPLES: usize = 480;
 /// Max Opus packet is 1275 bytes; 4000 leaves ample headroom.
@@ -164,6 +164,11 @@ fn mux_ogg_opus(packets: &[Vec<u8>]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tts_opus_target_matches_the_16kbps_stt_speech_budget() {
+        assert_eq!(OPUS_BITRATE_BPS, 16_000, "TTS must fit the STT Opus payload budget");
+    }
 
     #[test]
     fn resample_passthrough_at_24k() {

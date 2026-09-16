@@ -30,7 +30,8 @@ const MAX_BODY_BYTES: usize = 512 * 1024;
 const MAX_TTS_AUDIO_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PENDING_TTS: usize = 128;
 const TTS_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
-const MAX_TTS_REPLAYS: u8 = 2;
+// Initial transfer plus three retries, matching NativeVoiceTts MAX_CLIP_ATTEMPTS.
+const MAX_TTS_REPLAYS: u8 = 3;
 const SAMPLE_RATE_HZ: u32 = 25_200;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
