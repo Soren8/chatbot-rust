@@ -1348,48 +1348,13 @@ function renderMarkdown(text) {
 
 // Top-level on purpose: appendHistoryPair / applyHistoryPage run outside the
 // logged-in document.ready closure (a nested helper is ReferenceError there).
+// History adapter: whole-text projection, no console stripping.
 function formatAiMessage(text) {
   if (!text) return '';
 
-  const openTag = '<think>';
-  const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
-
-  let thinkingParts = [];
-  let visibleParts = [];
-  let buffer = text;
-  let state = 'visible';
-
-  while (buffer.length > 0) {
-    if (state === 'visible') {
-      const idx = buffer.indexOf(openTag);
-      if (idx !== -1) {
-        visibleParts.push(buffer.substring(0, idx));
-        buffer = buffer.substring(idx + openTag.length);
-        state = 'thinking';
-      } else {
-        visibleParts.push(buffer);
-        buffer = '';
-      }
-    } else {
-      let firstCloseIdx = -1;
-      let usedTagLen = 0;
-      for (const tag of closeTags) {
-        const idx = buffer.indexOf(tag);
-        if (idx !== -1 && (firstCloseIdx === -1 || idx < firstCloseIdx)) {
-          firstCloseIdx = idx;
-          usedTagLen = tag.length;
-        }
-      }
-      if (firstCloseIdx !== -1) {
-        thinkingParts.push(buffer.substring(0, firstCloseIdx));
-        buffer = buffer.substring(firstCloseIdx + usedTagLen);
-        state = 'visible';
-      } else {
-        thinkingParts.push(buffer);
-        buffer = '';
-      }
-    }
-  }
+  const parts = ChatStreamDecoder.decodeComplete(text);
+  const thinkingParts = [parts.thinking];
+  const visibleParts = [parts.visible];
 
   let html = '';
   const fullThinking = thinkingParts.join('').trim();
@@ -3227,8 +3192,9 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     const $msgText = $target.find('.ai-message-text');
     const $thinkingWrap = $target.find('.thinking-container');
     const $thinkingContent = $target.find('.thinking-content');
-    let buffer = '';
-    let state = 'visible';
+    // Regenerate adapter: no console stripping, no EOF flush (residual is
+    // dropped; console detail stays visible).
+    const streamState = ChatStreamDecoder.createStreamState();
     let hasWrittenToDOM = false;
     let fullVisibleText = '';
     let fullThinkingText = '';
@@ -3278,69 +3244,17 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
       $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
     }
-    function processBuffer() {
-      const openTag = '<think>';
-      const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
-
-      while (buffer.length > 0) {
-        if (state === 'visible') {
-          const tagStart = buffer.indexOf(openTag);
-          if (tagStart !== -1) {
-            const visiblePart = buffer.substring(0, tagStart);
-            appendVisible(visiblePart);
-            buffer = buffer.substring(tagStart + openTag.length);
-            state = 'thinking';
-            continue;
-          } else {
-            let flushableEnd = buffer.length;
-            for (let i = 1; i <= buffer.length && i <= openTag.length; i++) {
-              const suffix = buffer.substring(buffer.length - i);
-              if (openTag.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
-            }
-            const visiblePart = buffer.substring(0, flushableEnd);
-            appendVisible(visiblePart);
-            buffer = buffer.substring(flushableEnd);
-            break;
-          }
-        } else {
-          let firstCloseTagIndex = -1;
-          let actualCloseTag = '';
-
-          for (const tag of closeTags) {
-            const idx = buffer.indexOf(tag);
-            if (idx !== -1 && (firstCloseTagIndex === -1 || idx < firstCloseTagIndex)) {
-              firstCloseTagIndex = idx;
-              actualCloseTag = tag;
-            }
-          }
-
-          if (firstCloseTagIndex !== -1) {
-            const thinkingPart = buffer.substring(0, firstCloseTagIndex);
-            appendThinking(thinkingPart);
-            buffer = buffer.substring(firstCloseTagIndex + actualCloseTag.length);
-            state = 'visible';
-            continue;
-          } else {
-            let flushableEnd = buffer.length;
-            const maxTagLen = Math.max(...closeTags.map(t => t.length));
-            for (let i = 1; i <= buffer.length && i <= maxTagLen; i++) {
-              const suffix = buffer.substring(buffer.length - i);
-              if (closeTags.some(tag => tag.startsWith(suffix))) {
-                flushableEnd = buffer.length - i;
-                break;
-              }
-            }
-            const thinkingPart = buffer.substring(0, flushableEnd);
-            appendThinking(thinkingPart);
-            buffer = buffer.substring(flushableEnd);
-            break;
-          }
-        }
-      }
+    function processBuffer(chunk) {
+      ChatStreamDecoder.pushChunk(streamState, chunk, {
+        onVisible: appendVisible,
+        onThinking: appendThinking,
+        stripConsoleDetail: false
+      });
     }
             function read() {
           reader.read().then(({done, value}) => {
             if (done) {
+              // Regenerate does not flush: the residual stays dropped.
               const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
               $target.attr('data-original', finalAiOriginal);
               
@@ -3356,9 +3270,9 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               if (typeof loadSets === 'function') loadSets(false);
               return;
             }
-            buffer += decoder.decode(value, {stream:true});
+            const chunk = decoder.decode(value, {stream:true});
             const nearBottom = shouldStickChatToBottom();
-            processBuffer();
+            processBuffer(chunk);
             if (nearBottom) {
               scrollToBottom();
             }
@@ -4490,8 +4404,9 @@ $(document).ready(function() {
         const $messageTextElement = $targetElement.find('.ai-message-text');
         const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
         const $thinkingContentElement = $targetElement.find('.thinking-content');
-        let buffer = '';
-        let state = 'visible';
+        // Chat adapter: strips console detail to the console and flushes the
+        // residual at EOF/interrupt.
+        const streamState = ChatStreamDecoder.createStreamState();
         let hasWrittenToDOM = false;
         let fullVisibleText = '';
         let fullThinkingText = '';
@@ -4542,84 +4457,23 @@ $(document).ready(function() {
           $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
         }
         function processChunk(chunk) {
-          buffer += chunk;
-          // Strip the server's full-error detail (sent via [ConsoleError]…[/ConsoleError])
-          // and sink it to the browser console; it must never reach the visible message.
-          let di = buffer.indexOf('[ConsoleError]');
-          while (di !== -1) {
-            const dci = buffer.indexOf('[/ConsoleError]', di);
-            if (dci === -1) break; // wait for the closing marker to arrive
-            const detail = buffer.substring(di + '[ConsoleError]'.length, dci);
-            try { console.error(detail); } catch (e) {}
-            buffer = buffer.substring(0, di) + buffer.substring(dci + '[/ConsoleError]'.length);
-            di = buffer.indexOf('[ConsoleError]');
-          }
-          const openTag = '<think>';
-          const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
-
-          while (buffer.length > 0) {
-            if (state === 'visible') {
-              const tagStart = buffer.indexOf(openTag);
-              if (tagStart !== -1) {
-                const visiblePart = buffer.substring(0, tagStart);
-                appendVisible(visiblePart);
-                buffer = buffer.substring(tagStart + openTag.length);
-                state = 'thinking';
-                continue;
-              } else {
-                let flushableEnd = buffer.length;
-                for (let i = 1; i <= buffer.length && i <= openTag.length; i++) {
-                  const suffix = buffer.substring(buffer.length - i);
-                  if (openTag.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
-                }
-                const visiblePart = buffer.substring(0, flushableEnd);
-                appendVisible(visiblePart);
-                buffer = buffer.substring(flushableEnd);
-                break;
-              }
-            } else if (state === 'thinking') {
-              let firstCloseTagIndex = -1;
-              let actualCloseTag = '';
-
-              for (const tag of closeTags) {
-                const idx = buffer.indexOf(tag);
-                if (idx !== -1 && (firstCloseTagIndex === -1 || idx < firstCloseTagIndex)) {
-                  firstCloseTagIndex = idx;
-                  actualCloseTag = tag;
-                }
-              }
-
-              if (firstCloseTagIndex !== -1) {
-                const thinkingPart = buffer.substring(0, firstCloseTagIndex);
-                appendThinking(thinkingPart);
-                buffer = buffer.substring(firstCloseTagIndex + actualCloseTag.length);
-                state = 'visible';
-                continue;
-              } else {
-                let flushableEnd = buffer.length;
-                const maxTagLen = Math.max(...closeTags.map(t => t.length));
-                for (let i = 1; i <= buffer.length && i <= maxTagLen; i++) {
-                  const suffix = buffer.substring(buffer.length - i);
-                  if (closeTags.some(tag => tag.startsWith(suffix))) {
-                    flushableEnd = buffer.length - i;
-                    break;
-                  }
-                }
-                const thinkingPart = buffer.substring(0, flushableEnd);
-                appendThinking(thinkingPart);
-                buffer = buffer.substring(flushableEnd);
-                break;
-              }
-            }
-          }
+          ChatStreamDecoder.pushChunk(streamState, chunk, {
+            onVisible: appendVisible,
+            onThinking: appendThinking,
+            stripConsoleDetail: true,
+            onConsoleDetail(detail) { try { console.error(detail); } catch (e) {} }
+          });
+        }
+        function flushStreamRemainder() {
+          ChatStreamDecoder.flushRemainder(streamState, {
+            onVisible: appendVisible,
+            onThinking: appendThinking
+          });
         }
         function readStream() {
           return reader.read().then(({ done, value }) => {
             if (done) {
-              if (buffer) {
-                if (state === 'thinking') appendThinking(buffer); else appendVisible(buffer);
-                buffer = '';
-              }
+              flushStreamRemainder();
               
               const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
               $targetElement.attr('data-original', finalAiOriginal);
@@ -4652,10 +4506,7 @@ $(document).ready(function() {
             } catch (e) {}
             try { console.error('Stream read failed:', err); } catch (e) {}
             const errText = err && err.message ? err.message : String(err);
-            if (buffer) {
-              if (state === 'thinking') appendThinking(buffer); else appendVisible(buffer);
-              buffer = '';
-            }
+            flushStreamRemainder();
             appendVisible('\n[Error] The response stream was interrupted.');
             finishChatRequest(seq);
           });

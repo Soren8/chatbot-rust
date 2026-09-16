@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: [session 003 — first remediation batch](#session-003--first-remediation-batch-2026-09-16). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 004 — shared stream decoder](#session-004--shared-stream-decoder-2026-09-16). Earlier checkpoints record their original scope and status.
 
 ## Purpose and authority
 
@@ -80,3 +80,19 @@ Verification used the full supported command, `testctl --project chatbot-rust --
 Implementation and this verification record belong to the local commit titled **“Extract live naming, Fernet, and speech text helpers”**, based on `9b2624b`. Rebuild/restart the webserver on the host to deploy that commit.
 
 **Next entry point:** select the next bounded modularity batch. The shared stream decoder/test seams (MOD-010/016) remain the next browser foundation; finishing the TTS backend-result/HTTP boundary (MOD-011) is another independent slice. Larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements and were not reproduced or corrected in this structural batch. The six later whole-codebase passes remain unstarted.
+
+## Session 004 — shared stream decoder, 2026-09-16
+
+The user authorized the second modularity batch for MOD-010 with the corresponding MOD-016 seam. The worker personally reviewed the three browser parsers, server encoders and existing wire/test coverage before choosing a bounded browser-side extraction that preserves the wire contract with explicit adapters and no silent fixes.
+
+**MOD-010 browser extraction verified:** `static/stream-decoder.js` owns incremental decoding and whole-text projection, emitting visible/thinking segments in wire order as they are found. History delegates projection; regenerate pushes with console stripping disabled and drops the residual at EOF; chat pushes with console stripping plus console logging and flushes at EOF/interrupt. Split console-detail across chunks is emitted, not retracted. Status labels, TTS selection and Rust think-stripping/normalization are unchanged callers; typed wire events remain separately approved.
+
+**MOD-016 partial:** the new `stream_decoder.rs` plus `stream_decoder_test.js` require the shared unit directly with explicit literal expectations, including exact mixed visible/thinking callback order, and keep packaging/wiring pins to the real load-order/delegation contract. No existing tests were modified. Broader fixture/harness consolidation and the noted inconsistent voice contracts remain for pass six.
+
+Review correction: the first wired revision batched all visible callbacks before thinking callbacks, ordered differently from the original immediate interleaving, and carried an arbitrary iteration guard plus an inaccurate held-console comment. A mixed-order regression reproduced the deviation in job `20260916T180645-05a6588a814b` (`status=failed`, exit 101); the fix emits callbacks in wire order, removes the guard, and corrects the comment. The earlier wired green job `20260916T180042-78771ee26d7f` is superseded because its assertions only checked joined text, not callback order.
+
+Verification used the full supported command, `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`: the new decoder plus characterization (original chat wiring untouched) passed in job `20260916T175420-4b7dbb22aa88`; the corrected wired implementation passed in job `20260916T181236-a3251f9db599` (`status=passed`, exit 0). Logs are `temp/test-logs/modularity-batch2-baseline.log`, `temp/test-logs/modularity-batch2-order-red.log` (expected regression failure), and `temp/test-logs/modularity-batch2-final.log`. No application source changed after the final passing run. No GPU, APK, device or live-deployment validation is claimed.
+
+Implementation and this verification record belong to the pending local commit for this batch, based on `87f962b`. Rebuild/restart the webserver on the host to deploy it.
+
+**Next entry point:** finishing the TTS backend-result/HTTP boundary (MOD-011) is the next independent slice; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
