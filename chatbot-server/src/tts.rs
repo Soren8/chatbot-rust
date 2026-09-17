@@ -14,9 +14,8 @@ use chatbot_core::{
 };
 use once_cell::sync::Lazy;
 use rand::Rng;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::Deserialize;
+use serde_json::json;
 use tracing::{debug, error};
 
 use crate::http_error::{
@@ -25,6 +24,7 @@ use crate::http_error::{
 };
 use crate::tts_opus;
 
+mod backend;
 mod text;
 use text::sanitize_text;
 
@@ -34,25 +34,8 @@ const MAX_PENDING_TTS: usize = 128;
 const TTS_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
 // Initial transfer plus three retries, matching NativeVoiceTts MAX_CLIP_ATTEMPTS.
 const MAX_TTS_REPLAYS: u8 = 3;
-const SAMPLE_RATE_HZ: u32 = 25_200;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
-
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
-    Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("http client")
-});
-
-/// ~0.1 s of raw PCM silence. Served for payloads that sanitize to
-/// nothing (e.g. a trailing `---` rule, marker-only chunks, raw HTML): a 500
-/// there is deterministic, so the client retry storm cannot fix it — the
-/// sentence must become a brief silence instead of a failure.
-static SILENT_PCM: Lazy<Vec<u8>> = Lazy::new(|| {
-    let silent_samples = (SAMPLE_RATE_HZ as usize) / 10;
-    vec![0_u8; silent_samples * 2]
-});
 
 /// Final wire bytes for one TTS clip, in whatever codec the config selects.
 /// Cached verbatim for replays so synthesis and encoding both happen once.
@@ -78,27 +61,6 @@ static PENDING_TTS: Lazy<RwLock<HashMap<String, PendingTts>>> =
 struct ApiTtsRequest {
     #[serde(default)]
     text: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct BackendRequest {
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    voice_file: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct FishSpeechRequest {
-    text: String,
-    reference_id: String,
-    streaming: bool,
-    format: String,
-}
-
-#[derive(Debug, Serialize)]
-struct KokoroTtsRequest {
-    text: String,
-    voice: String,
 }
 
 pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpError> {
@@ -265,37 +227,33 @@ pub async fn handle_tts_stream(
         active: true,
     };
 
-    let result = synthesize_tts_stream(cleaned.clone()).await;
+    let result = backend::synthesize_pcm(cleaned.clone()).await;
     match result {
-        Ok(response) => {
-            let (parts, body) = response.into_parts();
-            let content_type = parts
-                .headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("audio/ogg;codecs=opus")
-                .to_string();
-            let filename = if content_type.contains("opus") {
-                "tts.opus".to_string()
-            } else {
-                "tts.wav".to_string()
-            };
-            let audio = match body::to_bytes(body, MAX_TTS_AUDIO_BYTES).await {
-                Ok(bytes) => TtsWireAudio {
-                    bytes: bytes.to_vec(),
-                    content_type,
-                    filename,
-                },
+        Ok(clip) => {
+            let audio = match encode_tts_wire_audio(&clip.pcm, clip.sample_rate) {
+                Ok(audio) => audio,
                 Err(err) => {
                     generating_guard.active = false;
-                    let mapped = map_body_read_err(err, "tts::stream::cache");
                     let mut map = PENDING_TTS.write().expect("tts lock");
                     if let Some(pending) = map.get_mut(&token) {
                         pending.generating = false;
                     }
-                    return Err(mapped);
+                    return Err(err);
                 }
             };
+            // Apply the size cap to encoded bytes before caching for replay.
+            if audio.bytes.len() > MAX_TTS_AUDIO_BYTES {
+                generating_guard.active = false;
+                let mapped = map_body_read_err(
+                    format!("encoded TTS clip exceeds {MAX_TTS_AUDIO_BYTES} bytes"),
+                    "tts::stream::cache",
+                );
+                let mut map = PENDING_TTS.write().expect("tts lock");
+                if let Some(pending) = map.get_mut(&token) {
+                    pending.generating = false;
+                }
+                return Err(mapped);
+            }
             generating_guard.active = false;
             let mut map = PENDING_TTS.write().expect("tts lock");
             if let Some(pending) = map.get_mut(&token) {
@@ -304,7 +262,7 @@ pub async fn handle_tts_stream(
                 pending.replay_count = 0;
                 pending.generating = false;
             }
-            Ok(Response::from_parts(parts, Body::from(audio.bytes)))
+            build_tts_audio_response(audio)
         }
         Err(err) => {
             generating_guard.active = false;
@@ -388,87 +346,6 @@ fn insert_pending_tts(
     true
 }
 
-async fn synthesize_tts_stream(cleaned: String) -> Result<Response<Body>, HttpError> {
-    if cleaned.is_empty() {
-        return build_tts_audio_response(encode_tts_wire_audio(&SILENT_PCM, SAMPLE_RATE_HZ)?);
-    }
-    let config = config::app_config();
-    debug!(provider = %config.tts_provider, "handling /tts_stream request");
-    if config.tts_provider == "kokoro" {
-        return handle_kokoro_tts(cleaned, &config).await;
-    }
-    // DEPRECATED: legacy external TTS provider
-    if config.tts_provider == "fish" {
-        return handle_fish_speech(cleaned).await;
-    }
-
-    debug!("using legacy external backend for /tts_stream");
-    let backend_request = BackendRequest {
-        text: cleaned,
-        voice_file: config.tts_voice.clone(),
-    };
-
-    // We use the non-streaming endpoint to get the full bytes so we can apply a fade
-    let response = match post_backend("/api/tts", &backend_request).await {
-        Ok(response) => response,
-        Err(err) => {
-            error!(?err, "failed to reach TTS backend for /tts_stream");
-            return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
-        }
-    };
-
-    let status = response.status();
-    let mut bytes = response.bytes().await.map_err(|err| {
-        error!(?err, "failed to read /tts_stream backend response body");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
-    })?.to_vec();
-
-    if !status.is_success() {
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "TTS backend returned error for /tts_stream");
-        return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
-    }
-
-    // Check for RIFF header and strip it if present to get raw PCM
-    if bytes.len() >= 44 && &bytes[0..4] == b"RIFF" {
-        debug!("stripping existing WAV header from backend response");
-        bytes = bytes.split_off(44);
-    }
-
-    // Apply a tiny fade to the PCM data to eliminate clicks
-    apply_pcm_fade(&mut bytes, SAMPLE_RATE_HZ);
-
-    build_tts_audio_response(encode_tts_wire_audio(&bytes, SAMPLE_RATE_HZ)?)
-}
-
-fn apply_pcm_fade(pcm: &mut [u8], sample_rate: u32) {
-    let fade_ms = 5;
-    let fade_samples = (sample_rate as f32 * (fade_ms as f32 / 1000.0)) as usize;
-    let num_samples = pcm.len() / 2;
-    if num_samples < fade_samples * 2 {
-        return;
-    }
-
-    for i in 0..fade_samples {
-        // Fade In
-        let start_bytes = [pcm[i * 2], pcm[i * 2 + 1]];
-        let mut sample = i16::from_le_bytes(start_bytes);
-        sample = (sample as f32 * (i as f32 / fade_samples as f32)) as i16;
-        let out_bytes = sample.to_le_bytes();
-        pcm[i * 2] = out_bytes[0];
-        pcm[i * 2 + 1] = out_bytes[1];
-
-        // Fade Out
-        let end_idx = num_samples - 1 - i;
-        let end_bytes = [pcm[end_idx * 2], pcm[end_idx * 2 + 1]];
-        let mut sample = i16::from_le_bytes(end_bytes);
-        sample = (sample as f32 * (i as f32 / fade_samples as f32)) as i16;
-        let out_bytes = sample.to_le_bytes();
-        pcm[end_idx * 2] = out_bytes[0];
-        pcm[end_idx * 2 + 1] = out_bytes[1];
-    }
-}
-
 /// Enforce deploy-time `tts_access` policy. Returns a log label (username or "guest").
 fn ensure_tts_access(cookie_header: Option<&str>) -> Result<String, HttpError> {
     let username = session::session_context(cookie_header)
@@ -511,96 +388,6 @@ fn ensure_tts_access(cookie_header: Option<&str>) -> Result<String, HttpError> {
             Ok(label)
         }
     }
-}
-
-async fn handle_fish_speech(text: String) -> Result<Response<Body>, HttpError> {
-    let request = FishSpeechRequest {
-        text,
-        reference_id: "default".to_string(),
-        streaming: false,
-        format: "wav".to_string(),
-    };
-
-    let config = config::app_config();
-    let base = config.tts_base_url.trim_end_matches('/');
-    let url = format!("{base}/v1/tts");
-
-    debug!(url = %url, "sending request to fish speech backend");
-
-    let response = HTTP_CLIENT
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach Fish Speech backend");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let bytes = response.bytes().await.unwrap_or_default();
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "Fish Speech backend returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
-    }
-
-    let bytes = response.bytes().await.map_err(|err| {
-        error!(?err, "failed to read Fish Speech response body");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
-    })?;
-
-    let (pcm, rate) = wav_pcm_and_rate(&bytes);
-    build_tts_audio_response(encode_tts_wire_audio(pcm, rate)?)
-}
-
-async fn handle_kokoro_tts(
-    text: String,
-    config: &config::AppConfig,
-) -> Result<Response<Body>, HttpError> {
-    let base = config.voice_service_base_url.trim_end_matches('/');
-    let url = format!("{base}/v1/tts/kokoro");
-
-    let voice = config.tts_voice.clone().unwrap_or_else(|| "af_heart".to_string());
-    let request = KokoroTtsRequest { text, voice };
-
-    debug!(url = %url, "sending request to Kokoro TTS voice service");
-
-    let response = HTTP_CLIENT
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach Kokoro TTS voice service");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
-        })?;
-
-    let sample_rate: u32 = response
-        .headers()
-        .get("X-Sample-Rate")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(24_000);
-
-    let status = response.status();
-    let mut bytes = response
-        .bytes()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to read Kokoro TTS response body");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
-        })?
-        .to_vec();
-
-    if !status.is_success() {
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "Kokoro TTS voice service returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
-    }
-
-    apply_pcm_fade(&mut bytes, sample_rate);
-    build_tts_audio_response(encode_tts_wire_audio(&bytes, sample_rate)?)
 }
 
 #[cfg(test)]
@@ -654,25 +441,6 @@ mod tests {
     }
 }
 
-async fn post_backend(
-    path: &str,
-    payload: &BackendRequest,
-) -> Result<reqwest::Response, HttpError> {
-    let config = config::app_config();
-    let base = config.tts_base_url.trim_end_matches('/');
-    let url = format!("{base}{path}");
-
-    HTTP_CLIENT
-        .post(url)
-        .json(payload)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach TTS backend");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
-        })
-}
-
 fn pcm_to_wav_header(data_len: u32, sample_rate: u32) -> Vec<u8> {
     let chunk_size = 36u32.saturating_add(data_len);
     let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
@@ -700,18 +468,6 @@ fn pcm_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
     let mut header = pcm_to_wav_header(data_len, sample_rate);
     header.extend_from_slice(pcm);
     header
-}
-
-/// Split backend WAV bytes into raw PCM plus its declared rate. Passes
-/// headerless PCM through with the default rate.
-fn wav_pcm_and_rate(bytes: &[u8]) -> (&[u8], u32) {
-    if bytes.len() >= 44 && &bytes[0..4] == b"RIFF" {
-        let rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-        let rate = if rate > 0 { rate } else { SAMPLE_RATE_HZ };
-        (&bytes[44..], rate)
-    } else {
-        (bytes, SAMPLE_RATE_HZ)
-    }
 }
 
 /// Encode raw mono 16-bit PCM (`sample_rate` Hz) into the configured wire
@@ -754,26 +510,4 @@ fn build_tts_audio_response(audio: TtsWireAudio) -> Result<Response<Body>, HttpE
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from(audio.bytes))
         .map_err(|err| map_response_build_err(err, "tts::audio_response"))
-}
-
-fn extract_backend_error(status: reqwest::StatusCode, body: &[u8]) -> String {
-    if let Ok(value) = serde_json::from_slice::<Value>(body) {
-        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
-            if !error.trim().is_empty() {
-                return error.trim().to_string();
-            }
-        }
-    }
-
-    if let Ok(text) = std::str::from_utf8(body) {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
-    status
-        .canonical_reason()
-        .unwrap_or("TTS backend provider error")
-        .to_string()
 }

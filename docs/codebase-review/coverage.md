@@ -33,6 +33,7 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | — | — | — | — | — | — |
 | S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | — | — | — | — | — | — |
 | S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | — | — | — | — | — | — |
+| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | — | — | — | — | — | — |
 | S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | — | — | — | — | — | — |
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | — | — | — | — | — | — |
 | T03 Shared test support | `chatbot-test-support/src/*` | R | — | — | — | — | — | — |
@@ -146,3 +147,9 @@ The new `static/stream-decoder.js` belongs to W01; the new `chatbot-server/tests
 Modularity coverage for W01 and T02 was stale during implementation and was revalidated for the changed stream-decoder boundaries through source/diff review and the passing full suite. The worker read the three browser parsers, server encoders and wire/test coverage; verified the shared tag/hold/console logic against the original loops; reviewed the explicit chat/regenerate/history adapters and template load order; and checked that no existing tests were modified. W01/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
 
 Runtime evidence for this batch: baseline job `20260916T175420-4b7dbb22aa88` passed with the new decoder plus characterization and original chat wiring untouched; the mixed-order regression failed as expected in job `20260916T180645-05a6588a814b` (`status=failed`, exit 101); the corrected wired implementation passed in final job `20260916T181236-a3251f9db599` (`status=passed`, exit 0). The earlier wired green job `20260916T180042-78771ee26d7f` is superseded: its assertions checked joined text only, not callback order.
+
+## Session 005 remediation coverage
+
+The new `chatbot-server/src/tts/backend.rs` belongs to S09; the new `chatbot-server/tests/tts_backend_boundary.rs` belongs to T02. The inventory grows to 302 paths in 38 units (31 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for S05 and T02 was stale during implementation and was revalidated for the changed TTS backend boundary through source/diff review and the passing full suite. The worker personally read the synthesis/HTTP flow, callers, error mappings and existing TTS tests; kept token lifetime, access policy, codec conversion and HTTP rendering in the parent; moved provider requests, the shared client, fade, WAV parsing, silence and error helpers narrowly with statuses/messages/log contexts preserved; and kept the encoded-size rejection status/message with retry reset via an explicit post-encode check. S09/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.

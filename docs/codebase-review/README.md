@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: [session 004 — shared stream decoder](#session-004--shared-stream-decoder-2026-09-16). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 005 — TTS backend-result boundary](#session-005--tts-backend-result-boundary-2026-09-17). Earlier checkpoints record their original scope and status.
 
 ## Purpose and authority
 
@@ -96,3 +96,15 @@ Verification used the full supported command, `testctl --project chatbot-rust --
 Implementation and this verification record belong to the pending local commit for this batch, based on `87f962b`. Rebuild/restart the webserver on the host to deploy it.
 
 **Next entry point:** finishing the TTS backend-result/HTTP boundary (MOD-011) is the next independent slice; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
+
+## Session 005 — TTS backend-result boundary, 2026-09-17
+
+The user authorized the MOD-011 backend slice as a primary implementation worker with no redelegation or commit. The worker personally read the synthesis/HTTP flow, route callers, error mappings, codec ownership and existing TTS tests before extracting the seam.
+
+**MOD-011 backend extraction verified:** private `chatbot-server/src/tts/backend.rs` owns provider synthesis and returns owned PCM plus sample rate (`synthesize_pcm` → `SynthesizedPcm`), never an Axum response. It holds the provider request shapes, the shared provider HTTP client, WAV parsing, per-provider fade, the silence fallback and backend error mapping with the existing `HttpError` adapter. `tts.rs` keeps token admission/cache/replay/cancel, access policy, codec conversion, HTTP rendering, and the encoded-size cache cap as an explicit post-encode check: oversize encoded clips are rejected with the same 400 `Invalid request body` status/message and `tts::stream::cache` context with the generating flag reset, so the token stays retryable. Provider requests, default rates, fade differences, error statuses/messages and log contexts are preserved verbatim; only the tracing target of moved log calls follows the module path (`chatbot_server::tts::backend`). No existing tests were modified. Codec, text-normalization, browser sentence policy, route and token ownership are unchanged; a longer-lived token-session owner remains open.
+
+Verification used the full supported command, `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`: the four new `tts_backend_boundary` HTTP characterization tests (fish WAV rate/bytes/replay, kokoro WAV rate/fade/replay, kokoro default-rate fallback, oversize rejection with retry reset) passed against the original implementation in job `20260917T010823-f68f1d440b58`; the refactored implementation passed in job `20260917T011458-bba885ff78f1` (both `status=passed`, exit 0). Logs are `temp/test-logs/modularity-mod011-baseline.log` and `temp/test-logs/modularity-mod011-final.log`. No application source changed after the final passing run. No GPU, APK, device or live-deployment validation is claimed.
+
+Implementation and this verification record belong to the pending local commit for this batch, based on `6ddcc33`. Rebuild/restart the webserver on the host to deploy it.
+
+**Next entry point:** MOD-011 retains only the token-session lifetime question; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
