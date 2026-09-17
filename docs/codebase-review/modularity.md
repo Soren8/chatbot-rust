@@ -46,6 +46,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 **Verification:** validate all mutation entry points, default-set/name policy, image edit/append/fork fidelity, cache cold/warm equivalence, and conflict handling. The dedicated security pass must examine whether cached reads rely on prior key verification outside the facade. The performance pass must measure projection/clone costs rather than assume savings.
 
+**Remediation — facade narrowed (session 010):** removed the unused service-level generic snapshot writer, cache export and two unused cache methods, plus seven storage-format exports with no repository consumers. Named service mutations retain internal CAS writes; domain types and the migration-tested `SetPayloadV1` export remain. Existing tests were unchanged and both full suites passed with no new warnings. Logical/materialized snapshot separation and cache normalization remain open; this closes only the unused public bypass/export portion.
+
 ## MOD-006 — Generation and mutation lifecycles have multiple owners
 
 **Evidence:** core prepare acquires an `AtomicBool` generation lock; server `ChatLockGuard` stores only a session ID and releases by looking up current global state (`chat_utils.rs:234–263`); core finalizers also unlock (`session.rs:1051,1455`); `StreamCompletionGuard` marks the server guard released after a closure calls the core finalizer (`chat_utils.rs:265–368`). Core finalizers return rendered stream-error strings rather than a typed commit outcome. Memory/reset/delete handlers separately perform a durable operation then update the session mirror (`memory.rs:130–150,240–265,372–391`; `reset_chat.rs:113–132`).

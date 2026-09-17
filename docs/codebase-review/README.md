@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: [session 009 — encryption-key cookie boundary](#session-009--encryption-key-cookie-boundary-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 010 — history facade tightening](#session-010--history-facade-tightening-2026-09-17). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
@@ -158,3 +158,11 @@ Implementation and this verification record belong to the local commit titled `M
 Seventeen new characterization tests in `chatbot-server/tests/enc_key_cookies_boundary.rs` cover header/account/generic precedence, empty and URL-encoded values, exact cookie flags and lifetimes, and verified promotion/fallback behavior. Existing tests were unchanged. The full supported executor suite passed before extraction (`20260917T221152-08c77a3e4e64`) and after extraction (`20260917T221739-1de89cde591d`), both exit 0. Logs: `temp/test-logs/modularity-mod008-cookies-baseline.log` and `temp/test-logs/modularity-mod008-cookies-final.log`. Primary review checked the moved implementation, compatibility exports, new tests and both logs, including provider-configuration validation. Only documentation changed after the final run.
 
 This batch is recorded in the local commit titled `Extract encryption-key cookie transport helpers`, based on `1dcdca2`. Rebuild/restart the webserver on the host to deploy. Next selection: narrow typed-error or history-facade visibility boundaries, preserving existing HTTP contracts. Phase 1 continues; the main-model read-only completion review has not begun.
+
+## Session 010 — history facade tightening, 2026-09-17
+
+The eighth remediation batch narrows MOD-005's public history boundary. Removed the unused service-level `HistoryService::commit_snapshot` bypass; named service mutations retain the private store's CAS writer. Removed the unused `SetCache` facade export, its two unused helpers (`with_limits`, `invalidate_user`), and seven storage-format exports (`BlobFormat`, `HeaderV1`, `ManifestPair`, `ManifestV1`, `PairPayloadV1`, `ImagePayloadV1`, `ThumbPayloadV1`). Domain types and `SetPayloadV1` remain available for current callers and migration compatibility tests. This is a Rust public-API reduction for hypothetical out-of-tree consumers; repository callers and HTTP behavior are preserved.
+
+Caller inventory found no consumers of the removed APIs. Existing history service, CAS/conflict, migration, image and cache tests provided behavioral coverage; no tests were modified or deleted. Full executor baseline `20260917T223122-938b876265b4` and final `20260917T223601-ac2cfb4c7d05` passed with exit 0 using `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Logs are `temp/test-logs/modularity-mod005-baseline.log` and `temp/test-logs/modularity-mod005-final.log`. Primary review checked every deletion/export change, retained internal writer call sites, passing provider-config validation and matching warning sets. Only documentation changed after the final run.
+
+This batch belongs to the local commit titled `Narrow history facade to used service APIs`, based on `a54c02e`. MOD-005 remains partial: logical versus materialized snapshot representations and cache normalization still need a focused design. Next entry point is a bounded typed-core-error or generation-lifecycle slice. Phase 1 remediation continues; phases 2–7 and the requested main-model read-only completion review remain pending. Host webserver rebuild/restart is required to deploy.

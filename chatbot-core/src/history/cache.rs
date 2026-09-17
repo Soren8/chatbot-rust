@@ -55,15 +55,6 @@ impl SetCache {
         }
     }
 
-    pub fn with_limits(capacity: usize, ttl: Duration) -> Self {
-        Self {
-            entries: Arc::new(DashMap::new()),
-            summaries: Arc::new(DashMap::new()),
-            capacity: capacity.max(1),
-            ttl,
-        }
-    }
-
     fn key(user: &str, set_id: SetId) -> (String, SetId) {
         (user.to_owned(), set_id)
     }
@@ -183,11 +174,6 @@ impl SetCache {
         let map_key = Self::key(user, set_id);
         self.entries.remove(&map_key);
         self.summaries.remove(&map_key);
-    }
-
-    pub fn invalidate_user(&self, user: &str) {
-        self.entries.retain(|(u, _), _| u != user);
-        self.summaries.retain(|(u, _), _| u != user);
     }
 
     fn evict_if_needed(&self) {

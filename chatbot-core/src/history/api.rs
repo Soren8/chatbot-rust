@@ -665,23 +665,6 @@ impl HistoryService {
         Ok(())
     }
 
-    pub fn commit_snapshot(
-        &self,
-        user: &str,
-        expected: SetVersion,
-        snapshot: &SetSnapshot,
-        key: &EncryptionKey,
-    ) -> Result<SetVersion, HistoryError> {
-        let user = normalise_user(user)?;
-        self.ensure_migrated(&user, key)?;
-        let v = self
-            .store
-            .commit_snapshot(&user, expected, snapshot, key)?;
-        self.remember_committed(&user, snapshot.clone(), v);
-        Ok(v)
-    }
-
-
     // --- content mutations (all CAS) ---
 
     pub fn append_pair(
