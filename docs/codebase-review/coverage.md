@@ -169,6 +169,8 @@ Modularity coverage for S01, S04 and T02 was stale during implementation and was
 
 ## Session 008 remediation coverage
 
+Session 011 adds `chatbot-server/tests/enc_key_validation_boundary.rs` to T02 (310 tracked paths). Targeted review covers the typed validator in core session, its compatibility adapter, direct server mappings and seven new behavioral tests. Pre-extraction characterization and corrected full-suite verification passed; broader core and HTTP boundaries retain their earlier dispositions.
+
 Session 010 changes only existing C04 history implementation files (`api.rs`, `cache.rs`, `mod.rs`); the inventory remains 309 paths. Caller/export inventory and primary diff review revalidated this narrowed facade, supported by baseline/final full-suite passes. No tests were modified. Other units retain their previous coverage.
 
 Session 009 adds `chatbot-server/src/enc_key_cookies.rs` to the server request boundary and `chatbot-server/tests/enc_key_cookies_boundary.rs` to T02, bringing the tracked inventory to 309 paths. Targeted primary review covered the verbatim extraction, compatibility exports and new behavioral tests; baseline/final full suites passed. Unchanged units retain their prior review scope.

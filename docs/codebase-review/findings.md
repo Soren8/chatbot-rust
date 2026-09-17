@@ -6,6 +6,8 @@ The continued modularity review is in [modularity.md](modularity.md): MOD-003 th
 
 ## MOD-001 — Core session APIs own HTTP serialization
 
+**Partial remediation (session 011):** encryption-key validation now returns `EncryptionKeyValidationError`, with direct server callers using one HTTP mapper. Core orchestration retains `require_encryption_key`'s `ServiceResponse` compatibility adapter. Exact rejection messages, verifier behavior, logs and error counting are preserved, verified by pre-extraction HTTP characterization and the corrected full suite. Other HTTP-shaped core outcomes remain open; see the session-011 checkpoint for regression evidence.
+
 **Disposition:** confirmed. **Priority:** P2. **Confidence:** high for boundary coupling. **Units:** C02, R01, S01/S03 consumers.
 
 **Evidence:** `chatbot-core/src/session.rs:38–43` defines `ServiceResponse` as numeric HTTP status, string headers, and body bytes; lines 520–549 serialize JSON and select HTTP statuses. Key-validation helpers return this response type (633–671), and `chat_prepare` returns it on failure (760–830). `chatbot-server/src/lib.rs:309–363` revalidates statuses/headers and builds an Axum response; `chat.rs:186–203` consumes this path. Independently, `chatbot-server/src/http_error.rs` already maps typed core errors into HTTP, including `HistoryError` at 86–110. That core error enum explicitly delegates HTTP mapping to the server (`history/api.rs:34–51`).

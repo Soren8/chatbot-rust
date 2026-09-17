@@ -9,8 +9,8 @@ use chatbot_core::{
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
-    map_serialization_err, map_session_err, HttpError,
+    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
+    map_response_build_err, map_serialization_err, map_session_err, HttpError,
 };
 
 /// Memory / system-prompt updates (no image payloads).
@@ -109,10 +109,10 @@ pub async fn handle_update_memory(
     }
 
     if let Some(username) = session.username.as_deref() {
-        if let Err(response) =
+        if let Err(err) =
             session::validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
-            return build_service_response(response);
+            return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = HistoryService::global().map_err(history_error_to_tuple)?;
@@ -219,10 +219,10 @@ pub async fn handle_update_system_prompt(
     }
 
     if let Some(username) = session.username.as_deref() {
-        if let Err(response) =
+        if let Err(err) =
             session::validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
-            return build_service_response(response);
+            return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = HistoryService::global().map_err(history_error_to_tuple)?;
@@ -338,10 +338,10 @@ pub async fn handle_delete_message(
         .map_err(|err| map_session_err(err, "memory::delete_message::session"))?;
 
     if let Some(username) = session.username.as_deref() {
-        if let Err(response) =
+        if let Err(err) =
             session::validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
-            return build_service_response(response);
+            return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history_svc = HistoryService::global().map_err(history_error_to_tuple)?;

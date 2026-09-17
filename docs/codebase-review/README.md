@@ -1,8 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 010 — history facade tightening](#session-010--history-facade-tightening-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 011 — typed encryption-key validation](#session-011--typed-encryption-key-validation-2026-09-17). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
+
+Current remediation count: nine committed batches through session 011. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -166,3 +168,13 @@ The eighth remediation batch narrows MOD-005's public history boundary. Removed 
 Caller inventory found no consumers of the removed APIs. Existing history service, CAS/conflict, migration, image and cache tests provided behavioral coverage; no tests were modified or deleted. Full executor baseline `20260917T223122-938b876265b4` and final `20260917T223601-ac2cfb4c7d05` passed with exit 0 using `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Logs are `temp/test-logs/modularity-mod005-baseline.log` and `temp/test-logs/modularity-mod005-final.log`. Primary review checked every deletion/export change, retained internal writer call sites, passing provider-config validation and matching warning sets. Only documentation changed after the final run.
 
 This batch belongs to the local commit titled `Narrow history facade to used service APIs`, based on `a54c02e`. MOD-005 remains partial: logical versus materialized snapshot representations and cache normalization still need a focused design. Next entry point is a bounded typed-core-error or generation-lifecycle slice. Phase 1 remediation continues; phases 2–7 and the requested main-model read-only completion review remain pending. Host webserver rebuild/restart is required to deploy.
+
+## Session 011 — typed encryption-key validation, 2026-09-17
+
+MOD-001 now has a narrow typed boundary: `session::validate_encryption_key_for_user` returns `EncryptionKeyValidationError::{Missing,Invalid,StoreUnavailable}`. Direct server callers in sets, memory, reset and preferences use one HTTP adapter. `require_encryption_key` retains its public `ServiceResponse` compatibility contract for core orchestration; two mirror helpers use that adapter. Exact 401/500 messages, verifier non-enrollment, cause logs and error counting are preserved. Chat/regenerate handlers, history status mappings, locks and cryptography are unchanged. Broader removal of HTTP-shaped core outcomes remains open.
+
+Five new HTTP characterization tests passed before extraction; two additional mapper regressions cover server-error counting. Primary review caught a lost counter increment and extra 5xx log in the first adapter. The counter regression failed before correction and the complete suite passed after correction. Existing tests were unchanged. Verification command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`.
+
+Evidence: clean baseline `20260917T224924-a885dc4da3c6`; pre-extraction characterization `20260917T225347-9b10d5a32e5f`; initial extraction `20260917T230028-fe028c782ca5` (all passed); instrumentation regression `20260917T230706-ee47aad2389d` (expected failure, counter 0 instead of 1); corrected final `20260917T230940-a5d05ec05060` (passed, exit 0, all seven new tests and provider-config validation green). Logs are `temp/test-logs/modularity-mod001-keys-{baseline,char,final,instrumentation-red,instrumentation-final}.log`. The final run supersedes the initial extraction result. Store-failure response/count mapping is tested directly; an actual failing filesystem-backed store was not injected. Primary reviewed all production adapters and the regression evidence. Only comments and documentation changed after the final run.
+
+Local commit title: `Return typed encryption-key validation errors`, based on `9b3e02a`. Next entry point: continue bounded core-outcome or generation-lease ownership work. Phase 1 and the requested main-model read-only completion review remain pending; phases 2–7 are unstarted. Rebuild/restart the webserver on the host to deploy.

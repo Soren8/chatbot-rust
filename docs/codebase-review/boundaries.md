@@ -88,6 +88,8 @@ POST `/tts` calls private `tts::text::sanitize_text` before token insertion. Tha
 
 ## Session 008 — remediated message-ownership boundary
 
+Session 011 gives encryption-key validation a typed core outcome consumed by a single server HTTP mapper. Core orchestration continues through `require_encryption_key`'s `ServiceResponse` adapter. Cause logging stays at validation, while the direct HTTP mapper preserves server-error counting and leaves response logging to middleware.
+
 Session 010 narrows the history facade to named service mutations and used types. `SetCache` and seven storage-format types are private implementation details; `SetPayloadV1` remains exported for migration compatibility. Generic snapshot commits remain available only inside the private store, not on `HistoryService`. Logical/materialized snapshot ownership is still unresolved.
 
 Session 009 additionally establishes `chatbot-server/src/enc_key_cookies.rs` as the encryption-key HTTP transport boundary, with compatibility re-exports from `chat_utils`. Core session/user/remember services still supply its state and verification dependencies; application composition and broader request-context ownership remain open.

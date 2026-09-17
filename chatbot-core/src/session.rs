@@ -630,28 +630,41 @@ fn unseal_session_data(
     Ok(())
 }
 
+/// Typed outcome of per-request encryption-key validation.
+///
+/// `Missing` covers both a missing key and a missing key verifier (no
+/// enrollment happens on data requests); `Invalid` is a wrong key;
+/// `StoreUnavailable` is a `UserStore` failure (already logged at the
+/// validation point).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionKeyValidationError {
+    Missing,
+    Invalid,
+    StoreUnavailable,
+}
+
 pub fn validate_encryption_key_for_user(
     username: &str,
     key: Option<&EncryptionKey>,
-) -> Result<(), ServiceResponse> {
+) -> Result<(), EncryptionKeyValidationError> {
     let Some(key) = key else {
-        return Err(unauthorized("Encryption key required. Please unlock."));
+        return Err(EncryptionKeyValidationError::Missing);
     };
 
-    let store =
-        UserStore::new().map_err(|err| map_store_error("failed to open user store", &err))?;
+    let store = UserStore::new()
+        .map_err(|err| map_store_unavailable("failed to open user store", &err))?;
 
     if !store
         .has_key_verifier(username)
-        .map_err(|err| map_store_error("failed to check key verifier", &err))?
+        .map_err(|err| map_store_unavailable("failed to check key verifier", &err))?
     {
-        return Err(unauthorized("Encryption key required. Please unlock."));
+        return Err(EncryptionKeyValidationError::Missing);
     }
     if !store
         .verify_encryption_key(username, key.as_bytes())
-        .map_err(|err| map_store_error("failed to verify encryption key", &err))?
+        .map_err(|err| map_store_unavailable("failed to verify encryption key", &err))?
     {
-        return Err(unauthorized("Invalid encryption key."));
+        return Err(EncryptionKeyValidationError::Invalid);
     }
 
     Ok(())
@@ -662,10 +675,18 @@ pub fn require_encryption_key<'a>(
     key: Option<&'a EncryptionKey>,
 ) -> Result<Option<&'a EncryptionKey>, ServiceResponse> {
     match username {
-        Some(name) => {
-            validate_encryption_key_for_user(name, key)?;
-            Ok(key)
-        }
+        Some(name) => match validate_encryption_key_for_user(name, key) {
+            Ok(()) => Ok(key),
+            Err(EncryptionKeyValidationError::Missing) => {
+                Err(unauthorized("Encryption key required. Please unlock."))
+            }
+            Err(EncryptionKeyValidationError::Invalid) => {
+                Err(unauthorized("Invalid encryption key."))
+            }
+            Err(EncryptionKeyValidationError::StoreUnavailable) => {
+                Err(server_error("internal error while accessing user store"))
+            }
+        },
         None => Ok(None),
     }
 }
@@ -755,6 +776,16 @@ fn map_fernet_error(context: &str, err: &FernetError) -> ServiceResponse {
 fn map_store_error(context: &str, err: &UserStoreError) -> ServiceResponse {
     error!(?err, "{context}");
     server_error("internal error while accessing user store")
+}
+
+/// Log a `UserStore` failure at the validation point and report it as a typed
+/// outcome; the HTTP mapper must not log the cause again.
+fn map_store_unavailable(
+    context: &str,
+    err: &UserStoreError,
+) -> EncryptionKeyValidationError {
+    error!(?err, "{context}");
+    EncryptionKeyValidationError::StoreUnavailable
 }
 
 pub fn chat_prepare(
@@ -1489,7 +1520,7 @@ pub fn update_session_memory_for_request(
     let store = SessionStore::global();
     let entry = store.entry(session_id);
     let mut data = entry.data.lock().unwrap();
-    validate_encryption_key_for_user(username, Some(key))?;
+    require_encryption_key(Some(username), Some(key))?;
     let key_bytes = key.as_bytes();
     unseal_session_data(&mut data, key_bytes, &resolve_default_prompt())?;
     if data.active_set_id != Some(set_id) {
@@ -1514,7 +1545,7 @@ pub fn update_session_system_prompt_for_request(
     let store = SessionStore::global();
     let entry = store.entry(session_id);
     let mut data = entry.data.lock().unwrap();
-    validate_encryption_key_for_user(username, Some(key))?;
+    require_encryption_key(Some(username), Some(key))?;
     let key_bytes = key.as_bytes();
     unseal_session_data(&mut data, key_bytes, &resolve_default_prompt())?;
     if data.active_set_id != Some(set_id) {

@@ -9,8 +9,8 @@ use chatbot_core::{
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_session_err, map_user_store_err,
-    HttpError,
+    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
+    map_session_err, map_user_store_err, HttpError,
 };
 
 #[derive(Deserialize)]
@@ -61,10 +61,10 @@ pub async fn handle_update_preferences(
 
     if let Some(username) = session.username {
         let encryption_key = crate::chat_utils::extract_enc_key(&headers);
-        if let Err(response) =
+        if let Err(err) =
             session::validate_encryption_key_for_user(&username, encryption_key.as_ref())
         {
-            return crate::build_response(response);
+            return Err(map_encryption_key_validation_err(err));
         }
 
         let mut store = UserStore::new().map_err(|err| {

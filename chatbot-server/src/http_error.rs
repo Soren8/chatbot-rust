@@ -1,7 +1,7 @@
 use axum::{http::StatusCode, Json};
 use chatbot_core::{
     history::HistoryError,
-    session::SessionError,
+    session::{EncryptionKeyValidationError, SessionError},
     user_store::UserStoreError,
 };
 use serde_json::{json, Value};
@@ -56,6 +56,31 @@ pub fn map_user_store_err(
 ) -> HttpError {
     error!(?err, context, "user store operation failed");
     api_error(StatusCode::INTERNAL_SERVER_ERROR, public_message)
+}
+
+/// Map a typed encryption-key validation outcome to a JSON error.
+///
+/// The `UserStore` cause for `StoreUnavailable` is already logged at the
+/// validation point in `chatbot_core::session`; this mapper adds no further
+/// cause logging. The 500 branch records the error counter; response logging
+/// belongs to the outer 5xx middleware.
+pub fn map_encryption_key_validation_err(err: EncryptionKeyValidationError) -> HttpError {
+    match err {
+        EncryptionKeyValidationError::Missing => api_error(
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.",
+        ),
+        EncryptionKeyValidationError::Invalid => {
+            api_error(StatusCode::UNAUTHORIZED, "Invalid encryption key.")
+        }
+        EncryptionKeyValidationError::StoreUnavailable => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing user store" })),
+            )
+        }
+    }
 }
 
 pub fn map_body_read_err(err: impl std::fmt::Debug, context: &'static str) -> HttpError {

@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Core encryption-key validation returns `EncryptionKeyValidationError` (`Missing`, `Invalid`, `StoreUnavailable`). Direct HTTP consumers map it in `chatbot-server/src/http_error.rs`; session orchestration retains a `ServiceResponse` adapter in `require_encryption_key`.
+
 Encryption-key HTTP transport helpers live in `chatbot-server/src/enc_key_cookies.rs`: header/account/generic cookie selection, cookie construction and verified account-cookie promotion. `chat_utils` retains compatibility re-exports for current callers.
 
 - **Shared naming and Fernet helpers** – `chatbot-core::names` owns username and set display-name validation. The history facade exports set-name operations with typed domain errors; HTTP handlers map them to responses. Private `fernet_crypto` provides session-mirror sealing and legacy history payload compatibility. The migration store delegates to these modules while preserving its compatibility APIs and error variants.
