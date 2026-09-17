@@ -410,29 +410,6 @@ public class NativeMicPlugin extends Plugin {
         }
 
         @Override
-        public int getVoiceCallVolume() {
-            if (audioManager == null) {
-                return -1;
-            }
-            return audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL);
-        }
-
-        @Override
-        public int getVoiceCallMaxVolume() {
-            if (audioManager == null) {
-                return 0;
-            }
-            return audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
-        }
-
-        @Override
-        public void setVoiceCallVolume(int index) {
-            if (audioManager != null && index >= 0) {
-                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, index, 0);
-            }
-        }
-
-        @Override
         public boolean requestCommunicationFocus() {
             requestAudioFocus();
             return hasAudioFocus;

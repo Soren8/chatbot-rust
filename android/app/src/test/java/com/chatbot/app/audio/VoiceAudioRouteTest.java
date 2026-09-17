@@ -13,7 +13,8 @@ import org.junit.Test;
 /**
  * Speakerphone routing must be a single session. Re-entering (TTS start, mic
  * restart) used to re-apply MODE_IN_COMMUNICATION / speakerphone and interrupt
- * playback with a volume jump.
+ * playback with a volume jump. Routing holds mode/speakerphone only and never
+ * touches stream volumes: the user owns every level.
  */
 public class VoiceAudioRouteTest {
     private FakeBackend backend;
@@ -32,7 +33,6 @@ public class VoiceAudioRouteTest {
         assertTrue(route.isActive());
         assertEquals(AudioManager.MODE_IN_COMMUNICATION, backend.mode);
         assertTrue(backend.speakerphoneOn);
-        assertEquals(backend.voiceCallMaxVolume, backend.voiceCallVolume);
         assertEquals(1, backend.setModeCount);
         assertEquals(1, backend.focusRequests);
         assertTrue(backend.speakerDeviceSet);
@@ -63,7 +63,6 @@ public class VoiceAudioRouteTest {
     public void exitRestoresCapturedPreVoiceStateNotCommunicationMode() {
         backend.mode = AudioManager.MODE_NORMAL;
         backend.speakerphoneOn = false;
-        backend.voiceCallVolume = 3;
 
         assertTrue(route.enter(backend));
         // Simulate a TTS session that would have overwritten previousMode
@@ -74,7 +73,6 @@ public class VoiceAudioRouteTest {
         assertFalse(route.isActive());
         assertEquals(AudioManager.MODE_NORMAL, backend.mode);
         assertFalse(backend.speakerphoneOn);
-        assertEquals(3, backend.voiceCallVolume);
         assertEquals(1, backend.focusAbandons);
         assertTrue(backend.communicationDeviceCleared);
     }
@@ -98,14 +96,12 @@ public class VoiceAudioRouteTest {
         backend.bluetoothAudio = true;
         backend.mode = AudioManager.MODE_NORMAL;
         backend.speakerphoneOn = false;
-        backend.voiceCallVolume = 3;
 
         assertFalse(route.enter(backend));
 
         assertFalse(route.isActive());
         assertEquals(AudioManager.MODE_NORMAL, backend.mode);
         assertFalse(backend.speakerphoneOn);
-        assertEquals(3, backend.voiceCallVolume);
         assertEquals(0, backend.setModeCount);
         assertEquals(0, backend.setSpeakerphoneCount);
         assertEquals(0, backend.focusRequests);
@@ -126,8 +122,6 @@ public class VoiceAudioRouteTest {
     private static final class FakeBackend implements VoiceAudioRoute.Backend {
         int mode = AudioManager.MODE_NORMAL;
         boolean speakerphoneOn;
-        int voiceCallVolume = 4;
-        final int voiceCallMaxVolume = 7;
         int setModeCount;
         int setSpeakerphoneCount;
         int focusRequests;
@@ -157,21 +151,6 @@ public class VoiceAudioRouteTest {
         public void setSpeakerphoneOn(boolean on) {
             setSpeakerphoneCount++;
             speakerphoneOn = on;
-        }
-
-        @Override
-        public int getVoiceCallVolume() {
-            return voiceCallVolume;
-        }
-
-        @Override
-        public int getVoiceCallMaxVolume() {
-            return voiceCallMaxVolume;
-        }
-
-        @Override
-        public void setVoiceCallVolume(int index) {
-            voiceCallVolume = index;
         }
 
         @Override

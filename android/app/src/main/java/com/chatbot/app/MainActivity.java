@@ -1,5 +1,6 @@
 package com.chatbot.app;
 
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -51,6 +52,10 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeSecureKeyPlugin.class);
         registerPlugin(LoggerPlugin.class);
         super.onCreate(savedInstanceState);
+        // TTS plays on STREAM_MUSIC, but MODE_IN_COMMUNICATION makes the
+        // hardware keys default to STREAM_VOICE_CALL. Pin them to MUSIC so
+        // they always drive TTS loudness.
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
     }
 
 
