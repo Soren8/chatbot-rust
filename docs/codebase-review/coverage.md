@@ -34,6 +34,7 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | — | — | — | — | — | — |
 | S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | — | — | — | — | — | — |
 | S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | — | — | — | — | — | — |
+| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | — | — | — | — | — | — |
 | S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | — | — | — | — | — | — |
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | — | — | — | — | — | — |
 | T03 Shared test support | `chatbot-test-support/src/*` | R | — | — | — | — | — | — |
@@ -153,3 +154,9 @@ Runtime evidence for this batch: baseline job `20260916T175420-4b7dbb22aa88` pas
 The new `chatbot-server/src/tts/backend.rs` belongs to S09; the new `chatbot-server/tests/tts_backend_boundary.rs` belongs to T02. The inventory grows to 302 paths in 38 units (31 `R`, seven `B`). These additions do not advance the six later review passes.
 
 Modularity coverage for S05 and T02 was stale during implementation and was revalidated for the changed TTS backend boundary through source/diff review and the passing full suite. The worker personally read the synthesis/HTTP flow, callers, error mappings and existing TTS tests; kept token lifetime, access policy, codec conversion and HTTP rendering in the parent; moved provider requests, the shared client, fade, WAV parsing, silence and error helpers narrowly with statuses/messages/log contexts preserved; and kept the encoded-size rejection status/message with retry reset via an explicit post-encode check. S09/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
+
+## Session 006 remediation coverage
+
+The new `chatbot-server/src/tts/store.rs` belongs to S10. The inventory grows to 303 paths in 39 units (32 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for S05 was stale during implementation and was revalidated for the changed TTS token-store boundary through source/diff review and the passing full suite. The worker read the token/HTTP flow, callers, error mappings and existing TTS tests; moved the wire-audio type, pending entries, TTL/cap/replay policy, prune/eviction helpers, cancel and the generation guard narrowly into the owned store with statuses/messages/headers/log contexts preserved; kept one global parent store plus minting, access policy, codec conversion, the encoded-size rejection with retry reset, and HTTP rendering; and preserved token-collision overwrite rather than fixing it. S10 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.

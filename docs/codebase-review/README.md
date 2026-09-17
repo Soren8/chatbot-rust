@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: [session 005 — TTS backend-result boundary](#session-005--tts-backend-result-boundary-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 006 — TTS token-store boundary](#session-006--tts-token-store-boundary-2026-09-17). Earlier checkpoints record their original scope and status.
 
 ## Purpose and authority
 
@@ -108,3 +108,15 @@ Verification used the full supported command, `testctl --project chatbot-rust --
 Implementation and this verification record belong to the pending local commit for this batch, based on `6ddcc33`. Rebuild/restart the webserver on the host to deploy it.
 
 **Next entry point:** MOD-011 retains only the token-session lifetime question; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
+
+## Session 006 — TTS token-store boundary, 2026-09-17
+
+The user authorized the next modularity batch on `modularity-refactor`. The primary reviewed the token lifecycle before delegating the store extraction and reviewed the resulting implementation. Characterization tests (prune/expiry/eviction/collision) plus the existing inline capacity test moved verbatim into the new module.
+
+**MOD-011 store extraction verified:** private `chatbot-server/src/tts/store.rs` owns the token-session lifecycle (`PendingTtsStore` over an `RwLock` map): admission with prune/evict-or-reject, `begin` arbitration into cached audio, first generation with a lease, busy, missing or exhausted, `cancel`, and a `GenerationLease` (`complete`/`fail`/drop) that releases the generating flag. `tts.rs` keeps one global `Lazy` store plus token minting, access policy, codec conversion, HTTP rendering, and the encoded-size cache cap with retry reset; handlers hold no map accesses and no lock crosses synthesis. TTL (10m), cap (128), oldest-cached-then->=60s-ungenerated-nongenerating eviction, three cached replays, statuses/messages/headers, the 8 MiB cap, missing-cancel 204, the invalid-token debug log, and token-collision overwrite are preserved verbatim; no silent fixes. Poison behavior is unchanged: store operations expect with `tts lock` exactly where the parent did, while lease drop stays best-effort. Six new store tests (busy, drop reset, success caching, three-replays-then-exhaustion, cancel-while-generating without reinsertion, independent stores) pass with the moved suite and the full HTTP coverage. No existing tests were modified. MOD-011 scoped store ownership is complete; the single process-global store remains a MOD-003 composition lead and browser sentence policy stays a separate earlier stage.
+
+Verification used the full supported command, `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`: the original implementation plus characterization passed in job `20260917T203605-4e0a8690a406`; the refactored implementation passed in job `20260917T204638-899441c20432` (both `status=passed`, exit 0). Logs are `temp/test-logs/modularity-mod011-store-baseline.log` and `temp/test-logs/modularity-mod011-store-final.log`. An intermediate final attempt failed only on a borrowck error in two new tests (`status=failed`, exit 101); production code was unchanged by that fix. No application source changed after the final passing run. No GPU, APK, device or live-deployment validation is claimed.
+
+Implementation and this verification record belong to the pending local commit for this batch, based on `36752c8`. Rebuild/restart the webserver on the host to deploy it.
+
+**Next entry point:** MOD-011 is complete for its scoped store ownership; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.

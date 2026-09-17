@@ -1,7 +1,3 @@
-use std::collections::HashMap;
-use std::sync::RwLock;
-use std::time::{Duration, Instant};
-
 use axum::{
     body::{self, Body},
     extract::Path,
@@ -25,37 +21,17 @@ use crate::http_error::{
 use crate::tts_opus;
 
 mod backend;
+mod store;
 mod text;
+use store::{BeginOutcome, PendingTtsStore, TtsWireAudio};
 use text::sanitize_text;
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const MAX_TTS_AUDIO_BYTES: usize = 8 * 1024 * 1024;
-const MAX_PENDING_TTS: usize = 128;
-const TTS_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
-// Initial transfer plus three retries, matching NativeVoiceTts MAX_CLIP_ATTEMPTS.
-const MAX_TTS_REPLAYS: u8 = 3;
 const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
 
-/// Final wire bytes for one TTS clip, in whatever codec the config selects.
-/// Cached verbatim for replays so synthesis and encoding both happen once.
-#[derive(Debug, Clone)]
-struct TtsWireAudio {
-    bytes: Vec<u8>,
-    content_type: String,
-    filename: String,
-}
-
-struct PendingTts {
-    text: String,
-    audio: Option<TtsWireAudio>,
-    created_at: Instant,
-    replay_count: u8,
-    generating: bool,
-}
-
-static PENDING_TTS: Lazy<RwLock<HashMap<String, PendingTts>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+static PENDING_TTS: Lazy<PendingTtsStore> = Lazy::new(PendingTtsStore::new);
 
 #[derive(Debug, Deserialize)]
 struct ApiTtsRequest {
@@ -137,20 +113,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
     
-    let inserted = {
-        let mut map = PENDING_TTS.write().expect("tts lock");
-        insert_pending_tts(
-            &mut map,
-            token.clone(),
-            PendingTts {
-                text: cleaned,
-                audio: None,
-                created_at: Instant::now(),
-                replay_count: 0,
-                generating: false,
-            },
-        )
-    };
+    let inserted = PENDING_TTS.insert(token.clone(), cleaned);
     if !inserted {
         return Err(api_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -171,50 +134,24 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .map_err(|err| map_response_build_err(err, "tts::post::token_response"))
 }
 
-struct GeneratingGuard<'a> {
-    token: &'a str,
-    active: bool,
-}
-
-impl<'a> Drop for GeneratingGuard<'a> {
-    fn drop(&mut self) {
-        if self.active {
-            if let Ok(mut map) = PENDING_TTS.write() {
-                if let Some(pending) = map.get_mut(self.token) {
-                    pending.generating = false;
-                }
-            }
-        }
-    }
-}
-
 pub async fn handle_tts_stream(
     Path(token): Path<String>,
 ) -> Result<Response<Body>, HttpError> {
-    let (cleaned, cached_audio, _created_at) = {
-        let mut map = PENDING_TTS.write().expect("tts lock");
-        prune_pending_tts(&mut map);
-        let pending = map.get_mut(&token).ok_or_else(|| {
+    let (cleaned, cached_audio, lease) = match PENDING_TTS.begin(&token) {
+        BeginOutcome::Cached(audio) => (String::new(), Some(audio), None),
+        BeginOutcome::Begin { text, lease } => (text, None, Some(lease)),
+        BeginOutcome::Busy => {
+            return Err(api_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "TTS generation already in progress",
+            ));
+        }
+        BeginOutcome::Missing => {
             debug!(token = %token, "invalid or expired TTS token");
-            api_error(StatusCode::NOT_FOUND, "Invalid or expired token")
-        })?;
-        let created_at = pending.created_at;
-        if let Some(audio) = pending.audio.clone() {
-            if pending.replay_count >= MAX_TTS_REPLAYS {
-                map.remove(&token);
-                return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
-            }
-            pending.replay_count += 1;
-            (String::new(), Some(audio), created_at)
-        } else {
-            if pending.generating {
-                return Err(api_error(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "TTS generation already in progress",
-                ));
-            }
-            pending.generating = true;
-            (pending.text.clone(), None, created_at)
+            return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
+        }
+        BeginOutcome::Exhausted => {
+            return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
         }
     };
 
@@ -222,10 +159,7 @@ pub async fn handle_tts_stream(
         return build_tts_audio_response(audio);
     }
 
-    let mut generating_guard = GeneratingGuard {
-        token: &token,
-        active: true,
-    };
+    let lease = lease.expect("begin without cached audio yields a generation lease");
 
     let result = backend::synthesize_pcm(cleaned.clone()).await;
     match result {
@@ -233,43 +167,24 @@ pub async fn handle_tts_stream(
             let audio = match encode_tts_wire_audio(&clip.pcm, clip.sample_rate) {
                 Ok(audio) => audio,
                 Err(err) => {
-                    generating_guard.active = false;
-                    let mut map = PENDING_TTS.write().expect("tts lock");
-                    if let Some(pending) = map.get_mut(&token) {
-                        pending.generating = false;
-                    }
+                    lease.fail();
                     return Err(err);
                 }
             };
             // Apply the size cap to encoded bytes before caching for replay.
             if audio.bytes.len() > MAX_TTS_AUDIO_BYTES {
-                generating_guard.active = false;
+                lease.fail();
                 let mapped = map_body_read_err(
                     format!("encoded TTS clip exceeds {MAX_TTS_AUDIO_BYTES} bytes"),
                     "tts::stream::cache",
                 );
-                let mut map = PENDING_TTS.write().expect("tts lock");
-                if let Some(pending) = map.get_mut(&token) {
-                    pending.generating = false;
-                }
                 return Err(mapped);
             }
-            generating_guard.active = false;
-            let mut map = PENDING_TTS.write().expect("tts lock");
-            if let Some(pending) = map.get_mut(&token) {
-                pending.text.clear();
-                pending.audio = Some(audio.clone());
-                pending.replay_count = 0;
-                pending.generating = false;
-            }
+            let audio = lease.complete(audio);
             build_tts_audio_response(audio)
         }
         Err(err) => {
-            generating_guard.active = false;
-            let mut map = PENDING_TTS.write().expect("tts lock");
-            if let Some(pending) = map.get_mut(&token) {
-                pending.generating = false;
-            }
+            lease.fail();
             Err(err)
         }
     }
@@ -299,51 +214,11 @@ pub async fn handle_tts_cancel(
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let mut map = PENDING_TTS.write().expect("tts lock");
-    map.remove(&token);
+    PENDING_TTS.cancel(&token);
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body(Body::empty())
         .map_err(|err| map_response_build_err(err, "tts::cancel"))?)
-}
-
-fn prune_pending_tts(map: &mut HashMap<String, PendingTts>) {
-    map.retain(|_, pending| pending.created_at.elapsed() <= TTS_TOKEN_TTL);
-}
-
-fn insert_pending_tts(
-    map: &mut HashMap<String, PendingTts>,
-    token: String,
-    pending: PendingTts,
-) -> bool {
-    prune_pending_tts(map);
-    if !map.contains_key(&token) && map.len() >= MAX_PENDING_TTS {
-        let oldest_cached = map
-            .iter()
-            .filter(|(_, pending)| pending.audio.is_some() && !pending.generating)
-            .min_by_key(|(_, pending)| pending.created_at)
-            .map(|(token, _)| token.clone());
-        if let Some(oldest) = oldest_cached {
-            map.remove(&oldest);
-        } else {
-            let stale_ungenerated = map
-                .iter()
-                .filter(|(_, pending)| {
-                    pending.audio.is_none()
-                        && !pending.generating
-                        && pending.created_at.elapsed() >= Duration::from_secs(60)
-                })
-                .min_by_key(|(_, pending)| pending.created_at)
-                .map(|(token, _)| token.clone());
-            if let Some(stale) = stale_ungenerated {
-                map.remove(&stale);
-            } else {
-                return false;
-            }
-        }
-    }
-    map.insert(token, pending);
-    true
 }
 
 /// Enforce deploy-time `tts_access` policy. Returns a log label (username or "guest").
@@ -387,57 +262,6 @@ fn ensure_tts_access(cookie_header: Option<&str>) -> Result<String, HttpError> {
             }
             Ok(label)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pending_tts_capacity_does_not_evict_oldest_pending_entry() {
-        let mut map = HashMap::new();
-        for index in 0..MAX_PENDING_TTS {
-            let token = format!("token-{index}");
-            map.insert(
-                token,
-                PendingTts {
-                    text: "queued".to_string(),
-                    audio: None,
-                    created_at: Instant::now(),
-                    replay_count: 0,
-                    generating: false,
-                },
-            );
-        }
-        let oldest = map
-            .iter()
-            .min_by_key(|(_, pending)| pending.created_at)
-            .map(|(token, _)| token.clone())
-            .expect("full map has an oldest entry");
-
-        let inserted = insert_pending_tts(
-            &mut map,
-            "new-token".to_string(),
-            PendingTts {
-                text: "new".to_string(),
-                audio: None,
-                created_at: Instant::now(),
-                replay_count: 0,
-                generating: false,
-            },
-        );
-
-        assert_eq!(map.len(), MAX_PENDING_TTS);
-        assert!(!inserted);
-        assert!(
-            map.contains_key(&oldest),
-            "a queued token must not be silently evicted when the cap is full"
-        );
-        assert!(
-            !map.contains_key("new-token"),
-            "a new token must be rejected when no safe cache entry can be evicted"
-        );
     }
 }
 
