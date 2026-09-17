@@ -88,4 +88,6 @@ POST `/tts` calls private `tts::text::sanitize_text` before token insertion. Tha
 
 ## Session 008 — remediated message-ownership boundary
 
+Session 009 additionally establishes `chatbot-server/src/enc_key_cookies.rs` as the encryption-key HTTP transport boundary, with compatibility re-exports from `chat_utils`. Core session/user/remember services still supply its state and verification dependencies; application composition and broader request-context ownership remain open.
+
 `chatbot-server/src/providers/messages.rs` owns the shared message DTO (`ContentPart`/`ImageUrlPart`/`ChatMessageContent`/`ChatMessagePayload` plus constructors) with OpenAI-compatible serialization; `generation.rs`, `message_utils.rs`, `xai.rs`, `search.rs`, the OpenAI internals and `payload::ChatCompletionRequest` resolve through the neutral module, while `providers::openai::messages` remains as a re-export. Handler, search-gating, XAI mapping and wire-shape behavior are unchanged. Baseline and final full-suite evidence is in the session-008 checkpoint.

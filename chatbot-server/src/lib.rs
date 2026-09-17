@@ -18,6 +18,7 @@ mod brave;
 mod chat;
 pub mod chat_utils;
 pub mod client_logs;
+pub mod enc_key_cookies;
 mod health;
 pub mod http_error;
 mod home;

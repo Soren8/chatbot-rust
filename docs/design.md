@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Encryption-key HTTP transport helpers live in `chatbot-server/src/enc_key_cookies.rs`: header/account/generic cookie selection, cookie construction and verified account-cookie promotion. `chat_utils` retains compatibility re-exports for current callers.
+
 - **Shared naming and Fernet helpers** – `chatbot-core::names` owns username and set display-name validation. The history facade exports set-name operations with typed domain errors; HTTP handlers map them to responses. Private `fernet_crypto` provides session-mirror sealing and legacy history payload compatibility. The migration store delegates to these modules while preserving its compatibility APIs and error variants.
 - **Speech-text boundary** – Private `chatbot-server/src/tts/text.rs` transforms submitted text before TTS token insertion: reasoning/markup/URLs/emoji/citations are removed, then currencies, abbreviations/symbols and numeric forms are expanded before whitespace cleanup. Browser sentence preparation runs earlier; the server stage applies to every `/tts` submission. Token-session lifecycle (admission, cached/replay/busy/missing arbitration, cancel, generation lease) lives in private `tts/store.rs` behind one global parent store; token minting, access policy, codec conversion and HTTP rendering remain in `tts.rs`; provider synthesis lives in private `tts/backend.rs`, which returns owned PCM plus sample rate (never an HTTP response). Opus conversion stays in `tts_opus.rs`.
 

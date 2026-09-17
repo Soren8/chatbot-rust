@@ -169,6 +169,8 @@ Modularity coverage for S01, S04 and T02 was stale during implementation and was
 
 ## Session 008 remediation coverage
 
+Session 009 adds `chatbot-server/src/enc_key_cookies.rs` to the server request boundary and `chatbot-server/tests/enc_key_cookies_boundary.rs` to T02, bringing the tracked inventory to 309 paths. Targeted primary review covered the verbatim extraction, compatibility exports and new behavioral tests; baseline/final full suites passed. Unchanged units retain their prior review scope.
+
 The new `chatbot-server/src/providers/messages.rs` belongs to S04; the new `chatbot-server/tests/provider_messages.rs` belongs to T02. The inventory grows to 307 paths in 39 units (32 `R`, seven `B`). These additions do not advance the six later review passes.
 
 Modularity coverage for S04 and T02 was stale during implementation and was revalidated for the changed message-ownership boundary through source/diff review and the passing full suite. The worker inventoried every `openai::messages` consumer, moved the shared types and constructors verbatim into the neutral module, migrated all production imports, kept `openai::messages` as a re-export, preserved serialization/constructors/images/tool-call/`None` omission and the XAI mapping with no trait or schema redesign, and corrected the trait-based provider abstraction claim in `docs/design.md` to the concrete enum dispatch. S04/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.

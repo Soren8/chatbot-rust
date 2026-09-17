@@ -1,6 +1,12 @@
 # Codebase review program
 
-Latest resume point: [session 008 — shared message ownership](#session-008--shared-message-ownership-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 009 — encryption-key cookie boundary](#session-009--encryption-key-cookie-boundary-2026-09-17). Earlier checkpoints record their original scope and status.
+
+## Overall phase status and review gate
+
+Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
+
+Seven remediation batches have landed through session 009. Verified boundaries include live naming/Fernet helpers, browser stream decoding, TTS text/backend/token-store ownership, shared generation dispatch/message ownership, and encryption-key cookie transport. Remaining structural work includes typed core outcomes, session/chat separation, generation lease ownership, application-service composition, history API boundaries, broader request context, browser/native voice coordination, credential-cache interfaces, voice-service lifetimes and distribution settings. Auto support requires a contract decision. Partial findings and compatibility decisions must receive explicit dispositions before the phase-completion review; cross-pass security/correctness leads remain separately tracked.
 
 ## Purpose and authority
 
@@ -144,3 +150,11 @@ Verification used the full supported command, `testctl --project chatbot-rust --
 Implementation and this verification record belong to the local commit titled `Move shared provider messages out of OpenAI adapter`, based on `6768d68`. Only comments, whitespace and documentation changed after the final passing run. Rebuild/restart the webserver on the host to deploy it.
 
 **Next entry point:** MOD-007 ownership is complete for the shared DTO with OpenAI-compatible serialization retained; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
+
+## Session 009 — encryption-key cookie boundary, 2026-09-17
+
+`chatbot-server/src/enc_key_cookies.rs` now owns encryption-key header/cookie extraction, account-cookie naming, cookie construction and verified promotion. The implementation moved verbatim from `chat_utils.rs`; explicit re-exports preserve existing public paths and callers. Request authorization, proxy identity, streaming guards and core storage are unchanged. MOD-008 is partially remediated; broader request-context and session/remember-cookie ownership remain open.
+
+Seventeen new characterization tests in `chatbot-server/tests/enc_key_cookies_boundary.rs` cover header/account/generic precedence, empty and URL-encoded values, exact cookie flags and lifetimes, and verified promotion/fallback behavior. Existing tests were unchanged. The full supported executor suite passed before extraction (`20260917T221152-08c77a3e4e64`) and after extraction (`20260917T221739-1de89cde591d`), both exit 0. Logs: `temp/test-logs/modularity-mod008-cookies-baseline.log` and `temp/test-logs/modularity-mod008-cookies-final.log`. Primary review checked the moved implementation, compatibility exports, new tests and both logs, including provider-configuration validation. Only documentation changed after the final run.
+
+This batch is recorded in the local commit titled `Extract encryption-key cookie transport helpers`, based on `1dcdca2`. Rebuild/restart the webserver on the host to deploy. Next selection: narrow typed-error or history-facade visibility boundaries, preserving existing HTTP contracts. Phase 1 continues; the main-model read-only completion review has not begun.

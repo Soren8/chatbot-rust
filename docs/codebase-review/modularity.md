@@ -80,6 +80,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 **Verification:** session/key/account combinations, expired/unknown cookies, CSRF rejection, safe read endpoints, guest routes, remember rotation and account switching. Record and reproduce the log-authorization defect separately (SEC-002); do not hide a behavior fix inside extraction.
 
+**Remediation — cookie transport extracted (session 009):** `enc_key_cookies.rs` owns encryption-key extraction, naming, construction and verified account-cookie promotion; `chat_utils` re-exports preserve existing callers. Seventeen new pre-extraction characterization tests and both full suites pass. The implementation moved verbatim. Request-context adapters, session/remember-cookie ownership and the separately tracked SEC-002 predicate mismatch remain open.
+
 ## MOD-009 — Browser application state is coupled to DOM and global initialization
 
 **Evidence:** all 6,355 lines of `static/chat.js` were read. It initializes config/native bridges and patches global fetch (79–354), owns history/version state (544–765), renders messages (959–1401,1968–2067), owns generation (2069–2159,3182–3393,4384–4695), implements TTS (1442–1612,2161–3149,5317–5652), and owns VAD/voice lifecycle (4869–6304). The main ready closure exports selected functions to `window` while other helpers reference outer mutable state.
