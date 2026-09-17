@@ -1,4 +1,4 @@
-use crate::providers::openai::messages::{ChatMessageContent, ContentPart, ImageUrlPart};
+use crate::providers::messages::{ChatMessageContent, ContentPart, ImageUrlPart};
 
 const IMAGE_PATTERN: &str = "[IMAGE:";
 const IMAGE_TRAILER: char = ']';

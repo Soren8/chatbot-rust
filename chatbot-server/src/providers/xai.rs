@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tracing::{debug, error, warn};
 
 use chatbot_core::config::ProviderConfig;
-use crate::providers::openai::messages::{ChatMessageContent, ChatMessagePayload, ContentPart};
+use crate::providers::messages::{ChatMessageContent, ChatMessagePayload, ContentPart};
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]

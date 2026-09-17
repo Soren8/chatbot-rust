@@ -1,7 +1,7 @@
 //! Shared generation dispatch.
 //!
 //! Both `/chat` and `/regenerate` construct the same closed provider set,
-//! map core messages through the existing OpenAI-owned DTO, and apply the
+//! map core messages through the shared message DTO, and apply the
 //! same search gating. Request validation, saved-turn rendering with
 //! append-versus-replace semantics, stream guards and finalizers stay in the
 //! handlers.
@@ -17,7 +17,7 @@ use futures_util::Stream;
 use tracing::{error, warn};
 
 use crate::providers::message_utils::parse_message_content;
-use crate::providers::openai::messages::ChatMessagePayload;
+use crate::providers::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
 use crate::providers::xai::XaiProvider;
 

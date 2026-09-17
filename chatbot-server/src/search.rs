@@ -8,7 +8,7 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::brave::BraveClient;
-use crate::providers::openai::messages::ChatMessagePayload;
+use crate::providers::messages::ChatMessagePayload;
 use crate::providers::openai::{OpenAiProvider, ToolStreamChunk};
 
 const MAX_SEARCH_RESULT_LEN: usize = 8_000;

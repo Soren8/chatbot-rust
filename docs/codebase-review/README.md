@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: [session 007 — shared generation dispatch](#session-007--shared-generation-dispatch-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 008 — shared message ownership](#session-008--shared-message-ownership-2026-09-17). Earlier checkpoints record their original scope and status.
 
 ## Purpose and authority
 
@@ -132,3 +132,15 @@ Verification used the full supported command, `testctl --project chatbot-rust --
 Implementation and this verification record belong to the pending local commit for this batch, based on `4bf36a0`. Rebuild/restart the webserver on the host to deploy it.
 
 **Next entry point:** MOD-007 scoped dispatch is complete with the shared DTO still open; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
+
+## Session 008 — shared message ownership, 2026-09-17
+
+The next authorized modularity batch addresses MOD-007 message ownership. Consumer inventory covered generation, message utilities, XAI, search, the OpenAI internals and `payload::ChatCompletionRequest`; no test-tree or core consumers used the old path. Primary review compared the moved types and constructors with the original definitions and checked every production import change.
+
+**MOD-007 message ownership verified:** `chatbot-server/src/providers/messages.rs` owns `ContentPart`/`ImageUrlPart`/`ChatMessageContent`/`ChatMessagePayload` and the `system`/`user`/`user_with_content`/`assistant` constructors verbatim; all production imports resolve through the neutral module. `providers::openai::messages` remains as a re-export so existing paths keep compiling. Serialization, constructors, images/tool-call/`None` omission, the XAI `input_text`/`input_image` mapping and all behavior are preserved; no existing tests were modified and no traits or schema redesign were introduced. Ownership is decoupled but the representation retains OpenAI-compatible serialization; no comprehensive provider-neutral domain redesign is claimed. `docs/design.md` no longer claims a trait-based provider abstraction: dispatch is recorded as the concrete `GenerationProvider` enum.
+
+Verification used the full supported command, `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`: the original implementation plus 4 new `provider_messages` upstream-capture characterization tests (user text shape with envelope and null omission, image text-plus-`image_url` parts, system plain string, second-turn assistant plain string; XAI mapping already pinned by `generation_dispatch.rs`) passed in job `20260917T215233-52d0e6ae1e67`; the refactored implementation passed in job `20260917T215738-03aef1cabdc2` (both `status=passed`, exit 0). Logs are `temp/test-logs/modularity-mod007-messages-baseline.log` and `temp/test-logs/modularity-mod007-messages-final.log`. No GPU, APK, device or live-deployment validation is claimed.
+
+Implementation and this verification record belong to the local commit titled `Move shared provider messages out of OpenAI adapter`, based on `6768d68`. Only comments, whitespace and documentation changed after the final passing run. Rebuild/restart the webserver on the host to deploy it.
+
+**Next entry point:** MOD-007 ownership is complete for the shared DTO with OpenAI-compatible serialization retained; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.

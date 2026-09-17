@@ -10,7 +10,7 @@ use tracing::{debug, error, warn};
 
 use chatbot_core::config::ProviderConfig;
 
-use self::messages::ChatMessagePayload;
+use crate::providers::messages::ChatMessagePayload;
 use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};
 
 /// Extra attempts after an upstream `429 Too Many Requests` when the provider
@@ -36,78 +36,9 @@ pub enum ToolStreamChunk {
 }
 
 pub mod messages {
-    use serde::Serialize;
-    use serde_json::Value;
-
-    #[derive(Clone, Serialize)]
-    #[serde(tag = "type", rename_all = "snake_case")]
-    pub enum ContentPart {
-        Text { text: String },
-        ImageUrl { image_url: ImageUrlPart },
-    }
-
-    #[derive(Clone, Serialize)]
-    pub struct ImageUrlPart {
-        pub url: String,
-    }
-
-    #[derive(Clone, Serialize)]
-    #[serde(untagged)]
-    pub enum ChatMessageContent {
-        Text(String),
-        MultiModal(Vec<ContentPart>),
-    }
-
-    #[derive(Clone, Serialize)]
-    pub struct ChatMessagePayload {
-        pub role: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub content: Option<ChatMessageContent>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub tool_calls: Option<Vec<Value>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub tool_call_id: Option<String>,
-    }
-
-    impl ChatMessagePayload {
-        pub fn system(content: String) -> Self {
-            Self {
-                role: "system".to_string(),
-                content: Some(ChatMessageContent::Text(content)),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-
-        pub fn user(content: String) -> Self {
-            Self {
-                role: "user".to_string(),
-                content: Some(ChatMessageContent::MultiModal(vec![
-                    ContentPart::Text { text: content },
-                ])),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-
-        pub fn user_with_content(content: ChatMessageContent) -> Self {
-            Self {
-                role: "user".to_string(),
-                content: Some(content),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-
-        pub fn assistant(content: String) -> Self {
-            Self {
-                role: "assistant".to_string(),
-                content: Some(ChatMessageContent::Text(content)),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-    }
+    //! Backwards-compatible re-export of the shared provider message DTO.
+    //! New code imports `crate::providers::messages` directly.
+    pub use crate::providers::messages::*;
 }
 
 mod payload {
@@ -123,7 +54,7 @@ mod payload {
     #[derive(Serialize)]
     pub struct ChatCompletionRequest {
         pub model: String,
-        pub messages: Vec<crate::providers::openai::messages::ChatMessagePayload>,
+        pub messages: Vec<crate::providers::messages::ChatMessagePayload>,
         pub stream: bool,
         pub temperature: f32,
         #[serde(skip_serializing_if = "Option::is_none")]

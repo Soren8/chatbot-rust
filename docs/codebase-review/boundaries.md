@@ -85,3 +85,7 @@ POST `/tts` calls private `tts::text::sanitize_text` before token insertion. Tha
 ## Session 007 — remediated generation-dispatch boundary
 
 `chatbot-server/src/providers/generation.rs` owns shared generation dispatch (closed `GenerationProvider`, `build_provider`, `map_core_messages`, search-gated `dispatch_stream`); `chat.rs`/`regenerate.rs` keep validation with the unsupported guard earlier, construction timing, saved-turn rendering with append-versus-replace, capture-derived versus payload user text, stream guards/finalizers and response building. The existing OpenAI-owned message DTO remains the shared shape. Baseline and final full-suite evidence is in the session-007 checkpoint.
+
+## Session 008 — remediated message-ownership boundary
+
+`chatbot-server/src/providers/messages.rs` owns the shared message DTO (`ContentPart`/`ImageUrlPart`/`ChatMessageContent`/`ChatMessagePayload` plus constructors) with OpenAI-compatible serialization; `generation.rs`, `message_utils.rs`, `xai.rs`, `search.rs`, the OpenAI internals and `payload::ChatCompletionRequest` resolve through the neutral module, while `providers::openai::messages` remains as a re-export. Handler, search-gating, XAI mapping and wire-shape behavior are unchanged. Baseline and final full-suite evidence is in the session-008 checkpoint.
