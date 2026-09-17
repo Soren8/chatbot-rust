@@ -81,3 +81,7 @@ POST `/tts` calls private `tts::text::sanitize_text` before token insertion. Tha
 ## Session 006 — remediated TTS token-store boundary
 
 `chatbot-server/src/tts/store.rs` owns the token-session map (`PendingTtsStore` over an `RwLock` map) with admission, cached-or-generation/busy/missing/exhausted arbitration, cancel, and a generation lease (`complete`/`fail`/drop reset). The `tts.rs` parent keeps one global `Lazy` store plus token minting, access policy, wire encoding, the encoded-size rejection with retry reset, and HTTP rendering; handlers hold no map accesses and no lock across synthesis. TTL, cap, eviction order, replay budget, statuses/messages/headers, the 8 MiB cap, missing-cancel 204, and token-collision overwrite are preserved verbatim. The single process-global store remains a MOD-003 composition lead. Baseline and final full-suite evidence is in the session-006 checkpoint.
+
+## Session 007 — remediated generation-dispatch boundary
+
+`chatbot-server/src/providers/generation.rs` owns shared generation dispatch (closed `GenerationProvider`, `build_provider`, `map_core_messages`, search-gated `dispatch_stream`); `chat.rs`/`regenerate.rs` keep validation with the unsupported guard earlier, construction timing, saved-turn rendering with append-versus-replace, capture-derived versus payload user text, stream guards/finalizers and response building. The existing OpenAI-owned message DTO remains the shared shape. Baseline and final full-suite evidence is in the session-007 checkpoint.

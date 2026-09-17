@@ -9,14 +9,14 @@ use axum::{
 };
 use bytes::Bytes;
 use chatbot_core::{
-    chat::{self, ChatMessageRole},
+    chat,
     config::{app_config, get_provider_config},
     session::{self, ChatRequestData, SessionContext},
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::chat_utils::{
     error_as_saved_chat_turn, provider_error_parts, service_error_message, ChatLockGuard,
@@ -26,10 +26,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
     HttpError,
 };
-use crate::providers::message_utils::parse_message_content;
-use crate::providers::openai::messages::ChatMessagePayload;
-use crate::providers::openai::OpenAiProvider;
-use crate::providers::xai::XaiProvider;
+use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -204,45 +201,20 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     let lock_guard = Arc::new(Mutex::new(ChatLockGuard::new(context.session_id.clone())));
 
-    enum ProviderKind {
-        OpenAi(OpenAiProvider),
-        Xai(XaiProvider),
-    }
-
-    let provider_kind = match provider_type.as_str() {
-        "openai" => match OpenAiProvider::new(&context.provider) {
-            Ok(p) => ProviderKind::OpenAi(p),
-            Err(err) => {
-                error!(?err, "failed to construct OpenAI provider");
-                lock_guard.lock().unwrap().release_if_needed();
-                let (setup_msg, _) = provider_error_parts(&err);
-                return error_as_saved_chat_turn(
-                    &session_context,
-                    Some(context.set_name.as_str()),
-                    payload.message.as_str(),
-                    &setup_msg,
-                    encryption_key.as_ref(),
-                    None,
-                );
-            }
-        },
-        "xai" => match XaiProvider::new(&context.provider) {
-            Ok(p) => ProviderKind::Xai(p),
-            Err(err) => {
-                error!(?err, "failed to construct XAI provider");
-                lock_guard.lock().unwrap().release_if_needed();
-                let (setup_msg, _) = provider_error_parts(&err);
-                return error_as_saved_chat_turn(
-                    &session_context,
-                    Some(context.set_name.as_str()),
-                    payload.message.as_str(),
-                    &setup_msg,
-                    encryption_key.as_ref(),
-                    None,
-                );
-            }
-        },
-        _ => unreachable!("provider_type should be filtered earlier"),
+    let provider = match build_provider(provider_type.as_str(), &context.provider) {
+        Ok(provider) => provider,
+        Err(err) => {
+            lock_guard.lock().unwrap().release_if_needed();
+            let (setup_msg, _) = provider_error_parts(&err);
+            return error_as_saved_chat_turn(
+                &session_context,
+                Some(context.set_name.as_str()),
+                payload.message.as_str(),
+                &setup_msg,
+                encryption_key.as_ref(),
+                None,
+            );
+        }
     };
 
     let prepared = chat::prepare_chat_messages(&context, payload.message.as_str());
@@ -255,18 +227,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         );
     }
 
-    let messages = prepared
-        .messages
-        .iter()
-        .map(|message| match message.role {
-            ChatMessageRole::System => ChatMessagePayload::system(message.content.clone()),
-            ChatMessageRole::User => {
-                let content = parse_message_content(&message.content);
-                ChatMessagePayload::user_with_content(content)
-            }
-            ChatMessageRole::Assistant => ChatMessagePayload::assistant(message.content.clone()),
-        })
-        .collect::<Vec<_>>();
+    let messages = map_core_messages(&prepared.messages);
 
     let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
@@ -274,85 +235,28 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     let user_message = payload.message.clone();
     let encryption_key_for_finalize = encryption_key.clone();
 
-    let mut provider_stream = match provider_kind {
-        ProviderKind::OpenAi(provider) => {
-            let use_search = payload.web_search.unwrap_or(false);
-            let brave = if use_search { crate::brave::brave_client() } else { None };
-
-            let stream_result = if let Some(ref brave) = brave {
-                let tools = vec![crate::tools::brave_web_search_tool()];
-                match crate::search::search_augmented_stream(&provider, messages.clone(), brave, &tools).await {
-                    Ok(s) => Ok(s),
-                    Err(err) => {
-                        warn!(?err, "search augmentation failed, falling back to regular streaming");
-                        provider.stream_chat(messages.clone())
-                    }
-                }
-            } else {
-                provider.stream_chat(messages.clone())
-            };
-
-            match stream_result {
-                Ok(stream) => stream,
-                Err(err) => {
-                    error!(?err, "provider stream setup failed");
-                    lock_guard.lock().unwrap().release_if_needed();
-                    let (req_msg, _) = provider_error_parts(&err);
-                    return error_as_saved_chat_turn(
-                        &session_context,
-                        Some(set_name.as_str()),
-                        user_message.as_str(),
-                        &req_msg,
-                        encryption_key.as_ref(),
-                        None,
-                    );
-                }
-            }
-        },
-        ProviderKind::Xai(xai_provider) => {
-            let web_search = payload.web_search.unwrap_or(false);
-            let use_brave = web_search && !context.provider.xai_search;
-            let brave = if use_brave { crate::brave::brave_client() } else { None };
-
-            let stream_result = if let Some(ref brave) = brave {
-                // Use Brave search via XAI's OpenAI-compatible /chat/completions endpoint
-                match OpenAiProvider::new(&context.provider) {
-                    Ok(openai_provider) => {
-                        let tools = vec![crate::tools::brave_web_search_tool()];
-                        match crate::search::search_augmented_stream(&openai_provider, messages.clone(), brave, &tools).await {
-                            Ok(s) => Ok(s),
-                            Err(err) => {
-                                warn!(?err, "XAI Brave search failed, falling back to native");
-                                xai_provider.stream_chat(messages.clone(), web_search)
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        warn!(?err, "failed to build OpenAI provider for XAI Brave search, using native");
-                        xai_provider.stream_chat(messages.clone(), web_search)
-                    }
-                }
-            } else {
-                xai_provider.stream_chat(messages.clone(), web_search)
-            };
-
-            match stream_result {
-                Ok(stream) => stream,
-                Err(err) => {
-                    error!(?err, "provider stream setup failed");
-                    lock_guard.lock().unwrap().release_if_needed();
-                    let (req_msg, _) = provider_error_parts(&err);
-                    return error_as_saved_chat_turn(
-                        &session_context,
-                        Some(set_name.as_str()),
-                        user_message.as_str(),
-                        &req_msg,
-                        encryption_key.as_ref(),
-                        None,
-                    );
-                }
-            }
-        },
+    let mut provider_stream = match dispatch_stream(
+        &provider,
+        &context.provider,
+        messages,
+        payload.web_search.unwrap_or(false),
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(err) => {
+            error!(?err, "provider stream setup failed");
+            lock_guard.lock().unwrap().release_if_needed();
+            let (req_msg, _) = provider_error_parts(&err);
+            return error_as_saved_chat_turn(
+                &session_context,
+                Some(set_name.as_str()),
+                user_message.as_str(),
+                &req_msg,
+                encryption_key.as_ref(),
+                None,
+            );
+        }
     };
 
     let stream_lock = lock_guard.clone();

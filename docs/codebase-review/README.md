@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: [session 006 — TTS token-store boundary](#session-006--tts-token-store-boundary-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 007 — shared generation dispatch](#session-007--shared-generation-dispatch-2026-09-17). Earlier checkpoints record their original scope and status.
 
 ## Purpose and authority
 
@@ -120,3 +120,15 @@ Verification used the full supported command, `testctl --project chatbot-rust --
 Implementation and this verification record belong to the pending local commit for this batch, based on `36752c8`. Rebuild/restart the webserver on the host to deploy it.
 
 **Next entry point:** MOD-011 is complete for its scoped store ownership; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
+
+## Session 007 — shared generation dispatch, 2026-09-17
+
+The user authorized the next modularity batch on `modularity-refactor`. Review of both generation handlers, provider/search modules and existing tests identified a shared dispatch boundary that keeps the existing OpenAI-owned message DTO. The primary reviewed the dispatch implementation before delegation and compared both handler diffs with the extracted module afterward.
+
+**MOD-007 scoped dispatch verified:** `chatbot-server/src/providers/generation.rs` owns the closed `GenerationProvider` enum, core-to-DTO mapping and the search-gated stream entry point (`build_provider` / `map_core_messages` / `dispatch_stream`); `providers/mod.rs` declares the module. `chat.rs` and `regenerate.rs` keep request validation with the unsupported-provider guard earlier, construction timing, saved-turn rendering with append-versus-replace (`None` vs `insertion_index`), capture-derived versus payload user text, stream guards/finalizers and response building. Construction timing, provider-specific construction error strings, the exact search gating (OpenAI `web_search`+Brave; XAI Brave only when `web_search && !xai_search`, OpenAI-compatible search then native fallback on setup errors only), the three fallback warnings, truncation metrics, and all error/stream rendering strings are preserved verbatim; only the tracing target of the moved construction/fallback logs follows the new module path. No traits, global DI, or lease rewrite; provider-neutral DTOs remain later scope. No existing tests were modified and no provider/search/brave/tool production code changed.
+
+Verification used the full supported command, `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`: the original implementation plus 15 new `generation_dispatch` characterization tests passed in job `20260917T212346-860fab0c728a`; the refactored implementation passed in job `20260917T213003-175cbdaa3629` (both `status=passed`, exit 0). The new suite exercises actual `/chat` and `/regenerate` handlers across search tool/direct/disabled/no-Brave paths, stream error rendering with no-persist/preserved-original history, and XAI native/Brave/multimodal dispatch through a local mock Responses API with no new production stub. Logs are `temp/test-logs/modularity-mod007-baseline.log` and `temp/test-logs/modularity-mod007-final.log`. Only comments and documentation changed after the final passing run. No GPU, APK, device or live-deployment validation is claimed.
+
+Implementation and this verification record belong to the pending local commit for this batch, based on `4bf36a0`. Rebuild/restart the webserver on the host to deploy it.
+
+**Next entry point:** MOD-007 scoped dispatch is complete with the shared DTO still open; larger session/service/voice ownership changes remain open. SEC-002/003 and COR-001/002 retain their separately recorded investigation requirements. The six later whole-codebase passes remain unstarted.
