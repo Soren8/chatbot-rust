@@ -7,7 +7,6 @@
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use chatbot_core::config;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::Serialize;
@@ -15,6 +14,7 @@ use serde_json::Value;
 use tracing::{debug, error};
 
 use crate::http_error::{api_error, HttpError};
+use crate::policy::TtsPolicy;
 
 const SAMPLE_RATE_HZ: u32 = 25_200;
 
@@ -61,31 +61,44 @@ struct KokoroTtsRequest {
     voice: String,
 }
 
-pub(super) async fn synthesize_pcm(cleaned: String) -> Result<SynthesizedPcm, HttpError> {
+pub(super) async fn synthesize_pcm(
+    cleaned: String,
+    policy: &TtsPolicy,
+) -> Result<SynthesizedPcm, HttpError> {
     if cleaned.is_empty() {
         return Ok(SynthesizedPcm {
             pcm: SILENT_PCM.clone(),
             sample_rate: SAMPLE_RATE_HZ,
         });
     }
-    let config = config::app_config();
-    debug!(provider = %config.tts_provider, "handling /tts_stream request");
-    if config.tts_provider == "kokoro" {
-        return handle_kokoro_tts(cleaned, &config).await;
+    // One coherent capture for dispatch, the legacy voice file and the
+    // Kokoro call.
+    let synthesis = policy.synthesis();
+    debug!(provider = %synthesis.provider, "handling /tts_stream request");
+    if synthesis.provider == "kokoro" {
+        return handle_kokoro_tts(
+            cleaned,
+            synthesis.voice,
+            synthesis.voice_service_base_url,
+        )
+        .await;
     }
     // DEPRECATED: legacy external TTS provider
-    if config.tts_provider == "fish" {
-        return handle_fish_speech(cleaned).await;
+    if synthesis.provider == "fish" {
+        let tts_base_url = policy.tts_base_url();
+        return handle_fish_speech(cleaned, tts_base_url).await;
     }
 
     debug!("using legacy external backend for /tts_stream");
     let backend_request = BackendRequest {
         text: cleaned,
-        voice_file: config.tts_voice.clone(),
+        voice_file: synthesis.voice,
     };
 
+    // The endpoint is resolved fresh on each call.
+    let tts_base_url = policy.tts_base_url();
     // We use the non-streaming endpoint to get the full bytes so we can apply a fade
-    let response = match post_backend("/api/tts", &backend_request).await {
+    let response = match post_backend("/api/tts", &backend_request, tts_base_url).await {
         Ok(response) => response,
         Err(err) => {
             error!(?err, "failed to reach TTS backend for /tts_stream");
@@ -148,7 +161,7 @@ fn apply_pcm_fade(pcm: &mut [u8], sample_rate: u32) {
     }
 }
 
-async fn handle_fish_speech(text: String) -> Result<SynthesizedPcm, HttpError> {
+async fn handle_fish_speech(text: String, tts_base_url: String) -> Result<SynthesizedPcm, HttpError> {
     let request = FishSpeechRequest {
         text,
         reference_id: "default".to_string(),
@@ -156,8 +169,7 @@ async fn handle_fish_speech(text: String) -> Result<SynthesizedPcm, HttpError> {
         format: "wav".to_string(),
     };
 
-    let config = config::app_config();
-    let base = config.tts_base_url.trim_end_matches('/');
+    let base = tts_base_url.trim_end_matches('/');
     let url = format!("{base}/v1/tts");
 
     debug!(url = %url, "sending request to fish speech backend");
@@ -194,12 +206,13 @@ async fn handle_fish_speech(text: String) -> Result<SynthesizedPcm, HttpError> {
 
 async fn handle_kokoro_tts(
     text: String,
-    config: &config::AppConfig,
+    voice: Option<String>,
+    voice_service_base_url: String,
 ) -> Result<SynthesizedPcm, HttpError> {
-    let base = config.voice_service_base_url.trim_end_matches('/');
+    let base = voice_service_base_url.trim_end_matches('/');
     let url = format!("{base}/v1/tts/kokoro");
 
-    let voice = config.tts_voice.clone().unwrap_or_else(|| "af_heart".to_string());
+    let voice = voice.unwrap_or_else(|| "af_heart".to_string());
     let request = KokoroTtsRequest { text, voice };
 
     debug!(url = %url, "sending request to Kokoro TTS voice service");
@@ -247,9 +260,9 @@ async fn handle_kokoro_tts(
 async fn post_backend(
     path: &str,
     payload: &BackendRequest,
+    tts_base_url: String,
 ) -> Result<reqwest::Response, HttpError> {
-    let config = config::app_config();
-    let base = config.tts_base_url.trim_end_matches('/');
+    let base = tts_base_url.trim_end_matches('/');
     let url = format!("{base}{path}");
 
     HTTP_CLIENT

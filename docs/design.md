@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+`RatePolicy` and `TtsPolicy` own per-router rate budgets and TTS access/codec/synthesis policy behind separate optional-`Arc` handles. `AppServices` carries both with `with_rate_policy`/`with_tts_policy`; TTS endpoints resolve access, wire codec, coherent provider/voice/endpoint inputs and legacy/fish bases through the router policy, while the rate middleware takes budgets from the router policy and keeps counters in the limiter dimension. Global handles construct config-free and delegate per operation at the original config sites; production keeps the live path with no snapshot or schema change. Other route/config policies remain ambient.
+
 `DataRequestContext` owns data-route session/key resolution without eager key validation. Direct data routes obtain a privately constructed, borrowed `VerifiedDataContext` after validation through their chat service. Chat/regenerate consume explicitly unverified parts so model/provider error ordering stays intact. CSRF remains at existing route boundaries; history images retain their named cookie fallback. Preferences retain their distinct session-first, key-only-for-authenticated flow.
 
 Core session operations now return `SessionOperationError`, including encryption-key, account-store, cache and bootstrap failures. `PrepareError::Session` carries these typed failures; `ServiceResponse` and core HTTP-body construction have been removed. Server error mapping owns JSON/status/counters, including raw-400 body logging and single-count 500 responses. Saved-error-turn handling keeps its prepare-specific policy.

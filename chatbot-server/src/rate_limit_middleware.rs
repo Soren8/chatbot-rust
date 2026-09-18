@@ -48,9 +48,21 @@ pub async fn middleware(request: Request<Body>, next: Next) -> Response {
         return next.run(request).await;
     }
 
-    let config = app_config();
-    let per_user = config.rate_limit_per_user_per_minute;
-    let global = config.rate_limit_global_per_minute;
+    // Budgets come from this router's rate policy. When the services
+    // extension is missing (a construction bug), fall back to the live
+    // global for this read so the disabled fast path keeps its original
+    // return-before-panic ordering; the explicit lookup below still panics.
+    let (per_user, global) = request
+        .extensions()
+        .get::<AppServices>()
+        .map(|services| services.rate_policy().budgets())
+        .unwrap_or_else(|| {
+            let config = app_config();
+            (
+                config.rate_limit_per_user_per_minute,
+                config.rate_limit_global_per_minute,
+            )
+        });
     if per_user == 0 && global == 0 {
         return next.run(request).await;
     }

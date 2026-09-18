@@ -3,8 +3,9 @@
 //! One owned [`AppServices`] bundles the per-router resources that must stay
 //! isolated together: the HTTP identity store, the TTS pending-token store,
 //! the rate-limit counters, the chat service (session RAM mirror plus
-//! durable history plus account-key/tier gates), and the generation
-//! dependencies (provider lookup plus thought defaults plus Brave client).
+//! durable history plus account-key/tier gates), the generation
+//! dependencies (provider lookup plus thought defaults plus Brave client),
+//! and the policy handles (rate budgets plus TTS access/codec/synthesis).
 //! Production builds one at startup and clones it into every request via an
 //! Axum `Extension` layer; the same identity value is also installed as the
 //! legacy `RequestIdentity` extension so existing handlers keep working from
@@ -13,15 +14,18 @@
 //! Compatibility: [`AppServices::global`] and [`AppServices::with_identity`]
 //! and [`AppServices::with_owned_stores`] resolve the chat and account
 //! dimensions to the existing process-global [`ChatService::global`] and
-//! [`AccountService::global`] (lazy first-use timing untouched) and the
-//! generation dimension to [`GenerationDeps::global`]. Use
+//! [`AccountService::global`] (lazy first-use timing untouched), the
+//! generation dimension to [`GenerationDeps::global`], and both policy
+//! dimensions to live-global handles. Use
 //! [`AppServices::with_chat_service`] to back a router with an explicit chat
-//! service, [`AppServices::with_account_service`] for explicit accounts, and
-//! [`AppServices::with_generation_deps`] for explicit generation.
+//! service, [`AppServices::with_account_service`] for explicit accounts,
+//! [`AppServices::with_generation_deps`] for explicit generation,
+//! [`AppServices::with_rate_policy`] for explicit rate budgets, and
+//! [`AppServices::with_tts_policy`] for explicit TTS policy.
 //!
 //! Config-free state only, except the deliberate production root capture in
 //! `run()`: token admission, rate windows, session mirrors, durable history
-//! handles, and account roots/secrets live here. Live `app_config()` limits
+//! handles, and account roots/secrets live here. Live `app_config()` policy
 //! (`rate_limit_*`, `tts_*`, providers, CSRF, cookie secure/max-age) and the
 //! login/signup/home/preferences and voice-service configuration stay
 //! process-global for now.
@@ -36,11 +40,12 @@ use chatbot_core::session::ChatService;
 
 use crate::generation_deps::GenerationDeps;
 use crate::identity::RequestIdentity;
+use crate::policy::{RatePolicy, TtsPolicy};
 use crate::tts::store::PendingTtsStore;
 
 /// Owned router resources: one identity plus one pending-token store plus one
 /// rate-limit counter set plus one chat service plus one account service plus
-/// one generation handle.
+/// one generation handle plus one rate policy plus one TTS policy.
 /// Cloned into every request; the inner stores stay shared via `Arc`.
 #[derive(Clone)]
 pub struct AppServices {
@@ -50,12 +55,14 @@ pub struct AppServices {
     chat: ChatService,
     accounts: AccountService,
     generation: GenerationDeps,
+    rate_policy: RatePolicy,
+    tts_policy: TtsPolicy,
 }
 
 impl AppServices {
     /// Compatibility context: the global identity plus the existing global
-    /// TTS, limiter, chat, account, and generation handles, with their lazy
-    /// first-use timing untouched.
+    /// TTS, limiter, chat, account, generation, and policy handles, with
+    /// their lazy first-use timing untouched.
     pub fn global() -> Self {
         Self {
             identity: RequestIdentity::global(),
@@ -64,12 +71,14 @@ impl AppServices {
             chat: ChatService::global(),
             accounts: AccountService::global(),
             generation: GenerationDeps::global(),
+            rate_policy: RatePolicy::global(),
+            tts_policy: TtsPolicy::global(),
         }
     }
 
     /// Compatibility context for an owned identity: TTS tokens, rate-limit
-    /// counters, chat, accounts, and generation stay process-global. Prefer
-    /// [`AppServices::with_owned_stores`] plus
+    /// counters, chat, accounts, generation, and both policies stay
+    /// process-global. Prefer [`AppServices::with_owned_stores`] plus
     /// [`AppServices::with_chat_service`] and
     /// [`AppServices::with_account_service`] for fully independent routers.
     pub fn with_identity(identity: RequestIdentity) -> Self {
@@ -80,6 +89,8 @@ impl AppServices {
             chat: ChatService::global(),
             accounts: AccountService::global(),
             generation: GenerationDeps::global(),
+            rate_policy: RatePolicy::global(),
+            tts_policy: TtsPolicy::global(),
         }
     }
 
@@ -103,6 +114,8 @@ impl AppServices {
             chat: ChatService::global(),
             accounts: AccountService::global(),
             generation: GenerationDeps::global(),
+            rate_policy: RatePolicy::global(),
+            tts_policy: TtsPolicy::global(),
         }
     }
 
@@ -143,6 +156,23 @@ impl AppServices {
         self
     }
 
+    /// Back this router with explicit rate budgets. Consumes and returns
+    /// `Self` so existing constructors keep live-global budgets while owned
+    /// routers opt in. Only the budgets are owned here; the counters stay in
+    /// the owned/global limiter dimension.
+    pub fn with_rate_policy(mut self, rate_policy: RatePolicy) -> Self {
+        self.rate_policy = rate_policy;
+        self
+    }
+
+    /// Back this router with an explicit TTS policy (access, codec,
+    /// synthesis inputs, endpoints). Consumes and returns `Self` so existing
+    /// constructors keep live-global policy while owned routers opt in.
+    pub fn with_tts_policy(mut self, tts_policy: TtsPolicy) -> Self {
+        self.tts_policy = tts_policy;
+        self
+    }
+
     /// The single identity for this router; the same value is installed as
     /// the legacy `RequestIdentity` extension.
     pub fn identity(&self) -> &RequestIdentity {
@@ -169,6 +199,20 @@ impl AppServices {
     /// owned routers return their explicit handle.
     pub fn generation_deps(&self) -> GenerationDeps {
         self.generation.clone()
+    }
+
+    /// The rate budgets for this router. Compatibility contexts return the
+    /// global handle, which reads live config on each call; owned routers
+    /// return their explicit budgets.
+    pub fn rate_policy(&self) -> RatePolicy {
+        self.rate_policy.clone()
+    }
+
+    /// The TTS policy for this router. Compatibility contexts return the
+    /// global handle, which resolves from live config on each call; owned
+    /// routers return their explicit policy.
+    pub fn tts_policy(&self) -> TtsPolicy {
+        self.tts_policy.clone()
     }
 
     /// Purge step for the background task, returning
@@ -200,8 +244,9 @@ impl AppServices {
     }
 
     /// Rate-limit check against this router's counters, or the
-    /// process-global limiter for compatibility contexts. Limits come from
-    /// live config at the call site; only the counters are owned here.
+    /// process-global limiter for compatibility contexts. Limits arrive from
+    /// this router's [`AppServices::rate_policy`] at the middleware call
+    /// site; only the counters are owned here.
     /// Crate-internal; handlers reach it through the middleware.
     pub(crate) fn check_rate_limit(
         &self,

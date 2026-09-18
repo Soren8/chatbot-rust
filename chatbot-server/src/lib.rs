@@ -32,6 +32,7 @@ mod login;
 mod logout;
 mod memory;
 mod preferences;
+pub mod policy;
 mod providers;
 mod rate_limit_middleware;
 mod regenerate;

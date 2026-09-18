@@ -3,10 +3,7 @@ use axum::{
     extract::{Extension, Path},
     http::{header, Method, Request, Response, StatusCode},
 };
-use chatbot_core::{
-    account_service::AccountService,
-    config::{self, TtsAccess},
-};
+use chatbot_core::{account_service::AccountService, config::TtsAccess};
 use once_cell::sync::Lazy;
 use rand::Rng;
 use serde::Deserialize;
@@ -18,6 +15,7 @@ use crate::http_error::{
     map_serialization_err, map_session_err, map_user_store_err, HttpError,
 };
 use crate::identity::RequestIdentity;
+use crate::policy::TtsPolicy;
 use crate::services::AppServices;
 use crate::tts_opus;
 
@@ -70,7 +68,12 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let username = ensure_tts_access(services.accounts(), &identity, cookie_header.as_deref())?;
+    let username = ensure_tts_access(
+        services.accounts(),
+        &identity,
+        cookie_header.as_deref(),
+        &services.tts_policy(),
+    )?;
     let ip = crate::request_context::get_ip(&headers, &parts.extensions);
 
     tracing::info!(username = %username, ip = %ip, "TTS token request");
@@ -169,10 +172,12 @@ pub async fn handle_tts_stream(
 
     let lease = lease.expect("begin without cached audio yields a generation lease");
 
-    let result = backend::synthesize_pcm(cleaned.clone()).await;
+    let tts_policy = services.tts_policy();
+    let result = backend::synthesize_pcm(cleaned.clone(), &tts_policy).await;
     match result {
         Ok(clip) => {
-            let audio = match encode_tts_wire_audio(&clip.pcm, clip.sample_rate) {
+            let codec = tts_policy.codec();
+            let audio = match encode_tts_wire_audio(&clip.pcm, clip.sample_rate, &codec) {
                 Ok(audio) => audio,
                 Err(err) => {
                     lease.fail();
@@ -225,11 +230,12 @@ pub async fn handle_tts_cancel(
         .map_err(|err| map_response_build_err(err, "tts::cancel"))?)
 }
 
-/// Enforce deploy-time `tts_access` policy. Returns a log label (username or "guest").
+/// Enforce the router's `tts_access` policy. Returns a log label (username or "guest").
 fn ensure_tts_access(
     accounts: &AccountService,
     identity: &RequestIdentity,
     cookie_header: Option<&str>,
+    policy: &TtsPolicy,
 ) -> Result<String, HttpError> {
     let username = identity
         .session_context(cookie_header)
@@ -239,7 +245,7 @@ fn ensure_tts_access(
         .clone()
         .unwrap_or_else(|| "guest".to_string());
 
-    match config::app_config().tts_access {
+    match policy.access() {
         TtsAccess::Anyone => Ok(label),
         TtsAccess::Authenticated => {
             if username.is_none() {
@@ -303,11 +309,15 @@ fn pcm_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
     header
 }
 
-/// Encode raw mono 16-bit PCM (`sample_rate` Hz) into the configured wire
+/// Encode raw mono 16-bit PCM (`sample_rate` Hz) into the router's wire
 /// codec: Ogg-Opus by default, WAV when `tts_codec: wav` is set for players
 /// without an Opus decoder.
-fn encode_tts_wire_audio(pcm: &[u8], sample_rate: u32) -> Result<TtsWireAudio, HttpError> {
-    if config::app_config().tts_codec == "opus" {
+fn encode_tts_wire_audio(
+    pcm: &[u8],
+    sample_rate: u32,
+    codec: &str,
+) -> Result<TtsWireAudio, HttpError> {
+    if codec == "opus" {
         // chunks_exact drops a trailing odd byte; backends emit whole
         // 16-bit samples so there is never one.
         let samples: Vec<i16> = pcm
