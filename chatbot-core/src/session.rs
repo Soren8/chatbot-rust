@@ -237,21 +237,34 @@ impl SessionEntry {
     }
 }
 
-struct SessionStore {
+/// Owned chat session state: guest RAM mirror plus generation locks.
+///
+/// Two instances share nothing; production keeps one process-global instance
+/// behind the free functions below. Authenticated durability stays with
+/// `HistoryService` and key checks with `UserStore` (used by the
+/// prepare/finalize and `*_for_request` paths, not by these owned methods).
+pub struct ChatSessionStore {
     entries: DashMap<String, Arc<SessionEntry>>,
     timeout: Duration,
     default_prompt: String,
 }
 
-impl SessionStore {
-    fn global() -> &'static SessionStore {
-        static STORE: Lazy<SessionStore> = Lazy::new(|| {
+impl ChatSessionStore {
+    /// Explicit owned construction from a raw `session_timeout` value and the
+    /// default system prompt. Unlike `HttpSessionStore::new`, the timeout is
+    /// kept raw (zero allowed, no 60s floor).
+    pub fn new(timeout_secs: u64, default_prompt: String) -> Self {
+        ChatSessionStore {
+            entries: DashMap::new(),
+            timeout: Duration::from_secs(timeout_secs),
+            default_prompt,
+        }
+    }
+
+    fn global() -> &'static ChatSessionStore {
+        static STORE: Lazy<ChatSessionStore> = Lazy::new(|| {
             let config = config::app_config();
-            SessionStore {
-                entries: DashMap::new(),
-                timeout: Duration::from_secs(config.session_timeout),
-                default_prompt: config.default_system_prompt.clone(),
-            }
+            ChatSessionStore::new(config.session_timeout, config.default_system_prompt.clone())
         });
         &STORE
     }
@@ -269,7 +282,10 @@ impl SessionStore {
         });
     }
 
-    fn purge_expired(&self) -> usize {
+    /// Owned purge hook. Public so composed servers can purge the same
+    /// instance that backs their router; the global delegate stays composed
+    /// in `purge_expired_chat_sessions`.
+    pub fn purge_expired(&self) -> usize {
         let before = self.entries.len();
         self.clean_expired();
         before.saturating_sub(self.entries.len())
@@ -288,6 +304,77 @@ impl SessionStore {
                 let inserted = vacant.insert(entry);
                 Arc::clone(&*inserted)
             }
+        }
+    }
+
+    /// Owned session history read. Unknown sessions report empty history.
+    pub fn history(&self, session_id: &str) -> Vec<(String, String)> {
+        self.entries
+            .get(session_id)
+            .map(|entry| {
+                let data = entry.data.lock().unwrap();
+                data.history.clone()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Owned history replace. Creates the session (seeded with this store's
+    /// default prompt) when missing.
+    pub fn update_history(&self, session_id: &str, history: &[(String, String)]) {
+        let entry = self.entry(session_id);
+        let mut data = entry.data.lock().unwrap();
+        data.history = history.to_owned();
+        data.initialised = true;
+        data.last_used = Instant::now();
+    }
+
+    /// Owned memory read. Unknown sessions report empty memory.
+    pub fn memory(&self, session_id: &str) -> String {
+        self.entries
+            .get(session_id)
+            .map(|entry| entry.data.lock().unwrap().memory.clone())
+            .unwrap_or_default()
+    }
+
+    /// Owned memory replace. No-op when the session does not exist.
+    pub fn update_memory(&self, session_id: &str, memory: &str) {
+        if let Some(entry) = self.entries.get(session_id) {
+            let mut data = entry.data.lock().unwrap();
+            data.memory = memory.to_owned();
+            data.initialised = true;
+            data.last_used = Instant::now();
+        }
+    }
+
+    /// Owned system-prompt read. Unknown sessions report empty; created
+    /// sessions start at this store's default prompt.
+    pub fn system_prompt(&self, session_id: &str) -> String {
+        self.entries
+            .get(session_id)
+            .map(|entry| entry.data.lock().unwrap().system_prompt.clone())
+            .unwrap_or_default()
+    }
+
+    /// Owned system-prompt replace. No-op when the session does not exist.
+    pub fn update_system_prompt(&self, session_id: &str, prompt: &str) {
+        if let Some(entry) = self.entries.get(session_id) {
+            let mut data = entry.data.lock().unwrap();
+            data.system_prompt = prompt.to_owned();
+            data.initialised = true;
+            data.last_used = Instant::now();
+        }
+    }
+
+    /// Owned generation-lock acquire. Creates the session when missing, like
+    /// the prepare path. Returns false when the session is already locked.
+    pub fn try_acquire_generation(&self, session_id: &str) -> bool {
+        self.entry(session_id).try_lock()
+    }
+
+    /// Owned generation-lock release. No-op when the session does not exist.
+    pub fn release_generation(&self, session_id: &str) {
+        if let Some(entry) = self.entries.get(session_id) {
+            entry.unlock();
         }
     }
 }
@@ -377,15 +464,15 @@ pub fn purge_expired_sessions() -> SessionPurgeStats {
 
 /// Drop expired chat session records only. Owned server identities purge
 /// their own HTTP store and reuse this for the shared chat store.
+///
+/// Production entry point: delegates to the single process-global store.
 pub fn purge_expired_chat_sessions() -> usize {
-    SessionStore::global().purge_expired()
+    ChatSessionStore::global().purge_expired()
 }
 
+/// Production entry point: delegates to the single process-global store.
 pub fn release_session_lock(session_id: &str) {
-    let store = SessionStore::global();
-    if let Some(entry) = store.entries.get(session_id) {
-        entry.unlock();
-    }
+    ChatSessionStore::global().release_generation(session_id);
 }
 
 /// Owns settlement for one successful prepare.
@@ -654,7 +741,7 @@ fn normalise_set_name(candidate: Option<&str>) -> Result<String, PrepareError> {
 }
 
 fn resolve_default_prompt() -> String {
-    SessionStore::global().default_prompt.clone()
+    ChatSessionStore::global().default_prompt.clone()
 }
 
 /// Guest-only session bootstrap. Authenticated users always load via HistoryService.
@@ -750,7 +837,7 @@ pub fn chat_prepare(
     provider: &ProviderConfig,
     encryption_key: Option<&EncryptionKey>,
 ) -> ChatPrepareResult {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     store.clean_expired();
 
     if request.message.trim().is_empty() {
@@ -947,7 +1034,7 @@ pub fn chat_finalize_with_capture(
     encryption_key: Option<&EncryptionKey>,
     prepare_capture: Option<PrepareCapture>,
 ) -> Vec<String> {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     let mut extras = Vec::new();
 
     if let Some(entry) = store.entries.get(&session.session_id) {
@@ -1073,7 +1160,7 @@ pub fn regenerate_prepare(
     provider: &ProviderConfig,
     encryption_key: Option<&EncryptionKey>,
 ) -> RegeneratePrepareResult {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     store.clean_expired();
 
     if request.message.trim().is_empty() {
@@ -1323,7 +1410,7 @@ pub fn regenerate_finalize_with_capture(
     encryption_key: Option<&EncryptionKey>,
     prepare_capture: Option<PrepareCapture>,
 ) -> Vec<String> {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     let mut extras = Vec::new();
 
     if let Some(entry) = store.entries.get(&session.session_id) {
@@ -1419,24 +1506,14 @@ pub fn regenerate_finalize_with_capture(
     extras
 }
 
+/// Production entry point: delegates to the single process-global store.
 pub fn update_session_memory(session_id: &str, memory: &str) {
-    let store = SessionStore::global();
-    if let Some(entry) = store.entries.get(session_id) {
-        let mut data = entry.data.lock().unwrap();
-        data.memory = memory.to_owned();
-        data.initialised = true;
-        data.last_used = Instant::now();
-    }
+    ChatSessionStore::global().update_memory(session_id, memory);
 }
 
+/// Production entry point: delegates to the single process-global store.
 pub fn update_session_system_prompt(session_id: &str, prompt: &str) {
-    let store = SessionStore::global();
-    if let Some(entry) = store.entries.get(session_id) {
-        let mut data = entry.data.lock().unwrap();
-        data.system_prompt = prompt.to_owned();
-        data.initialised = true;
-        data.last_used = Instant::now();
-    }
+    ChatSessionStore::global().update_system_prompt(session_id, prompt);
 }
 
 /// Update session memory only when the cache currently mirrors `set_id`.
@@ -1447,7 +1524,7 @@ pub fn update_session_memory_for_request(
     memory: &str,
     key: &EncryptionKey,
 ) -> Result<(), ServiceResponse> {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     let entry = store.entry(session_id);
     let mut data = entry.data.lock().unwrap();
     require_encryption_key(Some(username), Some(key))?;
@@ -1472,7 +1549,7 @@ pub fn update_session_system_prompt_for_request(
     prompt: &str,
     key: &EncryptionKey,
 ) -> Result<(), ServiceResponse> {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     let entry = store.entry(session_id);
     let mut data = entry.data.lock().unwrap();
     require_encryption_key(Some(username), Some(key))?;
@@ -1502,7 +1579,7 @@ pub fn replace_session_set(
     encrypted: bool,
     key: Option<&EncryptionKey>,
 ) -> Result<(), ServiceResponse> {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     let entry = store.entry(session_id);
     let mut data = entry.data.lock().unwrap();
     data.memory = memory.to_owned();
@@ -1527,7 +1604,7 @@ pub fn session_history_for_request(
     username: Option<&str>,
     key: Option<&EncryptionKey>,
 ) -> Result<Vec<(String, String)>, ServiceResponse> {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     let Some(entry) = store.entries.get(session_id) else {
         return Ok(Vec::new());
     };
@@ -1548,7 +1625,7 @@ pub fn set_session_history_for_request(
     history: Vec<(String, String)>,
     key: Option<&EncryptionKey>,
 ) -> Result<(), ServiceResponse> {
-    let store = SessionStore::global();
+    let store = ChatSessionStore::global();
     let Some(entry) = store.entries.get(session_id) else {
         return Ok(());
     };
@@ -1582,25 +1659,14 @@ pub fn set_session_history_for_request(
     Ok(())
 }
 
+/// Production entry point: delegates to the single process-global store.
 pub fn update_session_history(session_id: &str, history: &[(String, String)]) {
-    let store = SessionStore::global();
-    let entry = store.entry(session_id);
-    let mut data = entry.data.lock().unwrap();
-    data.history = history.to_owned();
-    data.initialised = true;
-    data.last_used = Instant::now();
+    ChatSessionStore::global().update_history(session_id, history);
 }
 
+/// Production entry point: delegates to the single process-global store.
 pub fn session_history(session_id: &str) -> Vec<(String, String)> {
-    let store = SessionStore::global();
-    store
-        .entries
-        .get(session_id)
-        .map(|entry| {
-            let data = entry.data.lock().unwrap();
-            data.history.clone()
-        })
-        .unwrap_or_default()
+    ChatSessionStore::global().history(session_id)
 }
 
 #[cfg(test)]
@@ -1617,7 +1683,7 @@ mod tests {
         ];
         
         // Setup initial state
-        SessionStore::global().entry(session_id);
+        ChatSessionStore::global().entry(session_id);
         update_session_history(session_id, &history);
         
         let session = SessionContext {
@@ -1690,7 +1756,7 @@ mod tests {
     #[test]
     fn regenerate_pair_index_equal_len_appends_in_flight_turn() {
         let session_id = "guest_test-session-regen-append";
-        SessionStore::global().entry(session_id);
+        ChatSessionStore::global().entry(session_id);
         update_session_history(
             session_id,
             &[("User1".to_string(), "AI1".to_string())],
@@ -1958,7 +2024,7 @@ mod tests {
     #[test]
     fn leased_regenerate_complete_replaces_and_releases() {
         let session_id = "guest_test-lease-regen-complete";
-        SessionStore::global().entry(session_id);
+        ChatSessionStore::global().entry(session_id);
         update_session_history(session_id, &[("u1".to_string(), "a1".to_string())]);
 
         let session = SessionContext {

@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 025 adds `chatbot-core/tests/chat_session_isolation.rs`. Primary reviewed the state-owner constructor/methods, global adapters and all four tests. The full suite passed; authenticated service composition and clock-controlled expiry/recreation races are not claimed covered by this batch.
+
 Session 024 adds `chatbot-core/tests/account_store_inputs.rs`. Primary reviewed explicit user/remember constructors, secret-input verifier paths and five new tests; corrected duplicate verifier IO before accepting the passing reviewed full suite. Production account composition remains open.
 
 Session 023 adds `chatbot-server/src/services.rs` and `chatbot-server/tests/router_resource_isolation.rs`. Primary reviewed the owned resource context, startup/router/middleware/TTS wiring, visibility changes and all four new HTTP isolation tests; the full executor suite passed.

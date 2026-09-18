@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 024 — account storage inputs](#session-024--account-storage-inputs-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 025 — owned chat state](#session-025--owned-chat-state-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-two committed batches through session 024. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-three committed batches through session 025. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 025 — owned chat state, 2026-09-18
+
+MOD-003 partial remediation: `ChatSessionStore` owns guest state, generation locks and raw-timeout expiry, with explicit construction and no exposed entry/field access. Existing free state APIs delegate to the same lazy global instance. Four new independent-store tests cover same-ID history/memory/prompt separation, locks, defaults/no-create setters and zero-timeout expiry. Existing in-module tests only rename their internal store reference; their scenarios/assertions remain unchanged. Primary reviewed the full diff and new tests. Authenticated orchestration and lease settlement remain global, explicitly pending service composition.
+
+Baseline reused the preceding reviewed green. Full final `20260918T072258-56cc973e7fbe` passed, including provider-config validation; log `temp/test-logs/modularity-mod003-chat-state-20260918T072258.log`. Commit title: `Make chat session state explicitly owned`, based on `b0c3ed8`. Phase-1 completion review remains pending.
 
 ## Session 024 — account storage inputs, 2026-09-18
 
