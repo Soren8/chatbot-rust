@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+`DataRequestContext` owns data-route session/key resolution without eager key validation. Direct data routes obtain a privately constructed, borrowed `VerifiedDataContext` after validation through their chat service. Chat/regenerate consume explicitly unverified parts so model/provider error ordering stays intact. CSRF remains at existing route boundaries; history images retain their named cookie fallback. Preferences retain their distinct session-first, key-only-for-authenticated flow.
+
 Core session operations now return `SessionOperationError`, including encryption-key, account-store, cache and bootstrap failures. `PrepareError::Session` carries these typed failures; `ServiceResponse` and core HTTP-body construction have been removed. Server error mapping owns JSON/status/counters, including raw-400 body logging and single-count 500 responses. Saved-error-turn handling keeps its prepare-specific policy.
 
 Canonical chat/regenerate finalization returns `FinalizeOutcome`; typed lease completion follows the same commit/mirror/unlock path. The server renders stream-error chunks. Guest updates, durable commits and absent sessions render no extras; key-validation failures retain the shared missing-key text, while conflict/input/store errors retain their existing messages. Legacy `Vec<String>` APIs remain compatibility adapters. Successful durable writes still count as committed when mirror sealing fails; expiry/recreation behavior is unchanged.

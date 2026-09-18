@@ -7,7 +7,7 @@ use chatbot_core::history::{self, HistoryError, SetId, SetVersion};
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
+    api_error, map_body_read_err, map_json_parse_err,
     map_response_build_err, map_session_err, map_session_operation_err, HttpError,
 };
 use crate::services::AppServices;
@@ -57,11 +57,12 @@ pub async fn handle_reset_chat(
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
-
-    let session_context = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "reset_chat::post::session"))?;
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "reset_chat::post::session",
+    )?;
 
     let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(|err| {
         match err {
@@ -71,13 +72,11 @@ pub async fn handle_reset_chat(
         }
     })?;
 
-    if let Some(username) = session_context.username.as_deref() {
-        if let Err(err) =
-            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-        {
-            return Err(map_encryption_key_validation_err(err));
-        }
-        let key = encryption_key.as_ref().expect("validated encryption key");
+    if data_context.session().username.as_deref().is_some() {
+        let verified = data_context.require_authenticated(&chat)?;
+        let username = verified.username();
+        let key = verified.key();
+        let session_context = verified.session();
         let history = chat.history().map_err(history_error_to_http)?;
         let set_id = if let Some(raw) = payload.set_id.as_deref().filter(|s| !s.trim().is_empty()) {
             SetId::parse(raw)
@@ -118,7 +117,7 @@ pub async fn handle_reset_chat(
             Some(username),
             Some(set_id),
             Vec::new(),
-            encryption_key.as_ref(),
+            Some(key),
         ) {
             return Err(map_session_operation_err(&err));
         }
@@ -135,7 +134,7 @@ pub async fn handle_reset_chat(
         );
     }
 
-    chat.update_session_history(&session_context.session_id, &[]);
+    chat.update_session_history(&data_context.session().session_id, &[]);
     build_json_response(
         StatusCode::OK,
         json!({

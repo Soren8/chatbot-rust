@@ -88,6 +88,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 ## MOD-008 — Request identity, key validation and cookie policy lack a clear adapter
 
+**Data adapter (session 031):** guest-capable resolution and a privately constructed borrowed verified identity/key context now serve chat/regenerate, set/history, memory and reset routes. Route CSRF and validation order remain explicit. Preferences keep their different session-first policy; client logs and TTS/STT/login retain distinct access rules. Fourteen new tests plus the reviewed full suite pass. SEC-002 remains a separate authorization finding.
+
 **Further partial remediation (session 014):** shared raw Cookie/CSRF/IP extraction now lives in `request_context.rs`, with equivalent handler/middleware parsing migrated and `chat_utils::get_ip` compatibility retained. Eighteen new tests and the reviewed full suite pass. Identity creation/lookup and route policy remain separate; authenticated request-context ownership is still open.
 
 **Evidence:** routes repeatedly parse cookies/CSRF, call `session_context`, extract a key, validate it, and translate `ServiceResponse`. `chat_utils.rs:59–232` mixes credential cookies/account promotion and proxy-IP handling with streaming guards and history errors. Cookie constructors are spread across core session, core remember store, server chat utilities, login, and native secure storage. `client_logs.rs:98–102` uses `rate_limit_identity` as an authorization predicate even though that helper explicitly accepts unknown cookie values (`session.rs:350–365`).

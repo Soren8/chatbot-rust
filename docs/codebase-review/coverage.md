@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 031 adds `chatbot-server/tests/data_request_context_boundary.rs`. Primary reviewed all adapter callers, borrowed verified context and 14 new tests. Full reviewed suite passed. Preferences ordering is preserved by leaving its handler unchanged; its test asserts guest/authenticated response policy, not lookup counts.
+
 Session 030 adds `chatbot-core/tests/session_operation_errors.rs` and `chatbot-server/tests/session_operation_error_boundary.rs`. Primary reviewed transport-carrier removal, all typed adapters/callers and 17 new tests. Reviewed full suite passed. New cases are post-extraction coverage; the unchanged baseline is not claimed as new before/after characterization.
 
 Session 029 adds `chatbot-core/tests/finalize_outcome_boundary.rs` and `chatbot-server/tests/finalize_stream_boundary.rs`. Primary reviewed canonical typed outcomes, compatibility adapters, both production completion callbacks and all 21 new tests. Full baseline/final/reviewed-final passed; exactly-once unlocking and expiry races are not dynamically proven by retry-only assertions.

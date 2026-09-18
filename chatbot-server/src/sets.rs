@@ -9,7 +9,7 @@ use chatbot_core::{
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
+    api_error, map_body_read_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
     HttpError,
 };
@@ -85,29 +85,15 @@ pub async fn handle_get_sets(
     let identity = services.identity().clone();
     let chat = services.chat().clone();
     let cookie_header = extract_cookie(request.headers());
-    let encryption_key =
-        crate::chat_utils::extract_enc_key_with_identity(&identity, request.headers());
-
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::get_sets::session"))?;
-
-    let username = match session.username.as_deref() {
-        Some(value) => value,
-        None => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Not authenticated"}),
-            );
-        }
-    };
-
-    if let Err(err) =
-        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-    {
-        return Err(map_encryption_key_validation_err(err));
-    }
-    let key = encryption_key.as_ref().expect("validated encryption key");
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        request.headers(),
+        cookie_header.as_deref(),
+        "sets::get_sets::session",
+    )?;
+    let verified = data_context.require_authenticated(&chat)?;
+    let username = verified.username();
+    let key = verified.key();
 
     let history = chat.history().map_err(history_error_to_http)?;
     // Single list_sets call. Decrypts sealed display names only; history blobs stay closed.
@@ -164,28 +150,15 @@ pub async fn handle_create_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
-
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::create_set::session"))?;
-
-    let username = match session.username.as_deref() {
-        Some(value) => value,
-        None => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Not authenticated"}),
-            );
-        }
-    };
-
-    if let Err(err) =
-        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-    {
-        return Err(map_encryption_key_validation_err(err));
-    }
-    let key = encryption_key.as_ref().expect("validated encryption key");
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "sets::create_set::session",
+    )?;
+    let verified = data_context.require_authenticated(&chat)?;
+    let username = verified.username();
+    let key = verified.key();
 
     // Empty name = auto placeholder (`New Chat`, `New Chat 2`, ...). The first
     // chat message replaces it with a contextual name server-side.
@@ -256,28 +229,15 @@ pub async fn handle_delete_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
-
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::delete_set::session"))?;
-
-    let username = match session.username.as_deref() {
-        Some(value) => value,
-        None => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Not authenticated"}),
-            );
-        }
-    };
-
-    if let Err(err) =
-        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-    {
-        return Err(map_encryption_key_validation_err(err));
-    }
-    let key = encryption_key.as_ref().expect("validated encryption key");
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "sets::delete_set::session",
+    )?;
+    let verified = data_context.require_authenticated(&chat)?;
+    let username = verified.username();
+    let key = verified.key();
     let history = chat.history().map_err(history_error_to_http)?;
 
     let snap = match resolve_set(
@@ -349,28 +309,15 @@ pub async fn handle_rename_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
-
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::rename_set::session"))?;
-
-    let username = match session.username.as_deref() {
-        Some(value) => value,
-        None => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Not authenticated"}),
-            );
-        }
-    };
-
-    if let Err(err) =
-        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-    {
-        return Err(map_encryption_key_validation_err(err));
-    }
-    let key = encryption_key.as_ref().expect("validated encryption key");
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "sets::rename_set::session",
+    )?;
+    let verified = data_context.require_authenticated(&chat)?;
+    let username = verified.username();
+    let key = verified.key();
     let new_name_raw = payload.new_name.unwrap_or_default();
     let new_name = match history::normalise_custom_set_name(&new_name_raw) {
         Ok(v) => v,
@@ -466,28 +413,16 @@ pub async fn handle_load_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
-
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::load_set::session"))?;
-
-    let username = match session.username.as_deref() {
-        Some(value) => value,
-        None => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Not authenticated"}),
-            );
-        }
-    };
-
-    if let Err(err) =
-        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-    {
-        return Err(map_encryption_key_validation_err(err));
-    }
-    let key = encryption_key.as_ref().expect("validated encryption key");
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "sets::load_set::session",
+    )?;
+    let verified = data_context.require_authenticated(&chat)?;
+    let username = verified.username();
+    let key = verified.key();
+    let session = verified.session();
     let history = chat.history().map_err(history_error_to_http)?;
 
     let set_id = match resolve_set_id(
@@ -526,7 +461,7 @@ pub async fn handle_load_set(
         &loaded.system_prompt,
         &[],
         true,
-        encryption_key.as_ref(),
+        Some(key),
     ) {
         return Err(map_session_operation_err(&err));
     }
@@ -587,19 +522,17 @@ pub async fn handle_history_pair(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "sets::history_pair::session",
+    )?;
 
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::history_pair::session"))?;
-
-    if let Some(username) = session.username.as_deref() {
-        if let Err(err) =
-            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-        {
-            return Err(map_encryption_key_validation_err(err));
-        }
-        let key = encryption_key.as_ref().expect("validated encryption key");
+    if data_context.session().username.as_deref().is_some() {
+        let verified = data_context.require_authenticated(&chat)?;
+        let username = verified.username();
+        let key = verified.key();
         let history = chat.history().map_err(history_error_to_http)?;
         let set_id = match resolve_set_id(
             &history,
@@ -653,7 +586,7 @@ pub async fn handle_history_pair(
         };
     }
 
-    let guest_history = chat.session_history(&session.session_id);
+    let guest_history = chat.session_history(&data_context.session().session_id);
     history_pair_json(&guest_history, pair_index, payload.image_index, None, None)
 }
 
@@ -685,30 +618,15 @@ pub async fn handle_history_image(
     let chat = services.chat().clone();
     let headers = request.headers();
     let cookie_header = extract_cookie(headers);
-    let encryption_key =
-        crate::chat_utils::extract_enc_key_with_identity(&identity, headers)
-            .or_else(|| extract_hist_enc_cookie(cookie_header.as_deref()));
-
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::history_image::session"))?;
-
-    let username = match session.username.as_deref() {
-        Some(value) => value,
-        None => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Not authenticated"}),
-            );
-        }
-    };
-
-    if let Err(err) =
-        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-    {
-        return Err(map_encryption_key_validation_err(err));
-    }
-    let key = encryption_key.as_ref().expect("validated encryption key");
+    let data_context = crate::request_context::DataRequestContext::resolve_for_history_image(
+        &identity,
+        headers,
+        cookie_header.as_deref(),
+        "sets::history_image::session",
+    )?;
+    let verified = data_context.require_authenticated(&chat)?;
+    let username = verified.username();
+    let key = verified.key();
     let history = chat.history().map_err(history_error_to_http)?;
     let id = match SetId::parse(&set_id) {
         Ok(id) => id,
@@ -758,19 +676,6 @@ fn parse_history_image_path(path: &str) -> Option<(String, u64, usize, usize)> {
         return None;
     }
     Some((set_id, version, pair_index, image_index))
-}
-
-fn extract_hist_enc_cookie(cookie_header: Option<&str>) -> Option<chatbot_core::enc_key::EncryptionKey> {
-    let header = cookie_header?;
-    for part in header.split(';') {
-        let part = part.trim();
-        let Some(value) = part.strip_prefix("hist_enc_key=") else {
-            continue;
-        };
-        let decoded = urlencoding::decode(value).ok()?;
-        return chatbot_core::enc_key::EncryptionKey::from_header_value(decoded.as_ref());
-    }
-    None
 }
 
 fn history_pair_json(
@@ -871,28 +776,15 @@ pub async fn handle_fork_set(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
-
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "sets::fork_set::session"))?;
-
-    let username = match session.username.as_deref() {
-        Some(value) => value,
-        None => {
-            return build_json_response(
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Not authenticated"}),
-            );
-        }
-    };
-
-    if let Err(err) =
-        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-    {
-        return Err(map_encryption_key_validation_err(err));
-    }
-    let key = encryption_key.as_ref().expect("validated encryption key");
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "sets::fork_set::session",
+    )?;
+    let verified = data_context.require_authenticated(&chat)?;
+    let username = verified.username();
+    let key = verified.key();
     let history = chat.history().map_err(history_error_to_http)?;
 
     let source_id = match resolve_set_id(

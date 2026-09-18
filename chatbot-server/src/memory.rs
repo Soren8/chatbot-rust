@@ -6,7 +6,7 @@ use chatbot_core::history::{self, HistoryError, HistoryService, SetId, SetVersio
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
+    api_error, map_body_read_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
     HttpError,
 };
@@ -100,26 +100,25 @@ pub async fn handle_update_memory(
     let csrf_token = extract_csrf(&headers);
 
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "memory::update_memory::session",
+    )?;
 
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "memory::update_memory::session"))?;
-
-    if payload.logged_in.unwrap_or(false) && session.username.is_none() {
+    if payload.logged_in.unwrap_or(false) && data_context.session().username.is_none() {
         return build_json_response(
             StatusCode::UNAUTHORIZED,
             json!({"error": "Session expired"}),
         );
     }
 
-    if let Some(username) = session.username.as_deref() {
-        if let Err(err) =
-            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-        {
-            return Err(map_encryption_key_validation_err(err));
-        }
-        let key = encryption_key.as_ref().expect("validated encryption key");
+    if data_context.session().username.as_deref().is_some() {
+        let verified = data_context.require_authenticated(&chat)?;
+        let username = verified.username();
+        let key = verified.key();
+        let session = verified.session();
         let history = chat.history().map_err(history_error_to_tuple)?;
         let snap = resolve_set(
             &history,
@@ -165,7 +164,7 @@ pub async fn handle_update_memory(
             }),
         )
     } else {
-        chat.update_session_memory(&session.session_id, &memory_text);
+        chat.update_session_memory(&data_context.session().session_id, &memory_text);
 
         build_json_response(
             StatusCode::OK,
@@ -213,28 +212,25 @@ pub async fn handle_update_system_prompt(
     let csrf_token = extract_csrf(&headers);
 
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "memory::update_system_prompt::session",
+    )?;
 
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| {
-            map_session_err(err, "memory::update_system_prompt::session")
-        })?;
-
-    if payload.logged_in.unwrap_or(false) && session.username.is_none() {
+    if payload.logged_in.unwrap_or(false) && data_context.session().username.is_none() {
         return build_json_response(
             StatusCode::UNAUTHORIZED,
             json!({"error": "Session expired"}),
         );
     }
 
-    if let Some(username) = session.username.as_deref() {
-        if let Err(err) =
-            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-        {
-            return Err(map_encryption_key_validation_err(err));
-        }
-        let key = encryption_key.as_ref().expect("validated encryption key");
+    if data_context.session().username.as_deref().is_some() {
+        let verified = data_context.require_authenticated(&chat)?;
+        let username = verified.username();
+        let key = verified.key();
+        let session = verified.session();
         let history = chat.history().map_err(history_error_to_tuple)?;
         let snap = resolve_set(
             &history,
@@ -285,7 +281,7 @@ pub async fn handle_update_system_prompt(
             }),
         )
     } else {
-        chat.update_session_system_prompt(&session.session_id, &system_prompt);
+        chat.update_session_system_prompt(&data_context.session().session_id, &system_prompt);
 
         build_json_response(
             StatusCode::OK,
@@ -345,19 +341,18 @@ pub async fn handle_delete_message(
     let csrf_token = extract_csrf(&headers);
 
     validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "memory::delete_message::session",
+    )?;
 
-    let session = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "memory::delete_message::session"))?;
-
-    if let Some(username) = session.username.as_deref() {
-        if let Err(err) =
-            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
-        {
-            return Err(map_encryption_key_validation_err(err));
-        }
-        let key = encryption_key.as_ref().expect("validated encryption key");
+    if data_context.session().username.as_deref().is_some() {
+        let verified = data_context.require_authenticated(&chat)?;
+        let username = verified.username();
+        let key = verified.key();
+        let session = verified.session();
         let history_svc = chat.history().map_err(history_error_to_tuple)?;
         // Prefer set_id + expected_version from the client so we do not decrypt the full
         // multi-MB set twice (once to resolve, once inside delete_pair).
@@ -399,7 +394,7 @@ pub async fn handle_delete_message(
                     Some(username),
                     Some(set_id),
                     Vec::new(),
-                    encryption_key.as_ref(),
+                    Some(key),
                 ) {
                     return Err(map_session_operation_err(&err));
                 }
@@ -434,7 +429,8 @@ pub async fn handle_delete_message(
         }
     }
 
-    let mut history = chat.session_history(&session.session_id);
+    let session_id = data_context.session().session_id.clone();
+    let mut history = chat.session_history(&session_id);
     if pair_index >= history.len() {
         return build_json_response(
             StatusCode::NOT_FOUND,
@@ -449,7 +445,7 @@ pub async fn handle_delete_message(
         );
     }
     history.remove(pair_index);
-    chat.update_session_history(&session.session_id, &history);
+    chat.update_session_history(&session_id, &history);
     build_json_response(StatusCode::OK, json!({"status": "success"}))
 }
 

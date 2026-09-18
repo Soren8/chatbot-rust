@@ -79,11 +79,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
-
-    let session_context = identity
-        .session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "chat::post::session"))?;
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "chat::post::session",
+    )?;
+    // Still unverified: core prepare owns key validation.
+    let (session_context, encryption_key) = data_context.into_unverified_parts();
 
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 

@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 030 — typed session operations](#session-030--typed-session-operations-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 031 — verified data request context](#session-031--verified-data-request-context-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-eight committed batches through session 030. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-nine committed batches through session 031. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 031 — verified data request context, 2026-09-18
+
+MOD-008 partial remediation: `DataRequestContext` resolves session/key through the existing cookie selector; direct data callers receive a borrowed verified pair after scoped chat validation. Chat/regenerate retain unverified inputs until core prepare. Set/history/memory/reset handlers use the adapter without moving CSRF or validation precedence. History-image fallback remains explicit. Primary rejected preferences migration because it changed session-first/key-only-for-authenticated lookup order; that handler is unchanged. Verified contexts borrow instead of cloning request keys. Client logs and distinct TTS/login/STT authorization remain separate.
+
+Fourteen new tests cover key precedence, guest and required-auth behavior, scoped root rejection, image fallback, CSRF/model error precedence, expired guest flags and preferences policy. Preferences tests observe response policy, not internal lookup counts; model-error tests observe the 200 response rather than prove durable persistence with an invalid key. Primary reviewed all migrated handlers, the new context and tests; formatting-only churn was removed. Baseline reused `20260918T101218-76798be2b510`. Final `20260918T103337-1f84641b11cf` and reviewed final `20260918T104555-2d17e9eb02ee` passed including provider-config validation. Logs: `temp/test-logs/modularity-mod008-data-context-20260918T103337Z.log` and `modularity-mod008-data-context-reviewed-final-20260918T104555Z.log`; initial compile failure preserved in `modularity-mod008-data-context-20260918T103217Z.log`. Commit title: `Introduce verified data request contexts`, based on `9ce3e05`.
 
 ## Session 030 — typed session operations, 2026-09-18
 
