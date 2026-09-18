@@ -88,6 +88,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 ## MOD-009 — Browser application state is coupled to DOM and global initialization
 
+**Partial remediation (session 018):** shared `voice-text.js` owns pure sentence/normalization/utterance operations with explicit inputs. Desktop/native queues import the same behavior through chat adapters. Approved test-seam migrations retain sentence/exhaustion scenarios and add direct module coverage. Mutable conversation/voice ownership remains open.
+
 **Evidence:** all 6,355 lines of `static/chat.js` were read. It initializes config/native bridges and patches global fetch (79–354), owns history/version state (544–765), renders messages (959–1401,1968–2067), owns generation (2069–2159,3182–3393,4384–4695), implements TTS (1442–1612,2161–3149,5317–5652), and owns VAD/voice lifecycle (4869–6304). The main ready closure exports selected functions to `window` while other helpers reference outer mutable state.
 
 **Consequence:** state ownership depends on lexical scope and document-ready timing. Request/version logic reads selected DOM options; playback determines whether generation continues from the last AI node, button disabled state, and a global abort controller. Splitting the file without replacing those implicit dependencies would preserve the coupling.
@@ -165,6 +167,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 **Verification:** config parity for supported overrides/substitution, startup failure/readiness, client disconnect, shutdown, concurrent inference and bounded buffering. GPU-runtime behavior remains unmeasured. Coordinate with MOD-003 and operational settings ownership.
 
 ## MOD-016 — Tests are forced across source/layout boundaries instead of stable units
+
+**Further partial remediation (session 018):** sentence and exhaustion fixtures import `voice-text.js` instead of slicing language-helper bodies. Existing behavioral scenarios remain; queue bodies are still source-extracted, and structural assertions were relocated to the actual owner under explicit user approval.
 
 **Evidence:** `voice_mode_reliability.rs` checks exact Java/JS source strings and method positions; `tts_sentence_boundaries.rs:43–165` pins regex spelling and helper names even alongside behavioral tests. Node fixtures extract function source by indentation/sentinel strings and provide many ambient globals (`fixtures/tts_sentence_boundary_test.js:19–34,55–72,108–149`; `native_tts_queue_test.js:5–8,26–70`). `js_syntax.rs` mixes real parsing with application behavior asserted through source spelling. Rust production exposes `test_instrumentation`, provider environment stubs, and an image fixture helper. Shared test support mostly owns filesystem/environment setup while login/bootstrap helpers are repeated in test files.
 

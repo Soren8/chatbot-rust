@@ -16,6 +16,7 @@ fn streaming_boundaries_speak_once_on_both_real_queues() {
     let run = Command::new("node")
         .arg(root.join("chatbot-server/tests/fixtures/tts_sentence_boundary_test.js"))
         .arg(root.join("static/chat.js"))
+        .arg(root.join("static/voice-text.js"))
         .output()
         .expect("test image must provide the JS behavior-test runtime");
     assert!(
@@ -31,6 +32,7 @@ fn retry_exhaustion_ends_the_session_with_a_visible_error() {
     let run = Command::new("node")
         .arg(root.join("chatbot-server/tests/fixtures/tts_exhaustion_test.js"))
         .arg(root.join("static/chat.js"))
+        .arg(root.join("static/voice-text.js"))
         .output()
         .expect("test image must provide the JS behavior-test runtime");
     assert!(
@@ -49,8 +51,9 @@ fn streaming_terminator_holds_extendable_endings() {
         !chat_js.contains("trailingTtsFragmentIsStable"),
         "no separate stability helper; the existing terminator carries the invariant"
     );
-    let term = function_body(chat_js, "sentenceEndsWithTerminator")
-        .expect("sentenceEndsWithTerminator must be declared");
+    let voice_text_js = include_str!("../../static/voice-text.js");
+    let term = function_body(voice_text_js, "sentenceEndsWithTerminator")
+        .expect("sentenceEndsWithTerminator must be declared in the shared voice-text unit");
     for marker in [
         ":\\s*[\"'",
         "[0-9]\\.\\s*[\"'",

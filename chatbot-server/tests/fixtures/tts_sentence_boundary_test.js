@@ -1,20 +1,26 @@
 'use strict';
 // Streaming TTS sentence boundaries on the REAL desktop + native queues.
 //
-// Real splitSentences / sentenceEndsWithTerminator / sanitizeForTTS /
-// isAsciiDigit and the real playMessageBodyTts + playNativeVoiceModeTts queue
-// logic from static/chat.js (leaf I/O mocked). Extendable trailing fragments
-// (colon, digit period, all-caps initialism, known abbreviations/honorifics)
-// must wait while generating so both queues speak each sentence once; ordinary
-// endings stream at once. A chunk that only appends punctuation/closers to an
-// already-queued sentence is ignored instead of repeated.
+// Sentence/normalize helpers come from the shared static/voice-text.js unit
+// (stable import); the real playMessageBodyTts + playNativeVoiceModeTts queue
+// logic is exercised from static/chat.js (leaf I/O mocked). Extendable
+// trailing fragments (colon, digit period, all-caps initialism, known
+// abbreviations/honorifics) must wait while generating so both queues speak
+// each sentence once; ordinary endings stream at once. A chunk that only
+// appends punctuation/closers to an already-queued sentence is ignored
+// instead of repeated.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
 const chatJsPath = process.argv[2];
-assert(chatJsPath, 'usage: node tts_sentence_boundary_test.js <static/chat.js>');
+const voiceTextPath = process.argv[3];
+assert(
+  chatJsPath && voiceTextPath,
+  'usage: node tts_sentence_boundary_test.js <static/chat.js> <static/voice-text.js>'
+);
 const source = fs.readFileSync(chatJsPath, 'utf8');
+const voiceText = require(voiceTextPath);
 
 function extractTop(name) {
   const header = 'function ' + name + '(';
@@ -26,7 +32,6 @@ function extractTop(name) {
   return source.slice(start, close + 2);
 }
 
-const langSrc = ['isAsciiDigit', 'sentenceEndsWithTerminator', 'splitSentences', 'sanitizeForTTS'].map(extractTop);
 const desktopSrc = extractTop('playMessageBodyTts');
 const nativeStart = source.indexOf('  function playNativeVoiceModeTts(');
 const nativeEnd = source.indexOf('  window.playNativeVoiceModeTts =', nativeStart);
@@ -70,7 +75,10 @@ function desktopSession() {
     reportVoice(k, m) { state.reports.push(k + ':' + m); },
     appendMessage(t) { state.chatErrors.push(String(t)); },
   });
-  for (const src of langSrc) vm.runInContext(src, context);
+  context.isAsciiDigit = voiceText.isAsciiDigit;
+  context.sentenceEndsWithTerminator = voiceText.sentenceEndsWithTerminator;
+  context.splitSentences = voiceText.splitSentences;
+  context.sanitizeForTTS = voiceText.sanitizeForTTS;
   vm.runInContext(desktopSrc, context);
   context.playMessageBodyTts(1, {}, element);
   return {
@@ -147,7 +155,10 @@ function nativeSession() {
       },
     },
   });
-  for (const src of langSrc) vm.runInContext(src, context);
+  context.isAsciiDigit = voiceText.isAsciiDigit;
+  context.sentenceEndsWithTerminator = voiceText.sentenceEndsWithTerminator;
+  context.splitSentences = voiceText.splitSentences;
+  context.sanitizeForTTS = voiceText.sanitizeForTTS;
   context.getMessageTtsText = () => context.sanitizeForTTS(state.raw);
   context.invalidateNativeVoiceTts = () => {
     context.nativeVoiceTtsGeneration++;

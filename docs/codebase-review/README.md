@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 017 — prepare history errors](#session-017--prepare-history-errors-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 018 — shared voice text](#session-018--shared-voice-text-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: fifteen committed batches through session 017. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: sixteen committed batches through session 018. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -238,3 +238,13 @@ Four new route characterizations passed before/after extraction: chat/regenerate
 Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline `20260918T022951-0bd17403a87f`, final `20260918T023620-e12d60e16461`, reviewed final `20260918T034644-c8beb77a06fa`: all passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod001-history-{baseline,final,reviewed-final}.log`. Reviewed final includes the parallel voice-text batch; primary reviewed the Rust diff, handler branching and all eight new tests. No claim of a deterministic route-level conflict/store-failure reproduction.
 
 Local commit title: `Return typed prepare history errors`, based on `bc140fd`. Fifteen remediation batches complete; phase 1 and its completion-review gate remain open.
+
+## Session 018 — shared voice text, 2026-09-18
+
+MOD-009/016 partial remediation: `static/voice-text.js` owns sentence splitting/completion, TTS normalization, joining, amend eligibility and sentence-offset lookup. `chat.js` keeps adapters, its 2000ms amend-window policy and all queue/voice coordination. No barge-in thresholds changed. Primary reviewed the extracted algorithms, template load order and fixture migrations.
+
+The user explicitly approved migrating source-bound voice tests. Existing desktop/native sentence and exhaustion fixtures now import the actual shared text unit; their queue scenarios/assertions remain intact. Structural checks refer to the new owner; queue checks stay on `chat.js`. Four new Rust tests cover stable-import behavior, parsing, packaging/delegation and explicit window wiring. Source-bound queue tests remain a MOD-016 limitation.
+
+Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Initial three-helper checkpoint: final `20260918T030051-5a4c88dc44a5` passed, but its baseline had two expected wiring failures and an intermediate new-test failure log was overwritten. Expanded characterization baseline `20260918T032717-84ec40f7fe3c` and expanded final `20260918T033914-d74887b0a0b3` passed. Expanded failed attempts are preserved: baseline test expectations `20260918T032011-d92e70621661`, syntax error during extraction `20260918T033446-6992cbe5f3ee`. Logs use `temp/test-logs/modularity-mod009-voice-text-expanded-{baseline,baseline-red,final,final-red}.log`. Later history reviewed-final also passed with these changes. Provider configuration validation passed.
+
+Local commit title: `Extract shared browser and native voice text utilities`, based on `8a200d7`. Sixteen remediation batches complete; browser state/voice coordination and phase-1 completion review remain open. Host webserver rebuild/restart is required for the new image-baked asset and template wiring.

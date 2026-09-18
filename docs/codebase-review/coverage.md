@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 018 adds `static/voice-text.js`, `chatbot-server/tests/voice_text_boundary.rs` and its JS fixture (321 tracked paths). Primary reviewed production delegation, all moved algorithms and approved existing-test migrations. Full expanded baseline/final suites passed; browser/device execution was not performed.
+
 Session 017 adds `chatbot-server/tests/prepare_history_boundary.rs` (318 tracked paths). Four pre-extraction route tests plus four mapper tests pass with the full suite. Primary reviewed all prepare-history mappings and both handlers; conflict/store failure are covered at the mapper boundary, not by forced route races/fault injection.
 
 Session 016 adds `chatbot-server/tests/prepare_policy_boundary.rs` (317 tracked paths). Primary reviewed core policy errors, both handler arms, the HTTP mapper and nine new route tests; baseline/final full suites passed.

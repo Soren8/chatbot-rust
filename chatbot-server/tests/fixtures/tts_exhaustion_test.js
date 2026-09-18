@@ -9,8 +9,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const chatJsPath = process.argv[2];
-assert(chatJsPath, 'usage: node tts_exhaustion_test.js <static/chat.js>');
+const voiceTextPath = process.argv[3];
+assert(
+  chatJsPath && voiceTextPath,
+  'usage: node tts_exhaustion_test.js <static/chat.js> <static/voice-text.js>'
+);
 const source = fs.readFileSync(chatJsPath, 'utf8');
+const voiceText = require(voiceTextPath);
 
 function extractTop(name) {
   const header = 'function ' + name + '(';
@@ -22,7 +27,6 @@ function extractTop(name) {
   return source.slice(start, close + 2);
 }
 
-const langSrc = ['isAsciiDigit', 'sentenceEndsWithTerminator', 'splitSentences', 'sanitizeForTTS'].map(extractTop);
 const streamingSrc = extractTop('playMessageBodyTts');
 const fixedSrc = extractTop('playFixedSentenceList');
 const nativeStart = source.indexOf('  function playNativeVoiceModeTts(');
@@ -67,7 +71,10 @@ function desktopStreamingSession() {
     reportVoice(k, m) { state.reports.push(k + ':' + m); },
     appendMessage(t) { state.chatErrors.push(String(t)); },
   });
-  for (const src of langSrc) vm.runInContext(src, context);
+  context.isAsciiDigit = voiceText.isAsciiDigit;
+  context.sentenceEndsWithTerminator = voiceText.sentenceEndsWithTerminator;
+  context.splitSentences = voiceText.splitSentences;
+  context.sanitizeForTTS = voiceText.sanitizeForTTS;
   vm.runInContext(streamingSrc, context);
   context.playMessageBodyTts(1, {}, element);
   return {
@@ -173,7 +180,10 @@ function nativeFailingSession() {
       },
     },
   });
-  for (const src of langSrc) vm.runInContext(src, context);
+  context.isAsciiDigit = voiceText.isAsciiDigit;
+  context.sentenceEndsWithTerminator = voiceText.sentenceEndsWithTerminator;
+  context.splitSentences = voiceText.splitSentences;
+  context.sanitizeForTTS = voiceText.sanitizeForTTS;
   context.getMessageTtsText = () => context.sanitizeForTTS(state.raw);
   context.invalidateNativeVoiceTts = () => {
     context.nativeVoiceTtsGeneration++;
@@ -264,7 +274,10 @@ function nativeReplacementHarness() {
       },
     },
   });
-  for (const src of langSrc) vm.runInContext(src, context);
+  context.isAsciiDigit = voiceText.isAsciiDigit;
+  context.sentenceEndsWithTerminator = voiceText.sentenceEndsWithTerminator;
+  context.splitSentences = voiceText.splitSentences;
+  context.sanitizeForTTS = voiceText.sanitizeForTTS;
   context.invalidateNativeVoiceTts = () => {
     context.nativeVoiceTtsGeneration++;
     context.nativeVoiceTtsSessionPromise = null;

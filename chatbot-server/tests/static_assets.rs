@@ -232,6 +232,17 @@ fn ai_message_supports_speak_from_text_position() {
             && chat_js.contains("function sentenceIndexAtOffset"),
         "highlight and click must share one sentence splitter"
     );
+    let voice_text_js = include_str!("../../static/voice-text.js");
+    assert!(
+        voice_text_js.contains("Consume the whole run")
+            && voice_text_js.contains("text.charAt(end) === '.'"),
+        "ellipsis \"...\" must be one terminator, not three \".\" sentences"
+    );
+    assert!(
+        chat_js.contains("ChatVoiceText.splitSentences")
+            && chat_js.contains("ChatVoiceText.sentenceEndsWithTerminator"),
+        "highlight and click must resolve through the shared voice-text unit"
+    );
     assert!(
         chat_js.contains("function highlightSentenceInElement"),
         "expected hover sentence highlight under the cursor"
@@ -264,11 +275,6 @@ fn ai_message_supports_speak_from_text_position() {
         style_css.contains(".tts-sentence-highlight")
             && style_css.contains(".tts-hover-play-icon"),
         "CSS for highlight and play/stop badge"
-    );
-    assert!(
-        chat_js.contains("Consume the whole run")
-            && chat_js.contains("text.charAt(end) === '.'"),
-        "ellipsis \"...\" must be one terminator, not three \".\" sentences"
     );
     assert!(
         chat_js.contains("function sentenceEndsWithTerminator"),
@@ -333,12 +339,17 @@ fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
 #[test]
 fn split_sentences_keeps_version_numbers_together() {
     let chat_js = include_str!("../../static/chat.js");
+    let voice_text_js = include_str!("../../static/voice-text.js");
 
     assert!(
-        chat_js.contains("function isAsciiDigit"),
+        voice_text_js.contains("function isAsciiDigit"),
         "isAsciiDigit helper is required for the digit-digit period rule"
     );
-    let body = function_body(chat_js, "splitSentences").expect("splitSentences body");
+    assert!(
+        chat_js.contains("ChatVoiceText.splitSentences"),
+        "chat must resolve splitting through the shared voice-text unit"
+    );
+    let body = function_body(voice_text_js, "splitSentences").expect("splitSentences body");
     assert!(
         body.contains("isAsciiDigit")
             && body.contains("Decimal/version dot")
@@ -350,8 +361,9 @@ fn split_sentences_keeps_version_numbers_together() {
 /// Initialisms (U.S., A.I., e.g.) and honorifics (Dr., Mr.) must NOT be split as separate sentences.
 #[test]
 fn split_sentences_keeps_initialisms_and_abbreviations_together() {
+    let voice_text_js = include_str!("../../static/voice-text.js");
     let chat_js = include_str!("../../static/chat.js");
-    let body = function_body(chat_js, "splitSentences").expect("splitSentences body");
+    let body = function_body(voice_text_js, "splitSentences").expect("splitSentences body");
     assert!(
         body.contains("Letter on BOTH sides")
             && body.contains("Honorific / Title")
@@ -359,7 +371,11 @@ fn split_sentences_keeps_initialisms_and_abbreviations_together() {
         "splitSentences must not split on initialisms or abbreviations; got: {body}"
     );
 
-    let sanitize_body = function_body(chat_js, "sanitizeForTTS").expect("sanitizeForTTS body");
+    let sanitize_body = function_body(voice_text_js, "sanitizeForTTS").expect("sanitizeForTTS body");
+    assert!(
+        chat_js.contains("ChatVoiceText.sanitizeForTTS"),
+        "chat must resolve speech normalization through the shared voice-text unit"
+    );
     assert!(
         sanitize_body.contains("Expand currency with magnitude")
             && sanitize_body.contains("Expand Latin abbreviations")

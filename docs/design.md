@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Pure browser/native voice-text operations live in `static/voice-text.js`: sentence splitting/completion, speech normalization, utterance joining, amend eligibility and caret-to-sentence lookup. `chat.js` delegates with an explicit amend window and retains playback/recording coordination. The template loads the shared unit before `chat.js`; server speech normalization remains a separate later stage.
+
 HTTP identity lifecycle lives in `chatbot-core/src/session_identity.rs`: cookie/CSRF state, guest/user identity, login/logout rotation and identity expiry. `session.rs` re-exports its public API and composes HTTP/chat expiry counts; chat state, generation locks and orchestration remain in `session.rs`.
 
 Raw request Cookie/CSRF header parsing and client-IP selection live in `chatbot-server/src/request_context.rs`. Route handlers retain identity lookup and CSRF/authorization decisions; rate limiting uses the borrowed cookie accessor. `chat_utils::get_ip` is a compatibility re-export.

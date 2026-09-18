@@ -1756,8 +1756,9 @@ fn streaming_tts_starts_on_first_sentence_without_waiting_for_generation_complet
     );
 
     // 1. sentenceEndsWithTerminator must match terminators with trailing whitespace/newlines
-    let term_body = function_body(chat_js, "sentenceEndsWithTerminator")
-        .expect("sentenceEndsWithTerminator must be declared");
+    let voice_text_js = include_str!("../../static/voice-text.js");
+    let term_body = function_body(voice_text_js, "sentenceEndsWithTerminator")
+        .expect("sentenceEndsWithTerminator must be declared in the shared voice-text unit");
     assert!(
         term_body.contains("\\s*$") || term_body.contains(".trim()"),
         "sentenceEndsWithTerminator must handle trailing whitespace/newlines so sentences followed by whitespace or line breaks are recognized as terminated"
@@ -1768,8 +1769,8 @@ fn streaming_tts_starts_on_first_sentence_without_waiting_for_generation_complet
     );
 
     // 2. splitSentences must recognize paragraph breaks (\n\n) as sentence boundaries
-    let split_body = function_body(chat_js, "splitSentences")
-        .expect("splitSentences must be declared");
+    let split_body = function_body(voice_text_js, "splitSentences")
+        .expect("splitSentences must be declared in the shared voice-text unit");
     assert!(
         split_body.contains("\\n\\n") || split_body.contains("\\n") || split_body.contains("newline"),
         "splitSentences must recognize paragraph breaks or newlines as sentence boundaries"
@@ -1792,8 +1793,8 @@ fn streaming_tts_starts_on_first_sentence_without_waiting_for_generation_complet
     );
 
     // 5. sanitizeForTTS must not destroy paragraph breaks by collapsing newlines into spaces
-    let sanitize_body = function_body(chat_js, "sanitizeForTTS")
-        .expect("sanitizeForTTS must be declared");
+    let sanitize_body = function_body(voice_text_js, "sanitizeForTTS")
+        .expect("sanitizeForTTS must be declared in the shared voice-text unit");
     assert!(
         !sanitize_body.contains(".replace(/\\s+/g, ' ')"),
         "sanitizeForTTS must not unconditionally collapse newlines into spaces, which destroys paragraph boundaries"
