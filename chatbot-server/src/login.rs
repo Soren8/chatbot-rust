@@ -38,11 +38,7 @@ pub async fn handle_get_salt(
 pub async fn handle_login_get(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    let cookie_header = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(request.headers());
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "login::get"))?;
@@ -65,10 +61,7 @@ pub async fn handle_login_post(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let body_bytes = body::to_bytes(body, 64 * 1024)
         .await
@@ -115,7 +108,7 @@ pub async fn handle_login_post(
         .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?;
 
     if !valid {
-        let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+        let ip = crate::request_context::get_ip(&headers, &parts.extensions);
         tracing::info!(username = %username, ip = %ip, "Login failed");
         return invalid_credentials();
     }
@@ -141,7 +134,7 @@ pub async fn handle_login_post(
     let finalize = session::finalize_login(cookie_header.as_deref(), &username)
         .map_err(|err| map_session_err(err, "login::post::finalize"))?;
 
-    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+    let ip = crate::request_context::get_ip(&headers, &parts.extensions);
     tracing::info!(username = %username, ip = %ip, "Login successful");
 
     let mut response = Response::builder()
@@ -296,10 +289,7 @@ pub async fn handle_login_remember_post(
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let body_bytes = body::to_bytes(body, 16 * 1024)
         .await
@@ -376,7 +366,7 @@ pub async fn handle_login_remember_post(
             let finalize = session::finalize_login(cookie_header.as_deref(), &username)
                 .map_err(|err| map_session_err(err, "login::remember::finalize"))?;
 
-            let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+            let ip = crate::request_context::get_ip(&headers, &parts.extensions);
             tracing::info!(username = %username, ip = %ip, "Session restored via remember token");
 
             let payload = serde_json::to_vec(&json!({
@@ -463,10 +453,7 @@ pub async fn handle_login_forget_post(
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let body_bytes = body::to_bytes(body, 16 * 1024)
         .await

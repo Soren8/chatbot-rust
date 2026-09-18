@@ -64,13 +64,8 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     let payload: ChatRequest = serde_json::from_slice(&body_bytes)
         .map_err(|err| map_json_parse_err(err, "chat::post"))?;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
+    let csrf_token = crate::request_context::extract_csrf(&headers);
 
     let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "chat::post::csrf"))?;
@@ -142,7 +137,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type"));
     }
 
-    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+    let ip = crate::request_context::get_ip(&headers, &parts.extensions);
     let username = session_context.username.as_deref().unwrap_or("guest");
     // Prefer non-sensitive set_id in logs; display names are privacy-sensitive.
     let set_log = payload

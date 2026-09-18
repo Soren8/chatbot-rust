@@ -22,11 +22,7 @@ use crate::http_error::{
 pub async fn handle_signup_get(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    let cookie_header = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(request.headers());
 
     let bootstrap = session::prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "signup::get"))?;
@@ -52,10 +48,7 @@ pub async fn handle_signup_post(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let body_bytes = body::to_bytes(body, 64 * 1024)
         .await
@@ -105,7 +98,7 @@ pub async fn handle_signup_post(
 
     match store.create_user(&username, &hashed) {
         Ok(CreateOutcome::Created) => {
-            let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+            let ip = crate::request_context::get_ip(&headers, &parts.extensions);
             tracing::info!(username = %username, ip = %ip, "User created");
         }
         Ok(CreateOutcome::AlreadyExists) => {

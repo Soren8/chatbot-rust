@@ -1,6 +1,6 @@
 use axum::{
     body::{self, Body},
-    http::{header, Method, Request, Response, StatusCode},
+    http::{Method, Request, Response, StatusCode},
 };
 use chatbot_core::session;
 use once_cell::sync::Lazy;
@@ -81,15 +81,8 @@ pub async fn handle_client_logs(request: Request<Body>) -> Result<Response<Body>
     }
 
     let (parts, body) = request.into_parts();
-    let cookie_header = parts
-        .headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_owned());
-    let csrf_token = parts
-        .headers
-        .get("X-CSRF-Token")
-        .and_then(|v| v.to_str().ok());
+    let cookie_header = crate::request_context::extract_cookie(&parts.headers);
+    let csrf_token = crate::request_context::extract_csrf(&parts.headers);
 
     // Log-only endpoint: no state mutation. The native reporter cannot obtain
     // the page's CSRF token, so a live session cookie is accepted as

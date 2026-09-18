@@ -13,6 +13,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, HttpError,
 };
+use crate::request_context::{extract_cookie, extract_csrf};
 
 #[derive(Deserialize, Default)]
 struct SetRequest {
@@ -921,19 +922,6 @@ fn resolve_set(
         Ok(None) => Err("set not found"),
         Err(_) => Err("set not found"),
     }
-}
-
-fn extract_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned())
-}
-
-fn extract_csrf(headers: &axum::http::HeaderMap) -> Option<&str> {
-    headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok())
 }
 
 fn validate_csrf(

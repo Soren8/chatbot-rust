@@ -47,14 +47,9 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
+    let csrf_token = crate::request_context::extract_csrf(&headers);
 
     let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "tts::post::csrf"))?;
@@ -64,7 +59,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     }
 
     let username = ensure_tts_access(cookie_header.as_deref())?;
-    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+    let ip = crate::request_context::get_ip(&headers, &parts.extensions);
 
     tracing::info!(username = %username, ip = %ip, "TTS token request");
 
@@ -199,15 +194,8 @@ pub async fn handle_tts_cancel(
     }
 
     let (parts, _body) = request.into_parts();
-    let cookie_header = parts
-        .headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
-    let csrf_token = parts
-        .headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
+    let cookie_header = crate::request_context::extract_cookie(&parts.headers);
+    let csrf_token = crate::request_context::extract_csrf(&parts.headers);
     let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "tts::cancel::csrf"))?;
     if !csrf_valid {

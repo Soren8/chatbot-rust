@@ -169,6 +169,8 @@ Modularity coverage for S01, S04 and T02 was stale during implementation and was
 
 ## Session 008 remediation coverage
 
+Session 014 adds `chatbot-server/src/request_context.rs` and `chatbot-server/tests/request_context_boundary.rs` (314 tracked paths). Primary reviewed all migrated transport call sites and 18 new tests. Existing IP/CSRF/authentication coverage passed before extraction; reviewed final full suite passed after test-fixture serialization.
+
 Session 013 adds `chatbot-core/tests/prompt_input_boundary.rs` (312 tracked paths). Primary reviewed the prompt algorithm extraction, borrowed inputs, default-size adapter and seven new tests. Existing prompt tests passed before extraction; new API tests and full suite passed afterward. Session lifecycle remains outside this batch.
 
 Session 012 adds `chatbot-server/tests/prepare_validation_boundary.rs` to T02 (311 tracked paths). Primary reviewed core prepare validation, both handlers and the HTTP mapper; ten new router tests pass before and after extraction. Broader session lifetimes and core service outcomes retain their open dispositions.

@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 013 — prompt-input boundary](#session-013--prompt-input-boundary-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 014 — request-transport ownership](#session-014--request-transport-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: eleven committed batches through session 013. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twelve committed batches through session 014. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -198,3 +198,13 @@ Existing chat tests provided the pre-extraction baseline, including memory, thou
 Verification: full `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust` baseline `20260918T004934-679d3f8ceba2`, extraction final `20260918T005646-e26a1428fa71`, and reviewed final `20260918T010245-e2177aad8c3b` all passed. The reviewed final includes all seven new tests and provider-config validation. Logs: `temp/test-logs/modularity-mod002-prompt-{baseline,final,reviewed-final}.log`. The baseline did not contain the new boundary tests. Only documentation changed after the reviewed final.
 
 Local commit title: `Decouple prompt packing from session context`, based on `edfa3e3`. Eleven remediation batches are complete; phase 1 remains in progress and phases 2–7 are unstarted. Next work should address another remaining ownership boundary or explicitly disposition a larger finding; the requested main-model read-only phase-completion review remains pending. Rebuild/restart the host webserver to deploy.
+
+## Session 014 — request-transport ownership, 2026-09-18
+
+MOD-008 partial remediation: `chatbot-server/src/request_context.rs` owns raw Cookie/CSRF header extraction and client-IP selection. Duplicate helpers in sets/memory and equivalent inline parsing in chat, regenerate, TTS/STT, reset, preferences, home, login/logout/signup, client logs and rate limiting delegate to it. The rate limiter retains borrowed cookie extraction; other consumers retain owned values. `chat_utils::get_ip` remains a compatibility re-export. IP forwarding precedence, malformed/empty/duplicate header handling, identity creation versus lookup, CSRF messages and per-route authorization decisions are unchanged. This does not resolve broader authenticated request-context ownership or SEC-002.
+
+Existing IP/CSRF/authentication tests passed before extraction. Eighteen new post-extraction tests cover transport edge cases and the chat/client-logs CSRF distinction. Primary reviewed every production diff and both new files, then required serialization of the two route tests because their fixtures mutate global cwd/environment/config. Existing tests were unchanged. Pure header tests do not use workspace fixtures.
+
+Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline `20260918T012122-4fd4dcdfb195`, extraction final `20260918T012843-718960cb230a`, and reviewed final `20260918T013542-d4bd42b45480` all passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod008-request-{baseline,final,reviewed-final}.log`. The new tests were added after the baseline. Only documentation changed after reviewed final.
+
+Local commit title: `Consolidate request transport extraction`, based on `e677bc8`. Twelve batches are complete; phase 1 remains in progress. Remaining work includes broader session/service composition, generation lifetime, history representation and browser/native voice ownership. Resolve or explicitly disposition remaining structural findings before the main-model read-only completion review; phases 2–7 remain unstarted. Host webserver rebuild/restart is required to deploy.

@@ -33,14 +33,9 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     let (parts, body) = request.into_parts();
     let headers = &parts.headers;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(headers);
 
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|v| v.to_str().ok());
+    let csrf_token = crate::request_context::extract_csrf(headers);
 
     let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "stt::post::csrf"))?;

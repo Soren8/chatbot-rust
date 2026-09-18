@@ -12,6 +12,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, HttpError,
 };
+use crate::request_context::{extract_cookie, extract_csrf};
 
 /// Memory / system-prompt updates (no image payloads).
 const MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
@@ -450,19 +451,6 @@ fn ensure_post(request: &Request<Body>) -> Result<(), HttpError> {
         return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
     Ok(())
-}
-
-fn extract_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned())
-}
-
-fn extract_csrf(headers: &axum::http::HeaderMap) -> Option<&str> {
-    headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok())
 }
 
 fn validate_csrf(

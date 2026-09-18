@@ -9,11 +9,8 @@ use crate::http_error::{
 
 pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let headers = request.headers();
-    let ip = crate::chat_utils::get_ip(headers, request.extensions());
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
+    let ip = crate::request_context::get_ip(headers, request.extensions());
+    let cookie_header = crate::request_context::extract_cookie(headers);
 
     let username = session::session_context(cookie_header.as_deref())
         .ok()

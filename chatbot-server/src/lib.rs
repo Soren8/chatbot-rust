@@ -29,6 +29,7 @@ mod preferences;
 mod providers;
 mod rate_limit_middleware;
 mod regenerate;
+pub mod request_context;
 mod reset_chat;
 mod search;
 mod sets;

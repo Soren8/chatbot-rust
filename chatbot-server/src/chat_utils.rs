@@ -1,7 +1,6 @@
 use axum::{
     body::Body,
-    extract::ConnectInfo,
-    http::{header, Extensions, HeaderMap, Response, StatusCode},
+    http::{header, Response, StatusCode},
 };
 use chatbot_core::{
     enc_key::EncryptionKey,
@@ -11,7 +10,6 @@ use chatbot_core::{
 use anyhow::Error;
 use regex::Regex;
 use serde_json::{json, Value};
-use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 
 use crate::http_error::{map_response_build_err, HttpError};
@@ -62,25 +60,7 @@ pub use crate::enc_key_cookies::{
     enc_key_cookie_value, extract_account_enc_key_cookie, extract_enc_key, extract_enc_key_cookie,
     promote_enc_key_cookies,
 };
-
-pub fn get_ip(headers: &HeaderMap, extensions: &Extensions) -> String {
-    headers
-        .get("X-Forwarded-For")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-        .or_else(|| {
-            headers
-                .get("X-Real-IP")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string())
-        })
-        .or_else(|| {
-            extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ConnectInfo(addr)| addr.ip().to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
-}
+pub use crate::request_context::get_ip;
 
 pub struct ChatLockGuard {
     session_id: String,

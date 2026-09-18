@@ -89,11 +89,8 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
 
 pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let headers = request.headers();
-    let ip = crate::chat_utils::get_ip(headers, request.extensions());
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let ip = crate::request_context::get_ip(headers, request.extensions());
+    let cookie_header = crate::request_context::extract_cookie(headers);
 
     let request_cookies = cookie_header.clone();
     let mut restored_cookies: Vec<String> = Vec::new();
