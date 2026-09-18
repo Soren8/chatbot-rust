@@ -76,18 +76,25 @@ impl BraveClient {
     }
 }
 
-/// Returns a `BraveClient` if `BRAVE_API_KEY` is set, otherwise `None`.
-/// Reads the env var on each call — cheap, and avoids singleton issues in tests.
-/// The underlying HTTP connection pool (`http_client()`) is still a singleton.
-pub fn brave_client() -> Option<BraveClient> {
-    match std::env::var("BRAVE_API_KEY") {
-        Ok(key) if !key.is_empty() => {
+/// Returns a `BraveClient` for an explicit key, otherwise `None`.
+/// Same messages as [`brave_client`]; dispatch calls this only in the gated
+/// search branches so explicit router keys stay isolated.
+pub fn brave_client_with_key(key: Option<&str>) -> Option<BraveClient> {
+    match key {
+        Some(key) if !key.is_empty() => {
             info!("Brave Search client initialized");
-            Some(BraveClient::new(key))
+            Some(BraveClient::new(key.to_owned()))
         }
         _ => {
             warn!("BRAVE_API_KEY not set; Brave Search disabled");
             None
         }
     }
+}
+
+/// Returns a `BraveClient` if `BRAVE_API_KEY` is set, otherwise `None`.
+/// Reads the env var on each call — cheap, and avoids singleton issues in tests.
+/// The underlying HTTP connection pool (`http_client()`) is still a singleton.
+pub fn brave_client() -> Option<BraveClient> {
+    brave_client_with_key(std::env::var("BRAVE_API_KEY").ok().as_deref())
 }

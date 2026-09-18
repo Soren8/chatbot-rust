@@ -16,6 +16,7 @@ use chatbot_core::{
 use futures_util::Stream;
 use tracing::{error, warn};
 
+use crate::generation_deps::GenerationDeps;
 use crate::providers::message_utils::parse_message_content;
 use crate::providers::messages::ChatMessagePayload;
 use crate::providers::openai::OpenAiProvider;
@@ -75,16 +76,20 @@ pub fn map_core_messages(messages: &[ChatMessage]) -> Vec<ChatMessagePayload> {
 /// XAI uses Brave only when `web_search` is set and `xai_search` is off, via
 /// the OpenAI-compatible search path, then falls back to native streaming on
 /// setup errors only.
+///
+/// The generation handle supplies the Brave client only in the same gated
+/// branches as before; no key or env read happens outside them.
 pub async fn dispatch_stream(
     provider: &GenerationProvider,
     provider_config: &ProviderConfig,
     messages: Vec<ChatMessagePayload>,
     web_search: bool,
+    generation: &GenerationDeps,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
     match provider {
         GenerationProvider::OpenAi(openai_provider) => {
             let brave = if web_search {
-                crate::brave::brave_client()
+                generation.brave_client()
             } else {
                 None
             };
@@ -112,7 +117,7 @@ pub async fn dispatch_stream(
         GenerationProvider::Xai(xai_provider) => {
             let use_brave = web_search && !provider_config.xai_search;
             let brave = if use_brave {
-                crate::brave::brave_client()
+                generation.brave_client()
             } else {
                 None
             };

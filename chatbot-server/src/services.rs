@@ -2,18 +2,22 @@
 //!
 //! One owned [`AppServices`] bundles the per-router resources that must stay
 //! isolated together: the HTTP identity store, the TTS pending-token store,
-//! the rate-limit counters, and the chat service (session RAM mirror plus
-//! durable history plus account-key/tier gates). Production builds one at
-//! startup and clones it into every request via an Axum `Extension` layer;
-//! the same identity value is also installed as the legacy `RequestIdentity`
-//! extension so existing handlers keep working from a single source.
+//! the rate-limit counters, the chat service (session RAM mirror plus
+//! durable history plus account-key/tier gates), and the generation
+//! dependencies (provider lookup plus thought defaults plus Brave client).
+//! Production builds one at startup and clones it into every request via an
+//! Axum `Extension` layer; the same identity value is also installed as the
+//! legacy `RequestIdentity` extension so existing handlers keep working from
+//! a single source.
 //!
 //! Compatibility: [`AppServices::global`] and [`AppServices::with_identity`]
 //! and [`AppServices::with_owned_stores`] resolve the chat and account
 //! dimensions to the existing process-global [`ChatService::global`] and
-//! [`AccountService::global`] (lazy first-use timing untouched). Use
+//! [`AccountService::global`] (lazy first-use timing untouched) and the
+//! generation dimension to [`GenerationDeps::global`]. Use
 //! [`AppServices::with_chat_service`] to back a router with an explicit chat
-//! service and [`AppServices::with_account_service`] for explicit accounts.
+//! service, [`AppServices::with_account_service`] for explicit accounts, and
+//! [`AppServices::with_generation_deps`] for explicit generation.
 //!
 //! Config-free state only, except the deliberate production root capture in
 //! `run()`: token admission, rate windows, session mirrors, durable history
@@ -30,11 +34,13 @@ use chatbot_core::account_service::AccountService;
 use chatbot_core::rate_limit::{self, RateLimitExceeded, RateLimiter};
 use chatbot_core::session::ChatService;
 
+use crate::generation_deps::GenerationDeps;
 use crate::identity::RequestIdentity;
 use crate::tts::store::PendingTtsStore;
 
 /// Owned router resources: one identity plus one pending-token store plus one
-/// rate-limit counter set plus one chat service plus one account service.
+/// rate-limit counter set plus one chat service plus one account service plus
+/// one generation handle.
 /// Cloned into every request; the inner stores stay shared via `Arc`.
 #[derive(Clone)]
 pub struct AppServices {
@@ -43,12 +49,13 @@ pub struct AppServices {
     limiter: Option<Arc<Mutex<RateLimiter>>>,
     chat: ChatService,
     accounts: AccountService,
+    generation: GenerationDeps,
 }
 
 impl AppServices {
     /// Compatibility context: the global identity plus the existing global
-    /// TTS, limiter, chat, and account stores, with their lazy first-use
-    /// timing untouched.
+    /// TTS, limiter, chat, account, and generation handles, with their lazy
+    /// first-use timing untouched.
     pub fn global() -> Self {
         Self {
             identity: RequestIdentity::global(),
@@ -56,11 +63,12 @@ impl AppServices {
             limiter: None,
             chat: ChatService::global(),
             accounts: AccountService::global(),
+            generation: GenerationDeps::global(),
         }
     }
 
     /// Compatibility context for an owned identity: TTS tokens, rate-limit
-    /// counters, chat, and accounts stay process-global. Prefer
+    /// counters, chat, accounts, and generation stay process-global. Prefer
     /// [`AppServices::with_owned_stores`] plus
     /// [`AppServices::with_chat_service`] and
     /// [`AppServices::with_account_service`] for fully independent routers.
@@ -71,6 +79,7 @@ impl AppServices {
             limiter: None,
             chat: ChatService::global(),
             accounts: AccountService::global(),
+            generation: GenerationDeps::global(),
         }
     }
 
@@ -93,6 +102,7 @@ impl AppServices {
             limiter: Some(limiter),
             chat: ChatService::global(),
             accounts: AccountService::global(),
+            generation: GenerationDeps::global(),
         }
     }
 
@@ -125,6 +135,14 @@ impl AppServices {
         self
     }
 
+    /// Back this router with explicit generation dependencies. Consumes and
+    /// returns `Self` so existing constructors keep their global handle while
+    /// owned routers opt in.
+    pub fn with_generation_deps(mut self, generation: GenerationDeps) -> Self {
+        self.generation = generation;
+        self
+    }
+
     /// The single identity for this router; the same value is installed as
     /// the legacy `RequestIdentity` extension.
     pub fn identity(&self) -> &RequestIdentity {
@@ -144,6 +162,13 @@ impl AppServices {
     /// handle; owned routers return their explicit service.
     pub fn accounts(&self) -> &AccountService {
         &self.accounts
+    }
+
+    /// The generation dependencies for this router. Compatibility contexts
+    /// return the global handle, which delegates at the original call sites;
+    /// owned routers return their explicit handle.
+    pub fn generation_deps(&self) -> GenerationDeps {
+        self.generation.clone()
     }
 
     /// Purge step for the background task, returning

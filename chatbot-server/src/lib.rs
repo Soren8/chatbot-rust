@@ -22,6 +22,7 @@ mod chat;
 pub mod chat_utils;
 pub mod client_logs;
 pub mod enc_key_cookies;
+pub mod generation_deps;
 mod health;
 pub mod http_error;
 pub mod identity;

@@ -1,10 +1,14 @@
 # Codebase review program
 
-Latest resume point: [session 035 — browser HTTP/session client](#session-035--browser-httpsession-client-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 036 — owned generation configuration](#session-036--owned-generation-configuration-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: thirty-three batches through session 035 (sessions 033 and 034 committed as `c3d4cdd`/`ca4fd8f`; session 035 implementation complete, commit `Extract owned browser session client` pending). Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: thirty-four batches through session 036 (sessions 033–035 committed as `c3d4cdd`/`ca4fd8f`/`04e079e`; session 036 implementation complete, commit `Inject owned generation configuration` pending). Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 036 — owned generation configuration, 2026-09-18
+
+MOD-003 partial remediation (implementation complete, commit `Inject owned generation configuration` pending): `GenerationDeps` owns per-router provider map/default, thought defaults and Brave key behind one optional-`Arc` handle. `AppServices` carries it with `with_generation_deps`; chat/regenerate/dispatch resolve provider lookup, thought defaults and gated Brave lookup through it. The global handle constructs config-free and delegates per operation at the original config/env sites; owned lookups are isolated. Production keeps the global-live handle via existing constructors with no config-schema change. Primary rejected early snapshot of the full map/env before body/CSRF and replaced it with lazy delegation; an unused live alias was removed. Nineteen characterization tests passed pre-extraction (`modularity-mod003-baseline-20260918T164148Z.log`, job `20260918T164148-d5ec34ce3ce9`); the same 19 plus four new two-router isolation tests (provider maps/defaults, regenerate/missing-model, thought defaults, ambient-Brave negative) pass post-extraction (`modularity-mod003-final-20260918T170149Z.log`, job `20260918T170149-8eb2193de617`, 23/23, 90 suites, provider-config validation green). Baseline is the previous suite only; parity rests on primary diff review and new coverage. Other route/config policies and provider env-chunk/test-fake inputs remain ambient; browser/native lifecycle and distribution remain open; phase-1 completion review remains pending.
 
 ## Session 035 — browser HTTP/session client, 2026-09-18
 

@@ -10,7 +10,6 @@ use axum::{
 use bytes::Bytes;
 use chatbot_core::{
     chat,
-    config::{app_config, get_provider_config},
     session::{self, RegenerateRequestData},
 };
 use futures_util::StreamExt;
@@ -63,6 +62,7 @@ pub async fn handle_regenerate(
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
     let chat = services.chat().clone();
+    let generation = services.generation_deps();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 5 * 1024 * 1024)
@@ -94,7 +94,7 @@ pub async fn handle_regenerate(
 
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 
-    let provider_config = match get_provider_config(if selected_model.is_empty() {
+    let provider_config = match generation.get_provider_config(if selected_model.is_empty() {
         None
     } else {
         Some(selected_model.as_str())
@@ -145,9 +145,9 @@ pub async fn handle_regenerate(
         return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type"));
     }
 
-    let app_config = app_config();
-    let save_thoughts = payload.save_thoughts.unwrap_or(app_config.save_thoughts);
-    let send_thoughts = payload.send_thoughts.unwrap_or(app_config.send_thoughts);
+    let (default_save_thoughts, default_send_thoughts) = generation.thoughts_defaults();
+    let save_thoughts = payload.save_thoughts.unwrap_or(default_save_thoughts);
+    let send_thoughts = payload.send_thoughts.unwrap_or(default_send_thoughts);
 
     let request_data = RegenerateRequestData {
         message: payload.message.as_str(),
@@ -278,6 +278,7 @@ pub async fn handle_regenerate(
         &context.provider,
         messages,
         payload.web_search.unwrap_or(false),
+        &generation,
     )
     .await
     {

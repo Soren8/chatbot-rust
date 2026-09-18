@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 036 adds `chatbot-server/src/generation_deps.rs` (S04) and `chatbot-server/tests/provider_config_isolation.rs` (T02). Primary reviewed the optional-`Arc` owner, `AppServices` injection, chat/regenerate/dispatch wiring, config-free global construction with per-operation live delegation, and all 23 tests (19 characterization plus 4 two-router isolation). Baseline `20260918T164148-d5ec34ce3ce9` and final `20260918T170149-8eb2193de617` full suites passed (90 suites, provider-config validation green). Commit `Inject owned generation configuration` pending. These additions do not advance the six later review passes.
+
 Session 035 adds `static/session-client.js`, `chatbot-server/tests/session_client.rs` and `chatbot-server/tests/fixtures/session_client_test.js` (W01/T02). Primary reviewed explicit DOM callbacks, the single shared bootstrap, the one allowlist, preserved exceptions and all ten tests. Combined failure `...160718Z` then green `...161552Z` (job `20260918T161553-07dfccaf81ee`). Commit `Extract owned browser session client` pending.
 
 Session 034 adds `chatbot-core/tests/mutation_mirror_boundary.rs` (T01) and `chatbot-server/tests/mutation_mirror_boundary.rs` (T02). Primary reviewed core durable-then-mirror order, typed outputs, preserved seal-error/401 behavior and all twenty tests. Combined failures `...155319Z`/`...160028Z` then green `...161552Z`. Committed as `ca4fd8f`.
