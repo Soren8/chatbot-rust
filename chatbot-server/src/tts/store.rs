@@ -17,10 +17,10 @@ const MAX_TTS_REPLAYS: u8 = 3;
 /// Final wire bytes for one TTS clip, in whatever codec the config selects.
 /// Cached verbatim for replays so synthesis and encoding both happen once.
 #[derive(Debug, Clone)]
-pub(super) struct TtsWireAudio {
-    pub(super) bytes: Vec<u8>,
-    pub(super) content_type: String,
-    pub(super) filename: String,
+pub(crate) struct TtsWireAudio {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) content_type: String,
+    pub(crate) filename: String,
 }
 
 struct PendingTts {
@@ -32,7 +32,7 @@ struct PendingTts {
 }
 
 /// Arbitration of one GET /tts_stream/{token} against the store.
-pub(super) enum BeginOutcome<'a> {
+pub(crate) enum BeginOutcome<'a> {
     /// Cached wire audio; the store already counted this replay.
     Cached(TtsWireAudio),
     /// First generation for this token. The store marked it generating and
@@ -51,12 +51,12 @@ pub(super) enum BeginOutcome<'a> {
 
 /// Token-session map with the admission/eviction policy. Each method takes
 /// the lock only for its own arbitration; no lock is held across synthesis.
-pub(super) struct PendingTtsStore {
+pub(crate) struct PendingTtsStore {
     map: RwLock<HashMap<String, PendingTts>>,
 }
 
 impl PendingTtsStore {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             map: RwLock::new(HashMap::new()),
         }
@@ -64,7 +64,7 @@ impl PendingTtsStore {
 
     /// Admit a fresh token. Returns false when full with nothing safe to
     /// evict. Reinserting an existing token overwrites it.
-    pub(super) fn insert(&self, token: String, text: String) -> bool {
+    pub(crate) fn insert(&self, token: String, text: String) -> bool {
         let mut map = self.map.write().expect("tts lock");
         insert_pending_tts(
             &mut map,
@@ -81,7 +81,7 @@ impl PendingTtsStore {
 
     /// Arbitrate one stream request: cached audio, first generation with a
     /// lease, busy, missing or exhausted.
-    pub(super) fn begin(&self, token: &str) -> BeginOutcome<'_> {
+    pub(crate) fn begin(&self, token: &str) -> BeginOutcome<'_> {
         let mut map = self.map.write().expect("tts lock");
         prune_pending_tts(&mut map);
         let pending = match map.get_mut(token) {
@@ -112,7 +112,7 @@ impl PendingTtsStore {
 
     /// Drop a token. Missing tokens are harmless; the handler still answers
     /// 204.
-    pub(super) fn cancel(&self, token: &str) {
+    pub(crate) fn cancel(&self, token: &str) {
         let mut map = self.map.write().expect("tts lock");
         map.remove(token);
     }
@@ -127,7 +127,7 @@ impl PendingTtsStore {
 
 /// Releases the generating flag for one in-flight synthesis. Holds only a
 /// store reference and the token, never the lock, so it is safe across await.
-pub(super) struct GenerationLease<'a> {
+pub(crate) struct GenerationLease<'a> {
     store: &'a PendingTtsStore,
     token: String,
     active: bool,
@@ -136,7 +136,7 @@ pub(super) struct GenerationLease<'a> {
 impl GenerationLease<'_> {
     /// Cache freshly encoded audio and release the flag. A token cancelled
     /// mid-generation stays gone: this never reinserts.
-    pub(super) fn complete(mut self, audio: TtsWireAudio) -> TtsWireAudio {
+    pub(crate) fn complete(mut self, audio: TtsWireAudio) -> TtsWireAudio {
         self.active = false;
         let mut map = self.store.map.write().expect("tts lock");
         if let Some(pending) = map.get_mut(&self.token) {
@@ -149,7 +149,7 @@ impl GenerationLease<'_> {
     }
 
     /// Release the flag without caching so the token stays retryable.
-    pub(super) fn fail(mut self) {
+    pub(crate) fn fail(mut self) {
         self.active = false;
         self.store.reset_generating(&self.token);
     }

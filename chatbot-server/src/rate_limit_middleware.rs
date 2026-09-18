@@ -7,12 +7,12 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chatbot_core::{config::app_config, rate_limit};
+use chatbot_core::config::app_config;
 use serde_json::json;
 
 use crate::{
-    identity::RequestIdentity,
     request_context::{extract_cookie_ref, get_ip},
+    services::AppServices,
 };
 
 const LIMITED_PATHS: &[&str] = &[
@@ -32,11 +32,10 @@ fn path_is_limited(path: &str) -> bool {
     })
 }
 
-fn client_key(request: &Request<Body>) -> String {
+fn client_key(request: &Request<Body>, services: &AppServices) -> String {
     let cookie = extract_cookie_ref(request.headers());
-    let identity = RequestIdentity::from_extensions(request.extensions());
 
-    if let Some(identity) = identity.rate_limit_identity(cookie) {
+    if let Some(identity) = services.identity().rate_limit_identity(cookie) {
         return identity;
     }
 
@@ -56,15 +55,16 @@ pub async fn middleware(request: Request<Body>, next: Next) -> Response {
         return next.run(request).await;
     }
 
-    let key = client_key(&request);
-    match rate_limit::check(&key, per_user, global) {
+    let services = AppServices::from_extensions(request.extensions());
+    let key = client_key(&request, &services);
+    match services.check_rate_limit(&key, per_user, global) {
         Ok(()) => next.run(request).await,
         Err(exceeded) => {
             let message = match exceeded.scope {
-                rate_limit::RateLimitScope::PerUser => {
+                chatbot_core::rate_limit::RateLimitScope::PerUser => {
                     "Rate limit exceeded for this user. Please try again later."
                 }
-                rate_limit::RateLimitScope::Global => {
+                chatbot_core::rate_limit::RateLimitScope::Global => {
                     "Server is busy (global rate limit). Please try again later."
                 }
             };

@@ -2,7 +2,8 @@
 //!
 //! Every route handler and middleware resolves its session identity through
 //! [`RequestIdentity`], read from the request extensions installed by
-//! [`crate::build_router`] / [`crate::build_router_with_identity`]. There is
+//! [`crate::build_router`] / [`crate::build_router_with_identity`] /
+//! [`crate::build_router_with_services`]. There is
 //! one lookup path: handlers never call the `chatbot_core::session` identity
 //! free functions directly.
 //!
@@ -14,8 +15,11 @@
 //! with an independent [`HttpSessionStore`]; two such routers share no
 //! cookies, CSRF tokens, or login bindings.
 //!
-//! Only identity is scoped here. Chat history, rate-limit counters, the
-//! remember store, user store, and configuration stay process-global.
+//! Only identity is scoped here. Full per-router resource composition (this
+//! identity plus TTS pending tokens plus rate-limit counters) lives in
+//! [`crate::services::AppServices`]; that context installs this same identity
+//! value as the legacy extension, so the two never diverge. Chat history,
+//! the remember store, user store, and configuration stay process-global.
 
 use std::sync::Arc;
 
@@ -75,7 +79,8 @@ impl RequestIdentity {
     pub fn from_extensions(extensions: &Extensions) -> Self {
         extensions.get::<RequestIdentity>().cloned().expect(
             "request identity extension missing; build the router with \
-             build_router() or build_router_with_identity()",
+             build_router(), build_router_with_identity(), or \
+             build_router_with_services()",
         )
     }
 

@@ -1,4 +1,10 @@
 //! In-process sliding-window rate limiter (per-key + global).
+//!
+//! [`RateLimiter`] is owned, config-free state: construct one per router via
+//! [`RateLimiter::new`] for isolated counters, or use the process-global
+//! [`check`]/[`reset`] free functions for the compatibility path. Limits
+//! themselves (`per_user_limit` / `global_limit`) stay live from `app_config`
+//! at each call site.
 
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, VecDeque};
@@ -22,13 +28,14 @@ pub enum RateLimitScope {
 }
 
 #[derive(Debug, Default)]
-struct RateLimiter {
+pub struct RateLimiter {
     per_key: HashMap<String, VecDeque<Instant>>,
     global: VecDeque<Instant>,
 }
 
 impl RateLimiter {
-    fn new() -> Self {
+    /// Fresh owned counters, independent of the process-global limiter.
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -55,7 +62,7 @@ impl RateLimiter {
     }
 
     /// Record a request for `key` if under limits. `0` disables that dimension.
-    fn check(
+    pub fn check(
         &mut self,
         key: &str,
         per_user_limit: u32,
@@ -107,6 +114,12 @@ impl RateLimiter {
     fn clear(&mut self) {
         self.per_key.clear();
         self.global.clear();
+    }
+
+    /// Clear owned counters (tests). The process-global [`reset`] does not
+    /// touch owned instances.
+    pub fn reset_owned(&mut self) {
+        self.clear();
     }
 }
 

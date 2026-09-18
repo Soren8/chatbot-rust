@@ -1,6 +1,6 @@
 use axum::{
     body::{self, Body},
-    extract::Path,
+    extract::{Extension, Path},
     http::{header, Method, Request, Response, StatusCode},
 };
 use chatbot_core::{
@@ -18,10 +18,11 @@ use crate::http_error::{
     map_serialization_err, map_session_err, map_user_store_err, HttpError,
 };
 use crate::identity::RequestIdentity;
+use crate::services::AppServices;
 use crate::tts_opus;
 
 mod backend;
-mod store;
+pub(crate) mod store;
 mod text;
 use store::{BeginOutcome, PendingTtsStore, TtsWireAudio};
 use text::sanitize_text;
@@ -32,6 +33,14 @@ const CHANNELS: u16 = 1;
 const BITS_PER_SAMPLE: u16 = 16;
 
 static PENDING_TTS: Lazy<PendingTtsStore> = Lazy::new(PendingTtsStore::new);
+
+/// Process-global pending-token store for compatibility routers. Owned
+/// routers built via `build_router_with_services` use their own store from
+/// `AppServices` instead; all three TTS endpoints on one router always share
+/// that router's store.
+pub(crate) fn global_pending_store() -> &'static PendingTtsStore {
+    &PENDING_TTS
+}
 
 #[derive(Debug, Deserialize)]
 struct ApiTtsRequest {
@@ -45,7 +54,8 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
     let headers = parts.headers;
 
     let cookie_header = crate::request_context::extract_cookie(&headers);
@@ -110,7 +120,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
     
-    let inserted = PENDING_TTS.insert(token.clone(), cleaned);
+    let inserted = services.pending_tts().insert(token.clone(), cleaned);
     if !inserted {
         return Err(api_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -133,8 +143,9 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
 
 pub async fn handle_tts_stream(
     Path(token): Path<String>,
+    Extension(services): Extension<AppServices>,
 ) -> Result<Response<Body>, HttpError> {
-    let (cleaned, cached_audio, lease) = match PENDING_TTS.begin(&token) {
+    let (cleaned, cached_audio, lease) = match services.pending_tts().begin(&token) {
         BeginOutcome::Cached(audio) => (String::new(), Some(audio), None),
         BeginOutcome::Begin { text, lease } => (text, None, Some(lease)),
         BeginOutcome::Busy => {
@@ -196,7 +207,8 @@ pub async fn handle_tts_cancel(
     }
 
     let (parts, _body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
     let cookie_header = crate::request_context::extract_cookie(&parts.headers);
     let csrf_token = crate::request_context::extract_csrf(&parts.headers);
     let csrf_valid = identity
@@ -206,7 +218,7 @@ pub async fn handle_tts_cancel(
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    PENDING_TTS.cancel(&token);
+    services.pending_tts().cancel(&token);
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body(Body::empty())

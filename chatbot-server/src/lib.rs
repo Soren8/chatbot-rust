@@ -27,6 +27,7 @@ pub mod enc_key_cookies;
 mod health;
 pub mod http_error;
 pub mod identity;
+pub mod services;
 mod home;
 mod login;
 mod logout;
@@ -52,14 +53,17 @@ pub async fn run() -> anyhow::Result<()> {
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
 
-    // One owned HTTP identity for the process: the router and the
-    // background purge share this instance. CSRF policy stays live.
+    // One owned application services context for the process: identity plus
+    // TTS pending tokens plus rate-limit counters. The router and the
+    // background purge share this instance's identity. CSRF policy stays
+    // live; rate/TTS limits stay live from global config.
     let identity = identity::RequestIdentity::with_store(Arc::new(HttpSessionStore::new(
         chatbot_core::config::app_config().session_timeout,
     )));
-    background::spawn_session_purge_task_with_identity(identity.clone());
+    let services = services::AppServices::with_owned_stores(identity);
+    background::spawn_session_purge_task_with_identity(services.identity().clone());
 
-    let app = build_router_with_identity(static_root, identity);
+    let app = build_router_with_services(static_root, services);
 
     let bind_addr = env::var("CHATBOT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:80".into());
     let listener = TcpListener::bind(&bind_addr).await?;
@@ -236,22 +240,42 @@ async fn sanitize_cookies_middleware(
     response
 }
 
-/// Compatibility router: request identity resolves to the single
-/// process-global HTTP session store, matching fixtures that bootstrap via
-/// the global `chatbot_core::session` API. Installing the (lazy) global
-/// identity touches neither config nor the store, preserving first-use
-/// initialization timing.
+/// Compatibility router: identity, TTS tokens, and rate-limit counters all
+/// resolve to the existing process-global stores, matching fixtures that
+/// bootstrap via the global `chatbot_core::session` and `rate_limit` APIs.
+/// Installing the (lazy) global services touches neither config nor the
+/// stores, preserving first-use initialization timing.
 pub fn build_router(static_root: PathBuf) -> Router {
-    build_router_with_identity(static_root, identity::RequestIdentity::global())
+    build_router_with_services(static_root, services::AppServices::global())
 }
 
-/// Router with an explicit request identity. Pass the same identity to its
-/// background purge via [`spawn_session_purge_task_with_identity`]. Routers
-/// built with different owned stores share no cookies, CSRF tokens, or
-/// login bindings. History, rate-limit counters, and config stay global.
+/// Router with an explicit request identity. Compatibility semantics: the
+/// identity is owned, while TTS pending tokens and rate-limit counters stay
+/// process-global. Pass the same identity to its background purge via
+/// [`spawn_session_purge_task_with_identity`]. Routers built with different
+/// owned stores share no cookies, CSRF tokens, or login bindings. For fully
+/// independent tokens and counters, use [`build_router_with_services`].
+/// History, user/remember stores, and config stay global either way.
 pub fn build_router_with_identity(
     static_root: PathBuf,
     identity: identity::RequestIdentity,
+) -> Router {
+    build_router_with_services(
+        static_root,
+        services::AppServices::with_identity(identity),
+    )
+}
+
+/// Router with fully owned services: the given identity plus its TTS pending
+/// tokens plus its rate-limit counters. Two routers built with independent
+/// [`services::AppServices`] share no cookies, CSRF tokens, login bindings,
+/// TTS tokens, or rate-limit counters. The services' identity is also
+/// installed as the legacy `RequestIdentity` extension (same value), so
+/// existing handlers keep resolving through one source. History,
+/// user/remember stores, and config stay global.
+pub fn build_router_with_services(
+    static_root: PathBuf,
+    services: services::AppServices,
 ) -> Router {
     let rate_limited = Router::new()
         .route(
@@ -316,7 +340,8 @@ pub fn build_router_with_identity(
             post(preferences::handle_update_preferences),
         )
         .merge(rate_limited)
-        .layer(axum::Extension(identity))
+        .layer(axum::Extension(services.clone()))
+        .layer(axum::Extension(services.identity().clone()))
         .layer(middleware::from_fn(sanitize_cookies_middleware))
         .layer(middleware::from_fn(set_static_cache_control_headers))
         .layer(middleware::from_fn(log_server_error_responses))

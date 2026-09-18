@@ -1,10 +1,14 @@
 # Codebase review program
 
-Latest resume point: [session 022 — generation settlement ownership](#session-022--generation-settlement-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 023 — router resource ownership](#session-023--router-resource-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty committed batches through session 022. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-one committed batches through session 023. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 023 — router resource ownership, 2026-09-18
+
+MOD-003 partial remediation: production composes owned identity, TTS tokens and rate counters in `AppServices`. Compatibility constructors preserve global state and lazy initialization; live limits remain configured globally. Four new HTTP tests prove cross-router token/replay/cancel isolation, independent per-client/global rate budgets and compatibility counter sharing. Primary reviewed the implementation, wiring and tests. Existing tests remain intact. Final full suite `20260918T064027-ec6ef22c6217` passed; log `temp/test-logs/modularity-mod003-resources-final.log`. Later account-input reviewed suite `20260918T071408-72c5505f8b38` also passed these changes and provider-config validation. Commit title: `Compose owned TTS tokens and rate counters`, based on `545c27f`. Full application isolation and phase-1 completion review remain open.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 

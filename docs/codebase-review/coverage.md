@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 023 adds `chatbot-server/src/services.rs` and `chatbot-server/tests/router_resource_isolation.rs`. Primary reviewed the owned resource context, startup/router/middleware/TTS wiring, visibility changes and all four new HTTP isolation tests; the full executor suite passed.
+
 Session 022 adds `chatbot-server/tests/generation_lease_boundary.rs` (328 tracked paths), plus six core lease unit tests. Primary reviewed full route/guard/core lease changes and all new tests. Full baseline/final/reviewed-final passed; expiry races, post-commit mirror failure and response-builder failure were not dynamically injected.
 
 Session 021 adds `chatbot-server/src/identity.rs`, `router_identity_isolation.rs` and `router_identity_composition.rs` under server tests (327 tracked paths). Primary reviewed every identity call-site migration and the seven new tests; full reviewed-final passed. No production process/server was launched.
