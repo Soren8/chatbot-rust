@@ -18,8 +18,8 @@ use serde::Deserialize;
 use tracing::{debug, error};
 
 use crate::chat_utils::{
-    error_as_saved_chat_turn_with_service, provider_error_parts, service_error_message,
-    StreamCompletionGuard,
+    error_as_saved_chat_turn_with_service, provider_error_parts, render_finalize_outcome,
+    service_error_message, StreamCompletionGuard,
 };
 use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_prepare_history_err,
@@ -310,13 +310,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         let mut guard = StreamCompletionGuard::new(
             save_thoughts,
             move |final_response: &str| -> Result<Vec<String>, ()> {
-                Ok(lease.complete_chat(
+                let outcome = lease.complete_chat_outcome(
                     &set_name_for_guard,
                     &user_message_for_guard,
                     final_response,
                     enc_for_guard.as_ref(),
                     capture_for_guard.clone(),
-                ))
+                );
+                Ok(render_finalize_outcome(&outcome))
             },
         );
 

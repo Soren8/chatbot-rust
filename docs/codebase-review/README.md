@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 028 — account service composition](#session-028--account-service-composition-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 029 — typed persistence outcomes](#session-029--typed-persistence-outcomes-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-six committed batches through session 028. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-seven committed batches through session 029. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 029 — typed persistence outcomes, 2026-09-18
+
+MOD-001/006 partial remediation: canonical core finalizers and lease completions return `FinalizeOutcome`; production routes use the server-owned renderer. Legacy public `Vec<String>` APIs render once as compatibility adapters. Primary required truthful guest-update/key-validation names and removed unused new global typed wrappers. Commit/mirror/unlock order, cause logging, exact chunks and saved-error-turn discarding remain unchanged. Durable success despite mirror-seal failure, current-ID expiry and pre-prepare error-turn unlocking remain explicit unresolved behavior boundaries.
+
+Eight new legacy characterizations passed before/after extraction; eight typed core tests and five server rendering tests pass. Existing route cancellation/provider/conflict tests remain unchanged. The lease test observes one persisted turn and successful follow-up, not an instrumented exactly-once unlock count. Primary reviewed the full code and test diff. Full baseline `20260918T091853-5e80340b90d0`, final `20260918T092719-1422ddfd5910` and reviewed final `20260918T093622-cd6d97fa7ba8` passed including provider-config validation. Logs: `temp/test-logs/modularity-mod006-finalize-outcomes-{baseline-20260918T091852Z,final-20260918T092719Z,reviewed-final-20260918T093622Z}.log`. Commit title: `Return typed generation persistence outcomes`, based on `00f3a08`.
 
 ## Session 028 — account service composition, 2026-09-18
 

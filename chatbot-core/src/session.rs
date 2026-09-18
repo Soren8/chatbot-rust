@@ -192,6 +192,59 @@ impl From<PrepareHistoryError> for PrepareError {
     }
 }
 
+/// Typed persistence outcome for chat/regenerate finalization.
+///
+/// Canonical result of the `*_finalize_outcome*` methods and the lease
+/// `complete_*_outcome` methods. Production stream-error text is owned by the
+/// server renderer; the legacy `Vec<String>` finalizers remain as
+/// compatibility adapters rendering this outcome once with no extra IO.
+///
+/// Current contract:
+/// - guest session write (append or replace) → `GuestUpdated` (no extras)
+/// - durable commit `Ok` (mirror seal failure still succeeds) → `DurableCommitted` (no extras)
+/// - missing session entry → `NoSession` (no-op, no extras)
+/// - any key-gate failure (`Missing`/`Invalid`/`StoreUnavailable`) →
+///   `KeyValidationFailed` (one shared missing-key string, intentionally)
+/// - `HistoryError::Conflict` → `Conflict`
+/// - `HistoryError::InvalidInput(msg)` → `InvalidInput(msg)`
+/// - every other commit failure (including fallback snapshot `Internal` and
+///   history-open failures) → `StoreFailure`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinalizeOutcome {
+    GuestUpdated,
+    DurableCommitted,
+    NoSession,
+    KeyValidationFailed,
+    Conflict,
+    InvalidInput(String),
+    StoreFailure,
+}
+
+/// Compatibility-only rendering of a finalize outcome.
+///
+/// Production routes must use the server-owned renderer. This renders the
+/// exact stream-error chunks for the legacy `Vec<String>` finalizers and
+/// lease `complete_*` adapters.
+fn render_finalize_outcome_compat(outcome: &FinalizeOutcome) -> Vec<String> {
+    match outcome {
+        FinalizeOutcome::GuestUpdated
+        | FinalizeOutcome::DurableCommitted
+        | FinalizeOutcome::NoSession => Vec::new(),
+        FinalizeOutcome::KeyValidationFailed => vec![
+            "\n[Error] Failed to save chat history: missing encryption key".to_string(),
+        ],
+        FinalizeOutcome::Conflict => vec![
+            "\n[Error] Chat history conflict — reload the set and retry.".to_string(),
+        ],
+        FinalizeOutcome::InvalidInput(msg) => {
+            vec![format!("\n[Error] Failed to save chat history: {msg}")]
+        }
+        FinalizeOutcome::StoreFailure => {
+            vec!["\n[Error] Failed to save chat history".to_string()]
+        }
+    }
+}
+
 struct SessionData {
     memory: String,
     system_prompt: String,
@@ -899,8 +952,11 @@ impl ChatService {
     }
 
     /// Owned chat finalize with capture: commit then mirror then unlock, with the
-    /// same capture-vs-fallback, conflict/invalid/internal extras, and logging.
-    pub fn chat_finalize_with_capture(
+    /// same capture-vs-fallback, conflict/invalid/internal outcome, and logging.
+    ///
+    /// Canonical typed API. The legacy `Vec<String>` wrapper renders this
+    /// outcome once with no extra IO.
+    pub fn chat_finalize_outcome_with_capture(
         &self,
         session: &SessionContext,
         set_name: &str,
@@ -908,9 +964,9 @@ impl ChatService {
         assistant_response: &str,
         encryption_key: Option<&EncryptionKey>,
         prepare_capture: Option<PrepareCapture>,
-    ) -> Vec<String> {
+    ) -> FinalizeOutcome {
         let store = self.sessions();
-        let mut extras = Vec::new();
+        let mut outcome = FinalizeOutcome::NoSession;
 
         if let Some(entry) = store.entries.get(&session.session_id) {
             {
@@ -963,47 +1019,84 @@ impl ChatService {
                                             "failed to seal session cache after chat finalize"
                                         );
                                     }
+                                    outcome = FinalizeOutcome::DurableCommitted;
                                 }
                                 Err(HistoryError::Conflict { .. }) => {
-                                    extras.push(
-                                        "\n[Error] Chat history conflict — reload the set and retry."
-                                            .to_string(),
-                                    );
+                                    outcome = FinalizeOutcome::Conflict;
                                 }
                                 Err(HistoryError::InvalidInput(msg)) => {
                                     error!(%msg, "failed to commit chat history");
-                                    extras.push(format!(
-                                        "\n[Error] Failed to save chat history: {msg}"
-                                    ));
+                                    outcome = FinalizeOutcome::InvalidInput(msg.to_owned());
                                 }
                                 Err(err) => {
                                     error!(?err, "failed to commit chat history");
-                                    extras.push(
-                                        "\n[Error] Failed to save chat history".to_string(),
-                                    );
+                                    outcome = FinalizeOutcome::StoreFailure;
                                 }
                             }
                         }
                         _ => {
-                            extras.push(
-                                "\n[Error] Failed to save chat history: missing encryption key"
-                                    .to_string(),
-                            );
+                            outcome = FinalizeOutcome::KeyValidationFailed;
                         }
                     }
                 } else {
                     data.history
                         .push((user_message.to_owned(), assistant_response.to_owned()));
+                    outcome = FinalizeOutcome::GuestUpdated;
                 }
             }
 
             entry.unlock();
         }
 
-        extras
+        outcome
     }
 
-    /// Owned chat finalize without a prepare capture (fallback path).
+    /// Owned chat finalize with capture (compatibility adapter).
+    ///
+    /// Renders the typed outcome once with no extra IO. New code should use
+    /// [`ChatService::chat_finalize_outcome_with_capture`] plus the
+    /// server-owned renderer.
+    pub fn chat_finalize_with_capture(
+        &self,
+        session: &SessionContext,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> Vec<String> {
+        let outcome = self.chat_finalize_outcome_with_capture(
+            session,
+            set_name,
+            user_message,
+            assistant_response,
+            encryption_key,
+            prepare_capture,
+        );
+        render_finalize_outcome_compat(&outcome)
+    }
+
+    /// Owned chat finalize outcome without a prepare capture (fallback path).
+    pub fn chat_finalize_outcome(
+        &self,
+        session: &SessionContext,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        encryption_key: Option<&EncryptionKey>,
+    ) -> FinalizeOutcome {
+        self.chat_finalize_outcome_with_capture(
+            session,
+            set_name,
+            user_message,
+            assistant_response,
+            encryption_key,
+            None,
+        )
+    }
+
+    /// Owned chat finalize without a prepare capture (fallback path,
+    /// compatibility adapter).
     pub fn chat_finalize(
         &self,
         session: &SessionContext,
@@ -1255,7 +1348,10 @@ impl ChatService {
     }
 
     /// Owned regenerate finalize with capture: commit then mirror then unlock.
-    pub fn regenerate_finalize_with_capture(
+    ///
+    /// Canonical typed API. The legacy `Vec<String>` wrapper renders this
+    /// outcome once with no extra IO.
+    pub fn regenerate_finalize_outcome_with_capture(
         &self,
         session: &SessionContext,
         set_name: &str,
@@ -1264,9 +1360,9 @@ impl ChatService {
         insertion_index: Option<usize>,
         encryption_key: Option<&EncryptionKey>,
         prepare_capture: Option<PrepareCapture>,
-    ) -> Vec<String> {
+    ) -> FinalizeOutcome {
         let store = self.sessions();
-        let mut extras = Vec::new();
+        let mut outcome = FinalizeOutcome::NoSession;
 
         if let Some(entry) = store.entries.get(&session.session_id) {
             {
@@ -1318,32 +1414,23 @@ impl ChatService {
                                     }
                                     data.history.clear();
                                     let _ = seal_session_data(&mut data, key.as_bytes());
+                                    outcome = FinalizeOutcome::DurableCommitted;
                                 }
                                 Err(HistoryError::Conflict { .. }) => {
-                                    extras.push(
-                                        "\n[Error] Chat history conflict — reload the set and retry."
-                                            .to_string(),
-                                    );
+                                    outcome = FinalizeOutcome::Conflict;
                                 }
                                 Err(HistoryError::InvalidInput(msg)) => {
                                     error!(%msg, "failed to commit regenerate history");
-                                    extras.push(format!(
-                                        "\n[Error] Failed to save chat history: {msg}"
-                                    ));
+                                    outcome = FinalizeOutcome::InvalidInput(msg.to_owned());
                                 }
                                 Err(err) => {
                                     error!(?err, "failed to commit regenerate history");
-                                    extras.push(
-                                        "\n[Error] Failed to save chat history".to_string(),
-                                    );
+                                    outcome = FinalizeOutcome::StoreFailure;
                                 }
                             }
                         }
                         _ => {
-                            extras.push(
-                                "\n[Error] Failed to save chat history: missing encryption key"
-                                    .to_string(),
-                            );
+                            outcome = FinalizeOutcome::KeyValidationFailed;
                         }
                     }
                 } else {
@@ -1357,16 +1444,66 @@ impl ChatService {
                     } else {
                         data.history.push(pair);
                     }
+                    outcome = FinalizeOutcome::GuestUpdated;
                 }
             }
 
             entry.unlock();
         }
 
-        extras
+        outcome
     }
 
-    /// Owned regenerate finalize without a prepare capture (fallback path).
+    /// Owned regenerate finalize with capture (compatibility adapter).
+    ///
+    /// Renders the typed outcome once with no extra IO. New code should use
+    /// [`ChatService::regenerate_finalize_outcome_with_capture`] plus the
+    /// server-owned renderer.
+    pub fn regenerate_finalize_with_capture(
+        &self,
+        session: &SessionContext,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        insertion_index: Option<usize>,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> Vec<String> {
+        let outcome = self.regenerate_finalize_outcome_with_capture(
+            session,
+            set_name,
+            user_message,
+            assistant_response,
+            insertion_index,
+            encryption_key,
+            prepare_capture,
+        );
+        render_finalize_outcome_compat(&outcome)
+    }
+
+    /// Owned regenerate finalize outcome without a prepare capture (fallback path).
+    pub fn regenerate_finalize_outcome(
+        &self,
+        session: &SessionContext,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        insertion_index: Option<usize>,
+        encryption_key: Option<&EncryptionKey>,
+    ) -> FinalizeOutcome {
+        self.regenerate_finalize_outcome_with_capture(
+            session,
+            set_name,
+            user_message,
+            assistant_response,
+            insertion_index,
+            encryption_key,
+            None,
+        )
+    }
+
+    /// Owned regenerate finalize without a prepare capture (fallback path,
+    /// compatibility adapter).
     pub fn regenerate_finalize(
         &self,
         session: &SessionContext,
@@ -1768,15 +1905,19 @@ impl GenerationLease {
     }
 
     /// Persist a `/chat` turn with the bound session, then settle.
-    pub fn complete_chat(
+    ///
+    /// Canonical typed completion: consumes the lease and settles the same
+    /// finalize-then-unlock flow. The legacy `Vec<String>` wrapper renders
+    /// this outcome once with no extra IO.
+    pub fn complete_chat_outcome(
         mut self,
         set_name: &str,
         user_message: &str,
         assistant_response: &str,
         encryption_key: Option<&EncryptionKey>,
         prepare_capture: Option<PrepareCapture>,
-    ) -> Vec<String> {
-        let extras = self.service.chat_finalize_with_capture(
+    ) -> FinalizeOutcome {
+        let outcome = self.service.chat_finalize_outcome_with_capture(
             &self.session,
             set_name,
             user_message,
@@ -1786,11 +1927,35 @@ impl GenerationLease {
         );
         // The finalize above already settled this session.
         self.settled = true;
-        extras
+        outcome
+    }
+
+    /// Persist a `/chat` turn with the bound session, then settle
+    /// (compatibility adapter).
+    pub fn complete_chat(
+        self,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> Vec<String> {
+        let outcome = self.complete_chat_outcome(
+            set_name,
+            user_message,
+            assistant_response,
+            encryption_key,
+            prepare_capture,
+        );
+        render_finalize_outcome_compat(&outcome)
     }
 
     /// Persist a `/regenerate` turn with the bound session, then settle.
-    pub fn complete_regenerate(
+    ///
+    /// Canonical typed completion: consumes the lease and settles the same
+    /// finalize-then-unlock flow. The legacy `Vec<String>` wrapper renders
+    /// this outcome once with no extra IO.
+    pub fn complete_regenerate_outcome(
         mut self,
         set_name: &str,
         user_message: &str,
@@ -1798,8 +1963,8 @@ impl GenerationLease {
         insertion_index: Option<usize>,
         encryption_key: Option<&EncryptionKey>,
         prepare_capture: Option<PrepareCapture>,
-    ) -> Vec<String> {
-        let extras = self.service.regenerate_finalize_with_capture(
+    ) -> FinalizeOutcome {
+        let outcome = self.service.regenerate_finalize_outcome_with_capture(
             &self.session,
             set_name,
             user_message,
@@ -1810,7 +1975,29 @@ impl GenerationLease {
         );
         // The finalize above already settled this session.
         self.settled = true;
-        extras
+        outcome
+    }
+
+    /// Persist a `/regenerate` turn with the bound session, then settle
+    /// (compatibility adapter).
+    pub fn complete_regenerate(
+        self,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        insertion_index: Option<usize>,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> Vec<String> {
+        let outcome = self.complete_regenerate_outcome(
+            set_name,
+            user_message,
+            assistant_response,
+            insertion_index,
+            encryption_key,
+            prepare_capture,
+        );
+        render_finalize_outcome_compat(&outcome)
     }
 
     /// Settle without persisting.

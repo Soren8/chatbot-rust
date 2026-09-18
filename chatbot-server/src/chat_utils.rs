@@ -5,7 +5,7 @@ use axum::{
 use chatbot_core::{
     enc_key::EncryptionKey,
     history::{HistoryError, SetId, SetVersion},
-    session::{self, ChatService},
+    session::{self, ChatService, FinalizeOutcome},
 };
 use anyhow::Error;
 use regex::Regex;
@@ -175,6 +175,32 @@ impl Drop for StreamCompletionGuard {
     }
 }
 
+/// Render a typed finalize outcome into stream-error chunks.
+///
+/// Single production renderer for `/chat` and `/regenerate` persistence.
+/// Success and no-op outcomes yield no chunks; failures yield the exact
+/// stream-error chunks. Mirrors the core compatibility rendering without
+/// depending on it.
+pub fn render_finalize_outcome(outcome: &FinalizeOutcome) -> Vec<String> {
+    match outcome {
+        FinalizeOutcome::GuestUpdated
+        | FinalizeOutcome::DurableCommitted
+        | FinalizeOutcome::NoSession => Vec::new(),
+        FinalizeOutcome::KeyValidationFailed => vec![
+            "\n[Error] Failed to save chat history: missing encryption key".to_string(),
+        ],
+        FinalizeOutcome::Conflict => vec![
+            "\n[Error] Chat history conflict — reload the set and retry.".to_string(),
+        ],
+        FinalizeOutcome::InvalidInput(msg) => {
+            vec![format!("\n[Error] Failed to save chat history: {msg}")]
+        }
+        FinalizeOutcome::StoreFailure => {
+            vec!["\n[Error] Failed to save chat history".to_string()]
+        }
+    }
+}
+
 pub fn service_error_message(resp: &session::ServiceResponse) -> String {
     serde_json::from_slice::<Value>(&resp.body)
         .ok()
@@ -212,7 +238,7 @@ pub fn error_as_saved_chat_turn_with_service(
         "saving /chat or /regenerate error as assistant turn"
     );
     if let Some(idx) = insertion_index {
-        chat.regenerate_finalize(
+        let _ = chat.regenerate_finalize_outcome(
             session,
             set,
             user_message,
@@ -221,7 +247,7 @@ pub fn error_as_saved_chat_turn_with_service(
             encryption_key,
         );
     } else {
-        chat.chat_finalize(session, set, user_message, &assistant, encryption_key);
+        let _ = chat.chat_finalize_outcome(session, set, user_message, &assistant, encryption_key);
     }
     Response::builder()
         .status(StatusCode::OK)

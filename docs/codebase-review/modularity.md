@@ -58,6 +58,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 ## MOD-006 — Generation and mutation lifecycles have multiple owners
 
+**Typed settlement (session 029):** production lease completion returns a typed persistence outcome and server rendering owns error chunks. Legacy string finalizers remain compatibility-only. Eight before/after characterizations, eight typed core cases and five renderer cases pass with the full suite. Mutation-plus-mirror policy, expiry/recreation and pre-prepare error-turn unlock behavior remain open; no correction to those policies is claimed.
+
 **Partial remediation (session 022):** production prepares return a non-cloneable, session-bound lease. Stream completion owns its lease-capturing persistence closure; compatibility finalizers retain the existing ID-lookup persistence/unlock path. Eight before/after route characterizations and six new core tests pass. Expiry/recreation and pre-prepare error-turn unlock semantics remain explicit unresolved correctness boundaries; typed persistence outcomes and durable/mirror policy remain open.
 
 **Evidence:** core prepare acquires an `AtomicBool` generation lock; server `ChatLockGuard` stores only a session ID and releases by looking up current global state (`chat_utils.rs:234–263`); core finalizers also unlock (`session.rs:1051,1455`); `StreamCompletionGuard` marks the server guard released after a closure calls the core finalizer (`chat_utils.rs:265–368`). Core finalizers return rendered stream-error strings rather than a typed commit outcome. Memory/reset/delete handlers separately perform a durable operation then update the session mirror (`memory.rs:130–150,240–265,372–391`; `reset_chat.rs:113–132`).

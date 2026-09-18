@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 029 adds `chatbot-core/tests/finalize_outcome_boundary.rs` and `chatbot-server/tests/finalize_stream_boundary.rs`. Primary reviewed canonical typed outcomes, compatibility adapters, both production completion callbacks and all 21 new tests. Full baseline/final/reviewed-final passed; exactly-once unlocking and expiry races are not dynamically proven by retry-only assertions.
+
 Session 028 adds `chatbot-core/src/account_service.rs`, `chatbot-core/tests/account_service_isolation.rs` and `chatbot-server/tests/router_account_service_isolation.rs`. Primary reviewed configured verifier handles, shared account/chat composition, all migrated HTTP/background callers and nine new tests; reviewed full suite passed. Provider/config isolation remains open.
 
 Session 027 adds `chatbot-core/tests/chat_service_lazy_history.rs` and `chatbot-server/tests/router_chat_service_isolation.rs`. Primary reviewed lazy-history retry, router/startup/background injection, every migrated chat/history/mirror caller and nine new tests; reviewed full suite passed. Account HTTP composition and phase-completion review remain open.
