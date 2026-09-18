@@ -2,11 +2,12 @@ use axum::{
     body::{self, Body},
     http::{header, Request, Response, StatusCode},
 };
-use chatbot_core::history::{self, HistoryError, HistoryService, SetId, SetVersion};
+use chatbot_core::history::{self, HistoryError, SetVersion};
+use chatbot_core::session::MutationMirrorError;
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err,
+    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
     HttpError,
 };
@@ -115,54 +116,45 @@ pub async fn handle_update_memory(
     }
 
     if data_context.session().username.as_deref().is_some() {
-        let verified = data_context.require_authenticated(&chat)?;
-        let username = verified.username();
-        let key = verified.key();
-        let session = verified.session();
-        let history = chat.history().map_err(history_error_to_tuple)?;
-        let snap = resolve_set(
-            &history,
-            username,
+        let session = data_context.session();
+        let key = data_context.unverified_encryption_key();
+        match chat.apply_memory_update(
+            session,
+            key,
+            &set_name,
             payload.set_id.as_deref(),
-            Some(&set_name),
-            key,
-        )?;
-        let expected = payload
-            .expected_version
-            .map(SetVersion)
-            .unwrap_or(snap.version);
-        let version = match history.update_memory(username, snap.set_id, expected, &memory_text, key)
-        {
-            Ok(v) => v,
-            Err(HistoryError::Conflict { current_version }) => {
-                return build_json_response(
-                    StatusCode::CONFLICT,
-                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
-                );
-            }
-            Err(err) => return Err(history_error_to_tuple(err)),
-        };
-
-        if let Err(err) = chat.update_session_memory_for_request(
-            &session.session_id,
-            username,
-            snap.set_id,
+            payload.expected_version.map(SetVersion),
             &memory_text,
-            key,
         ) {
-            return Err(map_session_operation_err(&err));
+            Ok(applied) => build_json_response(
+                StatusCode::OK,
+                json!({
+                    "status": "success",
+                    "message": "Memory saved to disk",
+                    "storage": "disk",
+                    "version": applied.version.get(),
+                    "set_id": applied.set_id.to_string(),
+                }),
+            ),
+            Err(MutationMirrorError::Key(err)) => {
+                Err(map_encryption_key_validation_err(err))
+            }
+            Err(MutationMirrorError::InvalidSetId) => {
+                Err(api_error(StatusCode::BAD_REQUEST, "invalid set_id"))
+            }
+            Err(MutationMirrorError::SetNotFound) => {
+                Err(api_error(StatusCode::BAD_REQUEST, "set not found"))
+            }
+            Err(MutationMirrorError::Conflict {
+                set_id,
+                current_version,
+            }) => build_json_response(
+                StatusCode::CONFLICT,
+                crate::chat_utils::version_conflict_json(set_id, current_version),
+            ),
+            Err(MutationMirrorError::History(err)) => Err(history_error_to_tuple(err)),
+            Err(MutationMirrorError::Mirror(err)) => Err(map_session_operation_err(&err)),
         }
-
-        build_json_response(
-            StatusCode::OK,
-            json!({
-                "status": "success",
-                "message": "Memory saved to disk",
-                "storage": "disk",
-                "version": version.get(),
-                "set_id": snap.set_id.to_string(),
-            }),
-        )
     } else {
         chat.update_session_memory(&data_context.session().session_id, &memory_text);
 
@@ -227,59 +219,45 @@ pub async fn handle_update_system_prompt(
     }
 
     if data_context.session().username.as_deref().is_some() {
-        let verified = data_context.require_authenticated(&chat)?;
-        let username = verified.username();
-        let key = verified.key();
-        let session = verified.session();
-        let history = chat.history().map_err(history_error_to_tuple)?;
-        let snap = resolve_set(
-            &history,
-            username,
+        let session = data_context.session();
+        let key = data_context.unverified_encryption_key();
+        match chat.apply_system_prompt_update(
+            session,
+            key,
+            &set_name,
             payload.set_id.as_deref(),
-            Some(&set_name),
-            key,
-        )?;
-        let expected = payload
-            .expected_version
-            .map(SetVersion)
-            .unwrap_or(snap.version);
-        let version = match history.update_system_prompt(
-            username,
-            snap.set_id,
-            expected,
+            payload.expected_version.map(SetVersion),
             &system_prompt,
-            key,
         ) {
-            Ok(v) => v,
-            Err(HistoryError::Conflict { current_version }) => {
-                return build_json_response(
-                    StatusCode::CONFLICT,
-                    crate::chat_utils::version_conflict_json(snap.set_id, current_version),
-                );
+            Ok(applied) => build_json_response(
+                StatusCode::OK,
+                json!({
+                    "status": "success",
+                    "message": "System prompt saved to disk",
+                    "storage": "disk",
+                    "version": applied.version.get(),
+                    "set_id": applied.set_id.to_string(),
+                }),
+            ),
+            Err(MutationMirrorError::Key(err)) => {
+                Err(map_encryption_key_validation_err(err))
             }
-            Err(err) => return Err(history_error_to_tuple(err)),
-        };
-
-        if let Err(err) = chat.update_session_system_prompt_for_request(
-            &session.session_id,
-            username,
-            snap.set_id,
-            &system_prompt,
-            key,
-        ) {
-            return Err(map_session_operation_err(&err));
+            Err(MutationMirrorError::InvalidSetId) => {
+                Err(api_error(StatusCode::BAD_REQUEST, "invalid set_id"))
+            }
+            Err(MutationMirrorError::SetNotFound) => {
+                Err(api_error(StatusCode::BAD_REQUEST, "set not found"))
+            }
+            Err(MutationMirrorError::Conflict {
+                set_id,
+                current_version,
+            }) => build_json_response(
+                StatusCode::CONFLICT,
+                crate::chat_utils::version_conflict_json(set_id, current_version),
+            ),
+            Err(MutationMirrorError::History(err)) => Err(history_error_to_tuple(err)),
+            Err(MutationMirrorError::Mirror(err)) => Err(map_session_operation_err(&err)),
         }
-
-        build_json_response(
-            StatusCode::OK,
-            json!({
-                "status": "success",
-                "message": "System prompt saved to disk",
-                "storage": "disk",
-                "version": version.get(),
-                "set_id": snap.set_id.to_string(),
-            }),
-        )
     } else {
         chat.update_session_system_prompt(&data_context.session().session_id, &system_prompt);
 
@@ -349,83 +327,73 @@ pub async fn handle_delete_message(
     )?;
 
     if data_context.session().username.as_deref().is_some() {
-        let verified = data_context.require_authenticated(&chat)?;
-        let username = verified.username();
-        let key = verified.key();
-        let session = verified.session();
-        let history_svc = chat.history().map_err(history_error_to_tuple)?;
         // Prefer set_id + expected_version from the client so we do not decrypt the full
         // multi-MB set twice (once to resolve, once inside delete_pair).
-        let set_id = if let Some(raw) = payload.set_id.as_deref().filter(|s| !s.trim().is_empty()) {
-            SetId::parse(raw).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?
-        } else {
-            resolve_set(
-                &history_svc,
-                username,
-                None,
-                Some(&set_name),
-                key,
-            )?
+        let set_id_raw = payload
             .set_id
-        };
-        let expected = match payload.expected_version {
-            Some(v) => SetVersion(v),
-            None => {
-                // Fallback for older clients: one load to learn the current version.
-                history_svc
-                    .load(username, set_id, key)
-                    .map_err(history_error_to_tuple)?
-                    .version
-            }
-        };
-        match history_svc.delete_pair(
-            username,
-            set_id,
-            expected,
+            .as_deref()
+            .filter(|s| !s.trim().is_empty());
+        let session = data_context.session();
+        let key = data_context.unverified_encryption_key();
+        match chat.apply_delete_pair(
+            session,
+            key,
+            &set_name,
+            set_id_raw,
+            payload.expected_version.map(SetVersion),
             pair_index,
             trimmed,
-            key,
         ) {
-            Ok(version) => {
-                // Authed history SoT is redb; session seal no longer stores history.
-                // Keep active set_id aligned without cloning multi-MB remaining pairs.
-                if let Err(err) = chat.set_session_history_for_request(
-                    &session.session_id,
-                    Some(username),
-                    Some(set_id),
-                    Vec::new(),
-                    Some(key),
-                ) {
-                    return Err(map_session_operation_err(&err));
-                }
+            Ok(applied) => {
                 return build_json_response(
                     StatusCode::OK,
                     json!({
                         "status": "success",
-                        "version": version.get(),
-                        "set_id": set_id.to_string(),
+                        "version": applied.version.get(),
+                        "set_id": applied.set_id.to_string(),
                     }),
                 );
             }
-            Err(HistoryError::Conflict { current_version }) => {
+            Err(MutationMirrorError::Key(err)) => {
+                return Err(map_encryption_key_validation_err(err));
+            }
+            Err(MutationMirrorError::InvalidSetId) => {
+                return Err(api_error(StatusCode::BAD_REQUEST, "invalid set_id"));
+            }
+            Err(MutationMirrorError::SetNotFound) => {
+                return Err(api_error(StatusCode::BAD_REQUEST, "set not found"));
+            }
+            Err(MutationMirrorError::Conflict {
+                set_id,
+                current_version,
+            }) => {
                 return build_json_response(
                     StatusCode::CONFLICT,
                     crate::chat_utils::version_conflict_json(set_id, current_version),
                 );
             }
-            Err(HistoryError::InvalidInput("content mismatch at pair_index")) => {
+            Err(MutationMirrorError::History(HistoryError::InvalidInput(
+                "content mismatch at pair_index",
+            ))) => {
                 return build_json_response(
                     StatusCode::CONFLICT,
                     json!({"status": "error", "error": "content mismatch at pair_index"}),
                 );
             }
-            Err(HistoryError::InvalidInput("pair_index out of range")) => {
+            Err(MutationMirrorError::History(HistoryError::InvalidInput(
+                "pair_index out of range",
+            ))) => {
                 return build_json_response(
                     StatusCode::NOT_FOUND,
                     json!({"status": "error", "error": "pair_index out of range"}),
                 );
             }
-            Err(err) => return Err(history_error_to_tuple(err)),
+            Err(MutationMirrorError::History(err)) => {
+                return Err(history_error_to_tuple(err));
+            }
+            Err(MutationMirrorError::Mirror(err)) => {
+                return Err(map_session_operation_err(&err));
+            }
         }
     }
 
@@ -481,30 +449,6 @@ fn map_name_err(err: chatbot_core::history::SetNameError) -> HttpError {
         chatbot_core::history::SetNameError::Invalid => {
             api_error(StatusCode::BAD_REQUEST, "invalid set name")
         }
-    }
-}
-
-fn resolve_set(
-    history: &HistoryService,
-    username: &str,
-    set_id: Option<&str>,
-    set_name: Option<&str>,
-    key: &chatbot_core::enc_key::EncryptionKey,
-) -> Result<chatbot_core::history::SetSnapshot, HttpError> {
-    if let Some(raw) = set_id {
-        let id = SetId::parse(raw).map_err(|_| {
-            api_error(StatusCode::BAD_REQUEST, "invalid set_id")
-        })?;
-        return history.load(username, id, key).map_err(history_error_to_tuple);
-    }
-    let name = set_name.unwrap_or("default");
-    match history.find_by_display_name(username, name, key) {
-        Ok(Some(snap)) => Ok(snap),
-        Ok(None) if name == "default" => history
-            .ensure_default_set(username, key)
-            .map_err(history_error_to_tuple),
-        Ok(None) => Err(api_error(StatusCode::BAD_REQUEST, "set not found")),
-        Err(err) => Err(history_error_to_tuple(err)),
     }
 }
 

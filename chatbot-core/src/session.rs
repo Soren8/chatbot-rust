@@ -34,7 +34,7 @@ use crate::{
     enc_key::EncryptionKey,
     fernet_crypto::{self, FernetError},
     history::{
-        HistoryError, HistoryService, PrepareCapture, SetId, SetSnapshot, SetVersion,
+        HistoryError, HistoryService, PrepareCapture, SetId, SetPage, SetSnapshot, SetVersion,
     },
     user_store::{UserStoreError, DEFAULT_TIER},
 };
@@ -1785,6 +1785,345 @@ impl ChatService {
     /// Owned expiry purge for server composition.
     pub fn purge_expired_chat_sessions(&self) -> usize {
         self.sessions().purge_expired()
+    }
+}
+
+/// Typed success for durable mutations that also mirror.
+///
+/// `set_id` is the durable address written; `version` is the new CAS version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedMutation {
+    pub set_id: SetId,
+    pub version: SetVersion,
+}
+
+/// Typed failure for durable-then-mirror application operations.
+///
+/// Key validation precedes history, set-address errors precede the durable
+/// write, `Conflict` carries its set for conflict handling, other durable
+/// failures stay as `History`, and mirror failures after durable success stay
+/// as `Mirror` with no rollback.
+#[derive(Debug)]
+pub enum MutationMirrorError {
+    Key(EncryptionKeyValidationError),
+    InvalidSetId,
+    SetNotFound,
+    Conflict {
+        set_id: SetId,
+        current_version: SetVersion,
+    },
+    History(HistoryError),
+    Mirror(SessionOperationError),
+}
+
+impl From<EncryptionKeyValidationError> for MutationMirrorError {
+    fn from(err: EncryptionKeyValidationError) -> Self {
+        MutationMirrorError::Key(err)
+    }
+}
+
+impl ChatService {
+    fn resolve_mutation_snapshot(
+        &self,
+        history: &HistoryService,
+        username: &str,
+        set_id_raw: Option<&str>,
+        set_name: Option<&str>,
+        key: &EncryptionKey,
+    ) -> Result<SetSnapshot, MutationMirrorError> {
+        if let Some(raw) = set_id_raw {
+            let id = SetId::parse(raw).map_err(|_| MutationMirrorError::InvalidSetId)?;
+            return history
+                .load(username, id, key)
+                .map_err(MutationMirrorError::History);
+        }
+        let name = set_name.unwrap_or("default");
+        match history.find_by_display_name(username, name, key) {
+            Ok(Some(snap)) => Ok(snap),
+            Ok(None) if name == "default" => history
+                .ensure_default_set(username, key)
+                .map_err(MutationMirrorError::History),
+            Ok(None) => Err(MutationMirrorError::SetNotFound),
+            Err(err) => Err(MutationMirrorError::History(err)),
+        }
+    }
+
+    fn resolve_mutation_set_id_by_name(
+        &self,
+        history: &HistoryService,
+        username: &str,
+        set_name: &str,
+        key: &EncryptionKey,
+    ) -> Result<SetId, MutationMirrorError> {
+        match history.find_by_display_name(username, set_name, key) {
+            Ok(Some(snap)) => Ok(snap.set_id),
+            Ok(None) if set_name == "default" => history
+                .ensure_default_set(username, key)
+                .map_err(MutationMirrorError::History)
+                .map(|snap| snap.set_id),
+            Ok(None) => Err(MutationMirrorError::SetNotFound),
+            Err(err) => Err(MutationMirrorError::History(err)),
+        }
+    }
+
+    fn authed_parts<'s, 'k>(
+        &self,
+        session: &'s SessionContext,
+        key: Option<&'k EncryptionKey>,
+    ) -> Result<(&'s str, &'k EncryptionKey), MutationMirrorError> {
+        let username = session
+            .username
+            .as_deref()
+            .ok_or(MutationMirrorError::Key(
+                EncryptionKeyValidationError::Missing,
+            ))?;
+        self.validate_encryption_key_for_user(username, key)
+            .map_err(MutationMirrorError::Key)?;
+        let key = key.expect("validated encryption key");
+        Ok((username, key))
+    }
+
+    /// Durable memory write then session mirror (authed only).
+    ///
+    /// Key validation precedes history; `set_id_raw` uses the caller's
+    /// empty-handling (memory passes through, so empty is invalid); expected
+    /// defaults to the resolved snapshot version (CAS); mirror runs only after
+    /// durable success with no rollback on mirror failure.
+    pub fn apply_memory_update(
+        &self,
+        session: &SessionContext,
+        key: Option<&EncryptionKey>,
+        set_name: &str,
+        set_id_raw: Option<&str>,
+        expected_version: Option<SetVersion>,
+        memory: &str,
+    ) -> Result<AppliedMutation, MutationMirrorError> {
+        let (username, key) = self.authed_parts(session, key)?;
+        let history = self.history().map_err(MutationMirrorError::History)?;
+        let snap =
+            self.resolve_mutation_snapshot(history, username, set_id_raw, Some(set_name), key)?;
+        let expected = expected_version.unwrap_or(snap.version);
+        let version = history
+            .update_memory(username, snap.set_id, expected, memory, key)
+            .map_err(|err| match err {
+                HistoryError::Conflict { current_version } => {
+                    MutationMirrorError::Conflict {
+                        set_id: snap.set_id,
+                        current_version,
+                    }
+                }
+                other => MutationMirrorError::History(other),
+            })?;
+        self.update_session_memory_for_request(
+            &session.session_id,
+            username,
+            snap.set_id,
+            memory,
+            key,
+        )
+        .map_err(MutationMirrorError::Mirror)?;
+        Ok(AppliedMutation {
+            set_id: snap.set_id,
+            version,
+        })
+    }
+
+    /// Durable system-prompt write then session mirror (authed only).
+    pub fn apply_system_prompt_update(
+        &self,
+        session: &SessionContext,
+        key: Option<&EncryptionKey>,
+        set_name: &str,
+        set_id_raw: Option<&str>,
+        expected_version: Option<SetVersion>,
+        prompt: &str,
+    ) -> Result<AppliedMutation, MutationMirrorError> {
+        let (username, key) = self.authed_parts(session, key)?;
+        let history = self.history().map_err(MutationMirrorError::History)?;
+        let snap =
+            self.resolve_mutation_snapshot(history, username, set_id_raw, Some(set_name), key)?;
+        let expected = expected_version.unwrap_or(snap.version);
+        let version = history
+            .update_system_prompt(username, snap.set_id, expected, prompt, key)
+            .map_err(|err| match err {
+                HistoryError::Conflict { current_version } => {
+                    MutationMirrorError::Conflict {
+                        set_id: snap.set_id,
+                        current_version,
+                    }
+                }
+                other => MutationMirrorError::History(other),
+            })?;
+        self.update_session_system_prompt_for_request(
+            &session.session_id,
+            username,
+            snap.set_id,
+            prompt,
+            key,
+        )
+        .map_err(MutationMirrorError::Mirror)?;
+        Ok(AppliedMutation {
+            set_id: snap.set_id,
+            version,
+        })
+    }
+
+    /// Durable pair delete then session mirror (authed only).
+    ///
+    /// `set_id_raw` must already filter empty strings (delete/reset callers do);
+    /// `None` resolves by `set_name`. Expected defaults via one load (legacy
+    /// clients); durable runs before mirror with no rollback.
+    pub fn apply_delete_pair(
+        &self,
+        session: &SessionContext,
+        key: Option<&EncryptionKey>,
+        set_name: &str,
+        set_id_raw: Option<&str>,
+        expected_version: Option<SetVersion>,
+        pair_index: usize,
+        user_message_trimmed: &str,
+    ) -> Result<AppliedMutation, MutationMirrorError> {
+        let (username, key) = self.authed_parts(session, key)?;
+        let history = self.history().map_err(MutationMirrorError::History)?;
+        let set_id = if let Some(raw) = set_id_raw {
+            SetId::parse(raw).map_err(|_| MutationMirrorError::InvalidSetId)?
+        } else {
+            self.resolve_mutation_set_id_by_name(history, username, set_name, key)?
+        };
+        let expected = match expected_version {
+            Some(v) => v,
+            None => {
+                history
+                    .load(username, set_id, key)
+                    .map_err(MutationMirrorError::History)?
+                    .version
+            }
+        };
+        let version = history
+            .delete_pair(
+                username,
+                set_id,
+                expected,
+                pair_index,
+                user_message_trimmed,
+                key,
+            )
+            .map_err(|err| match err {
+                HistoryError::Conflict { current_version } => {
+                    MutationMirrorError::Conflict {
+                        set_id,
+                        current_version,
+                    }
+                }
+                other => MutationMirrorError::History(other),
+            })?;
+        self.set_session_history_for_request(
+            &session.session_id,
+            Some(username),
+            Some(set_id),
+            Vec::new(),
+            Some(key),
+        )
+        .map_err(MutationMirrorError::Mirror)?;
+        Ok(AppliedMutation { set_id, version })
+    }
+
+    /// Durable history reset then session mirror (authed only).
+    pub fn apply_reset_history(
+        &self,
+        session: &SessionContext,
+        key: Option<&EncryptionKey>,
+        set_name: &str,
+        set_id_raw: Option<&str>,
+        expected_version: Option<SetVersion>,
+    ) -> Result<AppliedMutation, MutationMirrorError> {
+        let (username, key) = self.authed_parts(session, key)?;
+        let history = self.history().map_err(MutationMirrorError::History)?;
+        let set_id = if let Some(raw) = set_id_raw {
+            SetId::parse(raw).map_err(|_| MutationMirrorError::InvalidSetId)?
+        } else {
+            self.resolve_mutation_set_id_by_name(history, username, set_name, key)?
+        };
+        let expected = match expected_version {
+            Some(v) => v,
+            None => {
+                history
+                    .load(username, set_id, key)
+                    .map_err(MutationMirrorError::History)?
+                    .version
+            }
+        };
+        let version = history
+            .reset_history(username, set_id, expected, key)
+            .map_err(|err| match err {
+                HistoryError::Conflict { current_version } => {
+                    MutationMirrorError::Conflict {
+                        set_id,
+                        current_version,
+                    }
+                }
+                other => MutationMirrorError::History(other),
+            })?;
+        self.set_session_history_for_request(
+            &session.session_id,
+            Some(username),
+            Some(set_id),
+            Vec::new(),
+            Some(key),
+        )
+        .map_err(MutationMirrorError::Mirror)?;
+        Ok(AppliedMutation { set_id, version })
+    }
+
+    /// Durable page load then session mirror (authed only).
+    ///
+    /// Address resolution collapses unknown sets to address errors while
+    /// durable read failures stay as history errors. Mirror runs only after
+    /// the durable read with no rollback on mirror failure.
+    pub fn apply_load_set(
+        &self,
+        session: &SessionContext,
+        key: Option<&EncryptionKey>,
+        set_id_raw: Option<&str>,
+        set_name: Option<&str>,
+        limit: Option<usize>,
+        before: Option<usize>,
+        thumbnails: bool,
+    ) -> Result<SetPage, MutationMirrorError> {
+        let (username, key) = self.authed_parts(session, key)?;
+        let history = self.history().map_err(MutationMirrorError::History)?;
+        let set_id = if let Some(raw) = set_id_raw.filter(|s| !s.trim().is_empty()) {
+            SetId::parse(raw).map_err(|_| MutationMirrorError::InvalidSetId)?
+        } else {
+            let name = set_name
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("default");
+            match history.find_by_display_name(username, name, key) {
+                Ok(Some(snap)) => snap.set_id,
+                Ok(None) if name == "default" => history
+                    .ensure_default_set(username, key)
+                    .map_err(|_| MutationMirrorError::SetNotFound)?
+                    .set_id,
+                Ok(None) => return Err(MutationMirrorError::SetNotFound),
+                Err(_) => return Err(MutationMirrorError::SetNotFound),
+            }
+        };
+        let loaded = history
+            .load_page(username, set_id, key, limit, before, thumbnails)
+            .map_err(MutationMirrorError::History)?;
+        self.replace_session_set(
+            &session.session_id,
+            Some(username),
+            Some(loaded.set_id),
+            &loaded.memory,
+            &loaded.system_prompt,
+            &[],
+            true,
+            Some(key),
+        )
+        .map_err(MutationMirrorError::Mirror)?;
+        Ok(loaded)
     }
 }
 

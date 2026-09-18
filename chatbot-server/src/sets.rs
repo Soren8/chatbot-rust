@@ -5,11 +5,12 @@ use axum::{
 use chatbot_core::{
     chat_images,
     history::{self, HistoryError, HistoryService, SetId, SetVersion},
+    session::MutationMirrorError,
 };
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err,
+    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
     HttpError,
 };
@@ -419,52 +420,55 @@ pub async fn handle_load_set(
         cookie_header.as_deref(),
         "sets::load_set::session",
     )?;
-    let verified = data_context.require_authenticated(&chat)?;
-    let username = verified.username();
-    let key = verified.key();
-    let session = verified.session();
-    let history = chat.history().map_err(history_error_to_http)?;
-
-    let set_id = match resolve_set_id(
-        &history,
-        username,
+    if data_context.session().username.as_deref().is_none() {
+        return Err(api_error(StatusCode::UNAUTHORIZED, "Not authenticated"));
+    }
+    let session = data_context.session();
+    let key = data_context.unverified_encryption_key();
+    let thumbnails = payload.thumbnails.unwrap_or(false);
+    // Keep session set_id / memory / prompt in sync. Do not copy multi-MB history
+    // into the session cipher (durable store is SoT for authed history).
+    let loaded = match chat.apply_load_set(
+        session,
+        key,
         payload.set_id.as_deref(),
         payload.set_name.as_deref(),
-        key,
-    ) {
-        Ok(id) => id,
-        Err(msg) => {
-            return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
-        }
-    };
-
-    let thumbnails = payload.thumbnails.unwrap_or(false);
-    let loaded = match history.load_page(
-        username,
-        set_id,
-        key,
         payload.limit,
         payload.before,
         thumbnails,
     ) {
         Ok(page) => page,
-        Err(err) => return Err(history_error_to_http(err)),
+        Err(MutationMirrorError::Key(err)) => {
+            return Err(map_encryption_key_validation_err(err));
+        }
+        Err(MutationMirrorError::InvalidSetId) => {
+            return build_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "invalid set_id"}),
+            );
+        }
+        Err(MutationMirrorError::SetNotFound) => {
+            return build_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "set not found"}),
+            );
+        }
+        Err(MutationMirrorError::Conflict {
+            set_id,
+            current_version,
+        }) => {
+            return build_json_response(
+                StatusCode::CONFLICT,
+                crate::chat_utils::version_conflict_json(set_id, current_version),
+            );
+        }
+        Err(MutationMirrorError::History(err)) => {
+            return Err(history_error_to_http(err));
+        }
+        Err(MutationMirrorError::Mirror(err)) => {
+            return Err(map_session_operation_err(&err));
+        }
     };
-
-    // Keep session set_id / memory / prompt in sync. Do not copy multi-MB history
-    // into the session cipher (durable store is SoT for authed history).
-    if let Err(err) = chat.replace_session_set(
-        &session.session_id,
-        Some(username),
-        Some(loaded.set_id),
-        &loaded.memory,
-        &loaded.system_prompt,
-        &[],
-        true,
-        Some(key),
-    ) {
-        return Err(map_session_operation_err(&err));
-    }
 
     let history_json = loaded
         .history

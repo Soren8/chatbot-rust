@@ -3,11 +3,12 @@ use axum::{
     body::Body,
     http::{header, Request, Response, StatusCode},
 };
-use chatbot_core::history::{self, HistoryError, SetId, SetVersion};
+use chatbot_core::history::{self, HistoryError, SetVersion};
+use chatbot_core::session::MutationMirrorError;
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err,
+    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_session_err, map_session_operation_err, HttpError,
 };
 use crate::services::AppServices;
@@ -73,65 +74,56 @@ pub async fn handle_reset_chat(
     })?;
 
     if data_context.session().username.as_deref().is_some() {
-        let verified = data_context.require_authenticated(&chat)?;
-        let username = verified.username();
-        let key = verified.key();
-        let session_context = verified.session();
-        let history = chat.history().map_err(history_error_to_http)?;
-        let set_id = if let Some(raw) = payload.set_id.as_deref().filter(|s| !s.trim().is_empty()) {
-            SetId::parse(raw)
-                .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?
-        } else {
-            match history.find_by_display_name(username, &set_name, key) {
-                Ok(Some(s)) => s.set_id,
-                Ok(None) if set_name == "default" => history
-                    .ensure_default_set(username, key)
-                    .map_err(history_error_to_http)?
-                    .set_id,
-                Ok(None) => {
-                    return Err(api_error(StatusCode::BAD_REQUEST, "set not found"));
-                }
-                Err(err) => return Err(history_error_to_http(err)),
+        let session = data_context.session();
+        let key = data_context.unverified_encryption_key();
+        let set_id_raw = payload
+            .set_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty());
+        match chat.apply_reset_history(
+            session,
+            key,
+            &set_name,
+            set_id_raw,
+            payload.expected_version.map(SetVersion),
+        ) {
+            Ok(applied) => {
+                return build_json_response(
+                    StatusCode::OK,
+                    json!({
+                        "status": "success",
+                        "message": "Chat history has been reset.",
+                        "set_name": set_name,
+                        "set_id": applied.set_id.to_string(),
+                        "version": applied.version.get(),
+                    }),
+                );
             }
-        };
-        let expected = match payload.expected_version {
-            Some(v) => SetVersion(v),
-            None => history
-                .load(username, set_id, key)
-                .map_err(history_error_to_http)?
-                .version,
-        };
-        let version = match history.reset_history(username, set_id, expected, key) {
-            Ok(v) => v,
-            Err(HistoryError::Conflict { current_version }) => {
+            Err(MutationMirrorError::Key(err)) => {
+                return Err(map_encryption_key_validation_err(err));
+            }
+            Err(MutationMirrorError::InvalidSetId) => {
+                return Err(api_error(StatusCode::BAD_REQUEST, "invalid set_id"));
+            }
+            Err(MutationMirrorError::SetNotFound) => {
+                return Err(api_error(StatusCode::BAD_REQUEST, "set not found"));
+            }
+            Err(MutationMirrorError::Conflict {
+                set_id,
+                current_version,
+            }) => {
                 return build_json_response(
                     StatusCode::CONFLICT,
                     crate::chat_utils::version_conflict_json(set_id, current_version),
                 );
             }
-            Err(err) => return Err(history_error_to_http(err)),
-        };
-
-        if let Err(err) = chat.set_session_history_for_request(
-            &session_context.session_id,
-            Some(username),
-            Some(set_id),
-            Vec::new(),
-            Some(key),
-        ) {
-            return Err(map_session_operation_err(&err));
+            Err(MutationMirrorError::History(err)) => {
+                return Err(history_error_to_http(err));
+            }
+            Err(MutationMirrorError::Mirror(err)) => {
+                return Err(map_session_operation_err(&err));
+            }
         }
-
-        return build_json_response(
-            StatusCode::OK,
-            json!({
-                "status": "success",
-                "message": "Chat history has been reset.",
-                "set_name": set_name,
-                "set_id": set_id.to_string(),
-                "version": version.get(),
-            }),
-        );
     }
 
     chat.update_session_history(&data_context.session().session_id, &[]);
