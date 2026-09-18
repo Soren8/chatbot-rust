@@ -13,6 +13,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 use crate::request_context::{extract_cookie, extract_csrf};
 
 #[derive(Deserialize, Default)]
@@ -79,10 +80,13 @@ pub async fn handle_get_sets(
         return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only GET allowed"));
     }
 
+    let identity = RequestIdentity::from_extensions(request.extensions());
     let cookie_header = extract_cookie(request.headers());
-    let encryption_key = crate::chat_utils::extract_enc_key(request.headers());
+    let encryption_key =
+        crate::chat_utils::extract_enc_key_with_identity(&identity, request.headers());
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::get_sets::session"))?;
 
     let username = match session.username.as_deref() {
@@ -138,6 +142,7 @@ pub async fn handle_create_set(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -153,10 +158,11 @@ pub async fn handle_create_set(
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::create_set::session"))?;
 
     let username = match session.username.as_deref() {
@@ -226,6 +232,7 @@ pub async fn handle_delete_set(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -241,10 +248,11 @@ pub async fn handle_delete_set(
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::delete_set::session"))?;
 
     let username = match session.username.as_deref() {
@@ -319,6 +327,7 @@ pub async fn handle_rename_set(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -330,10 +339,11 @@ pub async fn handle_rename_set(
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::rename_set::session"))?;
 
     let username = match session.username.as_deref() {
@@ -428,6 +438,7 @@ pub async fn handle_load_set(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -443,10 +454,11 @@ pub async fn handle_load_set(
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::load_set::session"))?;
 
     let username = match session.username.as_deref() {
@@ -541,6 +553,7 @@ pub async fn handle_history_pair(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -560,10 +573,11 @@ pub async fn handle_history_pair(
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::history_pair::session"))?;
 
     if let Some(username) = session.username.as_deref() {
@@ -653,12 +667,15 @@ pub async fn handle_history_image(
         }
     };
 
+    let identity = RequestIdentity::from_extensions(request.extensions());
     let headers = request.headers();
     let cookie_header = extract_cookie(headers);
-    let encryption_key = crate::chat_utils::extract_enc_key(headers)
-        .or_else(|| extract_hist_enc_cookie(cookie_header.as_deref()));
+    let encryption_key =
+        crate::chat_utils::extract_enc_key_with_identity(&identity, headers)
+            .or_else(|| extract_hist_enc_cookie(cookie_header.as_deref()));
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::history_image::session"))?;
 
     let username = match session.username.as_deref() {
@@ -810,6 +827,7 @@ pub async fn handle_fork_set(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -835,10 +853,11 @@ pub async fn handle_fork_set(
 
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "sets::fork_set::session"))?;
 
     let username = match session.username.as_deref() {
@@ -925,10 +944,12 @@ fn resolve_set(
 }
 
 fn validate_csrf(
+    identity: &RequestIdentity,
     cookie_header: Option<&str>,
     csrf_token: Option<&str>,
 ) -> Result<(), HttpError> {
-    let valid = session::validate_csrf_token(cookie_header, csrf_token)
+    let valid = identity
+        .validate_csrf_token(cookie_header, csrf_token)
         .map_err(|err| map_session_err(err, "sets::csrf"))?;
 
     if !valid {

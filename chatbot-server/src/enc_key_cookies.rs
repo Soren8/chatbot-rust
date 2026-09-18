@@ -1,5 +1,7 @@
 use axum::http::{header, HeaderMap};
-use chatbot_core::{enc_key::EncryptionKey, session};
+use chatbot_core::enc_key::EncryptionKey;
+
+use crate::identity::RequestIdentity;
 
 pub const ENC_KEY_COOKIE_NAME: &str = "enc_key";
 
@@ -8,6 +10,17 @@ pub fn account_enc_key_cookie_name(username: &str) -> String {
 }
 
 pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
+    extract_enc_key_with_identity(&RequestIdentity::global(), headers)
+}
+
+/// Request-scoped variant: the account-cookie lookup runs against the
+/// router's identity instead of the process-global store. Handlers must
+/// use this; the header-only wrapper above stays for direct compatibility
+/// callers (existing tests).
+pub fn extract_enc_key_with_identity(
+    identity: &RequestIdentity,
+    headers: &HeaderMap,
+) -> Option<EncryptionKey> {
     headers
         .get("X-Enc-Key")
         .and_then(|value| value.to_str().ok())
@@ -16,7 +29,8 @@ pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
             let cookie = headers
                 .get(header::COOKIE)
                 .and_then(|value| value.to_str().ok());
-            let username = session::session_context(cookie)
+            let username = identity
+                .session_context(cookie)
                 .ok()
                 .and_then(|ctx| ctx.username);
             let account_key = username

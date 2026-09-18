@@ -7,10 +7,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chatbot_core::{config::app_config, rate_limit, session};
+use chatbot_core::{config::app_config, rate_limit};
 use serde_json::json;
 
-use crate::request_context::{extract_cookie_ref, get_ip};
+use crate::{
+    identity::RequestIdentity,
+    request_context::{extract_cookie_ref, get_ip},
+};
 
 const LIMITED_PATHS: &[&str] = &[
     "/chat",
@@ -31,8 +34,9 @@ fn path_is_limited(path: &str) -> bool {
 
 fn client_key(request: &Request<Body>) -> String {
     let cookie = extract_cookie_ref(request.headers());
+    let identity = RequestIdentity::from_extensions(request.extensions());
 
-    if let Some(identity) = session::rate_limit_identity(cookie) {
+    if let Some(identity) = identity.rate_limit_identity(cookie) {
         return identity;
     }
 

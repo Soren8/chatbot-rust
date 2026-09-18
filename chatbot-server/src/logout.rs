@@ -2,22 +2,25 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::session;
 use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 
 pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, HttpError> {
+    let identity = RequestIdentity::from_extensions(request.extensions());
     let headers = request.headers();
     let ip = crate::request_context::get_ip(headers, request.extensions());
     let cookie_header = crate::request_context::extract_cookie(headers);
 
-    let username = session::session_context(cookie_header.as_deref())
+    let username = identity
+        .session_context(cookie_header.as_deref())
         .ok()
         .and_then(|ctx| ctx.username)
         .unwrap_or_else(|| "guest".to_string());
 
-    let finalize = session::logout_user(cookie_header.as_deref())
+    let finalize = identity
+        .logout_user(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "logout::post"))?;
 
     tracing::info!(username = %username, ip = %ip, "Logout successful");

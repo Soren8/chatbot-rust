@@ -5,7 +5,6 @@ use axum::{
 };
 use chatbot_core::{
     config::{self, TtsAccess},
-    session,
     user_store::UserStore,
 };
 use once_cell::sync::Lazy;
@@ -18,6 +17,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
     map_serialization_err, map_session_err, map_user_store_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 use crate::tts_opus;
 
 mod backend;
@@ -45,20 +45,22 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let csrf_token = crate::request_context::extract_csrf(&headers);
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "tts::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let username = ensure_tts_access(cookie_header.as_deref())?;
+    let username = ensure_tts_access(&identity, cookie_header.as_deref())?;
     let ip = crate::request_context::get_ip(&headers, &parts.extensions);
 
     tracing::info!(username = %username, ip = %ip, "TTS token request");
@@ -194,9 +196,11 @@ pub async fn handle_tts_cancel(
     }
 
     let (parts, _body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let cookie_header = crate::request_context::extract_cookie(&parts.headers);
     let csrf_token = crate::request_context::extract_csrf(&parts.headers);
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "tts::cancel::csrf"))?;
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
@@ -210,8 +214,12 @@ pub async fn handle_tts_cancel(
 }
 
 /// Enforce deploy-time `tts_access` policy. Returns a log label (username or "guest").
-fn ensure_tts_access(cookie_header: Option<&str>) -> Result<String, HttpError> {
-    let username = session::session_context(cookie_header)
+fn ensure_tts_access(
+    identity: &RequestIdentity,
+    cookie_header: Option<&str>,
+) -> Result<String, HttpError> {
+    let username = identity
+        .session_context(cookie_header)
         .ok()
         .and_then(|ctx| ctx.username);
     let label = username

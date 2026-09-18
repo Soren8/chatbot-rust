@@ -91,7 +91,10 @@ impl HttpSessionStore {
         sessions.retain(|_, record| now.duration_since(record.last_used) <= timeout);
     }
 
-    pub(crate) fn purge_expired(&self) -> usize {
+    /// Owned purge hook. Public so composed servers can purge the same
+    /// instance that backs their router; the global delegate stays composed
+    /// in `session::purge_expired_sessions`.
+    pub fn purge_expired(&self) -> usize {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().unwrap();
         let before = sessions.len();

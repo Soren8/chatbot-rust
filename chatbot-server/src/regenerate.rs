@@ -26,6 +26,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_prepare_history_err,
     map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
     HttpError,
+use crate::identity::RequestIdentity;
 };
 use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
 
@@ -59,6 +60,7 @@ pub async fn handle_regenerate(
         return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
@@ -72,16 +74,18 @@ pub async fn handle_regenerate(
     let cookie_header = crate::request_context::extract_cookie(&headers);
     let csrf_token = crate::request_context::extract_csrf(&headers);
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "regenerate::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session_context = session::session_context(cookie_header.as_deref())
+    let session_context = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "regenerate::post::session"))?;
 
     let mut selected_model = payload.model_name.clone().unwrap_or_default();

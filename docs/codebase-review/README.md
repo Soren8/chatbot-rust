@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 020 — owned HTTP identity](#session-020--owned-http-identity-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 021 — router identity composition](#session-021--router-identity-composition-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: eighteen committed batches through session 020. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: nineteen committed batches through session 021. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -268,3 +268,13 @@ Primary found early-return delegates initially initialized the global too soon; 
 Baseline is the preceding unchanged green suite `20260918T043444-6c6e4d1e6375`, reused without rerunning. Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Final `20260918T044642-d78a66509158`; reviewed final `20260918T045405-b76137ee7465`, both passed including provider-config validation and existing six identity boundary tests. Logs: `temp/test-logs/modularity-mod003-identity-owned-{final,reviewed-final}.log`.
 
 Local commit title: `Make HTTP identity state explicitly owned`, based on `c63c994`. Eighteen remediation batches complete. Production router composition still uses global APIs; MOD-003 and phase-1 completion review remain open.
+
+## Session 021 — router identity composition, 2026-09-18
+
+MOD-003/008 partial remediation: production startup constructs one HTTP identity store for both router and purge. All identity-dependent handlers and middleware use request-injected `RequestIdentity`, including remember restoration and account-key-cookie precedence. Missing injection is a construction error rather than a silent global fallback. `build_router` keeps the existing lazy-global path for direct compatibility consumers. Owned purge calls only its own HTTP store plus the shared chat-only purge helper; primary corrected an initial accidental purge of the unrelated global HTTP store.
+
+Six route tests prove cross-router cookie/CSRF/login isolation, default-global compatibility, preserved unknown-cookie log/rate behavior and owned-account-key selection. One separate-process test proves owned purge does not initialize global HTTP identity. Existing tests were untouched. History/chat, rate counters, remember/user stores and config remain shared; no full-application isolation claim is made. SEC-002 policy remains unchanged.
+
+Baseline reused preceding green `20260918T045405-b76137ee7465`. Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Final `20260918T052122-07de4775eb68`, reviewed final `20260918T053800-0895f05d4d11`: passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod003-router-identity-{final,reviewed-final}.log`; failed new-fixture attempts are preserved under `*-final-attempt1-red.log` (rate-limit environment precedence) and `*-reviewed-final-attempt1-red.log` (global initialization shared between tests, corrected by dedicated binary). Primary reviewed every migrated call site, startup/layer wiring, purge and seven tests.
+
+Local commit title: `Compose HTTP identity through router and background tasks`, based on `c678656`. Nineteen remediation batches complete; broader application composition and phase-1 completion review remain open.

@@ -5,10 +5,7 @@ use axum::{
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::{
-    session,
-    user_store::{normalise_username, CreateOutcome, UserStore},
-};
+use chatbot_core::user_store::{normalise_username, CreateOutcome, UserStore};
 use minijinja::{context, AutoEscape, Environment};
 use serde_urlencoded::from_bytes;
 use tracing::warn;
@@ -18,13 +15,16 @@ use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_form_parse_err, map_response_build_err,
     map_session_err, map_user_store_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 
 pub async fn handle_signup_get(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
+    let identity = RequestIdentity::from_extensions(request.extensions());
     let cookie_header = crate::request_context::extract_cookie(request.headers());
 
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref())
+    let bootstrap = identity
+        .prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "signup::get"))?;
 
     let csrf_token = bootstrap.csrf_token;
@@ -46,6 +46,7 @@ pub async fn handle_signup_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let cookie_header = crate::request_context::extract_cookie(&headers);
@@ -65,7 +66,8 @@ pub async fn handle_signup_post(
         return Err(api_error(StatusCode::BAD_REQUEST, "Username and password required."));
     }
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "signup::post::csrf"))?;
 
     if !csrf_valid {

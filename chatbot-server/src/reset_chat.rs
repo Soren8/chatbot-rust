@@ -13,6 +13,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_session_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 
 #[derive(Deserialize, Default)]
 struct ResetChatRequest {
@@ -32,6 +33,7 @@ pub async fn handle_reset_chat(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 256 * 1024)
@@ -48,16 +50,18 @@ pub async fn handle_reset_chat(
     let cookie_header = crate::request_context::extract_cookie(&headers);
     let csrf_token = crate::request_context::extract_csrf(&headers);
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "reset_chat::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session_context = session::session_context(cookie_header.as_deref())
+    let session_context = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "reset_chat::post::session"))?;
 
     let set_name = history::normalise_set_name(payload.set_name.as_deref()).map_err(|err| {

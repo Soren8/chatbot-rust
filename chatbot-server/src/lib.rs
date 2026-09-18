@@ -7,13 +7,18 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chatbot_core::{logging, session::ServiceResponse};
-use std::{env, net::SocketAddr, path::PathBuf};
+use chatbot_core::{
+    logging,
+    session::ServiceResponse,
+    session_identity::HttpSessionStore,
+};
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
 
 mod background;
+pub use background::spawn_session_purge_task_with_identity;
 mod brave;
 mod chat;
 pub mod chat_utils;
@@ -21,6 +26,7 @@ pub mod client_logs;
 pub mod enc_key_cookies;
 mod health;
 pub mod http_error;
+pub mod identity;
 mod home;
 mod login;
 mod logout;
@@ -46,9 +52,14 @@ pub async fn run() -> anyhow::Result<()> {
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
 
-    background::spawn_session_purge_task();
+    // One owned HTTP identity for the process: the router and the
+    // background purge share this instance. CSRF policy stays live.
+    let identity = identity::RequestIdentity::with_store(Arc::new(HttpSessionStore::new(
+        chatbot_core::config::app_config().session_timeout,
+    )));
+    background::spawn_session_purge_task_with_identity(identity.clone());
 
-    let app = build_router(static_root);
+    let app = build_router_with_identity(static_root, identity);
 
     let bind_addr = env::var("CHATBOT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:80".into());
     let listener = TcpListener::bind(&bind_addr).await?;
@@ -225,7 +236,23 @@ async fn sanitize_cookies_middleware(
     response
 }
 
+/// Compatibility router: request identity resolves to the single
+/// process-global HTTP session store, matching fixtures that bootstrap via
+/// the global `chatbot_core::session` API. Installing the (lazy) global
+/// identity touches neither config nor the store, preserving first-use
+/// initialization timing.
 pub fn build_router(static_root: PathBuf) -> Router {
+    build_router_with_identity(static_root, identity::RequestIdentity::global())
+}
+
+/// Router with an explicit request identity. Pass the same identity to its
+/// background purge via [`spawn_session_purge_task_with_identity`]. Routers
+/// built with different owned stores share no cookies, CSRF tokens, or
+/// login bindings. History, rate-limit counters, and config stay global.
+pub fn build_router_with_identity(
+    static_root: PathBuf,
+    identity: identity::RequestIdentity,
+) -> Router {
     let rate_limited = Router::new()
         .route(
             "/signup",
@@ -289,6 +316,7 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(preferences::handle_update_preferences),
         )
         .merge(rate_limited)
+        .layer(axum::Extension(identity))
         .layer(middleware::from_fn(sanitize_cookies_middleware))
         .layer(middleware::from_fn(set_static_cache_control_headers))
         .layer(middleware::from_fn(log_server_error_responses))

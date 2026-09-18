@@ -12,6 +12,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_session_err, map_user_store_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 
 #[derive(Deserialize)]
 struct UpdatePreferencesRequest {
@@ -31,6 +32,7 @@ pub async fn handle_update_preferences(
     }
 
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 1024)
@@ -44,18 +46,21 @@ pub async fn handle_update_preferences(
 
     let csrf_token = crate::request_context::extract_csrf(&headers);
 
-    let valid_csrf = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let valid_csrf = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "preferences::post::csrf"))?;
 
     if !valid_csrf {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid CSRF token"));
     }
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "preferences::post::session"))?;
 
     if let Some(username) = session.username {
-        let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+        let encryption_key =
+            crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
         if let Err(err) =
             session::validate_encryption_key_for_user(&username, encryption_key.as_ref())
         {

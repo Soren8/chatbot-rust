@@ -368,11 +368,17 @@ impl SessionPurgeStats {
 /// Proactively drop expired HTTP and chat session records (also runs lazily on requests).
 pub fn purge_expired_sessions() -> SessionPurgeStats {
     let http_sessions_removed = crate::session_identity::purge_expired_http_sessions();
-    let chat_sessions_removed = SessionStore::global().purge_expired();
+    let chat_sessions_removed = purge_expired_chat_sessions();
     SessionPurgeStats {
         http_sessions_removed,
         chat_sessions_removed,
     }
+}
+
+/// Drop expired chat session records only. Owned server identities purge
+/// their own HTTP store and reuse this for the shared chat store.
+pub fn purge_expired_chat_sessions() -> usize {
+    SessionStore::global().purge_expired()
 }
 
 pub fn release_session_lock(session_id: &str) {

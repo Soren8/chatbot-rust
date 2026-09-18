@@ -11,6 +11,7 @@ use tracing::warn;
 use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 
 pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; require-trusted-types-for 'script'; trusted-types chatbot default; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
@@ -37,9 +38,14 @@ struct RestoredSession {
 /// Only runs for guest sessions — an authenticated visit never rotates the
 /// token. `/login` deliberately does NOT auto-restore: that page is the
 /// account-selection surface.
-fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSession> {
+fn try_auto_restore(
+    identity: &RequestIdentity,
+    cookie_header: Option<&str>,
+    ip: &str,
+) -> Option<RestoredSession> {
     let token = remember_store::extract_token(cookie_header)?;
-    if session::session_context(cookie_header)
+    if identity
+        .session_context(cookie_header)
         .ok()
         .and_then(|ctx| ctx.username)
         .is_some()
@@ -53,7 +59,7 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
             username,
             replacement_token,
         }) => {
-            let finalize = session::finalize_login(cookie_header, &username).ok()?;
+            let finalize = identity.finalize_login(cookie_header, &username).ok()?;
             let session_cookie = finalize
                 .set_cookie
                 .split(';')
@@ -88,6 +94,7 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
 }
 
 pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpError> {
+    let identity = RequestIdentity::from_extensions(request.extensions());
     let headers = request.headers();
     let ip = crate::request_context::get_ip(headers, request.extensions());
     let cookie_header = crate::request_context::extract_cookie(headers);
@@ -95,13 +102,14 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
     let request_cookies = cookie_header.clone();
     let mut restored_cookies: Vec<String> = Vec::new();
     let mut cookie_header = cookie_header;
-    if let Some(restored) = try_auto_restore(cookie_header.as_deref(), &ip) {
+    if let Some(restored) = try_auto_restore(&identity, cookie_header.as_deref(), &ip) {
         cookie_header = Some(restored.session_cookie);
         restored_cookies.push(restored.remember_set_cookie);
         restored_cookies.push(restored.account_set_cookie);
     }
 
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref())
+    let bootstrap = identity
+        .prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "home::get"))?;
 
     if let Some(username) = bootstrap.username.as_deref() {

@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use chatbot_core::{
-    config, remember_store, session,
+    config, remember_store,
     user_store::{normalise_username, UserStore},
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -20,6 +20,7 @@ use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_form_parse_err, map_response_build_err,
     map_session_err, map_user_store_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 
 const INVALID_CREDENTIALS: &str = "Invalid credentials";
 
@@ -38,9 +39,11 @@ pub async fn handle_get_salt(
 pub async fn handle_login_get(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
+    let identity = RequestIdentity::from_extensions(request.extensions());
     let cookie_header = crate::request_context::extract_cookie(request.headers());
 
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref())
+    let bootstrap = identity
+        .prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "login::get"))?;
 
     let html = render_login_template(&bootstrap.csrf_token).map_err(|err| {
@@ -59,6 +62,7 @@ pub async fn handle_login_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let cookie_header = crate::request_context::extract_cookie(&headers);
@@ -83,7 +87,8 @@ pub async fn handle_login_post(
         return invalid_credentials();
     }
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "login::post::csrf"))?;
 
     if !csrf_valid {
@@ -131,7 +136,8 @@ pub async fn handle_login_post(
         .ensure_key_verifier(&username, &encryption_key)
         .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?;
 
-    let finalize = session::finalize_login(cookie_header.as_deref(), &username)
+    let finalize = identity
+        .finalize_login(cookie_header.as_deref(), &username)
         .map_err(|err| map_session_err(err, "login::post::finalize"))?;
 
     let ip = crate::request_context::get_ip(&headers, &parts.extensions);
@@ -288,6 +294,7 @@ pub async fn handle_login_remember_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
     let cookie_header = crate::request_context::extract_cookie(&headers);
 
@@ -298,7 +305,8 @@ pub async fn handle_login_remember_post(
         from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::remember"))?;
     let csrf_token = form.get("csrf_token").map(|s| s.as_str());
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "login::remember::csrf"))?;
     if !csrf_valid {
         return Err(api_error(
@@ -363,7 +371,8 @@ pub async fn handle_login_remember_post(
             username,
             replacement_token,
         }) => {
-            let finalize = session::finalize_login(cookie_header.as_deref(), &username)
+            let finalize = identity
+                .finalize_login(cookie_header.as_deref(), &username)
                 .map_err(|err| map_session_err(err, "login::remember::finalize"))?;
 
             let ip = crate::request_context::get_ip(&headers, &parts.extensions);
@@ -452,6 +461,7 @@ pub async fn handle_login_forget_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
     let cookie_header = crate::request_context::extract_cookie(&headers);
 
@@ -462,7 +472,8 @@ pub async fn handle_login_forget_post(
         from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::forget"))?;
     let csrf_token = form.get("csrf_token").map(|s| s.as_str());
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "login::forget::csrf"))?;
     if !csrf_valid {
         return Err(api_error(

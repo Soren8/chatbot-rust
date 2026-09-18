@@ -12,6 +12,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, HttpError,
 };
+use crate::identity::RequestIdentity;
 use crate::request_context::{extract_cookie, extract_csrf};
 
 /// Memory / system-prompt updates (no image payloads).
@@ -75,6 +76,7 @@ pub async fn handle_update_memory(
 ) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
@@ -96,10 +98,11 @@ pub async fn handle_update_memory(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
 
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "memory::update_memory::session"))?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
@@ -179,6 +182,7 @@ pub async fn handle_update_system_prompt(
 ) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
@@ -205,12 +209,14 @@ pub async fn handle_update_system_prompt(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
 
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref()).map_err(|err| {
-        map_session_err(err, "memory::update_system_prompt::session")
-    })?;
+    let session = identity
+        .session_context(cookie_header.as_deref())
+        .map_err(|err| {
+            map_session_err(err, "memory::update_system_prompt::session")
+        })?;
 
     if payload.logged_in.unwrap_or(false) && session.username.is_none() {
         return build_json_response(
@@ -294,6 +300,7 @@ pub async fn handle_delete_message(
 ) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_DELETE_BODY_SIZE)
@@ -332,10 +339,11 @@ pub async fn handle_delete_message(
     let cookie_header = extract_cookie(&headers);
     let csrf_token = extract_csrf(&headers);
 
-    validate_csrf(cookie_header.as_deref(), csrf_token)?;
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
+    validate_csrf(&identity, cookie_header.as_deref(), csrf_token)?;
+    let encryption_key = crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "memory::delete_message::session"))?;
 
     if let Some(username) = session.username.as_deref() {
@@ -454,10 +462,12 @@ fn ensure_post(request: &Request<Body>) -> Result<(), HttpError> {
 }
 
 fn validate_csrf(
+    identity: &RequestIdentity,
     cookie_header: Option<&str>,
     csrf_token: Option<&str>,
 ) -> Result<(), HttpError> {
-    let valid = session::validate_csrf_token(cookie_header, csrf_token)
+    let valid = identity
+        .validate_csrf_token(cookie_header, csrf_token)
         .map_err(|err| map_session_err(err, "memory::csrf"))?;
 
     if !valid {

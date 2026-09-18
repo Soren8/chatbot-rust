@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 021 adds `chatbot-server/src/identity.rs`, `router_identity_isolation.rs` and `router_identity_composition.rs` under server tests (327 tracked paths). Primary reviewed every identity call-site migration and the seven new tests; full reviewed-final passed. No production process/server was launched.
+
 Session 020 adds `chatbot-core/tests/http_identity_isolation.rs` and `http_identity_lazy_init.rs` (324 tracked paths). Primary reviewed the owned lifecycle and lazy compatibility delegates; five new tests and the full suite pass. HTTP identity state isolation is proven at the store boundary, not yet across routers.
 
 Session 019 adds `chatbot-core/tests/history_snapshot_boundary.rs` (322 tracked paths). Primary reviewed all cache producers, normalization/commit output, migration handling and seven tests. Two warm/cold regressions failed before correction and passed afterward. Reviewed final also covers malformed literal markers; existing unit tests only adapt signatures with assertions preserved.
