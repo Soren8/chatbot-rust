@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 025 — owned chat state](#session-025--owned-chat-state-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 026 — owned chat orchestration](#session-026--owned-chat-orchestration-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-three committed batches through session 025. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-four committed batches through session 026. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 026 — owned chat orchestration, 2026-09-18
+
+MOD-003/006 partial remediation: `ChatService` owns concrete session/history/account dependencies behind one shared bundle; global compatibility stays lazy with per-call ambient account inputs. Prepare/finalize, key/tier checks and mirror operations use that owner. Generation leases bind the service and session, including drop/release. Primary removed redundant prompt ownership and raw configuration getters and required a cheap shared dependency handle. Existing global API signatures, lock/validation/commit/mirror ordering, logs, response strings and current-ID expiry semantics remain unchanged. Typed finalization and server wiring remain open.
+
+Eight new tests cover guest/durable same-ID isolation, key roots/secrets, premium tier selection, regeneration capture, explicit release/drop isolation and early validation. Existing tests retain scenarios/assertions. Full final `20260918T074237-605fba7caffb` and reviewed final `20260918T075255-f323a263208e` passed, including provider-config validation; logs `temp/test-logs/modularity-mod003-chat-service-20260918T074237.log` and `modularity-mod003-chat-service-reviewed-final-20260918T075255.log`. Primary reviewed all moved orchestration, compatibility wrappers, lease changes and new tests. Commit title: `Compose chat workflows with owned service dependencies`, based on `1775aef`.
 
 ## Session 025 — owned chat state, 2026-09-18
 

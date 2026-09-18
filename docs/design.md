@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+`ChatService` composes chat state, history and account validation with concrete owned dependencies. Its leases bind both service and prepare-time session, so prepare, durable completion, mirror updates and release use the same owner. The session store supplies the default prompt; service clones share one dependency bundle. `ChatService::global()` and existing free functions preserve lazy process-global compatibility. Owned services use explicit account roots/HMAC secrets and provider inputs; the test-chunk environment override remains shared. Router chat/history wiring still uses compatibility functions until service injection is completed.
+
 `ChatSessionStore::new(timeout_secs, default_prompt)` owns independent guest history, memory, prompt, generation locks and expiry. Its timeout is raw seconds, including zero; only HTTP identity applies a 60-second floor. State free functions delegate to the same lazy global store. Authenticated preparation/finalization, mirror mutations and generation leases still use global chat/history/account dependencies; state construction alone does not isolate those workflows.
 
 `UserStore::open(root)` and `RememberStore::open(root)` support explicit storage roots; their `new()` compatibility APIs still resolve `HOST_DATA_DIR` per call. User-store verifier enrollment and checking also accept an explicit HMAC secret through `_with_secret` methods. Compatibility verification preserves one record read and only resolves configuration when a verifier exists. These constructors enable independent services; production account handlers still use the compatibility APIs.

@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 026 adds `chatbot-core/tests/chat_service_isolation.rs`. Primary reviewed owned chat dependencies and all moved prepare/finalize/mirror paths, global wrappers, service-bound lease settlement and eight new tests. Reviewed full suite passed. Server injection and typed core finalization remain open; no expiry-race correction is claimed.
+
 Session 025 adds `chatbot-core/tests/chat_session_isolation.rs`. Primary reviewed the state-owner constructor/methods, global adapters and all four tests. The full suite passed; authenticated service composition and clock-controlled expiry/recreation races are not claimed covered by this batch.
 
 Session 024 adds `chatbot-core/tests/account_store_inputs.rs`. Primary reviewed explicit user/remember constructors, secret-input verifier paths and five new tests; corrected duplicate verifier IO before accepting the passing reviewed full suite. Production account composition remains open.
