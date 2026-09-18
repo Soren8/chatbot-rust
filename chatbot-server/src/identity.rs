@@ -165,4 +165,17 @@ impl RequestIdentity {
             }
         }
     }
+
+    /// HTTP-only purge step for composed [`crate::services::AppServices`]
+    /// background tasks. Purges only this identity's HTTP store (global or
+    /// owned) without touching any chat store, so an owned router can compose
+    /// it with its own chat service and never initialize the unrelated global
+    /// chat store. The legacy [`RequestIdentity::purge_for_background`] stays
+    /// for identity-only callers.
+    pub fn purge_http_for_background(&self) -> usize {
+        match &self.store {
+            None => chatbot_core::session::purge_expired_http_sessions(),
+            Some(store) => store.purge_expired(),
+        }
+    }
 }

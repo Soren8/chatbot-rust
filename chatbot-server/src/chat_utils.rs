@@ -5,7 +5,7 @@ use axum::{
 use chatbot_core::{
     enc_key::EncryptionKey,
     history::{HistoryError, SetId, SetVersion},
-    session,
+    session::{self, ChatService},
 };
 use anyhow::Error;
 use regex::Regex;
@@ -188,7 +188,13 @@ pub fn service_error_message(resp: &session::ServiceResponse) -> String {
 
 /// Persist a /chat or /regenerate failure as a real history pair and return it
 /// as a 200 text/plain assistant turn so the client can regenerate.
-pub fn error_as_saved_chat_turn(
+///
+/// Scoped variant: persists through the router's injected [`ChatService`] so
+/// the saved error turn lands in that router's session mirror and durable
+/// history only. All chat/regenerate saved-error-turn fallbacks must use the
+/// same injected service as their prepare path.
+pub fn error_as_saved_chat_turn_with_service(
+    chat: &ChatService,
     session: &session::SessionContext,
     set_name: Option<&str>,
     user_message: &str,
@@ -205,7 +211,7 @@ pub fn error_as_saved_chat_turn(
         "saving /chat or /regenerate error as assistant turn"
     );
     if let Some(idx) = insertion_index {
-        session::regenerate_finalize(
+        chat.regenerate_finalize(
             session,
             set,
             user_message,
@@ -214,7 +220,7 @@ pub fn error_as_saved_chat_turn(
             encryption_key,
         );
     } else {
-        session::chat_finalize(session, set, user_message, &assistant, encryption_key);
+        chat.chat_finalize(session, set, user_message, &assistant, encryption_key);
     }
     Response::builder()
         .status(StatusCode::OK)
@@ -223,6 +229,31 @@ pub fn error_as_saved_chat_turn(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from(assistant))
         .map_err(|err| map_response_build_err(err, "chat_utils::error_as_saved_chat_turn"))
+}
+
+/// Persist a /chat or /regenerate failure as a real history pair and return it
+/// as a 200 text/plain assistant turn so the client can regenerate.
+///
+/// Compatibility wrapper: persists through the process-global chat service,
+/// preserving the existing global-router behavior. Injected routers must use
+/// [`error_as_saved_chat_turn_with_service`] with their own service instead.
+pub fn error_as_saved_chat_turn(
+    session: &session::SessionContext,
+    set_name: Option<&str>,
+    user_message: &str,
+    error_message: &str,
+    encryption_key: Option<&EncryptionKey>,
+    insertion_index: Option<usize>,
+) -> Result<Response<Body>, HttpError> {
+    error_as_saved_chat_turn_with_service(
+        &ChatService::global(),
+        session,
+        set_name,
+        user_message,
+        error_message,
+        encryption_key,
+        insertion_index,
+    )
 }
 
 /// Standard CAS conflict body for durable set mutations.

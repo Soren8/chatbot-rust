@@ -1,67 +1,77 @@
 //! Narrow application services context (MOD-003 resource composition).
 //!
-//! One owned [`AppServices`] bundles the three per-router resources that must
-//! stay isolated together: the HTTP identity store, the TTS pending-token
-//! store, and the rate-limit counters. Production builds one at startup and
-//! clones it into every request via an Axum `Extension` layer; the same
-//! identity value is also installed as the legacy `RequestIdentity` extension
-//! so existing handlers keep working from a single source.
+//! One owned [`AppServices`] bundles the per-router resources that must stay
+//! isolated together: the HTTP identity store, the TTS pending-token store,
+//! the rate-limit counters, and the chat service (session RAM mirror plus
+//! durable history plus account-key/tier gates). Production builds one at
+//! startup and clones it into every request via an Axum `Extension` layer;
+//! the same identity value is also installed as the legacy `RequestIdentity`
+//! extension so existing handlers keep working from a single source.
 //!
 //! Compatibility: [`AppServices::global`] and [`AppServices::with_identity`]
-//! resolve the TTS and limiter dimensions to the existing process-global
-//! stores (the `tts` static and the `chatbot_core::rate_limit` free
-//! functions), preserving lazy initialization and the `rate_limit::reset`
-//! test hook. [`AppServices::with_owned_stores`] backs
-//! a router with fully independent tokens and counters.
+//! and [`AppServices::with_owned_stores`] resolve the chat dimension to the
+//! existing process-global [`ChatService::global`] (lazy first-use timing
+//! untouched). Use [`AppServices::with_chat_service`] to back a router with an
+//! explicit chat service.
 //!
-//! Config-free state only: token admission and rate windows live here. Live
-//! `app_config()` limits (`rate_limit_*`, `tts_*`) and the user, remember,
-//! history, and chat stores stay process-global for now.
+//! Config-free state only, except the deliberate production root capture in
+//! `run()`: token admission, rate windows, session mirrors, durable history
+//! handles, and account roots/secrets live here. Live `app_config()` limits
+//! (`rate_limit_*`, `tts_*`, providers, CSRF) and the user, remember,
+//! login/signup/home/preferences, and voice-service configuration stay
+//! process-global for now.
 
 use std::sync::{Arc, Mutex};
 
 use axum::http::Extensions;
 
 use chatbot_core::rate_limit::{self, RateLimitExceeded, RateLimiter};
+use chatbot_core::session::ChatService;
 
 use crate::identity::RequestIdentity;
 use crate::tts::store::PendingTtsStore;
 
 /// Owned router resources: one identity plus one pending-token store plus one
-/// rate-limit counter set. Cloned into every request; the inner stores stay
-/// shared via `Arc`.
+/// rate-limit counter set plus one chat service. Cloned into every request;
+/// the inner stores stay shared via `Arc`.
 #[derive(Clone)]
 pub struct AppServices {
     identity: RequestIdentity,
     pending_tts: Option<Arc<PendingTtsStore>>,
     limiter: Option<Arc<Mutex<RateLimiter>>>,
+    chat: ChatService,
 }
 
 impl AppServices {
     /// Compatibility context: the global identity plus the existing global
-    /// TTS and limiter stores, with their lazy first-use timing untouched.
+    /// TTS, limiter, and chat stores, with their lazy first-use timing untouched.
     pub fn global() -> Self {
         Self {
             identity: RequestIdentity::global(),
             pending_tts: None,
             limiter: None,
+            chat: ChatService::global(),
         }
     }
 
-    /// Compatibility context for an owned identity: TTS tokens and
-    /// rate-limit counters stay process-global. Prefer
-    /// [`AppServices::with_owned_stores`] for fully independent routers.
+    /// Compatibility context for an owned identity: TTS tokens, rate-limit
+    /// counters, and chat stay process-global. Prefer
+    /// [`AppServices::with_owned_stores`] plus
+    /// [`AppServices::with_chat_service`] for fully independent routers.
     pub fn with_identity(identity: RequestIdentity) -> Self {
         Self {
             identity,
             pending_tts: None,
             limiter: None,
+            chat: ChatService::global(),
         }
     }
 
     /// Fully owned context: `pending_tts` and `limiter` back this router
     /// only. Tokens admitted here are unknown elsewhere; counters are
-    /// independent. Crate-internal: external callers use
+    /// independent. Chat stays process-global for compatibility; use
+    /// [`AppServices::with_chat_service`] for an explicit chat service.
+    /// Crate-internal: external callers use
     /// [`AppServices::with_owned_stores`] so the narrow public surface never
     /// names the store types.
     fn new(
@@ -73,6 +83,7 @@ impl AppServices {
             identity,
             pending_tts: Some(pending_tts),
             limiter: Some(limiter),
+            chat: ChatService::global(),
         }
     }
 
@@ -85,10 +96,38 @@ impl AppServices {
         )
     }
 
+    /// Back this router with an explicit chat service (owned session mirror
+    /// plus durable history plus account-key/tier gates). Consumes and
+    /// returns `Self` so existing constructors keep their global-chat
+    /// defaults while owned production and isolation tests opt in.
+    pub fn with_chat_service(mut self, chat: ChatService) -> Self {
+        self.chat = chat;
+        self
+    }
+
     /// The single identity for this router; the same value is installed as
     /// the legacy `RequestIdentity` extension.
     pub fn identity(&self) -> &RequestIdentity {
         &self.identity
+    }
+
+    /// The single chat service for this router: prepare/finalize, durable
+    /// history, session mirror, key/tier gates, and generation leases all
+    /// resolve through this handle. Compatibility contexts return the global
+    /// handle; owned routers return their explicit service.
+    pub fn chat(&self) -> &ChatService {
+        &self.chat
+    }
+
+    /// Purge step for the background task, returning
+    /// `(http_removed, chat_removed)`. Composes this router's HTTP store with
+    /// this router's chat sessions, so a fully owned router never initializes
+    /// or purges the unrelated global HTTP/chat stores. The remember store
+    /// stays global.
+    pub fn purge_for_background(&self) -> (usize, usize) {
+        let http_removed = self.identity.purge_http_for_background();
+        let chat_removed = self.chat.purge_expired_chat_sessions();
+        (http_removed, chat_removed)
     }
 
     /// Pending-token store for all three TTS endpoints. Owned when present,

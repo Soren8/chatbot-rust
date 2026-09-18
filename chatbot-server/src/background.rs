@@ -30,6 +30,36 @@ pub fn spawn_session_purge_task_with_identity(
     });
 }
 
+/// Background purge for a fully composed router: expired records are purged
+/// from that same [`crate::services::AppServices`] identity plus that same
+/// chat service, so an owned production router never initializes or purges
+/// the unrelated global HTTP/chat stores. The remember store stays global.
+pub fn spawn_session_purge_task_with_services(services: crate::services::AppServices) {
+    let interval_secs = purge_interval_secs();
+
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+        ticker.tick().await;
+
+        loop {
+            ticker.tick().await;
+            let (http_sessions_removed, chat_sessions_removed) =
+                services.purge_for_background();
+            let remember_removed = chatbot_core::remember_store::RememberStore::new()
+                .map(|store| store.purge_expired())
+                .unwrap_or(0);
+            if http_sessions_removed + chat_sessions_removed > 0 || remember_removed > 0 {
+                info!(
+                    http_sessions_removed,
+                    chat_sessions_removed,
+                    remember_tokens_removed = remember_removed,
+                    "background session purge completed"
+                );
+            }
+        }
+    });
+}
+
 fn purge_interval_secs() -> u64 {
     env::var("SESSION_PURGE_INTERVAL_SECS")
         .ok()

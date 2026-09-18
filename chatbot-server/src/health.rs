@@ -1,13 +1,15 @@
 use axum::{
-    extract::Query,
+    extract::{Extension, Query},
     http::StatusCode,
     Json,
 };
-use chatbot_core::{config, history::HistoryService};
+use chatbot_core::config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tracing::{info, warn};
+
+use crate::services::AppServices;
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct HealthPayload {
@@ -23,6 +25,7 @@ pub(crate) struct HealthQuery {
 }
 
 pub(crate) async fn handle_health(
+    Extension(services): Extension<AppServices>,
     Query(query): Query<HealthQuery>,
 ) -> (StatusCode, Json<HealthPayload>) {
     info!(deep = query.deep, "health check requested");
@@ -37,7 +40,11 @@ pub(crate) async fn handle_health(
         );
     }
 
-    let history_ok = HistoryService::global().is_ok();
+    // Scoped history check through this router's chat service: compatibility
+    // routers resolve the process-global service (same `is_ok` as before with
+    // no extra `redb` open), while owned routers check only their explicit
+    // history without initializing the unrelated global database.
+    let history_ok = services.chat().history().is_ok();
     let voice_ok = probe_voice_service().await;
 
     let checks = json!({

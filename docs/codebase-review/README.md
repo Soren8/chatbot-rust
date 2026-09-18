@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 026 — owned chat orchestration](#session-026--owned-chat-orchestration-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 027 — router chat composition](#session-027--router-chat-composition-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-four committed batches through session 026. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-five committed batches through session 027. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 027 — router chat composition, 2026-09-18
+
+MOD-003 partial remediation: production installs an owned chat service alongside HTTP identity, TTS and rate state. All chat/regenerate saved-error paths, durable set/history and memory/reset operations, deep health and chat purge resolve the same service. Compatibility constructors retain lazy globals. Production captures chat timeout/prompt/storage roots/verifier secret at composition; owned history opens lazily and retries failures. Account HTTP handlers and live provider/config dependencies remain open.
+
+Six router tests cover independent durable histories, memory/reset/regenerate, saved-error persistence, pre-poll cancellation, global-chat lazy initialization and scoped deep-health failure/recovery with a local voice stub. Three core tests cover lazy construction, clone sharing and retry after a blocked directory is repaired. Primary reviewed all production changes and nine new tests. Full final `20260918T082434-66da584567c5` and reviewed final `20260918T083752-84a8ea588426` passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod003-router-chat-final3.log` and `modularity-mod003-router-chat-reviewed-final.log`. Failed new-fixture runs `20260918T081057-b6f741460fbf`, `20260918T081842-2ccd0d971639` and `20260918T083615-553a263e8917` remain in `final.log`, `final2.log` and `reviewed-final2.log` of that family. An earlier reviewed-attempt compile failure requiring a Debug-free assertion was overwritten by the worker; separate evidence is unavailable. Commit title: `Inject chat services through routes and background purge`, based on `8d4c310`.
 
 ## Session 026 — owned chat orchestration, 2026-09-18
 

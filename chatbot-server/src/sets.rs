@@ -15,6 +15,7 @@ use crate::http_error::{
 };
 use crate::identity::RequestIdentity;
 use crate::request_context::{extract_cookie, extract_csrf};
+use crate::services::AppServices;
 
 #[derive(Deserialize, Default)]
 struct SetRequest {
@@ -80,7 +81,9 @@ pub async fn handle_get_sets(
         return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only GET allowed"));
     }
 
-    let identity = RequestIdentity::from_extensions(request.extensions());
+    let services = AppServices::from_extensions(request.extensions());
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let cookie_header = extract_cookie(request.headers());
     let encryption_key =
         crate::chat_utils::extract_enc_key_with_identity(&identity, request.headers());
@@ -100,13 +103,13 @@ pub async fn handle_get_sets(
     };
 
     if let Err(err) =
-        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
     {
         return Err(map_encryption_key_validation_err(err));
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
 
-    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let history = chat.history().map_err(history_error_to_http)?;
     // Single list_sets call. Decrypts sealed display names only; history blobs stay closed.
     let mut sets = history.list_sets(username, key).map_err(history_error_to_http)?;
     if sets.is_empty() {
@@ -142,7 +145,9 @@ pub async fn handle_create_set(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -176,7 +181,7 @@ pub async fn handle_create_set(
     };
 
     if let Err(err) =
-        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
     {
         return Err(map_encryption_key_validation_err(err));
     }
@@ -202,7 +207,7 @@ pub async fn handle_create_set(
         }
     };
 
-    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let history = chat.history().map_err(history_error_to_http)?;
     match history.create_set(username, &set_name, key) {
         Ok(summary) => build_json_response(
             StatusCode::OK,
@@ -232,7 +237,9 @@ pub async fn handle_delete_set(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -266,12 +273,12 @@ pub async fn handle_delete_set(
     };
 
     if let Err(err) =
-        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
     {
         return Err(map_encryption_key_validation_err(err));
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
-    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let history = chat.history().map_err(history_error_to_http)?;
 
     let snap = match resolve_set(
         &history,
@@ -327,7 +334,9 @@ pub async fn handle_rename_set(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -357,7 +366,7 @@ pub async fn handle_rename_set(
     };
 
     if let Err(err) =
-        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
     {
         return Err(map_encryption_key_validation_err(err));
     }
@@ -376,7 +385,7 @@ pub async fn handle_rename_set(
         }
     };
 
-    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let history = chat.history().map_err(history_error_to_http)?;
     let snap = match resolve_set(
         &history,
         username,
@@ -438,7 +447,9 @@ pub async fn handle_load_set(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -472,12 +483,12 @@ pub async fn handle_load_set(
     };
 
     if let Err(err) =
-        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
     {
         return Err(map_encryption_key_validation_err(err));
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
-    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let history = chat.history().map_err(history_error_to_http)?;
 
     let set_id = match resolve_set_id(
         &history,
@@ -507,7 +518,7 @@ pub async fn handle_load_set(
 
     // Keep session set_id / memory / prompt in sync. Do not copy multi-MB history
     // into the session cipher (durable store is SoT for authed history).
-    if let Err(response) = session::replace_session_set(
+    if let Err(response) = chat.replace_session_set(
         &session.session_id,
         Some(username),
         Some(loaded.set_id),
@@ -553,7 +564,9 @@ pub async fn handle_history_pair(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -582,12 +595,12 @@ pub async fn handle_history_pair(
 
     if let Some(username) = session.username.as_deref() {
         if let Err(err) =
-            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
             return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
-        let history = HistoryService::global().map_err(history_error_to_http)?;
+        let history = chat.history().map_err(history_error_to_http)?;
         let set_id = match resolve_set_id(
             &history,
             username,
@@ -640,7 +653,7 @@ pub async fn handle_history_pair(
         };
     }
 
-    let guest_history = session::session_history(&session.session_id);
+    let guest_history = chat.session_history(&session.session_id);
     history_pair_json(&guest_history, pair_index, payload.image_index, None, None)
 }
 
@@ -667,7 +680,9 @@ pub async fn handle_history_image(
         }
     };
 
-    let identity = RequestIdentity::from_extensions(request.extensions());
+    let services = AppServices::from_extensions(request.extensions());
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = request.headers();
     let cookie_header = extract_cookie(headers);
     let encryption_key =
@@ -689,12 +704,12 @@ pub async fn handle_history_image(
     };
 
     if let Err(err) =
-        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
     {
         return Err(map_encryption_key_validation_err(err));
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
-    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let history = chat.history().map_err(history_error_to_http)?;
     let id = match SetId::parse(&set_id) {
         Ok(id) => id,
         Err(_) => {
@@ -827,7 +842,9 @@ pub async fn handle_fork_set(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 128 * 1024)
@@ -871,12 +888,12 @@ pub async fn handle_fork_set(
     };
 
     if let Err(err) =
-        session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+        chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
     {
         return Err(map_encryption_key_validation_err(err));
     }
     let key = encryption_key.as_ref().expect("validated encryption key");
-    let history = HistoryService::global().map_err(history_error_to_http)?;
+    let history = chat.history().map_err(history_error_to_http)?;
 
     let source_id = match resolve_set_id(
         &history,

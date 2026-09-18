@@ -18,7 +18,9 @@ use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
 
 mod background;
-pub use background::spawn_session_purge_task_with_identity;
+pub use background::{
+    spawn_session_purge_task_with_identity, spawn_session_purge_task_with_services,
+};
 mod brave;
 mod chat;
 pub mod chat_utils;
@@ -54,14 +56,34 @@ pub async fn run() -> anyhow::Result<()> {
     info!("serving static assets from {}", static_root.display());
 
     // One owned application services context for the process: identity plus
-    // TTS pending tokens plus rate-limit counters. The router and the
-    // background purge share this instance's identity. CSRF policy stays
-    // live; rate/TTS limits stay live from global config.
+    // TTS pending tokens plus rate-limit counters plus chat (session mirror,
+    // durable history, account-key/tier gates). The router and the background
+    // purge share this instance. Chat history opens lazily on first use via
+    // `ChatService::with_storage` with `get_or_try_init` retry, so a database
+    // failure is fallible per request and never fatal at startup, and the
+    // same database file is never opened twice (no global chat/history init).
+    // Deliberate root capture: timeout/prompt/history roots/account
+    // root/verifier secret are resolved once from `app_config()` here, with
+    // the same `HOST_DATA_DIR` / `host_data_dir` semantics as `UserStore::new`
+    // and `HistoryService::global`. Live global config remains for providers,
+    // CSRF, TTS, rate limits, user/remember stores, and
+    // login/signup/home/preferences/voice-service routes.
+    let app_config = chatbot_core::config::app_config();
     let identity = identity::RequestIdentity::with_store(Arc::new(HttpSessionStore::new(
-        chatbot_core::config::app_config().session_timeout,
+        app_config.session_timeout,
     )));
-    let services = services::AppServices::with_owned_stores(identity);
-    background::spawn_session_purge_task_with_identity(services.identity().clone());
+    let chat_sessions = Arc::new(chatbot_core::session::ChatSessionStore::new(
+        app_config.session_timeout,
+        app_config.default_system_prompt.clone(),
+    ));
+    let chat = chatbot_core::session::ChatService::with_storage(
+        chat_sessions,
+        app_config.host_data_dir.clone(),
+        app_config.host_data_dir.clone(),
+        app_config.secret_key.clone(),
+    );
+    let services = services::AppServices::with_owned_stores(identity).with_chat_service(chat);
+    background::spawn_session_purge_task_with_services(services.clone());
 
     let app = build_router_with_services(static_root, services);
 
@@ -240,8 +262,8 @@ async fn sanitize_cookies_middleware(
     response
 }
 
-/// Compatibility router: identity, TTS tokens, and rate-limit counters all
-/// resolve to the existing process-global stores, matching fixtures that
+/// Compatibility router: identity, TTS tokens, rate-limit counters, and chat
+/// all resolve to the existing process-global stores, matching fixtures that
 /// bootstrap via the global `chatbot_core::session` and `rate_limit` APIs.
 /// Installing the (lazy) global services touches neither config nor the
 /// stores, preserving first-use initialization timing.
@@ -250,12 +272,15 @@ pub fn build_router(static_root: PathBuf) -> Router {
 }
 
 /// Router with an explicit request identity. Compatibility semantics: the
-/// identity is owned, while TTS pending tokens and rate-limit counters stay
-/// process-global. Pass the same identity to its background purge via
+/// identity is owned, while TTS pending tokens, rate-limit counters, and chat
+/// stay process-global. Pass the same identity to its background purge via
 /// [`spawn_session_purge_task_with_identity`]. Routers built with different
 /// owned stores share no cookies, CSRF tokens, or login bindings. For fully
-/// independent tokens and counters, use [`build_router_with_services`].
-/// History, user/remember stores, and config stay global either way.
+/// independent tokens, counters, and chat, use
+/// [`build_router_with_services`] with
+/// [`services::AppServices::with_chat_service`]. Durable history mirrors the
+/// chat dimension; user/remember stores and live config (providers, CSRF,
+/// TTS, rate limits) stay global either way.
 pub fn build_router_with_identity(
     static_root: PathBuf,
     identity: identity::RequestIdentity,
@@ -267,12 +292,17 @@ pub fn build_router_with_identity(
 }
 
 /// Router with fully owned services: the given identity plus its TTS pending
-/// tokens plus its rate-limit counters. Two routers built with independent
-/// [`services::AppServices`] share no cookies, CSRF tokens, login bindings,
-/// TTS tokens, or rate-limit counters. The services' identity is also
-/// installed as the legacy `RequestIdentity` extension (same value), so
-/// existing handlers keep resolving through one source. History,
-/// user/remember stores, and config stay global.
+/// tokens plus its rate-limit counters plus its chat service (when configured
+/// via [`services::AppServices::with_chat_service`]). Two routers built with
+/// independent [`services::AppServices`] share no cookies, CSRF tokens, login
+/// bindings, TTS tokens, rate-limit counters, session mirrors, durable
+/// history, or account-key/tier gates once both carry explicit chat services.
+/// The services' identity is also installed as the legacy `RequestIdentity`
+/// extension (same value), so existing handlers keep resolving through one
+/// source: the `AppServices` extension. Without an explicit chat service the
+/// chat/history dimension stays process-global for compatibility.
+/// User/remember stores and live config (providers, CSRF, TTS, rate limits)
+/// stay global.
 pub fn build_router_with_services(
     static_root: PathBuf,
     services: services::AppServices,

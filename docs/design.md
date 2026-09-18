@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Production now installs its owned `ChatService` in `AppServices`. Chat/regenerate (including saved-error turns), set/history routes, memory/reset and deep health use that same service. Background purge uses the matching HTTP/chat owners. `ChatService::with_storage` opens history on first use and retries failed opens, preserving request-level database failures rather than failing startup. Compatibility routers retain lazy global chat/history. Account HTTP handlers, provider selection and live configuration remain ambient dependencies.
+
 `ChatService` composes chat state, history and account validation with concrete owned dependencies. Its leases bind both service and prepare-time session, so prepare, durable completion, mirror updates and release use the same owner. The session store supplies the default prompt; service clones share one dependency bundle. `ChatService::global()` and existing free functions preserve lazy process-global compatibility. Owned services use explicit account roots/HMAC secrets and provider inputs; the test-chunk environment override remains shared. Router chat/history wiring still uses compatibility functions until service injection is completed.
 
 `ChatSessionStore::new(timeout_secs, default_prompt)` owns independent guest history, memory, prompt, generation locks and expiry. Its timeout is raw seconds, including zero; only HTTP identity applies a 60-second floor. State free functions delegate to the same lazy global store. Authenticated preparation/finalization, mirror mutations and generation leases still use global chat/history/account dependencies; state construction alone does not isolate those workflows.

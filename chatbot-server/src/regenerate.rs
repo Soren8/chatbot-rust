@@ -18,7 +18,7 @@ use serde::Deserialize;
 use tracing::{debug, error};
 
 use crate::chat_utils::{
-    error_as_saved_chat_turn, provider_error_parts, service_error_message,
+    error_as_saved_chat_turn_with_service, provider_error_parts, service_error_message,
     StreamCompletionGuard,
 };
 use crate::http_error::{
@@ -26,8 +26,8 @@ use crate::http_error::{
     map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
     HttpError,
 };
-use crate::identity::RequestIdentity;
 use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
+use crate::services::AppServices;
 
 #[derive(Deserialize)]
 struct RegenerateRequest {
@@ -60,7 +60,9 @@ pub async fn handle_regenerate(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 5 * 1024 * 1024)
@@ -103,7 +105,7 @@ pub async fn handle_regenerate(
             };
             error!(model = %model, "requested model not found");
             if !payload.message.trim().is_empty() {
-                return error_as_saved_chat_turn(
+                return error_as_saved_chat_turn_with_service(&chat,
                     &session_context,
                     payload.set_name.as_deref(),
                     &payload.message,
@@ -128,7 +130,7 @@ pub async fn handle_regenerate(
             "unsupported provider type for regenerate"
         );
         if !payload.message.trim().is_empty() {
-            return error_as_saved_chat_turn(
+            return error_as_saved_chat_turn_with_service(&chat,
                 &session_context,
                 payload.set_name.as_deref(),
                 &payload.message,
@@ -155,7 +157,7 @@ pub async fn handle_regenerate(
         send_thoughts,
     };
 
-    let prepare = session::regenerate_prepare_leased(
+    let prepare = chat.regenerate_prepare_leased(
         &session_context,
         &request_data,
         &provider_config,
@@ -166,7 +168,7 @@ pub async fn handle_regenerate(
         match err {
             session::PrepareError::Validation(validation) => {
                 if !payload.message.trim().is_empty() {
-                    return error_as_saved_chat_turn(
+                    return error_as_saved_chat_turn_with_service(&chat,
                         &session_context,
                         payload.set_name.as_deref(),
                         &payload.message,
@@ -183,7 +185,7 @@ pub async fn handle_regenerate(
             session::PrepareError::History(history) => {
                 if !payload.message.trim().is_empty() {
                     if let Some(msg) = history.saved_error_message() {
-                        return error_as_saved_chat_turn(
+                        return error_as_saved_chat_turn_with_service(&chat,
                             &session_context,
                             payload.set_name.as_deref(),
                             &payload.message,
@@ -198,7 +200,7 @@ pub async fn handle_regenerate(
             session::PrepareError::Service(service) => {
                 if service.status == 400 && !payload.message.trim().is_empty() {
                     let msg = service_error_message(&service);
-                    return error_as_saved_chat_turn(
+                    return error_as_saved_chat_turn_with_service(&chat,
                         &session_context,
                         payload.set_name.as_deref(),
                         &payload.message,
@@ -231,7 +233,7 @@ pub async fn handle_regenerate(
         Err(err) => {
             lease.release_without_persist();
             let (setup_msg, _) = provider_error_parts(&err);
-            return error_as_saved_chat_turn(
+            return error_as_saved_chat_turn_with_service(&chat,
                 &session_context,
                 Some(context.set_name.as_str()),
                 payload.message.as_str(),
@@ -280,7 +282,7 @@ pub async fn handle_regenerate(
             error!(?err, "provider stream setup failed");
             lease.release_without_persist();
             let (req_msg, _) = provider_error_parts(&err);
-            return error_as_saved_chat_turn(
+            return error_as_saved_chat_turn_with_service(&chat,
                 &session_context,
                 Some(set_name.as_str()),
                 user_message.as_str(),

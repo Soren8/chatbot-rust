@@ -4,7 +4,7 @@ use axum::{
     http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::{
-    history::{self, HistoryError, HistoryService, SetId, SetVersion},
+    history::{self, HistoryError, SetId, SetVersion},
     session,
 };
 use serde::Deserialize;
@@ -13,7 +13,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_session_err, HttpError,
 };
-use crate::identity::RequestIdentity;
+use crate::services::AppServices;
 
 #[derive(Deserialize, Default)]
 struct ResetChatRequest {
@@ -33,7 +33,9 @@ pub async fn handle_reset_chat(
     }
 
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 256 * 1024)
@@ -74,12 +76,12 @@ pub async fn handle_reset_chat(
 
     if let Some(username) = session_context.username.as_deref() {
         if let Err(err) =
-            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
             return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
-        let history = HistoryService::global().map_err(history_error_to_http)?;
+        let history = chat.history().map_err(history_error_to_http)?;
         let set_id = if let Some(raw) = payload.set_id.as_deref().filter(|s| !s.trim().is_empty()) {
             SetId::parse(raw)
                 .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?
@@ -114,7 +116,7 @@ pub async fn handle_reset_chat(
             Err(err) => return Err(history_error_to_http(err)),
         };
 
-        if let Err(response) = session::set_session_history_for_request(
+        if let Err(response) = chat.set_session_history_for_request(
             &session_context.session_id,
             Some(username),
             Some(set_id),
@@ -136,7 +138,7 @@ pub async fn handle_reset_chat(
         );
     }
 
-    session::update_session_history(&session_context.session_id, &[]);
+    chat.update_session_history(&session_context.session_id, &[]);
     build_json_response(
         StatusCode::OK,
         json!({

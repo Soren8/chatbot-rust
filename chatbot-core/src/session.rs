@@ -8,7 +8,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, error, warn};
@@ -412,9 +412,28 @@ pub struct ChatService {
 
 struct OwnedChatDependencies {
     sessions: Arc<ChatSessionStore>,
-    history: Arc<HistoryService>,
+    history: OwnedHistory,
     account_root: PathBuf,
     verifier_secret: String,
+}
+
+/// Owned durable history: either a ready service or a lazily opened one.
+///
+/// The lazy variant opens `{data_root}/history/redb` via
+/// `HistoryService::open_with_data_dir` on first `history()` use with
+/// `get_or_try_init` retry semantics: a failed open leaves the cell empty so
+/// the next request retries instead of freezing the failure, and a missing
+/// database never fails process startup.
+enum OwnedHistory {
+    Ready(Arc<HistoryService>),
+    Lazy(LazyOwnedHistory),
+}
+
+struct LazyOwnedHistory {
+    cell: OnceCell<HistoryService>,
+    redb_path: PathBuf,
+    data_dir: PathBuf,
+    default_prompt: String,
 }
 
 impl ChatService {
@@ -430,7 +449,43 @@ impl ChatService {
         Self {
             owned: Some(Arc::new(OwnedChatDependencies {
                 sessions,
-                history,
+                history: OwnedHistory::Ready(history),
+                account_root,
+                verifier_secret,
+            })),
+        }
+    }
+
+    /// Owned construction with lazily opened durable history.
+    ///
+    /// `data_root` is the host data dir containing `history/redb` plus the
+    /// legacy `user_sets/` migration tree; `account_root` is the explicit
+    /// account store root (same `HOST_DATA_DIR` semantics as `UserStore::new`
+    /// when both are the production host dir, separate temp roots in tests).
+    /// `verifier_secret` is the explicit HMAC secret (production
+    /// `secret_key`). Constructing this touches neither config nor any store;
+    /// the first `history()` call opens via
+    /// `HistoryService::open_with_data_dir` with `get_or_try_init` retry, so a
+    /// database failure is fallible per request and never fatal at startup,
+    /// and the same database file is never opened twice by this service.
+    /// The history default prompt is taken from `sessions.default_prompt()`.
+    pub fn with_storage(
+        sessions: Arc<ChatSessionStore>,
+        data_root: PathBuf,
+        account_root: PathBuf,
+        verifier_secret: String,
+    ) -> Self {
+        let default_prompt = sessions.default_prompt().to_owned();
+        let redb_path = data_root.join("history").join("redb");
+        Self {
+            owned: Some(Arc::new(OwnedChatDependencies {
+                sessions,
+                history: OwnedHistory::Lazy(LazyOwnedHistory {
+                    cell: OnceCell::new(),
+                    redb_path,
+                    data_dir: data_root,
+                    default_prompt,
+                }),
                 account_root,
                 verifier_secret,
             })),
@@ -458,7 +513,16 @@ impl ChatService {
     /// service lazily for server composition.
     pub fn history(&self) -> Result<&HistoryService, HistoryError> {
         match &self.owned {
-            Some(deps) => Ok(deps.history.as_ref()),
+            Some(deps) => match &deps.history {
+                OwnedHistory::Ready(history) => Ok(history.as_ref()),
+                OwnedHistory::Lazy(lazy) => lazy.cell.get_or_try_init(|| {
+                    HistoryService::open_with_data_dir(
+                        &lazy.redb_path,
+                        &lazy.data_dir,
+                        lazy.default_prompt.clone(),
+                    )
+                }),
+            },
             None => HistoryService::global(),
         }
     }
@@ -1642,6 +1706,15 @@ pub fn purge_expired_sessions() -> SessionPurgeStats {
 /// Production entry point: delegates to the single process-global store.
 pub fn purge_expired_chat_sessions() -> usize {
     ChatService::global().purge_expired_chat_sessions()
+}
+
+/// Drop expired HTTP session records only, without touching chat state.
+///
+/// Production entry point: delegates to the single process-global HTTP store.
+/// Composed servers purge their owned HTTP store plus their owned chat
+/// service separately so an owned router never initializes the global stores.
+pub fn purge_expired_http_sessions() -> usize {
+    crate::session_identity::purge_expired_http_sessions()
 }
 
 /// Production entry point: delegates to the single process-global store.

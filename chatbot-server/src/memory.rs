@@ -12,8 +12,9 @@ use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, HttpError,
 };
-use crate::identity::RequestIdentity;
 use crate::request_context::{extract_cookie, extract_csrf};
+use crate::services::AppServices;
+use crate::identity::RequestIdentity;
 
 /// Memory / system-prompt updates (no image payloads).
 const MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
@@ -76,7 +77,9 @@ pub async fn handle_update_memory(
 ) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
@@ -114,12 +117,12 @@ pub async fn handle_update_memory(
 
     if let Some(username) = session.username.as_deref() {
         if let Err(err) =
-            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
             return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
-        let history = HistoryService::global().map_err(history_error_to_tuple)?;
+        let history = chat.history().map_err(history_error_to_tuple)?;
         let snap = resolve_set(
             &history,
             username,
@@ -143,7 +146,7 @@ pub async fn handle_update_memory(
             Err(err) => return Err(history_error_to_tuple(err)),
         };
 
-        if let Err(response) = session::update_session_memory_for_request(
+        if let Err(response) = chat.update_session_memory_for_request(
             &session.session_id,
             username,
             snap.set_id,
@@ -164,7 +167,7 @@ pub async fn handle_update_memory(
             }),
         )
     } else {
-        session::update_session_memory(&session.session_id, &memory_text);
+        chat.update_session_memory(&session.session_id, &memory_text);
 
         build_json_response(
             StatusCode::OK,
@@ -182,7 +185,9 @@ pub async fn handle_update_system_prompt(
 ) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_BODY_SIZE)
@@ -227,12 +232,12 @@ pub async fn handle_update_system_prompt(
 
     if let Some(username) = session.username.as_deref() {
         if let Err(err) =
-            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
             return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
-        let history = HistoryService::global().map_err(history_error_to_tuple)?;
+        let history = chat.history().map_err(history_error_to_tuple)?;
         let snap = resolve_set(
             &history,
             username,
@@ -261,7 +266,7 @@ pub async fn handle_update_system_prompt(
             Err(err) => return Err(history_error_to_tuple(err)),
         };
 
-        if let Err(response) = session::update_session_system_prompt_for_request(
+        if let Err(response) = chat.update_session_system_prompt_for_request(
             &session.session_id,
             username,
             snap.set_id,
@@ -282,7 +287,7 @@ pub async fn handle_update_system_prompt(
             }),
         )
     } else {
-        session::update_session_system_prompt(&session.session_id, &system_prompt);
+        chat.update_session_system_prompt(&session.session_id, &system_prompt);
 
         build_json_response(
             StatusCode::OK,
@@ -300,7 +305,9 @@ pub async fn handle_delete_message(
 ) -> Result<Response<Body>, HttpError> {
     ensure_post(&request)?;
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, MAX_DELETE_BODY_SIZE)
@@ -348,12 +355,12 @@ pub async fn handle_delete_message(
 
     if let Some(username) = session.username.as_deref() {
         if let Err(err) =
-            session::validate_encryption_key_for_user(username, encryption_key.as_ref())
+            chat.validate_encryption_key_for_user(username, encryption_key.as_ref())
         {
             return Err(map_encryption_key_validation_err(err));
         }
         let key = encryption_key.as_ref().expect("validated encryption key");
-        let history_svc = HistoryService::global().map_err(history_error_to_tuple)?;
+        let history_svc = chat.history().map_err(history_error_to_tuple)?;
         // Prefer set_id + expected_version from the client so we do not decrypt the full
         // multi-MB set twice (once to resolve, once inside delete_pair).
         let set_id = if let Some(raw) = payload.set_id.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -389,7 +396,7 @@ pub async fn handle_delete_message(
             Ok(version) => {
                 // Authed history SoT is redb; session seal no longer stores history.
                 // Keep active set_id aligned without cloning multi-MB remaining pairs.
-                if let Err(response) = session::set_session_history_for_request(
+                if let Err(response) = chat.set_session_history_for_request(
                     &session.session_id,
                     Some(username),
                     Some(set_id),
@@ -429,7 +436,7 @@ pub async fn handle_delete_message(
         }
     }
 
-    let mut history = session::session_history(&session.session_id);
+    let mut history = chat.session_history(&session.session_id);
     if pair_index >= history.len() {
         return build_json_response(
             StatusCode::NOT_FOUND,
@@ -444,7 +451,7 @@ pub async fn handle_delete_message(
         );
     }
     history.remove(pair_index);
-    session::update_session_history(&session.session_id, &history);
+    chat.update_session_history(&session.session_id, &history);
     build_json_response(StatusCode::OK, json!({"status": "success"}))
 }
 
