@@ -122,11 +122,30 @@ impl PrepareValidationError {
     }
 }
 
-/// Transitional prepare outcome: pure validation failures are typed, every
-/// other failure stays a carried service response.
+/// Policy gates evaluated during prepare (generation lock, model tier).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparePolicyError {
+    Busy,
+    PremiumRequired,
+}
+
+impl PreparePolicyError {
+    pub fn message(&self) -> &'static str {
+        match self {
+            PreparePolicyError::Busy => {
+                "A response is currently being generated. Please wait and try again."
+            }
+            PreparePolicyError::PremiumRequired => "This model requires a Premium account",
+        }
+    }
+}
+
+/// Transitional prepare outcome: pure validation and policy failures are
+/// typed, every other failure stays a carried service response.
 #[derive(Debug, Clone)]
 pub enum PrepareError {
     Validation(PrepareValidationError),
+    Policy(PreparePolicyError),
     Service(ServiceResponse),
 }
 
@@ -456,7 +475,7 @@ fn initialise_session_data(
 fn ensure_model_allowed(
     provider: &ProviderConfig,
     username: Option<&str>,
-) -> Result<(), ServiceResponse> {
+) -> Result<(), PrepareError> {
     let tier = provider
         .tier
         .as_deref()
@@ -467,7 +486,7 @@ fn ensure_model_allowed(
     }
 
     let Some(username) = username else {
-        return Err(forbidden("This model requires a Premium account"));
+        return Err(PrepareError::Policy(PreparePolicyError::PremiumRequired));
     };
 
     let user_store =
@@ -477,7 +496,7 @@ fn ensure_model_allowed(
         .map_err(|err| map_store_error("failed to resolve user tier", &err))?;
 
     if !user_tier.eq_ignore_ascii_case("premium") {
-        return Err(forbidden("This model requires a Premium account"));
+        return Err(PrepareError::Policy(PreparePolicyError::PremiumRequired));
     }
 
     Ok(())
@@ -556,12 +575,7 @@ pub fn chat_prepare(
     if !entry.try_lock() {
         return ChatPrepareResult {
             context: None,
-            error: Some(PrepareError::Service(build_json_response(
-                429,
-                json!({
-                    "error": "A response is currently being generated. Please wait and try again."
-                }),
-            ))),
+            error: Some(PrepareError::Policy(PreparePolicyError::Busy)),
         };
     }
 
@@ -910,12 +924,7 @@ pub fn regenerate_prepare(
         return RegeneratePrepareResult {
             context: None,
             insertion_index: None,
-            error: Some(PrepareError::Service(build_json_response(
-                429,
-                json!({
-                    "error": "A response is currently being generated. Please wait and try again."
-                }),
-            ))),
+            error: Some(PrepareError::Policy(PreparePolicyError::Busy)),
         };
     }
 

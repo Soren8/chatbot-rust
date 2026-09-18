@@ -12,6 +12,8 @@ Prompt packing in `chatbot-core::chat::prepare_prompt_messages` uses borrowed `P
 
 Chat/regenerate preparation exposes typed `PrepareValidationError` values through `PrepareError::Validation`; other failures use a transitional `Service(ServiceResponse)` carrier. HTTP handlers retain the nonempty-message saved error-turn path and map raw validation failures in `http_error.rs`.
 
+Generation contention and premium-model rejection use `PrepareError::Policy(PreparePolicyError)`. The server maps these to direct 429/403 JSON responses without saving an error turn or adding error instrumentation.
+
 Core encryption-key validation returns `EncryptionKeyValidationError` (`Missing`, `Invalid`, `StoreUnavailable`). Direct HTTP consumers map it in `chatbot-server/src/http_error.rs`; session orchestration retains a `ServiceResponse` adapter in `require_encryption_key`.
 
 Encryption-key HTTP transport helpers live in `chatbot-server/src/enc_key_cookies.rs`: header/account/generic cookie selection, cookie construction and verified account-cookie promotion. `chat_utils` retains compatibility re-exports for current callers.

@@ -23,8 +23,8 @@ use crate::chat_utils::{
     StreamCompletionGuard,
 };
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_prepare_validation_err,
-    map_response_build_err, map_session_err, HttpError,
+    api_error, map_body_read_err, map_json_parse_err, map_prepare_policy_err,
+    map_prepare_validation_err, map_response_build_err, map_session_err, HttpError,
 };
 use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
 
@@ -172,6 +172,9 @@ pub async fn handle_regenerate(
                     );
                 }
                 return Err(map_prepare_validation_err(&validation));
+            }
+            session::PrepareError::Policy(policy) => {
+                return Err(map_prepare_policy_err(&policy));
             }
             session::PrepareError::Service(service) => {
                 if service.status == 400 && !payload.message.trim().is_empty() {

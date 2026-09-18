@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 016 adds `chatbot-server/tests/prepare_policy_boundary.rs` (317 tracked paths). Primary reviewed core policy errors, both handler arms, the HTTP mapper and nine new route tests; baseline/final full suites passed.
+
 Baseline: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3` (2026-09-16). This is a scoped review ledger, not a test coverage measurement.
 
 Session 001 inventory verification assigned all 288 baseline tracked paths, plus the four new review records, to 35 units with no unassigned paths. Assignment is inventory completeness, not review completion.

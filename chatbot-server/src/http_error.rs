@@ -1,7 +1,9 @@
 use axum::{http::StatusCode, Json};
 use chatbot_core::{
     history::HistoryError,
-    session::{EncryptionKeyValidationError, PrepareValidationError, SessionError},
+    session::{
+        EncryptionKeyValidationError, PreparePolicyError, PrepareValidationError, SessionError,
+    },
     user_store::UserStoreError,
 };
 use serde_json::{json, Value};
@@ -92,6 +94,22 @@ pub fn map_encryption_key_validation_err(err: EncryptionKeyValidationError) -> H
 /// this mapper must not be invoked on that branch.
 pub fn map_prepare_validation_err(err: &PrepareValidationError) -> HttpError {
     api_error_json(StatusCode::BAD_REQUEST, json!({ "error": err.message() }))
+}
+
+/// Map a prepare policy failure to its exact 429/403 JSON error.
+///
+/// This mapper adds no logging and records no error counter; policy
+/// rejections are expected client-visible gates, not server failures.
+pub fn map_prepare_policy_err(err: &PreparePolicyError) -> HttpError {
+    match err {
+        PreparePolicyError::Busy => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": err.message() })),
+        ),
+        PreparePolicyError::PremiumRequired => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": err.message() })))
+        }
+    }
 }
 
 pub fn map_body_read_err(err: impl std::fmt::Debug, context: &'static str) -> HttpError {

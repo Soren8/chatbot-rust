@@ -1,5 +1,7 @@
 # Findings
 
+Session 016 further narrows MOD-001: generation contention and premium access rejection are typed core outcomes with server-owned 429/403 rendering. Nine new before/after route tests and the full suite pass; history/storage and other `ServiceResponse` carriers remain open.
+
 Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. No finding below is approved for implementation, fixed, or dynamically reproduced. Structural findings are based on inspected source; cross-pass leads explicitly retain uncertainty.
 
 The continued modularity review is in [modularity.md](modularity.md): MOD-003 through MOD-017, extensions to MOD-001/MOD-002, and separately labeled correctness/security/testing/documentation follow-ups. Review coverage and execution limits are in [coverage.md](coverage.md). IDs are global across these records.

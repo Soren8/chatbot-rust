@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 015 — HTTP identity ownership](#session-015--http-identity-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 016 — prepare policy errors](#session-016--prepare-policy-errors-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: thirteen committed batches through session 015. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: fourteen committed batches through session 016. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -220,3 +220,11 @@ Six new lifecycle characterization tests passed before and after extraction thro
 Command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline `20260918T014810-c8c009c7bdbc`; final `20260918T015409-61aad3c42477`, both passed. Logs: `temp/test-logs/modularity-mod002-identity-{baseline,final}.log`; initial compile failure `20260918T014643-497ad3303a55` is preserved in `modularity-mod002-identity-baseline-compilefail.log`. Only comments/documentation changed after final.
 
 Local commit title: `Separate HTTP session identity from chat orchestration`, based on `f664908`. Thirteen batches are complete; MOD-002 remains open for broader orchestration boundaries, and MOD-003 still covers global service composition. Phase 1 and its main-model read-only completion review remain pending; phases 2–7 are unstarted. Host webserver rebuild/restart is required to deploy.
+
+## Session 016 — prepare policy errors, 2026-09-18
+
+MOD-001 partial remediation: core prepare emits typed `PreparePolicyError::{Busy, PremiumRequired}`; the server renders the exact 429/403 JSON bodies. User-store failures retain the service carrier. Primary reviewed all production changes and new tests: lock acquisition/release, saved-400 handling and logging/counter behavior are unchanged.
+
+Nine new serialized route characterization tests cover both busy routes, guest rejection, authenticated free-user rejection, premium success and lock reuse following rejection. They passed against the original implementation before extraction and unchanged afterward. Existing tests were untouched; provider-config validation passed. Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline job `20260918T021259-87f815022547`; final `20260918T021924-d37e30d3b1fb`, both passed. Logs: `temp/test-logs/modularity-mod001-policy-{baseline,final}.log`. Only documentation/comments changed after final.
+
+Local commit title: `Return typed prepare policy errors`, based on `711c9ed`. Fourteen batches complete; broader core response removal and lifecycle ownership remain open. Phase 1 completion review is pending; phases 2–7 remain unstarted.
