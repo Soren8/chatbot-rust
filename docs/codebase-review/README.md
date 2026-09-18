@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 014 — request-transport ownership](#session-014--request-transport-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 015 — HTTP identity ownership](#session-015--http-identity-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twelve committed batches through session 014. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: thirteen committed batches through session 015. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -208,3 +208,15 @@ Existing IP/CSRF/authentication tests passed before extraction. Eighteen new pos
 Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline `20260918T012122-4fd4dcdfb195`, extraction final `20260918T012843-718960cb230a`, and reviewed final `20260918T013542-d4bd42b45480` all passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod008-request-{baseline,final,reviewed-final}.log`. The new tests were added after the baseline. Only documentation changed after reviewed final.
 
 Local commit title: `Consolidate request transport extraction`, based on `e677bc8`. Twelve batches are complete; phase 1 remains in progress. Remaining work includes broader session/service composition, generation lifetime, history representation and browser/native voice ownership. Resolve or explicitly disposition remaining structural findings before the main-model read-only completion review; phases 2–7 remain unstarted. Host webserver rebuild/restart is required to deploy.
+
+## Session 015 — HTTP identity ownership, 2026-09-18
+
+MOD-002 partial remediation: `chatbot-core/src/session_identity.rs` owns the HTTP identity store, DTOs, cookie/token helpers, CSRF validation, bootstrap/context lookup, rate-limit identity and login/logout rotation. `session.rs` re-exports the public API; it retains chat state, generation locks, prepare/finalize/persistence and the combined purge entry point. A crate-visible HTTP purge hook composes the two stores, and the guest-prefix constant is crate-visible for the existing chat cipher gate. Public callers and existing tests require no migration.
+
+Primary reviewed the full removed/moved blocks and purge composition: HTTP minimum-60-second timeout, raw chat timeout, singleton initialization, lock order, cookie flags and identity creation/lookup semantics are preserved. The unknown-cookie rate-limit identity fallback is unchanged; SEC-002 remains separately tracked. Expiry itself has no new clock-controlled test; preservation is supported by source review and existing integration coverage.
+
+Six new lifecycle characterization tests passed before and after extraction through the existing `session::` API: guest bootstrap/cookie shape, stable reuse, CSRF rejection/match, login rotation, logout rotation and noncreating rate-limit identity. They serialize their shared workspace state. A new-test compile error using equality on `SessionError` was fixed before the green baseline; existing tests were unchanged. Provider-config validation and the full suite pass.
+
+Command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline `20260918T014810-c8c009c7bdbc`; final `20260918T015409-61aad3c42477`, both passed. Logs: `temp/test-logs/modularity-mod002-identity-{baseline,final}.log`; initial compile failure `20260918T014643-497ad3303a55` is preserved in `modularity-mod002-identity-baseline-compilefail.log`. Only comments/documentation changed after final.
+
+Local commit title: `Separate HTTP session identity from chat orchestration`, based on `f664908`. Thirteen batches are complete; MOD-002 remains open for broader orchestration boundaries, and MOD-003 still covers global service composition. Phase 1 and its main-model read-only completion review remain pending; phases 2–7 are unstarted. Host webserver rebuild/restart is required to deploy.

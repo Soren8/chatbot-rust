@@ -12,4 +12,5 @@ pub mod persistence;
 pub mod rate_limit;
 pub mod remember_store;
 pub mod session;
+pub mod session_identity;
 pub mod user_store;

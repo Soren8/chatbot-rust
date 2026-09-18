@@ -26,6 +26,8 @@ The continued modularity review is in [modularity.md](modularity.md): MOD-003 th
 
 ## MOD-002 — Session module mixes identity lifecycle with chat application orchestration
 
+**Further partial remediation (session 015):** HTTP identity store, lifecycle and DTOs moved to `session_identity.rs`; compatibility re-exports and the combined purge entry point remain in `session.rs`. Six new lifecycle tests passed before and after the verbatim move, along with the full suite. Chat orchestration and global service composition remain open; expiry and generation-lock semantics are unchanged.
+
 **Partial remediation (session 013):** prompt packing accepts a small borrowed `PromptInput` rather than reading `ChatContext`. The public session-context wrapper remains for compatibility and resolves provider defaults. Seven new boundary tests and the full suite pass; existing prompt tests supplied the pre-extraction baseline. Session identity, lifecycle and orchestration separation remain open.
 
 **Disposition:** confirmed. **Priority:** P2. **Confidence:** high for mixed responsibilities; final extraction boundaries pending. **Units:** C02, R01, S01.

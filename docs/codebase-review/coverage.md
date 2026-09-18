@@ -169,6 +169,8 @@ Modularity coverage for S01, S04 and T02 was stale during implementation and was
 
 ## Session 008 remediation coverage
 
+Session 015 adds `chatbot-core/src/session_identity.rs` and `chatbot-server/tests/session_identity_boundary.rs` (316 tracked paths). Primary reviewed the complete identity move, public re-exports, guest-prefix dependency and purge composition. Six new tests and the full suite passed before/after extraction; clock-controlled expiry testing was not added.
+
 Session 014 adds `chatbot-server/src/request_context.rs` and `chatbot-server/tests/request_context_boundary.rs` (314 tracked paths). Primary reviewed all migrated transport call sites and 18 new tests. Existing IP/CSRF/authentication coverage passed before extraction; reviewed final full suite passed after test-fixture serialization.
 
 Session 013 adds `chatbot-core/tests/prompt_input_boundary.rs` (312 tracked paths). Primary reviewed the prompt algorithm extraction, borrowed inputs, default-size adapter and seven new tests. Existing prompt tests passed before extraction; new API tests and full suite passed afterward. Session lifecycle remains outside this batch.

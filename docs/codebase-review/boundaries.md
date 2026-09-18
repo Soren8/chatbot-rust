@@ -88,6 +88,8 @@ POST `/tts` calls private `tts::text::sanitize_text` before token insertion. Tha
 
 ## Session 008 — remediated message-ownership boundary
 
+Session 015 separates HTTP identity ownership into core `session_identity.rs`. Chat orchestration retains its separate store and composes purge counts via a crate-visible identity hook. Public `session::` compatibility paths remain; the module split does not alter singleton lifetimes or authorize unknown cookies.
+
 Session 014 gives raw Cookie/CSRF/IP extraction a shared request-transport owner. This module performs no session lookup or authorization; handlers preserve their distinct creating/non-creating identity calls and CSRF rules. Borrowed rate-limit cookie access and forwarding-header precedence are retained.
 
 Session 013 introduces a borrowed prompt-packing input that excludes identity, encryption, provider credentials and generation capture. The algorithm consumes this value; the compatibility wrapper still accepts `ChatContext` and supplies the provider context-size default. No new storage or lifetime ownership is introduced.
