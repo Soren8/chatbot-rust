@@ -1099,6 +1099,7 @@ fn desktop_play_tts_shared_voice_state_is_top_level() {
 #[test]
 fn voice_http_retries_stt_and_tts_on_spotty_links() {
     let chat_js = include_str!("../../static/chat.js");
+    let session_js = include_str!("../../static/session-client.js");
     let tts = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
     );
@@ -1109,7 +1110,7 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
         "STT uploads must use the progress-reporting XHR helper (uplink metrics) and TTS fetches must retry transient failures on desktop and mobile"
     );
     let stt_post =
-        function_body(chat_js, "postVoiceSttXhr").expect("postVoiceSttXhr must be declared");
+        function_body(session_js, "postVoiceSttXhr").expect("postVoiceSttXhr must be declared");
     assert!(
         stt_post.contains("xhr.upload.onprogress") && stt_post.contains("upMs"),
         "the STT XHR helper must time the true uplink from progress events"
@@ -1305,9 +1306,9 @@ fn desktop_tts_discovery_survives_sanitize_shrink_of_consumed_prefix() {
 /// AbortError. A stalled spotty-link request must retry; a user stop must not.
 #[test]
 fn voice_http_retry_retries_stalled_requests_not_user_aborts() {
-    let chat_js = include_str!("../../static/chat.js");
+    let session_js = include_str!("../../static/session-client.js");
     let retry =
-        function_body(chat_js, "fetchVoiceRetry").expect("fetchVoiceRetry must be declared");
+        function_body(session_js, "fetchVoiceRetry").expect("fetchVoiceRetry must be declared");
     assert!(
         retry.contains("userAborted"),
         "the retry loop must distinguish its own stall timeout from a user abort"

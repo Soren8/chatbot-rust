@@ -1,5 +1,11 @@
 # Review coverage
 
+Session 035 adds `static/session-client.js`, `chatbot-server/tests/session_client.rs` and `chatbot-server/tests/fixtures/session_client_test.js` (W01/T02). Primary reviewed explicit DOM callbacks, the single shared bootstrap, the one allowlist, preserved exceptions and all ten tests. Combined failure `...160718Z` then green `...161552Z` (job `20260918T161553-07dfccaf81ee`). Commit `Extract owned browser session client` pending.
+
+Session 034 adds `chatbot-core/tests/mutation_mirror_boundary.rs` (T01) and `chatbot-server/tests/mutation_mirror_boundary.rs` (T02). Primary reviewed core durable-then-mirror order, typed outputs, preserved seal-error/401 behavior and all twenty tests. Combined failures `...155319Z`/`...160028Z` then green `...161552Z`. Committed as `ca4fd8f`.
+
+Session 033 adds `chatbot-cuda/src/settings.py`, `chatbot-cuda/src/service.py`, `chatbot-cuda/tests/` and `chatbot-server/tests/voice_service_lifecycle.rs` (G01/T02). Primary reviewed raw-YAML settings, lifespan-owned inference, the shipped-app route fix and all thirty-eight Python tests. Voice-only failures `...154500Z`/`...162000Z`, voice-only green `152039` superseded by combined green `...161552Z`. Committed as `c3d4cdd`. No GPU/device/deploy coverage claimed.
+
 Session 032 adds the importable browser conversation state and its Node behavior fixture. Primary reviewed production adapters, request abort ordering, history/version transitions, and TTS fixture migrations. Reviewed full suite `20260918T144643-e8f88bd1db7d` passed. Rendering, browser voice coordination, and real-device lifecycles remain outside this extracted owner.
 
 Session 031 adds `chatbot-server/tests/data_request_context_boundary.rs`. Primary reviewed all adapter callers, borrowed verified context and 14 new tests. Full reviewed suite passed. Preferences ordering is preserved by leaving its handler unchanged; its test asserts guest/authenticated response policy, not lookup counts.

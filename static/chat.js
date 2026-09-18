@@ -216,52 +216,26 @@ if (window.EncKey && window.EncKey.purgeNonRememberedSlots && (!window.APP_DATA 
   }
 })();
 
-const SESSION_EXPIRED_SEND_MSG =
-  'Session expired or unauthorized. Your message was not sent — it is still in the input box.';
+// HTTP/session client (static/session-client.js): single owner of fetch
+// bootstrap, CSRF refresh, 401 retry, generate retry and voice HTTP helpers.
+// Chat keeps DOM callbacks (location, CSRF meta, login state) here.
+const SESSION_EXPIRED_SEND_MSG = ChatSessionClient.SESSION_EXPIRED_SEND_MSG;
+
+var sessionClient = ChatSessionClient.createSessionClient({
+  getLoggedIn: function () { return !!(window.APP_DATA && window.APP_DATA.loggedIn); },
+  getCsrfToken: function () { return window.CSRF_TOKEN; },
+  setCsrfToken: function (token) {
+    window.CSRF_TOKEN = token;
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) meta.setAttribute('content', token);
+  },
+  redirectHome: function () { window.location.href = '/'; }
+});
+sessionClient.installFetchInterceptor();
 
 function redirectHomeOnAuthFailure() {
-  if (window.APP_DATA && window.APP_DATA.loggedIn) {
-    return false;
-  }
-  window.location.href = '/';
-  return true;
+  return sessionClient.redirectHomeOnAuthFailure();
 }
-
-const originalFetch = window.fetch;
-window.fetch = function(input, init) {
-  return originalFetch.apply(this, arguments).then(response => {
-    if (response.status === 401) {
-      let url = input;
-      if (input instanceof Request) {
-        url = input.url;
-      }
-      if (typeof url === 'string' && (
-        url.includes('/chat') ||
-        url.includes('/regenerate') ||
-        url.includes('/get_sets') ||
-        url.includes('/load_set') ||
-        url.includes('/create_set') ||
-        url.includes('/fork_set') ||
-        url.includes('/delete_set') ||
-        url.includes('/rename_set') ||
-        url.includes('/update_memory') ||
-        url.includes('/update_system_prompt') ||
-        url.includes('/update_preferences') ||
-        url.includes('/delete_message') ||
-        url.includes('/reset_chat') ||
-        url.includes('/history_pair') ||
-        url.includes('/history_image')
-      )) {
-        return response;
-      }
-      if (!redirectHomeOnAuthFailure()) {
-        return response;
-      }
-      throw new Error('Session expired');
-    }
-    return response;
-  });
-};
 
 try {
   var appRoot = document.getElementById('app-root');
@@ -276,81 +250,16 @@ try {
   }
 } catch (e) { /* no-op */ }
 
-// Silent session restore after a server restart: bootstrap a fresh guest
-// session (GET /login) for a CSRF token the dead page cannot produce,
-// exchange the HttpOnly remember cookie (POST /login/remember), then adopt
-// the restored session's CSRF token so same-page requests keep validating.
-// Concurrent callers share one attempt. Resolves to a boolean.
-var sessionRefreshPromise = null;
+// Session bootstrap lives in the owned client (single shared attempt,
+// guest bypass, error recovery). Chat keeps only the thin adapter.
 function refreshSession() {
-  if (!window.APP_DATA || !window.APP_DATA.loggedIn) {
-    return Promise.resolve(false);
-  }
-  if (sessionRefreshPromise) {
-    return sessionRefreshPromise;
-  }
-  sessionRefreshPromise = originalFetch('/login')
-    .then(function (resp) {
-      if (!resp.ok) {
-        throw new Error('session bootstrap failed');
-      }
-      return resp.text();
-    })
-    .then(function (html) {
-      var match = html.match(/name="csrf_token" value="([^"]+)"/);
-      if (!match) {
-        throw new Error('csrf token not found');
-      }
-      return originalFetch('/login/remember', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'csrf_token=' + encodeURIComponent(match[1]),
-      });
-    })
-    .then(function (resp) {
-      if (!resp.ok) {
-        return false;
-      }
-      return resp.json().then(function (data) {
-        if (data && data.csrf_token) {
-          window.CSRF_TOKEN = data.csrf_token;
-          var meta = document.querySelector('meta[name="csrf-token"]');
-          if (meta) {
-            meta.setAttribute('content', data.csrf_token);
-          }
-          return true;
-        }
-        return false;
-      });
-    })
-    .catch(function () {
-      return false;
-    });
-  sessionRefreshPromise.finally(function () { sessionRefreshPromise = null; });
-  return sessionRefreshPromise;
+  return sessionClient.refreshSession();
 }
 
 // Rebuild a cached fetch init's X-CSRF-Token header after a session
 // refresh (headers were snapshotted by withCsrf at call time).
 function refreshCsrfInit(init) {
-  if (!init || !init.headers || !window.CSRF_TOKEN) {
-    return init;
-  }
-  var fresh = Object.assign({}, init);
-  var copy;
-  if (typeof Headers !== 'undefined' && init.headers instanceof Headers) {
-    copy = {};
-    init.headers.forEach(function (value, key) { copy[key] = value; });
-  } else {
-    copy = Object.assign({}, init.headers);
-  }
-  Object.keys(copy).forEach(function (key) {
-    if (key.toLowerCase() === 'x-csrf-token') {
-      copy[key] = window.CSRF_TOKEN;
-    }
-  });
-  fresh.headers = copy;
-  return fresh;
+  return sessionClient.refreshCsrfInit(init);
 }
 
 
@@ -370,174 +279,30 @@ function historyThumbUrl(pairIndex, imageIndex) {
   return historyImageUrl(pairIndex, imageIndex) + '?size=thumb';
 }
 
+// Voice/generate HTTP helpers live in the owned session client; chat keeps
+// thin adapters so call sites and vm fixtures keep the same names.
 function sleepMs(ms) {
-  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  return sessionClient.sleepMs(ms);
 }
 
 function isRetryableVoiceStatus(status) {
-  return status === 408 || status === 429 || status === 502 || status === 503 || status === 504
-    || status >= 500;
+  return sessionClient.isRetryableVoiceStatus(status);
 }
 
 function fetchVoiceRetry(url, buildOptions, attempts) {
-  attempts = attempts || 3;
-  function attempt(n) {
-    var options = typeof buildOptions === 'function' ? buildOptions() : (buildOptions || {});
-    var userSignal = options.signal;
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function () { controller.abort(); }, 60000);
-    var userAborted = false;
-    var onUserAbort = function () {
-      userAborted = true;
-      controller.abort();
-    };
-    if (userSignal) {
-      if (userSignal.aborted) {
-        clearTimeout(timeoutId);
-        var aborted = new Error('aborted');
-        aborted.name = 'AbortError';
-        return Promise.reject(aborted);
-      }
-      userSignal.addEventListener('abort', onUserAbort);
-    }
-    var opts = Object.assign({}, options, { signal: controller.signal });
-    return fetch(url, opts).then(function (res) {
-      if (res.ok) return res;
-      if (res.status === 401) {
-        redirectHomeOnAuthFailure();
-        throw new Error('Session expired');
-      }
-      if (n > 1 && isRetryableVoiceStatus(res.status)) {
-        return sleepMs(400 * Math.pow(2, attempts - n)).then(function () { return attempt(n - 1); });
-      }
-      throw new Error('request failed (' + res.status + ')');
-    }).catch(function (err) {
-      if (err && err.message === 'Session expired') throw err;
-      if (err && err.name === 'AbortError' && userAborted) throw err;
-      if (n <= 1) throw err;
-      return sleepMs(400 * Math.pow(2, attempts - n)).then(function () { return attempt(n - 1); });
-    }).finally(function () {
-      clearTimeout(timeoutId);
-      if (userSignal) userSignal.removeEventListener('abort', onUserAbort);
-    });
-  }
-  return attempt(attempts);
+  return sessionClient.fetchVoiceRetry(url, buildOptions, attempts);
 }
 
 function postVoiceSttXhr(url, buildOptions, attempts) {
-  attempts = attempts || 3;
-  function attempt(n) {
-    var options = typeof buildOptions === 'function' ? buildOptions() : (buildOptions || {});
-    var userSignal = options.signal;
-    return new Promise(function (resolve, reject) {
-      var settled = false;
-      function finish(fn, arg) {
-        if (!settled) {
-          settled = true;
-          fn(arg);
-        }
-      }
-      var abortErr = function () {
-        var err = new Error('aborted');
-        err.name = 'AbortError';
-        return err;
-      };
-      var xhr = new XMLHttpRequest();
-      xhr.open('POST', url, true);
-      var headers = options.headers || {};
-      Object.keys(headers).forEach(function (name) {
-        xhr.setRequestHeader(name, headers[name]);
-      });
-      xhr.timeout = 60000;
-      var tSend = Date.now();
-      var tLastProgress = 0;
-      var lastLoaded = 0;
-      xhr.upload.onprogress = function (ev) {
-        if (!ev || !ev.lengthComputable) return;
-        tLastProgress = Date.now();
-        lastLoaded = ev.loaded;
-      };
-      xhr.onload = function () {
-        var tDone = Date.now();
-        var upMs = tLastProgress > tSend ? tLastProgress - tSend : tDone - tSend;
-        var net = {
-          bytes: lastLoaded || options.bodyBytes || 0,
-          upMs: Math.max(1, Math.round(upMs))
-        };
-        if (xhr.status === 401) {
-          redirectHomeOnAuthFailure();
-          finish(reject, new Error('Session expired'));
-          return;
-        }
-        if (xhr.status >= 200 && xhr.status < 300) {
-          finish(resolve, { status: xhr.status, responseText: xhr.responseText, net: net });
-          return;
-        }
-        var err = new Error('request failed (' + xhr.status + ')');
-        err.retryableVoice = isRetryableVoiceStatus(xhr.status);
-        err.net = net;
-        finish(reject, err);
-      };
-      xhr.onerror = function () {
-        var err = new Error('network error');
-        err.retryableVoice = true;
-        finish(reject, err);
-      };
-      xhr.ontimeout = function () {
-        var err = new Error('timeout');
-        err.name = 'TimeoutError';
-        err.retryableVoice = true;
-        finish(reject, err);
-      };
-      xhr.onabort = function () {
-        finish(reject, abortErr());
-      };
-      var onUserAbort = function () {
-        try {
-          xhr.abort();
-        } catch (_) {
-          finish(reject, abortErr());
-        }
-      };
-      if (userSignal) {
-        if (userSignal.aborted) {
-          finish(reject, abortErr());
-          return;
-        }
-        userSignal.addEventListener('abort', onUserAbort);
-      }
-      try {
-        xhr.send(options.body);
-      } catch (sendErr) {
-        var serr = new Error(sendErr && sendErr.message ? sendErr.message : 'send failed');
-        serr.retryableVoice = true;
-        finish(reject, serr);
-      }
-    }).catch(function (err) {
-      if (err && (err.message === 'Session expired' || err.name === 'AbortError')) throw err;
-      if (n <= 1 || (err && err.retryableVoice === false)) throw err;
-      return sleepMs(400 * Math.pow(2, attempts - n)).then(function () {
-        return attempt(n - 1);
-      });
-    });
-  }
-  return attempt(attempts);
+  return sessionClient.postVoiceSttXhr(url, buildOptions, attempts);
 }
 
 function withCsrf(headers) {
-  var result = headers ? Object.assign({}, headers) : {};
-  if (window.CSRF_TOKEN) {
-    result['X-CSRF-Token'] = window.CSRF_TOKEN;
-  }
-  return result;
+  return sessionClient.withCsrf(headers);
 }
 
 async function withCsrfAsync(headers) {
-  var result = headers ? Object.assign({}, headers) : {};
-  if (window.CSRF_TOKEN) {
-    result['X-CSRF-Token'] = window.CSRF_TOKEN;
-  }
-  return result;
+  return sessionClient.withCsrfAsync(headers);
 }
 
 
@@ -813,42 +578,18 @@ function beginEncKeyUnlockFlow(fromUser) {
   return encKeyUnlockInFlight;
 }
 
+// 401 classification lives in the owned session client; chat keeps thin
+// adapters so call sites stay unchanged.
 async function response401Message(response) {
-  try {
-    var body = await response.clone().json();
-    return (body.error || body.message || '').toString();
-  } catch (_) {
-    return '';
-  }
+  return sessionClient.response401Message(response);
 }
 
 async function response401Kind(response) {
-  if (response.status !== 401) {
-    return null;
-  }
-  var msg = await response401Message(response);
-  if (/encryption key|unlock|invalid encryption key/i.test(msg)) {
-    return 'enc_key';
-  }
-  return 'session';
+  return sessionClient.response401Kind(response);
 }
 
 async function handle401OrRetry(response, retryFn) {
-  var kind = await response401Kind(response);
-  if (kind === 'enc_key') {
-    throw new Error(
-      (await response401Message(response)) ||
-        'Could not unlock chats. Sign out and log in with your password.'
-    );
-  }
-  if (response.status === 401) {
-    var restored = await refreshSession();
-    if (restored && retryFn) {
-      return retryFn();
-    }
-    throw new Error('Session expired. Sign out and log in again.');
-  }
-  return response;
+  return sessionClient.handle401OrRetry(response, retryFn);
 }
 
 function logoutThisComputer() {
@@ -2036,34 +1777,8 @@ function abortChatRequestQuietly() {
   chatRequests.abortQuietly();
 }
 
-function sleepMs(ms) {
-  return new Promise(function (resolve) { setTimeout(resolve, ms); });
-}
-
 function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
-  attempt = attempt || 0;
-  return fetch(url, init).then(function (res) {
-    if (res.status === 401 && !afterRefresh) {
-      return refreshSession().then(function (restored) {
-        if (!restored) {
-          redirectHomeOnAuthFailure();
-          throw new Error('Session expired');
-        }
-        return fetchWithGenerateRetry(url, refreshCsrfInit(init), attempt, true);
-      });
-    }
-    if ((res.status === 429 || (res.status === 400 && attempt < 8)) && attempt < 12) {
-      return sleepMs(200 + attempt * 150).then(function () {
-        if (init && init.signal && init.signal.aborted) {
-          const err = new Error('Aborted');
-          err.name = 'AbortError';
-          throw err;
-        }
-        return fetchWithGenerateRetry(url, init, attempt + 1, afterRefresh);
-      });
-    }
-    return res;
-  });
+  return sessionClient.fetchWithGenerateRetry(url, init, attempt, afterRefresh);
 }
 
 function setGeneratingState(isGenerating) {

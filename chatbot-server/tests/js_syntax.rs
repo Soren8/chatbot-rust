@@ -25,6 +25,10 @@ fn first_party_static_js_parses() {
         "static/conversation-state.js",
         include_str!("../../static/conversation-state.js"),
     );
+    assert_script_parses(
+        "static/session-client.js",
+        include_str!("../../static/session-client.js"),
+    );
     assert_script_parses("static/login.js", include_str!("../../static/login.js"));
     assert_script_parses(
         "static/native-audio.js",
@@ -98,14 +102,31 @@ fn login_js_does_not_use_opaque_manual_redirect() {
 
 #[test]
 fn chat_js_401_interceptor_allowlists_preference_saves() {
-    let src = include_str!("../../static/chat.js");
-    let start = src.find("window.fetch = function").expect("fetch wrap");
-    let chunk = &src[start..start.saturating_add(1800).min(src.len())];
+    // Owned client installs the global fetch wrapper routed through the single
+    // allowlist owner; chat.js delegates.
+    let unit = include_str!("../../static/session-client.js");
+    let owner = unit
+        .find("function isAuthAllowlistedUrl(")
+        .expect("allowlist owner");
+    let owner_chunk = &unit[owner..owner.saturating_add(1200).min(unit.len())];
     assert!(
-        chunk.contains("/update_preferences"),
+        owner_chunk.contains("/update_preferences"),
         "POST /update_preferences 401s without an enc-key cookie; if the fetch interceptor \
          is not allowlisted it assigns location.href = '/' and reloads the enc-key \
          gate in a loop after every logged-in load"
+    );
+    let install = unit
+        .find("function installFetchInterceptor(")
+        .expect("session client fetch wrap");
+    let install_chunk = &unit[install..install.saturating_add(1200).min(unit.len())];
+    assert!(
+        install_chunk.contains("isAuthAllowlistedUrl("),
+        "interceptor must route through the allowlist owner instead of duplicating it"
+    );
+    let chat = include_str!("../../static/chat.js");
+    assert!(
+        chat.contains("sessionClient.installFetchInterceptor()"),
+        "chat.js must delegate the global fetch wrapper to the owned session client"
     );
 }
 
@@ -130,6 +151,10 @@ fn page_js_does_not_touch_enc_key() {
     for (name, src) in [
         ("static/login.js", include_str!("../../static/login.js")),
         ("static/chat.js", include_str!("../../static/chat.js")),
+        (
+            "static/session-client.js",
+            include_str!("../../static/session-client.js"),
+        ),
     ] {
         assert!(
             !src.contains("X-Enc-Key"),
