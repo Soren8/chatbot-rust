@@ -1,7 +1,7 @@
 use axum::{http::StatusCode, Json};
 use chatbot_core::{
     history::HistoryError,
-    session::{EncryptionKeyValidationError, SessionError},
+    session::{EncryptionKeyValidationError, PrepareValidationError, SessionError},
     user_store::UserStoreError,
 };
 use serde_json::{json, Value};
@@ -81,6 +81,17 @@ pub fn map_encryption_key_validation_err(err: EncryptionKeyValidationError) -> H
             )
         }
     }
+}
+
+/// Map a pure prepare validation failure to a 400 JSON error.
+///
+/// The cause is already logged at the validation point in
+/// `chatbot_core::session`; this mapper renders the response and logs the
+/// raw 400 body. Handlers inspect `PrepareError` first: a validation failure
+/// with a nonempty user message is saved as a 200 error turn instead, so
+/// this mapper must not be invoked on that branch.
+pub fn map_prepare_validation_err(err: &PrepareValidationError) -> HttpError {
+    api_error_json(StatusCode::BAD_REQUEST, json!({ "error": err.message() }))
 }
 
 pub fn map_body_read_err(err: impl std::fmt::Debug, context: &'static str) -> HttpError {

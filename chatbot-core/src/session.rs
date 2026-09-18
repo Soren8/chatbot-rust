@@ -98,7 +98,7 @@ pub struct ChatContext {
 
 pub struct ChatPrepareResult {
     pub context: Option<ChatContext>,
-    pub error: Option<ServiceResponse>,
+    pub error: Option<PrepareError>,
 }
 
 pub struct ChatRequestData<'a> {
@@ -115,7 +115,7 @@ pub struct ChatRequestData<'a> {
 pub struct RegeneratePrepareResult {
     pub context: Option<ChatContext>,
     pub insertion_index: Option<usize>,
-    pub error: Option<ServiceResponse>,
+    pub error: Option<PrepareError>,
 }
 
 pub struct RegenerateRequestData<'a> {
@@ -128,6 +128,44 @@ pub struct RegenerateRequestData<'a> {
     pub encrypted: bool,
     pub pair_index: Option<i32>,
     pub send_thoughts: bool,
+}
+
+/// Pure prepare-time validation failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrepareValidationError {
+    MessageRequired,
+    InvalidSetName,
+    InvalidSetId,
+    PairIndexOutOfRange,
+    PairIndexRequired,
+}
+
+impl PrepareValidationError {
+    pub fn message(&self) -> &'static str {
+        match self {
+            PrepareValidationError::MessageRequired => "message is required",
+            PrepareValidationError::InvalidSetName => "invalid set name",
+            PrepareValidationError::InvalidSetId => "invalid set_id",
+            PrepareValidationError::PairIndexOutOfRange => "pair_index out of range",
+            PrepareValidationError::PairIndexRequired => {
+                "pair_index is required when message is not the last user turn"
+            }
+        }
+    }
+}
+
+/// Transitional prepare outcome: pure validation failures are typed, every
+/// other failure stays a carried service response.
+#[derive(Debug, Clone)]
+pub enum PrepareError {
+    Validation(PrepareValidationError),
+    Service(ServiceResponse),
+}
+
+impl From<ServiceResponse> for PrepareError {
+    fn from(response: ServiceResponse) -> Self {
+        PrepareError::Service(response)
+    }
 }
 
 const SESSION_COOKIE_NAME: &str = "session";
@@ -536,6 +574,11 @@ fn invalid_request(message: &str) -> ServiceResponse {
     build_json_response(400, json!({ "error": message }))
 }
 
+fn validation_failed(err: PrepareValidationError) -> PrepareError {
+    warn!(error = err.message(), "bad request");
+    PrepareError::Validation(err)
+}
+
 fn forbidden(message: &str) -> ServiceResponse {
     build_json_response(403, json!({ "error": message }))
 }
@@ -693,8 +736,9 @@ pub fn require_encryption_key<'a>(
 
 // Additional chat/regenerate logic will be implemented here.
 
-fn normalise_set_name(candidate: Option<&str>) -> Result<String, ServiceResponse> {
-    crate::history::normalise_set_name(candidate).map_err(|_| invalid_request("invalid set name"))
+fn normalise_set_name(candidate: Option<&str>) -> Result<String, PrepareError> {
+    crate::history::normalise_set_name(candidate)
+        .map_err(|_| validation_failed(PrepareValidationError::InvalidSetName))
 }
 
 fn resolve_default_prompt() -> String {
@@ -800,25 +844,27 @@ pub fn chat_prepare(
     if request.message.trim().is_empty() {
         return ChatPrepareResult {
             context: None,
-            error: Some(invalid_request("message is required")),
+            error: Some(validation_failed(
+                PrepareValidationError::MessageRequired,
+            )),
         };
     }
 
     let set_name = match normalise_set_name(request.set_name) {
         Ok(name) => name,
-        Err(response) => {
+        Err(err) => {
             return ChatPrepareResult {
                 context: None,
-                error: Some(response),
+                error: Some(err),
             }
         }
     };
     let resolved_set_id = match parse_optional_set_id(request.set_id) {
         Ok(id) => id,
-        Err(response) => {
+        Err(err) => {
             return ChatPrepareResult {
                 context: None,
-                error: Some(response),
+                error: Some(err),
             }
         }
     };
@@ -827,12 +873,12 @@ pub fn chat_prepare(
     if !entry.try_lock() {
         return ChatPrepareResult {
             context: None,
-            error: Some(build_json_response(
+            error: Some(PrepareError::Service(build_json_response(
                 429,
                 json!({
                     "error": "A response is currently being generated. Please wait and try again."
                 }),
-            )),
+            ))),
         };
     }
 
@@ -846,11 +892,11 @@ pub fn chat_prepare(
         encryption_key,
     ) {
         Ok(ctx) => ctx,
-        Err(response) => {
+        Err(err) => {
             entry.unlock();
             return ChatPrepareResult {
                 context: None,
-                error: Some(response),
+                error: Some(err),
             };
         }
     };
@@ -869,7 +915,7 @@ fn build_chat_context(
     request_set_id: Option<SetId>,
     entry: &Arc<SessionEntry>,
     encryption_key: Option<&EncryptionKey>,
-) -> Result<ChatContext, ServiceResponse> {
+) -> Result<ChatContext, PrepareError> {
     let _default_prompt = resolve_default_prompt();
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
@@ -1085,12 +1131,12 @@ pub fn chat_finalize_with_capture(
     extras
 }
 
-fn parse_optional_set_id(raw: Option<&str>) -> Result<Option<SetId>, ServiceResponse> {
+fn parse_optional_set_id(raw: Option<&str>) -> Result<Option<SetId>, PrepareError> {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(None),
         Some(s) => SetId::parse(s)
             .map(Some)
-            .map_err(|_| invalid_request("invalid set_id")),
+            .map_err(|_| validation_failed(PrepareValidationError::InvalidSetId)),
     }
 }
 
@@ -1149,27 +1195,29 @@ pub fn regenerate_prepare(
         return RegeneratePrepareResult {
             context: None,
             insertion_index: None,
-            error: Some(invalid_request("message is required")),
+            error: Some(validation_failed(
+                PrepareValidationError::MessageRequired,
+            )),
         };
     }
 
     let set_name = match normalise_set_name(request.set_name) {
         Ok(name) => name,
-        Err(response) => {
+        Err(err) => {
             return RegeneratePrepareResult {
                 context: None,
                 insertion_index: None,
-                error: Some(response),
+                error: Some(err),
             }
         }
     };
     let resolved_set_id = match parse_optional_set_id(request.set_id) {
         Ok(id) => id,
-        Err(response) => {
+        Err(err) => {
             return RegeneratePrepareResult {
                 context: None,
                 insertion_index: None,
-                error: Some(response),
+                error: Some(err),
             }
         }
     };
@@ -1179,12 +1227,12 @@ pub fn regenerate_prepare(
         return RegeneratePrepareResult {
             context: None,
             insertion_index: None,
-            error: Some(build_json_response(
+            error: Some(PrepareError::Service(build_json_response(
                 429,
                 json!({
                     "error": "A response is currently being generated. Please wait and try again."
                 }),
-            )),
+            ))),
         };
     }
 
@@ -1202,12 +1250,12 @@ pub fn regenerate_prepare(
             insertion_index,
             error: None,
         },
-        Err(response) => {
+        Err(err) => {
             entry.unlock();
             RegeneratePrepareResult {
                 context: None,
                 insertion_index: None,
-                error: Some(response),
+                error: Some(err),
             }
         }
     }
@@ -1221,7 +1269,7 @@ fn build_regenerate_context(
     request_set_id: Option<SetId>,
     entry: &Arc<SessionEntry>,
     encryption_key: Option<&EncryptionKey>,
-) -> Result<(ChatContext, Option<usize>), ServiceResponse> {
+) -> Result<(ChatContext, Option<usize>), PrepareError> {
     let mut data = entry.data.lock().unwrap();
     data.last_used = Instant::now();
 
@@ -1295,7 +1343,9 @@ fn build_regenerate_context(
                 set = %set_name,
                 "regenerate rejected: pair_index out of range"
             );
-            return Err(invalid_request("pair_index out of range"));
+            return Err(validation_failed(
+                PrepareValidationError::PairIndexOutOfRange,
+            ));
         }
         index as usize
     } else if full_history
@@ -1311,8 +1361,8 @@ fn build_regenerate_context(
             set = %set_name,
             "regenerate rejected: pair_index required (message is not the last user turn)"
         );
-        return Err(invalid_request(
-            "pair_index is required when message is not the last user turn",
+        return Err(validation_failed(
+            PrepareValidationError::PairIndexRequired,
         ));
     };
 

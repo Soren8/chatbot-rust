@@ -88,6 +88,8 @@ POST `/tts` calls private `tts::text::sanitize_text` before token insertion. Tha
 
 ## Session 008 — remediated message-ownership boundary
 
+Session 012 separates five prepare-validation categories from serialized HTTP errors. Chat/regenerate handlers own the choice between a raw 400 and a saved error turn; `PrepareError::Service` remains the compatibility boundary for other prepare failures. Lock lifetime and lookup-error behavior are unchanged.
+
 Session 011 gives encryption-key validation a typed core outcome consumed by a single server HTTP mapper. Core orchestration continues through `require_encryption_key`'s `ServiceResponse` adapter. Cause logging stays at validation, while the direct HTTP mapper preserves server-error counting and leaves response logging to middleware.
 
 Session 010 narrows the history facade to named service mutations and used types. `SetCache` and seven storage-format types are private implementation details; `SetPayloadV1` remains exported for migration compatibility. Generic snapshot commits remain available only inside the private store, not on `HistoryService`. Logical/materialized snapshot ownership is still unresolved.

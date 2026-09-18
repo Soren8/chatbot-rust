@@ -23,8 +23,8 @@ use crate::chat_utils::{
     StreamCompletionGuard,
 };
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
-    HttpError,
+    api_error, map_body_read_err, map_json_parse_err, map_prepare_validation_err,
+    map_response_build_err, map_session_err, HttpError,
 };
 use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
 
@@ -180,19 +180,36 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         encryption_key.as_ref(),
     );
 
-    if let Some(py_response) = prepare.error {
-        if py_response.status == 400 && !payload.message.trim().is_empty() {
-            let msg = service_error_message(&py_response);
-            return error_as_saved_chat_turn(
-                &session_context,
-                payload.set_name.as_deref(),
-                &payload.message,
-                &msg,
-                encryption_key.as_ref(),
-                None,
-            );
+    if let Some(err) = prepare.error {
+        match err {
+            session::PrepareError::Validation(validation) => {
+                if !payload.message.trim().is_empty() {
+                    return error_as_saved_chat_turn(
+                        &session_context,
+                        payload.set_name.as_deref(),
+                        &payload.message,
+                        validation.message(),
+                        encryption_key.as_ref(),
+                        None,
+                    );
+                }
+                return Err(map_prepare_validation_err(&validation));
+            }
+            session::PrepareError::Service(service) => {
+                if service.status == 400 && !payload.message.trim().is_empty() {
+                    let msg = service_error_message(&service);
+                    return error_as_saved_chat_turn(
+                        &session_context,
+                        payload.set_name.as_deref(),
+                        &payload.message,
+                        &msg,
+                        encryption_key.as_ref(),
+                        None,
+                    );
+                }
+                return crate::build_response(service);
+            }
         }
-        return crate::build_response(py_response);
     }
 
     let context = prepare.context.ok_or_else(|| {

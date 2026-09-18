@@ -6,6 +6,8 @@ The continued modularity review is in [modularity.md](modularity.md): MOD-003 th
 
 ## MOD-001 — Core session APIs own HTTP serialization
 
+**Further partial remediation (session 012):** five prepare-input validation categories are typed, with a server mapper and preserved saved-turn handling. `PrepareError::Service` carries remaining responses. Ten new characterization tests and the reviewed full suite pass; this does not close the broader core/HTTP coupling finding.
+
 **Partial remediation (session 011):** encryption-key validation now returns `EncryptionKeyValidationError`, with direct server callers using one HTTP mapper. Core orchestration retains `require_encryption_key`'s `ServiceResponse` compatibility adapter. Exact rejection messages, verifier behavior, logs and error counting are preserved, verified by pre-extraction HTTP characterization and the corrected full suite. Other HTTP-shaped core outcomes remain open; see the session-011 checkpoint for regression evidence.
 
 **Disposition:** confirmed. **Priority:** P2. **Confidence:** high for boundary coupling. **Units:** C02, R01, S01/S03 consumers.

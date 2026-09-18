@@ -1,14 +1,14 @@
 # Codebase review program
 
-Latest resume point: [session 011 — typed encryption-key validation](#session-011--typed-encryption-key-validation-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 012 — typed prepare validation](#session-012--typed-prepare-validation-2026-09-17). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: nine committed batches through session 011. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: ten committed batches through session 012. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
-Seven remediation batches have landed through session 009. Verified boundaries include live naming/Fernet helpers, browser stream decoding, TTS text/backend/token-store ownership, shared generation dispatch/message ownership, and encryption-key cookie transport. Remaining structural work includes typed core outcomes, session/chat separation, generation lease ownership, application-service composition, history API boundaries, broader request context, browser/native voice coordination, credential-cache interfaces, voice-service lifetimes and distribution settings. Auto support requires a contract decision. Partial findings and compatibility decisions must receive explicit dispositions before the phase-completion review; cross-pass security/correctness leads remain separately tracked.
+Verified boundaries include live naming/Fernet helpers, browser stream decoding, TTS text/backend/token-store ownership, shared generation dispatch/message ownership, encryption-key cookie transport, narrowed history APIs and typed key/prepare validation. Remaining structural work includes broader typed core outcomes, session/chat separation, generation lease ownership, application-service composition, history representations, broader request context, browser/native voice coordination, credential-cache interfaces, voice-service lifetimes and distribution settings. Auto support requires a contract decision. Partial findings and compatibility decisions must receive explicit dispositions before the phase-completion review; cross-pass security/correctness leads remain separately tracked.
 
 ## Purpose and authority
 
@@ -178,3 +178,13 @@ Five new HTTP characterization tests passed before extraction; two additional ma
 Evidence: clean baseline `20260917T224924-a885dc4da3c6`; pre-extraction characterization `20260917T225347-9b10d5a32e5f`; initial extraction `20260917T230028-fe028c782ca5` (all passed); instrumentation regression `20260917T230706-ee47aad2389d` (expected failure, counter 0 instead of 1); corrected final `20260917T230940-a5d05ec05060` (passed, exit 0, all seven new tests and provider-config validation green). Logs are `temp/test-logs/modularity-mod001-keys-{baseline,char,final,instrumentation-red,instrumentation-final}.log`. The final run supersedes the initial extraction result. Store-failure response/count mapping is tested directly; an actual failing filesystem-backed store was not injected. Primary reviewed all production adapters and the regression evidence. Only comments and documentation changed after the final run.
 
 Local commit title: `Return typed encryption-key validation errors`, based on `9b3e02a`. Next entry point: continue bounded core-outcome or generation-lease ownership work. Phase 1 and the requested main-model read-only completion review remain pending; phases 2–7 are unstarted. Rebuild/restart the webserver on the host to deploy.
+
+## Session 012 — typed prepare validation, 2026-09-17
+
+MOD-001 partial remediation: chat/regenerate preparation returns `PrepareError::Validation(PrepareValidationError)` for empty messages, invalid set names/IDs and invalid/missing regeneration pair indices. Other failures retain a transitional `Service(ServiceResponse)` carrier. HTTP consumers choose the existing saved error-turn path for nonempty messages, or a typed raw-400 mapper otherwise. Lookup failures retain their separate service-response path. Locks, finalizers, authentication and history error policies are unchanged. This changes the Rust prepare-result error type; no other in-repository consumers needed migration.
+
+Ten new router tests in `prepare_validation_boundary.rs` characterize status/content/body behavior and successful same-session regeneration after an out-of-range failure. They passed before extraction and after. Existing tests were unchanged. Primary reviewed all production diffs and tests, and requested preserving the structured raw-400 `body` log field via `api_error_json`; the log target now follows the HTTP error module. Saved-turn branches do not invoke that mapper. The tests do not assert tracing metadata or cover expiry/recreation during generation.
+
+Full-suite command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Characterization baseline `20260917T233812-71888f6e8ee4` passed; extraction final `20260917T234712-dfb4f1a9f34f` passed after two corrected compilation failures; reviewed final `20260917T235325-bd666bc570e5` passed after the log-field adjustment. All ten new tests and provider-config validation are green. Logs: `temp/test-logs/modularity-mod001-prepare-{baseline,final,reviewed-final}.log`. Only documentation changed after the reviewed final.
+
+Local commit title: `Return typed chat preparation validation errors`, based on `8eacc78`. MOD-001 remains open for remaining service outcomes. Generation-lease work requires a dedicated disposition of ID-based release versus acquired-entry lifetime; do not silently change expiry semantics in an extraction. Phase 1 remediation and its main-model read-only completion review remain pending, with phases 2–7 unstarted. Host webserver rebuild/restart is required to deploy.
