@@ -1,5 +1,7 @@
 # Findings
 
+Session 017 further narrows MOD-001: prepare-time history errors are typed, including minimal conflict metadata and the prepare-specific missing-set classification. Eight new route/mapper tests pass; primary corrected raw-400 logging-field parity before the final green suite. Encryption/store/init response carriers and finalizer rendering remain open.
+
 Session 016 further narrows MOD-001: generation contention and premium access rejection are typed core outcomes with server-owned 429/403 rendering. Nine new before/after route tests and the full suite pass; history/storage and other `ServiceResponse` carriers remain open.
 
 Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. No finding below is approved for implementation, fixed, or dynamically reproduced. Structural findings are based on inspected source; cross-pass leads explicitly retain uncertainty.

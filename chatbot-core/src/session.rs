@@ -140,18 +140,53 @@ impl PreparePolicyError {
     }
 }
 
-/// Transitional prepare outcome: pure validation and policy failures are
-/// typed, every other failure stays a carried service response.
+/// Typed history failures from chat/regenerate prepare.
+///
+/// Narrow cloneable projection of [`HistoryError`] for the prepare path only:
+/// `HistoryError` itself is not `Clone`, so [`PrepareError`] (which is
+/// `Clone`) cannot carry it directly. Finalize paths keep matching on
+/// `HistoryError`; other `ServiceResponse` carriers (encryption, store,
+/// session init) are unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrepareHistoryError {
+    Unauthorized,
+    NotFound,
+    Conflict { current_version: SetVersion },
+    InvalidInput(&'static str),
+    Forbidden,
+    Internal,
+}
+
+impl PrepareHistoryError {
+    /// Saved-turn message for 400 variants; other statuses map directly.
+    pub fn saved_error_message(&self) -> Option<&'static str> {
+        match self {
+            PrepareHistoryError::NotFound => Some("invalid set name"),
+            PrepareHistoryError::InvalidInput(msg) => Some(*msg),
+            _ => None,
+        }
+    }
+}
+
+/// Prepare outcome: validation, policy and history failures are typed;
+/// every other failure stays a carried service response.
 #[derive(Debug, Clone)]
 pub enum PrepareError {
     Validation(PrepareValidationError),
     Policy(PreparePolicyError),
+    History(PrepareHistoryError),
     Service(ServiceResponse),
 }
 
 impl From<ServiceResponse> for PrepareError {
     fn from(response: ServiceResponse) -> Self {
         PrepareError::Service(response)
+    }
+}
+
+impl From<PrepareHistoryError> for PrepareError {
+    fn from(err: PrepareHistoryError) -> Self {
+        PrepareError::History(err)
     }
 }
 
@@ -281,8 +316,33 @@ fn validation_failed(err: PrepareValidationError) -> PrepareError {
     PrepareError::Validation(err)
 }
 
-fn forbidden(message: &str) -> ServiceResponse {
-    build_json_response(403, json!({ "error": message }))
+fn history_not_found() -> PrepareHistoryError {
+    warn!(error = "invalid set name", "bad request");
+    PrepareHistoryError::NotFound
+}
+
+/// Log the cause at the prepare point and project `HistoryError` onto the
+/// cloneable prepare representation. Response rendering and the 500 counter
+/// belong to the server adapter.
+fn map_history_to_prepare(err: HistoryError) -> PrepareHistoryError {
+    match err {
+        HistoryError::MissingKey | HistoryError::DecryptFailed => {
+            PrepareHistoryError::Unauthorized
+        }
+        HistoryError::NotFound => history_not_found(),
+        HistoryError::Conflict { current_version } => PrepareHistoryError::Conflict {
+            current_version,
+        },
+        HistoryError::InvalidInput(msg) => {
+            warn!(error = msg, "bad request");
+            PrepareHistoryError::InvalidInput(msg)
+        }
+        HistoryError::Forbidden => PrepareHistoryError::Forbidden,
+        HistoryError::Internal => {
+            error!("history service internal error");
+            PrepareHistoryError::Internal
+        }
+    }
 }
 
 fn unauthorized(message: &str) -> ServiceResponse {
@@ -632,7 +692,7 @@ fn build_chat_context(
         if let Some(prompt) = request.system_prompt {
             if prompt != snapshot.system_prompt {
                 let new_v = HistoryService::global()
-                    .map_err(map_history_error)?
+                    .map_err(map_history_to_prepare)?
                     .update_system_prompt(
                         username,
                         snapshot.set_id,
@@ -640,7 +700,7 @@ fn build_chat_context(
                         prompt,
                         key,
                     )
-                    .map_err(map_history_error)?;
+                    .map_err(map_history_to_prepare)?;
                 snapshot.system_prompt = prompt.to_owned();
                 snapshot.version = new_v;
             }
@@ -842,40 +902,18 @@ fn load_history_snapshot(
     set_id: Option<SetId>,
     set_name: &str,
     key: &EncryptionKey,
-) -> Result<SetSnapshot, ServiceResponse> {
-    let hs = HistoryService::global().map_err(map_history_error)?;
+) -> Result<SetSnapshot, PrepareHistoryError> {
+    let hs = HistoryService::global().map_err(map_history_to_prepare)?;
     if let Some(id) = set_id {
-        return hs.load(username, id, key).map_err(map_history_error);
+        return hs.load(username, id, key).map_err(map_history_to_prepare);
     }
     match hs.find_by_display_name(username, set_name, key) {
         Ok(Some(snap)) => Ok(snap),
         Ok(None) if set_name == "default" => hs
             .ensure_default_set(username, key)
-            .map_err(map_history_error),
-        Ok(None) => Err(invalid_request("invalid set name")),
-        Err(err) => Err(map_history_error(err)),
-    }
-}
-
-fn map_history_error(err: HistoryError) -> ServiceResponse {
-    match err {
-        HistoryError::MissingKey | HistoryError::DecryptFailed => {
-            unauthorized("Encryption key required. Please unlock.")
-        }
-        HistoryError::NotFound => invalid_request("invalid set name"),
-        HistoryError::Conflict { current_version } => build_json_response(
-            409,
-            json!({
-                "error": "version_conflict",
-                "current_version": current_version.get(),
-            }),
-        ),
-        HistoryError::InvalidInput(msg) => invalid_request(msg),
-        HistoryError::Forbidden => forbidden("forbidden"),
-        HistoryError::Internal => {
-            error!("history service internal error");
-            server_error("internal error while accessing chat history")
-        }
+            .map_err(map_history_to_prepare),
+        Ok(None) => Err(history_not_found()),
+        Err(err) => Err(map_history_to_prepare(err)),
     }
 }
 
@@ -982,7 +1020,7 @@ fn build_regenerate_context(
         if let Some(prompt) = request.system_prompt {
             if prompt != snapshot.system_prompt {
                 let new_v = HistoryService::global()
-                    .map_err(map_history_error)?
+                    .map_err(map_history_to_prepare)?
                     .update_system_prompt(
                         username,
                         snapshot.set_id,
@@ -990,7 +1028,7 @@ fn build_regenerate_context(
                         prompt,
                         key,
                     )
-                    .map_err(map_history_error)?;
+                    .map_err(map_history_to_prepare)?;
                 snapshot.system_prompt = prompt.to_owned();
                 snapshot.version = new_v;
             }

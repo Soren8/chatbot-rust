@@ -14,6 +14,8 @@ Chat/regenerate preparation exposes typed `PrepareValidationError` values throug
 
 Generation contention and premium-model rejection use `PrepareError::Policy(PreparePolicyError)`. The server maps these to direct 429/403 JSON responses without saving an error turn or adding error instrumentation.
 
+Prepare-time history failures use `PrepareError::History(PrepareHistoryError)`. The server owns status/JSON mapping; missing sets retain the prepare-specific 400 classification and nonempty-message saved-error-turn handling. Other history routes keep their own 404 mapping. Core records the history cause; the server records response error counters.
+
 Core encryption-key validation returns `EncryptionKeyValidationError` (`Missing`, `Invalid`, `StoreUnavailable`). Direct HTTP consumers map it in `chatbot-server/src/http_error.rs`; session orchestration retains a `ServiceResponse` adapter in `require_encryption_key`.
 
 Encryption-key HTTP transport helpers live in `chatbot-server/src/enc_key_cookies.rs`: header/account/generic cookie selection, cookie construction and verified account-cookie promotion. `chat_utils` retains compatibility re-exports for current callers.

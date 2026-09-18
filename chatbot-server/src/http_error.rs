@@ -2,7 +2,8 @@ use axum::{http::StatusCode, Json};
 use chatbot_core::{
     history::HistoryError,
     session::{
-        EncryptionKeyValidationError, PreparePolicyError, PrepareValidationError, SessionError,
+        EncryptionKeyValidationError, PrepareHistoryError, PreparePolicyError,
+        PrepareValidationError, SessionError,
     },
     user_store::UserStoreError,
 };
@@ -108,6 +109,49 @@ pub fn map_prepare_policy_err(err: &PreparePolicyError) -> HttpError {
         ),
         PreparePolicyError::PremiumRequired => {
             (StatusCode::FORBIDDEN, Json(json!({ "error": err.message() })))
+        }
+    }
+}
+
+/// Map a typed prepare history failure to its exact JSON error.
+///
+/// Preserves the prepare-path bodies: `NotFound` stays a 400
+/// "invalid set name" (unlike the general history 404), conflict carries
+/// only `error` + `current_version`, and the 500 branch keeps the prepare
+/// message with the error counter. The cause is already logged at the
+/// prepare point in `chatbot_core::session`; 400s log the body here, and
+/// 5xx response logging belongs to the outer middleware. Handlers inspect
+/// `PrepareError` first: a 400 history failure with a nonempty user message
+/// is saved as a 200 error turn instead, so this mapper must not be invoked
+/// on that branch.
+pub fn map_prepare_history_err(err: &PrepareHistoryError) -> HttpError {
+    match err {
+        PrepareHistoryError::Unauthorized => api_error(
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.",
+        ),
+        PrepareHistoryError::NotFound => api_error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid set name" }),
+        ),
+        PrepareHistoryError::Conflict { current_version } => api_error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "version_conflict",
+                "current_version": current_version.get(),
+            }),
+        ),
+        PrepareHistoryError::InvalidInput(msg) => api_error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": msg }),
+        ),
+        PrepareHistoryError::Forbidden => api_error(StatusCode::FORBIDDEN, "forbidden"),
+        PrepareHistoryError::Internal => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing chat history" })),
+            )
         }
     }
 }

@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 016 — prepare policy errors](#session-016--prepare-policy-errors-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 017 — prepare history errors](#session-017--prepare-history-errors-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: fourteen committed batches through session 016. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: fifteen committed batches through session 017. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -228,3 +228,13 @@ MOD-001 partial remediation: core prepare emits typed `PreparePolicyError::{Busy
 Nine new serialized route characterization tests cover both busy routes, guest rejection, authenticated free-user rejection, premium success and lock reuse following rejection. They passed against the original implementation before extraction and unchanged afterward. Existing tests were untouched; provider-config validation passed. Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline job `20260918T021259-87f815022547`; final `20260918T021924-d37e30d3b1fb`, both passed. Logs: `temp/test-logs/modularity-mod001-policy-{baseline,final}.log`. Only documentation/comments changed after final.
 
 Local commit title: `Return typed prepare policy errors`, based on `711c9ed`. Fourteen batches complete; broader core response removal and lifecycle ownership remain open. Phase 1 completion review is pending; phases 2–7 remain unstarted.
+
+## Session 017 — prepare history errors, 2026-09-18
+
+MOD-001 partial remediation: typed `PrepareHistoryError` replaces history response construction during prepare. The cloneable projection retains unauthorized, missing, conflict/version, invalid-input, forbidden and internal outcomes. Both generation routes preserve saved error turns for nonempty-message 400s. Prepare missing-set remains 400 rather than the general mapper's 404; conflict retains only `error` and `current_version`. Core cause logs, server 500 instrumentation and raw-400 structured `body` logging are preserved. Key/user-store/session-init carriers and finalizer rendering remain open.
+
+Four new route characterizations passed before/after extraction: chat/regenerate missing-set saved turns, lock recovery, wrong-key raw 401 and oversized-prompt saved error. Wrong-key exercises the retained encryption gate, not history decryption. Primary added review requirements for raw-400 log-field parity and four direct mapper tests, including otherwise race-dependent conflict and internal-error counter. Existing tests were unchanged.
+
+Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline `20260918T022951-0bd17403a87f`, final `20260918T023620-e12d60e16461`, reviewed final `20260918T034644-c8beb77a06fa`: all passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod001-history-{baseline,final,reviewed-final}.log`. Reviewed final includes the parallel voice-text batch; primary reviewed the Rust diff, handler branching and all eight new tests. No claim of a deterministic route-level conflict/store-failure reproduction.
+
+Local commit title: `Return typed prepare history errors`, based on `bc140fd`. Fifteen remediation batches complete; phase 1 and its completion-review gate remain open.

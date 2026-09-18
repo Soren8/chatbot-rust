@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 017 adds `chatbot-server/tests/prepare_history_boundary.rs` (318 tracked paths). Four pre-extraction route tests plus four mapper tests pass with the full suite. Primary reviewed all prepare-history mappings and both handlers; conflict/store failure are covered at the mapper boundary, not by forced route races/fault injection.
+
 Session 016 adds `chatbot-server/tests/prepare_policy_boundary.rs` (317 tracked paths). Primary reviewed core policy errors, both handler arms, the HTTP mapper and nine new route tests; baseline/final full suites passed.
 
 Baseline: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3` (2026-09-16). This is a scoped review ledger, not a test coverage measurement.
