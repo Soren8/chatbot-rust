@@ -26,6 +26,8 @@ The continued modularity review is in [modularity.md](modularity.md): MOD-003 th
 
 ## MOD-002 — Session module mixes identity lifecycle with chat application orchestration
 
+**Partial remediation (session 013):** prompt packing accepts a small borrowed `PromptInput` rather than reading `ChatContext`. The public session-context wrapper remains for compatibility and resolves provider defaults. Seven new boundary tests and the full suite pass; existing prompt tests supplied the pre-extraction baseline. Session identity, lifecycle and orchestration separation remain open.
+
 **Disposition:** confirmed. **Priority:** P2. **Confidence:** high for mixed responsibilities; final extraction boundaries pending. **Units:** C02, R01, S01.
 
 **Evidence:** `session.rs` owns cookie parsing/building, CSRF, login/logout and HTTP-session lifetime (133–416); chat state and generation locks (418–518); key-verifier/store access and model-tier policy (633–735); chat preparation including durable prompt updates (760–938); and authenticated durable commits/guest append plus user-facing stream errors (940–1055). The same public module is used by server startup cleanup, the home handler, and chat preparation.

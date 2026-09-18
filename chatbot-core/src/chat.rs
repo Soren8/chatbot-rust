@@ -130,30 +130,41 @@ pub fn truncate_history(
     truncated
 }
 
-pub fn prepare_chat_messages(
-    context: &ChatContext,
+/// Borrowed prompt inputs for message packing.
+///
+/// `context_size` is an already-resolved concrete budget. Callers holding a
+/// `ChatContext` should use [`prepare_chat_messages`], which applies the
+/// provider default.
+#[derive(Debug, Clone, Copy)]
+pub struct PromptInput<'a> {
+    pub system_prompt: &'a str,
+    pub memory_text: &'a str,
+    pub history: &'a [(String, String)],
+    pub send_thoughts: bool,
+    pub context_size: usize,
+}
+
+pub fn prepare_prompt_messages(
+    input: &PromptInput,
     new_user_message: &str,
 ) -> PreparedChatMessages {
-    let context_size = context
-        .provider
-        .context_size
-        .unwrap_or(DEFAULT_CONTEXT_SIZE as u32) as usize;
+    let context_size = input.context_size;
 
     // Limit system prompt and memory to 20% of context size each.
     // 20% system + 20% memory + 20% buffer = 60%, leaving ~40% for history + new message
     let max_component_tokens = (context_size as f64 * 0.20) as usize;
     let max_component_chars = max_component_tokens * 4;
 
-    let system_prompt = if approximate_token_count(&context.system_prompt) > max_component_tokens as f64 {
-        take_chars(&context.system_prompt, max_component_chars)
+    let system_prompt = if approximate_token_count(input.system_prompt) > max_component_tokens as f64 {
+        take_chars(input.system_prompt, max_component_chars)
     } else {
-        context.system_prompt.clone()
+        input.system_prompt.to_owned()
     };
 
-    let memory_text = if approximate_token_count(&context.memory_text) > max_component_tokens as f64 {
-        take_chars(&context.memory_text, max_component_chars)
+    let memory_text = if approximate_token_count(input.memory_text) > max_component_tokens as f64 {
+        take_chars(input.memory_text, max_component_chars)
     } else {
-        context.memory_text.clone()
+        input.memory_text.to_owned()
     };
 
     let available_tokens = calculate_available_history_tokens(
@@ -170,10 +181,10 @@ pub fn prepare_chat_messages(
         .floor()
         .max(0.0) as usize;
 
-    let history_processed: Vec<(String, String)> = if context.send_thoughts {
-        context.history.clone()
+    let history_processed: Vec<(String, String)> = if input.send_thoughts {
+        input.history.to_vec()
     } else {
-        context
+        input
             .history
             .iter()
             .map(|(u, a)| (u.clone(), strip_think_tags(a)))
@@ -187,9 +198,9 @@ pub fn prepare_chat_messages(
 
     let truncated_history = truncate_history(&history_images, history_budget);
 
-    let original_pairs = context.history.len();
+    let original_pairs = input.history.len();
     let truncated_pairs = truncated_history.len();
-    let original_tokens = approximate_history_tokens(&context.history);
+    let original_tokens = approximate_history_tokens(input.history);
     let truncated_tokens = approximate_history_tokens(&truncated_history);
 
     if truncated_pairs < original_pairs {
@@ -237,6 +248,26 @@ pub fn prepare_chat_messages(
         original_history_tokens: original_tokens,
         truncated_history_tokens: truncated_tokens,
     }
+}
+
+/// Compatibility wrapper: resolves the provider default context size and
+/// delegates to [`prepare_prompt_messages`] without cloning history/strings.
+pub fn prepare_chat_messages(
+    context: &ChatContext,
+    new_user_message: &str,
+) -> PreparedChatMessages {
+    let context_size = context
+        .provider
+        .context_size
+        .unwrap_or(DEFAULT_CONTEXT_SIZE as u32) as usize;
+    let input = PromptInput {
+        system_prompt: &context.system_prompt,
+        memory_text: &context.memory_text,
+        history: &context.history,
+        send_thoughts: context.send_thoughts,
+        context_size,
+    };
+    prepare_prompt_messages(&input, new_user_message)
 }
 
 pub fn strip_think_tags(content: &str) -> String {

@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Prompt packing in `chatbot-core::chat::prepare_prompt_messages` uses borrowed `PromptInput` (system prompt, memory, history, context size and thoughts flag). `prepare_chat_messages` adapts the session-owned `ChatContext` and resolves the provider's default context size for existing consumers.
+
 Chat/regenerate preparation exposes typed `PrepareValidationError` values through `PrepareError::Validation`; other failures use a transitional `Service(ServiceResponse)` carrier. HTTP handlers retain the nonempty-message saved error-turn path and map raw validation failures in `http_error.rs`.
 
 Core encryption-key validation returns `EncryptionKeyValidationError` (`Missing`, `Invalid`, `StoreUnavailable`). Direct HTTP consumers map it in `chatbot-server/src/http_error.rs`; session orchestration retains a `ServiceResponse` adapter in `require_encryption_key`.

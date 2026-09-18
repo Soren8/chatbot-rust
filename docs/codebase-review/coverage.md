@@ -169,6 +169,8 @@ Modularity coverage for S01, S04 and T02 was stale during implementation and was
 
 ## Session 008 remediation coverage
 
+Session 013 adds `chatbot-core/tests/prompt_input_boundary.rs` (312 tracked paths). Primary reviewed the prompt algorithm extraction, borrowed inputs, default-size adapter and seven new tests. Existing prompt tests passed before extraction; new API tests and full suite passed afterward. Session lifecycle remains outside this batch.
+
 Session 012 adds `chatbot-server/tests/prepare_validation_boundary.rs` to T02 (311 tracked paths). Primary reviewed core prepare validation, both handlers and the HTTP mapper; ten new router tests pass before and after extraction. Broader session lifetimes and core service outcomes retain their open dispositions.
 
 Session 011 adds `chatbot-server/tests/enc_key_validation_boundary.rs` to T02 (310 tracked paths). Targeted review covers the typed validator in core session, its compatibility adapter, direct server mappings and seven new behavioral tests. Pre-extraction characterization and corrected full-suite verification passed; broader core and HTTP boundaries retain their earlier dispositions.

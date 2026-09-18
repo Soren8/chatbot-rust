@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 012 — typed prepare validation](#session-012--typed-prepare-validation-2026-09-17). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 013 — prompt-input boundary](#session-013--prompt-input-boundary-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: ten committed batches through session 012. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: eleven committed batches through session 013. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -188,3 +188,13 @@ Ten new router tests in `prepare_validation_boundary.rs` characterize status/con
 Full-suite command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Characterization baseline `20260917T233812-71888f6e8ee4` passed; extraction final `20260917T234712-dfb4f1a9f34f` passed after two corrected compilation failures; reviewed final `20260917T235325-bd666bc570e5` passed after the log-field adjustment. All ten new tests and provider-config validation are green. Logs: `temp/test-logs/modularity-mod001-prepare-{baseline,final,reviewed-final}.log`. Only documentation changed after the reviewed final.
 
 Local commit title: `Return typed chat preparation validation errors`, based on `8eacc78`. MOD-001 remains open for remaining service outcomes. Generation-lease work requires a dedicated disposition of ID-based release versus acquired-entry lifetime; do not silently change expiry semantics in an extraction. Phase 1 remediation and its main-model read-only completion review remain pending, with phases 2–7 unstarted. Host webserver rebuild/restart is required to deploy.
+
+## Session 013 — prompt-input boundary, 2026-09-18
+
+MOD-002 partial remediation: pure prompt packing now accepts borrowed `PromptInput` through `prepare_prompt_messages`. Its inputs are system prompt, memory, history, resolved context size and the thoughts flag. The existing public `prepare_chat_messages(&ChatContext, ...)` delegates without additional input cloning and retains provider-default resolution. Production callers and existing tests remain unchanged; the compatibility wrapper still imports session types, while the packing algorithm no longer consumes them. Broader session/identity/orchestration separation remains open.
+
+Existing chat tests provided the pre-extraction baseline, including memory, thoughts, truncation and image handling. Seven new post-extraction boundary tests exercise the smaller API plus explicit/default wrapper compatibility. Primary reviewed the mechanical packing changes and strengthened the new image assertion so loss of the history image cannot pass silently. A malformed image fixture in a new test was corrected during development; existing tests were not modified. The initial failed-run log was overwritten by the worker, so only its report remains for that intermediate failure.
+
+Verification: full `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust` baseline `20260918T004934-679d3f8ceba2`, extraction final `20260918T005646-e26a1428fa71`, and reviewed final `20260918T010245-e2177aad8c3b` all passed. The reviewed final includes all seven new tests and provider-config validation. Logs: `temp/test-logs/modularity-mod002-prompt-{baseline,final,reviewed-final}.log`. The baseline did not contain the new boundary tests. Only documentation changed after the reviewed final.
+
+Local commit title: `Decouple prompt packing from session context`, based on `edfa3e3`. Eleven remediation batches are complete; phase 1 remains in progress and phases 2–7 are unstarted. Next work should address another remaining ownership boundary or explicitly disposition a larger finding; the requested main-model read-only phase-completion review remains pending. Rebuild/restart the host webserver to deploy.
