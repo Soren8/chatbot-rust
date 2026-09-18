@@ -5,7 +5,7 @@ use axum::{
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_core::user_store::{normalise_username, CreateOutcome, UserStore};
+use chatbot_core::user_store::{normalise_username, CreateOutcome};
 use minijinja::{context, AutoEscape, Environment};
 use serde_urlencoded::from_bytes;
 use tracing::warn;
@@ -15,12 +15,14 @@ use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_form_parse_err, map_response_build_err,
     map_session_err, map_user_store_err, HttpError,
 };
-use crate::identity::RequestIdentity;
+use crate::services::AppServices;
 
 pub async fn handle_signup_get(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    let identity = RequestIdentity::from_extensions(request.extensions());
+    let identity = AppServices::from_extensions(request.extensions())
+        .identity()
+        .clone();
     let cookie_header = crate::request_context::extract_cookie(request.headers());
 
     let bootstrap = identity
@@ -46,7 +48,9 @@ pub async fn handle_signup_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
 
     let cookie_header = crate::request_context::extract_cookie(&headers);
@@ -94,7 +98,7 @@ pub async fn handle_signup_post(
         )
     })?;
 
-    let mut store = UserStore::new().map_err(|err| {
+    let mut store = accounts.users().map_err(|err| {
         map_user_store_err(err, "signup::post", "Unable to create user")
     })?;
 

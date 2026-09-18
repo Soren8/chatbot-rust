@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{config, remember_store, session, user_store::UserStore};
+use chatbot_core::{account_service::AccountService, config, remember_store, session};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -12,6 +12,7 @@ use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
 use crate::identity::RequestIdentity;
+use crate::services::AppServices;
 
 pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; require-trusted-types-for 'script'; trusted-types chatbot default; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
@@ -40,6 +41,7 @@ struct RestoredSession {
 /// account-selection surface.
 fn try_auto_restore(
     identity: &RequestIdentity,
+    accounts: &AccountService,
     cookie_header: Option<&str>,
     ip: &str,
 ) -> Option<RestoredSession> {
@@ -53,7 +55,7 @@ fn try_auto_restore(
         return None;
     }
 
-    let store = remember_store::RememberStore::new().ok()?;
+    let store = accounts.remember().ok()?;
     match store.resume(Some(&token)) {
         Ok(remember_store::ResumeOutcome::Authenticated {
             username,
@@ -94,7 +96,9 @@ fn try_auto_restore(
 }
 
 pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpError> {
-    let identity = RequestIdentity::from_extensions(request.extensions());
+    let services = AppServices::from_extensions(request.extensions());
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = request.headers();
     let ip = crate::request_context::get_ip(headers, request.extensions());
     let cookie_header = crate::request_context::extract_cookie(headers);
@@ -102,7 +106,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
     let request_cookies = cookie_header.clone();
     let mut restored_cookies: Vec<String> = Vec::new();
     let mut cookie_header = cookie_header;
-    if let Some(restored) = try_auto_restore(&identity, cookie_header.as_deref(), &ip) {
+    if let Some(restored) = try_auto_restore(&identity, &accounts, cookie_header.as_deref(), &ip) {
         cookie_header = Some(restored.session_cookie);
         restored_cookies.push(restored.remember_set_cookie);
         restored_cookies.push(restored.account_set_cookie);
@@ -113,14 +117,17 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         .map_err(|err| map_session_err(err, "home::get"))?;
 
     if let Some(username) = bootstrap.username.as_deref() {
-        restored_cookies.extend(crate::chat_utils::promote_enc_key_cookies(
-            request_cookies.as_deref(),
-            username,
-        ));
+        restored_cookies.extend(
+            crate::chat_utils::promote_enc_key_cookies_with_accounts(
+                request_cookies.as_deref(),
+                username,
+                &accounts,
+            ),
+        );
     }
 
     let logged_in = bootstrap.username.is_some();
-    let user_details = resolve_user_details(bootstrap.username.as_deref());
+    let user_details = resolve_user_details(&accounts, bootstrap.username.as_deref());
 
     let config = config::app_config();
     let default_prompt = config.default_system_prompt.clone();
@@ -167,10 +174,10 @@ struct UserDetails {
     voice_mode: bool,
 }
 
-fn resolve_user_details(username: Option<&str>) -> UserDetails {
+fn resolve_user_details(accounts: &AccountService, username: Option<&str>) -> UserDetails {
     match username {
         Some(name) => {
-            let store = match UserStore::new() {
+            let store = match accounts.users() {
                 Ok(store) => store,
                 Err(err) => {
                     warn!(?err, "failed to open user store when resolving details");

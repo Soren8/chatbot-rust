@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::OnceLock};
 
 use axum::{
     body::{self, Body},
-    extract::Path,
+    extract::{Extension, Path},
     http::{header, HeaderValue, Request, Response, StatusCode},
     Json,
 };
 use chatbot_core::{
-    config, remember_store,
-    user_store::{normalise_username, UserStore},
+    account_service::AccountService, config, remember_store,
+    user_store::normalise_username,
 };
 use minijinja::{context, AutoEscape, Environment};
 use serde_json::json;
@@ -20,14 +20,15 @@ use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_form_parse_err, map_response_build_err,
     map_session_err, map_user_store_err, HttpError,
 };
-use crate::identity::RequestIdentity;
+use crate::services::AppServices;
 
 const INVALID_CREDENTIALS: &str = "Invalid credentials";
 
 pub async fn handle_get_salt(
     Path(username): Path<String>,
+    Extension(services): Extension<AppServices>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
-    let store = UserStore::new().map_err(|err| {
+    let store = services.accounts().users().map_err(|err| {
         map_user_store_err(err, "login::get_salt", "Unable to log in")
     })?;
     let salt = store
@@ -39,7 +40,9 @@ pub async fn handle_get_salt(
 pub async fn handle_login_get(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    let identity = RequestIdentity::from_extensions(request.extensions());
+    let identity = AppServices::from_extensions(request.extensions())
+        .identity()
+        .clone();
     let cookie_header = crate::request_context::extract_cookie(request.headers());
 
     let bootstrap = identity
@@ -62,7 +65,9 @@ pub async fn handle_login_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
 
     let cookie_header = crate::request_context::extract_cookie(&headers);
@@ -104,7 +109,7 @@ pub async fn handle_login_post(
         Err(_) => return invalid_credentials(),
     };
 
-    let store = UserStore::new().map_err(|err| {
+    let store = accounts.users().map_err(|err| {
         map_user_store_err(err, "login::post", "Unable to log in")
     })?;
 
@@ -165,7 +170,7 @@ pub async fn handle_login_post(
         let account_tok = remember_store::extract_account_token(cookie_header.as_deref(), &username);
         let presented = account_tok.or_else(|| {
             let last = remember_store::extract_token(cookie_header.as_deref())?;
-            let store = remember_store::RememberStore::new().ok()?;
+            let store = accounts.remember().ok()?;
             if store.peek_username(Some(&last)).as_deref() == Some(username.as_str()) {
                 Some(last)
             } else {
@@ -173,6 +178,7 @@ pub async fn handle_login_post(
             }
         });
         match issue_remember_cookies(
+            &accounts,
             &username,
             presented.as_deref(),
         ) {
@@ -194,11 +200,11 @@ pub async fn handle_login_post(
         // Unchecked "remember this computer": revoke this account's family only.
         let last = remember_store::extract_token(cookie_header.as_deref());
         let account = remember_store::extract_account_token(cookie_header.as_deref(), &username);
-        let last_belongs = match remember_store::RememberStore::new() {
+        let last_belongs = match accounts.remember() {
             Ok(store) => store.peek_username(last.as_deref()).as_deref() == Some(username.as_str()),
             Err(_) => false,
         } || (account.is_some() && account == last);
-        if let Ok(store) = remember_store::RememberStore::new() {
+        if let Ok(store) = accounts.remember() {
             store.revoke(account.as_deref());
             if last_belongs {
                 store.revoke(last.as_deref());
@@ -274,10 +280,11 @@ fn presented_enc_key_string(
 }
 
 fn issue_remember_cookies(
+    accounts: &AccountService,
     username: &str,
     presented: Option<&str>,
 ) -> Result<Vec<String>, remember_store::RememberError> {
-    let store = remember_store::RememberStore::new()?;
+    let store = accounts.remember()?;
     let token = store.issue_or_refresh(username, presented)?;
     Ok(vec![
         remember_store::build_set_cookie(&token),
@@ -294,7 +301,9 @@ pub async fn handle_login_remember_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
     let cookie_header = crate::request_context::extract_cookie(&headers);
 
@@ -331,7 +340,7 @@ pub async fn handle_login_remember_post(
         },
         None => None,
     };
-    let store = remember_store::RememberStore::new().map_err(|err| {
+    let store = accounts.remember().map_err(|err| {
         log_and_api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "remember store error",
@@ -421,7 +430,7 @@ pub async fn handle_login_remember_post(
 
             if let Some(enc_key) = presented_enc_key_string(&headers, &username, cookie_header.as_deref())
             {
-                if let Ok(store) = UserStore::new() {
+                if let Ok(store) = accounts.users() {
                     if store
                         .verify_encryption_key(&username, enc_key.as_bytes())
                         .unwrap_or(false)
@@ -461,7 +470,9 @@ pub async fn handle_login_forget_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
     let cookie_header = crate::request_context::extract_cookie(&headers);
 
@@ -494,7 +505,7 @@ pub async fn handle_login_forget_post(
 
     let last = remember_store::extract_token(cookie_header.as_deref());
     let account = remember_store::extract_account_token(cookie_header.as_deref(), &username);
-    let store = match remember_store::RememberStore::new() {
+    let store = match accounts.remember() {
         Ok(store) => store,
         Err(err) => {
             return Err(log_and_api_error(

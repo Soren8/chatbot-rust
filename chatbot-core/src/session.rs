@@ -30,13 +30,14 @@ struct CachedSetPayload {
 }
 
 use crate::{
+    account_service::AccountService,
     config::{self, ProviderConfig},
     enc_key::EncryptionKey,
     fernet_crypto::{self, FernetError},
     history::{
         HistoryError, HistoryService, PrepareCapture, SetId, SetSnapshot, SetVersion,
     },
-    user_store::{UserStore, UserStoreError, DEFAULT_TIER},
+    user_store::{UserStoreError, DEFAULT_TIER},
 };
 
 #[derive(Debug, Clone)]
@@ -396,15 +397,16 @@ impl ChatSessionStore {
 /// Compatibility: [`ChatService::global`] constructs a handle that touches
 /// neither config nor any store. Each of its operations delegates to the
 /// existing process-global stores with their lazy first-use timing untouched
-/// (per-call `UserStore::new` plus live verifier secret,
+/// (per-call account stores plus live verifier secret,
 /// `HistoryService::global`, `ChatSessionStore::global`). Owned handles
-/// ([`ChatService::new`]) use only their explicit stores/root/secret and the
+/// ([`ChatService::new`]) use only their explicit stores/accounts and the
 /// session store's default prompt, and never read ambient config, except
 /// [`resolve_test_chunks`], which intentionally keeps the explicit
 /// `CHATBOT_TEST_OPENAI_CHUNKS` env plus `provider.test_chunks`
 /// compatibility hook on both paths.
 ///
-/// Only the HMAC verifier secret is stored; no live data-key is retained.
+/// Only the HMAC verifier secret is stored via the account service; no live
+/// data-key is retained.
 #[derive(Clone)]
 pub struct ChatService {
     owned: Option<Arc<OwnedChatDependencies>>,
@@ -413,8 +415,7 @@ pub struct ChatService {
 struct OwnedChatDependencies {
     sessions: Arc<ChatSessionStore>,
     history: OwnedHistory,
-    account_root: PathBuf,
-    verifier_secret: String,
+    accounts: AccountService,
 }
 
 /// Owned durable history: either a ready service or a lazily opened one.
@@ -446,12 +447,25 @@ impl ChatService {
         account_root: PathBuf,
         verifier_secret: String,
     ) -> Self {
+        Self::new_with_accounts(
+            sessions,
+            history,
+            AccountService::with_root_and_secret(account_root, verifier_secret),
+        )
+    }
+
+    /// Explicit owned construction sharing an [`AccountService`] for key/tier
+    /// gates. Touches no config/store; inputs are used as-is.
+    pub fn new_with_accounts(
+        sessions: Arc<ChatSessionStore>,
+        history: Arc<HistoryService>,
+        accounts: AccountService,
+    ) -> Self {
         Self {
             owned: Some(Arc::new(OwnedChatDependencies {
                 sessions,
                 history: OwnedHistory::Ready(history),
-                account_root,
-                verifier_secret,
+                accounts,
             })),
         }
     }
@@ -475,6 +489,26 @@ impl ChatService {
         account_root: PathBuf,
         verifier_secret: String,
     ) -> Self {
+        Self::with_storage_and_accounts(
+            sessions,
+            data_root,
+            AccountService::with_root_and_secret(account_root, verifier_secret),
+        )
+    }
+
+    /// Owned construction with lazily opened durable history sharing an
+    /// [`AccountService`] for key/tier gates.
+    ///
+    /// `data_root` is the host data dir containing `history/redb` plus the
+    /// legacy `user_sets/` migration tree. Constructing this touches neither
+    /// config nor any store; history opens lazily with `get_or_try_init`
+    /// retry. The history default prompt is taken from
+    /// `sessions.default_prompt()`.
+    pub fn with_storage_and_accounts(
+        sessions: Arc<ChatSessionStore>,
+        data_root: PathBuf,
+        accounts: AccountService,
+    ) -> Self {
         let default_prompt = sessions.default_prompt().to_owned();
         let redb_path = data_root.join("history").join("redb");
         Self {
@@ -486,8 +520,7 @@ impl ChatService {
                     data_dir: data_root,
                     default_prompt,
                 }),
-                account_root,
-                verifier_secret,
+                accounts,
             })),
         }
     }
@@ -527,6 +560,15 @@ impl ChatService {
         }
     }
 
+    /// Account service backing key/tier gates: the owned service or the
+    /// process-global accounts, resolved lazily per operation.
+    fn accounts(&self) -> AccountService {
+        match self.owned.as_ref() {
+            Some(deps) => deps.accounts.clone(),
+            None => AccountService::global(),
+        }
+    }
+
     fn default_prompt_resolved(&self) -> String {
         self.sessions().default_prompt().to_owned()
     }
@@ -539,9 +581,10 @@ impl ChatService {
         self.history()
     }
 
-    /// Owned key validation: explicit root plus explicit HMAC secret. The
-    /// global handle preserves the original per-call `UserStore::new` plus
-    /// live-secret timing with the same single-has-plus-single-verify reads.
+    /// Owned key validation through the shared account service. The global
+    /// handle preserves the original per-call open plus live-secret timing
+    /// with the same single-has-plus-single-verify reads; the owned handle
+    /// opens its explicit root with its explicit secret.
     pub fn validate_encryption_key_for_user(
         &self,
         username: &str,
@@ -550,50 +593,23 @@ impl ChatService {
         let Some(key) = key else {
             return Err(EncryptionKeyValidationError::Missing);
         };
-        match self.owned.as_ref() {
-            Some(deps) => {
-                let store = UserStore::open(&deps.account_root)
-                    .map_err(|err| map_store_unavailable("failed to open user store", &err))?;
-                if !store
-                    .has_key_verifier(username)
-                    .map_err(|err| map_store_unavailable("failed to check key verifier", &err))?
-                {
-                    return Err(EncryptionKeyValidationError::Missing);
-                }
-                if !store
-                    .verify_encryption_key_with_secret(
-                        username,
-                        key.as_bytes(),
-                        deps.verifier_secret.as_bytes(),
-                    )
-                    .map_err(|err| {
-                        map_store_unavailable("failed to verify encryption key", &err)
-                    })?
-                {
-                    return Err(EncryptionKeyValidationError::Invalid);
-                }
-                Ok(())
-            }
-            _ => {
-                let store = UserStore::new()
-                    .map_err(|err| map_store_unavailable("failed to open user store", &err))?;
-                if !store
-                    .has_key_verifier(username)
-                    .map_err(|err| map_store_unavailable("failed to check key verifier", &err))?
-                {
-                    return Err(EncryptionKeyValidationError::Missing);
-                }
-                if !store
-                    .verify_encryption_key(username, key.as_bytes())
-                    .map_err(|err| {
-                        map_store_unavailable("failed to verify encryption key", &err)
-                    })?
-                {
-                    return Err(EncryptionKeyValidationError::Invalid);
-                }
-                Ok(())
-            }
+        let store = self
+            .accounts()
+            .users()
+            .map_err(|err| map_store_unavailable("failed to open user store", &err))?;
+        if !store
+            .has_key_verifier(username)
+            .map_err(|err| map_store_unavailable("failed to check key verifier", &err))?
+        {
+            return Err(EncryptionKeyValidationError::Missing);
         }
+        if !store
+            .verify_encryption_key(username, key.as_bytes())
+            .map_err(|err| map_store_unavailable("failed to verify encryption key", &err))?
+        {
+            return Err(EncryptionKeyValidationError::Invalid);
+        }
+        Ok(())
     }
 
     /// Owned key gate: same 401/500 strings as the free adapter, via the
@@ -636,30 +652,17 @@ impl ChatService {
         let Some(username) = username else {
             return Err(PrepareError::Policy(PreparePolicyError::PremiumRequired));
         };
-        match self.owned.as_ref() {
-            Some(deps) => {
-                let user_store = UserStore::open(&deps.account_root)
-                    .map_err(|err| map_store_error("failed to open user store", &err))?;
-                let user_tier = user_store
-                    .user_tier(username)
-                    .map_err(|err| map_store_error("failed to resolve user tier", &err))?;
-                if !user_tier.eq_ignore_ascii_case("premium") {
-                    return Err(PrepareError::Policy(PreparePolicyError::PremiumRequired));
-                }
-                Ok(())
-            }
-            None => {
-                let user_store = UserStore::new()
-                    .map_err(|err| map_store_error("failed to open user store", &err))?;
-                let user_tier = user_store
-                    .user_tier(username)
-                    .map_err(|err| map_store_error("failed to resolve user tier", &err))?;
-                if !user_tier.eq_ignore_ascii_case("premium") {
-                    return Err(PrepareError::Policy(PreparePolicyError::PremiumRequired));
-                }
-                Ok(())
-            }
+        let user_store = self
+            .accounts()
+            .users()
+            .map_err(|err| map_store_error("failed to open user store", &err))?;
+        let user_tier = user_store
+            .user_tier(username)
+            .map_err(|err| map_store_error("failed to resolve user tier", &err))?;
+        if !user_tier.eq_ignore_ascii_case("premium") {
+            return Err(PrepareError::Policy(PreparePolicyError::PremiumRequired));
         }
+        Ok(())
     }
 
     fn load_history_snapshot(

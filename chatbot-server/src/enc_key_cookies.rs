@@ -1,4 +1,5 @@
 use axum::http::{header, HeaderMap};
+use chatbot_core::account_service::AccountService;
 use chatbot_core::enc_key::EncryptionKey;
 
 use crate::identity::RequestIdentity;
@@ -114,8 +115,23 @@ pub fn enc_key_cookie_value(key: &EncryptionKey) -> Option<&str> {
 /// After switch-account (last-used `enc_key` cleared) or a deploy that only had
 /// last-used, copy a verified key onto the missing cookie. Does not slide
 /// max-age when both cookies are already present.
+///
+/// Compatibility wrapper: promotes through the process-global account stores,
+/// preserving the existing global-router behavior. Injected routers must use
+/// [`promote_enc_key_cookies_with_accounts`] with their own service instead.
 pub fn promote_enc_key_cookies(cookie_header: Option<&str>, username: &str) -> Vec<String> {
-    let Ok(store) = chatbot_core::user_store::UserStore::new() else {
+    promote_enc_key_cookies_with_accounts(cookie_header, username, &AccountService::global())
+}
+
+/// Scoped variant: promotes through the router's injected [`AccountService`]
+/// so verification and remember checks resolve in that router's user/remember
+/// stores only. Cookie secure/max-age stay live from global config.
+pub fn promote_enc_key_cookies_with_accounts(
+    cookie_header: Option<&str>,
+    username: &str,
+    accounts: &AccountService,
+) -> Vec<String> {
+    let Ok(store) = accounts.users() else {
         return Vec::new();
     };
     let last = extract_enc_key_cookie(cookie_header);
@@ -149,7 +165,8 @@ pub fn promote_enc_key_cookies(cookie_header: Option<&str>, username: &str) -> V
     };
 
     let remembered = chatbot_core::remember_store::extract_account_token(cookie_header, username).is_some()
-        || chatbot_core::remember_store::RememberStore::new()
+        || accounts
+            .remember()
             .ok()
             .and_then(|rs| rs.peek_username(chatbot_core::remember_store::extract_token(cookie_header).as_deref()))
             .as_deref() == Some(username);

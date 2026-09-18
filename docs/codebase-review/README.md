@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 027 — router chat composition](#session-027--router-chat-composition-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 028 — account service composition](#session-028--account-service-composition-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-five committed batches through session 027. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-six committed batches through session 028. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 028 — account service composition, 2026-09-18
+
+MOD-003 partial remediation: `AccountService` owns an explicit root/HMAC secret, opens concrete user/remember stores per operation, and shares with chat validation and account HTTP. Production passes one instance to both chat and router resources. All signup/login/salt/remember/forget, home restoration/preferences/promotion, preferences updates, TTS tier checks and composed remember purge use it. Compatibility constructors and public cookie helpers retain lazy global account semantics. Cookie/access/config policy, provider behavior and the test-chunk override remain ambient; no RMW concurrency or authorization fixes are bundled.
+
+Five core and four HTTP tests cover independent passwords/preferences/salts/verifiers/tokens, ordinary explicit-secret APIs, signup/login, real password-login cookies driving chat and durable reads without `X-Enc-Key`, remember rotation/cross-root rejection, promotion/forget and compatibility sharing. Primary reviewed every caller, core APIs and both test files; required serialized config guards and real cookie-only coverage before acceptance. Full final `20260918T085742` log and reviewed final `20260918T090641-05dda4c08f9b` passed including provider-config validation. Logs: `temp/test-logs/modularity-mod003-account-services-20260918T085742-attempt2.log` and `modularity-mod003-account-services-20260918T090641-reviewed-final.log`; compile failure preserved in `modularity-mod003-account-services-20260918T085620.log`. Commit title: `Compose account services across HTTP and chat`, based on `eb3aa56`.
 
 ## Session 027 — router chat composition, 2026-09-18
 

@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 028 adds `chatbot-core/src/account_service.rs`, `chatbot-core/tests/account_service_isolation.rs` and `chatbot-server/tests/router_account_service_isolation.rs`. Primary reviewed configured verifier handles, shared account/chat composition, all migrated HTTP/background callers and nine new tests; reviewed full suite passed. Provider/config isolation remains open.
+
 Session 027 adds `chatbot-core/tests/chat_service_lazy_history.rs` and `chatbot-server/tests/router_chat_service_isolation.rs`. Primary reviewed lazy-history retry, router/startup/background injection, every migrated chat/history/mirror caller and nine new tests; reviewed full suite passed. Account HTTP composition and phase-completion review remain open.
 
 Session 026 adds `chatbot-core/tests/chat_service_isolation.rs`. Primary reviewed owned chat dependencies and all moved prepare/finalize/mirror paths, global wrappers, service-bound lease settlement and eight new tests. Reviewed full suite passed. Server injection and typed core finalization remain open; no expiry-race correction is claimed.

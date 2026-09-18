@@ -59,6 +59,7 @@ pub use crate::enc_key_cookies::{
     build_enc_key_account_set_cookie, build_enc_key_clear_cookie, build_enc_key_set_cookie,
     enc_key_cookie_value, extract_account_enc_key_cookie, extract_enc_key, extract_enc_key_cookie,
     extract_enc_key_with_identity, promote_enc_key_cookies,
+    promote_enc_key_cookies_with_accounts,
 };
 pub use crate::request_context::get_ip;
 

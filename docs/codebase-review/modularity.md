@@ -16,6 +16,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 ## MOD-003 — Process-global state bypasses application composition
 
+**Service composition (sessions 023–028):** production now composes owned HTTP identity, chat/session/history, TTS tokens, rate counters and account root/verifier/remember dependencies. Chat leases bind the service; deep health and background purge resolve the same owners. Lazy history retains retryable per-request failures. Explicit constructors and independent-router tests exercise real password cookies, durable history and remember rotation. Existing constructors preserve global compatibility. Live provider/config policy and fake-provider environment inputs remain open; this is not yet complete application isolation. Full reviewed suites pass; checkpoints and evidence are in README sessions 023–028.
+
 **Router composition (session 021):** production owns one HTTP identity store shared by request injection and purge. All handlers/middleware and account-cookie selection resolve that identity. Compatibility constructors remain lazy-global; seven new tests prove the scoped identity boundary. Chat/history, counters, user/remember stores and config remain open.
 
 **Partial remediation (session 020):** owned `HttpSessionStore` accepts explicit timeout/CSRF inputs; independent instances are lifecycle-isolated. Compatibility delegates retain one lazy production instance, including early-return initialization timing. Five new tests and full suites pass. Router-level ownership, history/chat composition and ambient storage/config remain open.

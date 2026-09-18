@@ -4,8 +4,8 @@ use axum::{
     http::{header, Method, Request, Response, StatusCode},
 };
 use chatbot_core::{
+    account_service::AccountService,
     config::{self, TtsAccess},
-    user_store::UserStore,
 };
 use once_cell::sync::Lazy;
 use rand::Rng;
@@ -70,7 +70,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let username = ensure_tts_access(&identity, cookie_header.as_deref())?;
+    let username = ensure_tts_access(services.accounts(), &identity, cookie_header.as_deref())?;
     let ip = crate::request_context::get_ip(&headers, &parts.extensions);
 
     tracing::info!(username = %username, ip = %ip, "TTS token request");
@@ -227,6 +227,7 @@ pub async fn handle_tts_cancel(
 
 /// Enforce deploy-time `tts_access` policy. Returns a log label (username or "guest").
 fn ensure_tts_access(
+    accounts: &AccountService,
     identity: &RequestIdentity,
     cookie_header: Option<&str>,
 ) -> Result<String, HttpError> {
@@ -256,7 +257,7 @@ fn ensure_tts_access(
                     "TTS requires a Premium account",
                 ));
             };
-            let store = UserStore::new().map_err(|err| {
+            let store = accounts.users().map_err(|err| {
                 map_user_store_err(err, "tts::access::open_store", "Unable to check TTS access")
             })?;
             let tier = store.user_tier(name).map_err(|err| {

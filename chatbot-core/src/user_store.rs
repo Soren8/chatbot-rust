@@ -4,7 +4,10 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use base64::engine::general_purpose::STANDARD;
@@ -79,6 +82,7 @@ pub struct UserStore {
     users_file: PathBuf,
     salts_dir: PathBuf,
     key_verifiers_dir: PathBuf,
+    verifier_secret: Option<Arc<str>>,
 }
 
 pub enum CreateOutcome {
@@ -158,7 +162,21 @@ impl UserStore {
             users_file,
             salts_dir,
             key_verifiers_dir,
+            verifier_secret: None,
         })
+    }
+
+    /// Open (creating) the account file store rooted at `root` with an
+    /// explicit HMAC verifier secret.
+    ///
+    /// Same layout/creation as [`UserStore::open`] with no environment reads.
+    /// The ordinary [`UserStore::ensure_key_verifier`] and
+    /// [`UserStore::verify_encryption_key`] on this handle use the explicit
+    /// secret; the `*_with_secret` variants remain for one-off overrides.
+    pub fn open_with_secret(root: &Path, secret: impl Into<Arc<str>>) -> Result<Self, UserStoreError> {
+        let mut store = Self::open(root)?;
+        store.verifier_secret = Some(secret.into());
+        Ok(store)
     }
 
     pub fn create_user(
@@ -267,6 +285,11 @@ impl UserStore {
 
     pub fn ensure_key_verifier(&self, username: &str, key: &[u8]) -> Result<(), UserStoreError> {
         // Invalid names report `Crypto` without initializing the global config.
+        // An explicitly configured store uses its secret with the same
+        // validation precedence; otherwise the global secret resolves lazily.
+        if let Some(secret) = self.verifier_secret.clone() {
+            return self.ensure_key_verifier_with_secret(username, key, secret.as_bytes());
+        }
         normalise_username(username).map_err(UserStoreError::Crypto)?;
         let secret = config::app_config().secret_key.clone();
         self.ensure_key_verifier_with_secret(username, key, secret.as_bytes())
@@ -302,11 +325,19 @@ impl UserStore {
     pub fn verify_encryption_key(&self, username: &str, key: &[u8]) -> Result<bool, UserStoreError> {
         // Invalid names report `Crypto` and missing verifiers report `false`,
         // both without initializing the global config. The loaded record is
-        // compared directly so the verifier is read exactly once.
+        // compared directly so the verifier is read exactly once. An
+        // explicitly configured store compares against its secret with the
+        // same validation/record-read precedence.
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let Some(record) = self.load_key_verifier_record(&normalised)? else {
             return Ok(false);
         };
+        if let Some(secret) = self.verifier_secret.clone() {
+            return Ok(constant_time_eq(
+                &record.verifier,
+                &Self::compute_key_verifier_with_secret(key, secret.as_bytes()),
+            ));
+        }
         let secret = config::app_config().secret_key.clone();
         Ok(constant_time_eq(
             &record.verifier,

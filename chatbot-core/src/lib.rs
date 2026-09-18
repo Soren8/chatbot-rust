@@ -1,3 +1,4 @@
+pub mod account_service;
 pub mod chat;
 pub mod chat_images;
 pub mod config;
