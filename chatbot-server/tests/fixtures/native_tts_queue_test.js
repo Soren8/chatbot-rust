@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(process.argv[2], 'utf8');
+const conversationState = require(process.argv[3]);
+assert(process.argv[3], 'usage: node native_tts_queue_test.js <static/chat.js> <static/conversation-state.js>');
 const start = source.indexOf('  function playNativeVoiceModeTts(');
 const end = source.indexOf('  window.playNativeVoiceModeTts =', start);
 assert(start >= 0 && end > start, 'native TTS entry point must be available');
@@ -23,10 +25,14 @@ function session(sentences, generating = false, modern = true) {
     addClass() { return this; }, html() { return this; }
   };
   let timer = 0;
+  // Generating state comes from the real conversation request tracker, the
+  // single authority chat.js reads via chatRequests.isGenerating().
+  const chatRequests = conversationState.createChatRequestTracker();
+  if (generating) chatRequests.begin();
   const context = vm.createContext({
     console: { error() {} }, AbortController, Promise, Set, Map,
     setTimeout() { return ++timer; }, clearTimeout() {},
-    $() { return element; }, currentAbortController: generating ? {} : null,
+    $() { return element; }, chatRequests,
     CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
     voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,

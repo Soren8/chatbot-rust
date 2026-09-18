@@ -15,12 +15,14 @@ const vm = require('node:vm');
 
 const chatJsPath = process.argv[2];
 const voiceTextPath = process.argv[3];
+const conversationStatePath = process.argv[4];
 assert(
-  chatJsPath && voiceTextPath,
-  'usage: node tts_sentence_boundary_test.js <static/chat.js> <static/voice-text.js>'
+  chatJsPath && voiceTextPath && conversationStatePath,
+  'usage: node tts_sentence_boundary_test.js <static/chat.js> <static/voice-text.js> <static/conversation-state.js>'
 );
 const source = fs.readFileSync(chatJsPath, 'utf8');
 const voiceText = require(voiceTextPath);
+const conversationState = require(conversationStatePath);
 
 function extractTop(name) {
   const header = 'function ' + name + '(';
@@ -57,13 +59,17 @@ function desktopSession() {
     addClass() { return this; }, removeClass() { return this; }, html() { return this; },
     attr() { return ''; },
   };
+  // Generating state comes from the real conversation request tracker, the
+  // single authority chat.js reads via chatRequests.isGenerating().
+  const chatRequests = conversationState.createChatRequestTracker();
+  let liveSeq = chatRequests.begin();
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); }, log() {}, debug() {}, warn() {} },
     Promise, Set, Map,
     setTimeout(fn) { state.timers.push(fn); return state.timers.length; },
     clearTimeout() {},
     $() { return element; },
-    currentAbortController: {},
+    chatRequests,
     desktopTtsIsLive(id) { return state.live && id === 1; },
     completeDesktopTtsPlayback() { state.completed++; state.live = false; },
     preloadDesktopTtsSentence(sessionId, text) { state.preloaded.push(String(text)); },
@@ -85,13 +91,13 @@ function desktopSession() {
     state, context,
     stream(raw) {
       state.raw = raw; state.domText = raw;
-      context.currentAbortController = state.generating ? {} : null;
+      if (!chatRequests.isGenerating()) liveSeq = chatRequests.begin();
       state.observer();
     },
     finish(raw) {
       if (raw !== undefined) { state.raw = raw; state.domText = raw; }
       state.generating = false;
-      context.currentAbortController = null;
+      if (chatRequests.isGenerating()) chatRequests.finish(liveSeq);
       state.observer();
     },
   };
@@ -114,11 +120,13 @@ function nativeSession() {
     addClass() { return this; }, html() { return this; },
   };
   let timer = 0;
+  const chatRequests = conversationState.createChatRequestTracker();
+  let liveSeq = chatRequests.begin();
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); } },
     AbortController, Promise, Set, Map,
     setTimeout() { return ++timer; }, clearTimeout() {},
-    $() { return element; }, currentAbortController: {},
+    $() { return element; }, chatRequests,
     CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
     voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
@@ -170,13 +178,13 @@ function nativeSession() {
     posts, enqueued, cancelled, state, context,
     stream(raw) {
       state.raw = raw;
-      context.currentAbortController = state.generating ? {} : null;
+      if (!chatRequests.isGenerating()) liveSeq = chatRequests.begin();
       state.observer();
     },
     finish(raw) {
       if (raw !== undefined) state.raw = raw;
       state.generating = false;
-      context.currentAbortController = null;
+      if (chatRequests.isGenerating()) chatRequests.finish(liveSeq);
       state.observer();
     },
   };

@@ -10,12 +10,14 @@ const vm = require('node:vm');
 
 const chatJsPath = process.argv[2];
 const voiceTextPath = process.argv[3];
+const conversationStatePath = process.argv[4];
 assert(
-  chatJsPath && voiceTextPath,
-  'usage: node tts_exhaustion_test.js <static/chat.js> <static/voice-text.js>'
+  chatJsPath && voiceTextPath && conversationStatePath,
+  'usage: node tts_exhaustion_test.js <static/chat.js> <static/voice-text.js> <static/conversation-state.js>'
 );
 const source = fs.readFileSync(chatJsPath, 'utf8');
 const voiceText = require(voiceTextPath);
+const conversationState = require(conversationStatePath);
 
 function extractTop(name) {
   const header = 'function ' + name + '(';
@@ -59,7 +61,7 @@ function desktopStreamingSession() {
     setTimeout(fn) { state.timers.push(fn); return state.timers.length; },
     clearTimeout() {},
     $() { return element; },
-    currentAbortController: null,
+    chatRequests: (() => { const t = conversationState.createChatRequestTracker(); return t; })(),
     desktopTtsIsLive(id) { return state.live && id === 1; },
     completeDesktopTtsPlayback() { state.completed++; state.live = false; },
     preloadDesktopTtsSentence() {},
@@ -145,7 +147,8 @@ function nativeFailingSession() {
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); } },
     AbortController, Promise, Set, Map,
     setTimeout() { return 1; }, clearTimeout() {},
-    $() { return element; }, currentAbortController: null,
+    $() { return element; },
+    chatRequests: (() => { const t = conversationState.createChatRequestTracker(); return t; })(),
     CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
     voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
@@ -226,7 +229,8 @@ function nativeReplacementHarness() {
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); } },
     AbortController, Promise, Set, Map,
     setTimeout() { return 1; }, clearTimeout() {},
-    $() { return element; }, currentAbortController: {},
+    $() { return element; },
+    chatRequests: (() => { const t = conversationState.createChatRequestTracker(); t.begin(); return t; })(),
     CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
     voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
@@ -364,7 +368,7 @@ function nativeReplacementHarness() {
     assert.deepEqual(t.enqueued, ['new-0'], 'new playback intact');
     assert.deepEqual(t.state.chatErrors, [], 'stale failure stays silent');
     assert.deepEqual(t.state.reports, [], 'stale failure stays silent');
-    t.context.currentAbortController = null;
+    t.context.chatRequests.finish(t.context.chatRequests.seq());
     t.observers[1]();
     await flush();
     assert.equal(t.state.ended, 1, 'new session marks end of queue');

@@ -1,5 +1,7 @@
 # Review coverage
 
+Session 032 adds the importable browser conversation state and its Node behavior fixture. Primary reviewed production adapters, request abort ordering, history/version transitions, and TTS fixture migrations. Reviewed full suite `20260918T144643-e8f88bd1db7d` passed. Rendering, browser voice coordination, and real-device lifecycles remain outside this extracted owner.
+
 Session 031 adds `chatbot-server/tests/data_request_context_boundary.rs`. Primary reviewed all adapter callers, borrowed verified context and 14 new tests. Full reviewed suite passed. Preferences ordering is preserved by leaving its handler unchanged; its test asserts guest/authenticated response policy, not lookup counts.
 
 Session 030 adds `chatbot-core/tests/session_operation_errors.rs` and `chatbot-server/tests/session_operation_error_boundary.rs`. Primary reviewed transport-carrier removal, all typed adapters/callers and 17 new tests. Reviewed full suite passed. New cases are post-extraction coverage; the unchanged baseline is not claimed as new before/after characterization.

@@ -17,6 +17,7 @@ fn streaming_boundaries_speak_once_on_both_real_queues() {
         .arg(root.join("chatbot-server/tests/fixtures/tts_sentence_boundary_test.js"))
         .arg(root.join("static/chat.js"))
         .arg(root.join("static/voice-text.js"))
+        .arg(root.join("static/conversation-state.js"))
         .output()
         .expect("test image must provide the JS behavior-test runtime");
     assert!(
@@ -33,6 +34,7 @@ fn retry_exhaustion_ends_the_session_with_a_visible_error() {
         .arg(root.join("chatbot-server/tests/fixtures/tts_exhaustion_test.js"))
         .arg(root.join("static/chat.js"))
         .arg(root.join("static/voice-text.js"))
+        .arg(root.join("static/conversation-state.js"))
         .output()
         .expect("test image must provide the JS behavior-test runtime");
     assert!(

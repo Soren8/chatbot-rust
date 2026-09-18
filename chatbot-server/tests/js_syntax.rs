@@ -21,6 +21,10 @@ fn assert_script_parses(name: &str, source: &str) {
 #[test]
 fn first_party_static_js_parses() {
     assert_script_parses("static/chat.js", include_str!("../../static/chat.js"));
+    assert_script_parses(
+        "static/conversation-state.js",
+        include_str!("../../static/conversation-state.js"),
+    );
     assert_script_parses("static/login.js", include_str!("../../static/login.js"));
     assert_script_parses(
         "static/native-audio.js",

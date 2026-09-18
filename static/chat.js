@@ -546,51 +546,29 @@ function syncSelectedOptionVersion(version) {
   if ($opt.length) $opt.attr('data-version', String(version));
 }
 
-/** Apply a set version from a response or 409 body.
- *  List refreshes (`get_sets`) must not rewind: an in-flight list after delete
- *  can be stale. Mutation / 409 bodies are authoritative (`allowRewind`). */
+/** Version transitions live in static/conversation-state.js (reads advance
+ *  only; mutations/409 authoritative). window.APP_DATA stays the single
+ *  store; the option sync below is the DOM callback. */
 function applySetVersion(version, setId, options) {
   if (!window.APP_DATA) window.APP_DATA = {};
-  var allowRewind = !!(options && options.allowRewind);
-  if (setId) {
-    if (window.APP_DATA.lastSetId && setId !== window.APP_DATA.lastSetId) {
-      window.APP_DATA.lastSetId = setId;
-      if (version != null && version !== '') {
-        var switched = Number(version);
-        if (!Number.isNaN(switched)) {
-          window.APP_DATA.setVersion = switched;
-          syncSelectedOptionVersion(switched);
-        }
-      }
-      return;
-    }
-    window.APP_DATA.lastSetId = setId;
-  }
-  if (version == null || version === '') return;
-  var next = Number(version);
-  if (Number.isNaN(next)) return;
-  var current = Number(window.APP_DATA.setVersion);
-  if (!allowRewind && !Number.isNaN(current) && next < current) return;
-  window.APP_DATA.setVersion = next;
-  syncSelectedOptionVersion(next);
+  var result = ChatConversationState.applySetVersionTo(window.APP_DATA, version, setId, options);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
 function activeSetPayload(extra) {
   var $o = $('#set-selector option:selected');
-  var payload = Object.assign({}, extra || {});
-  payload.set_name = $o.attr('data-name') || $o.text() || 'default';
-  var setId = window.APP_DATA.lastSetId || $o.val();
-  if (setId) payload.set_id = setId;
-  if (window.APP_DATA.setVersion != null && window.APP_DATA.setVersion !== '') {
-    payload.expected_version = Number(window.APP_DATA.setVersion);
-  }
-  return payload;
+  return ChatConversationState.buildActiveSetPayload({
+    setName: $o.attr('data-name') || $o.text() || 'default',
+    setId: (window.APP_DATA && window.APP_DATA.lastSetId) || $o.val(),
+    setVersion: window.APP_DATA ? window.APP_DATA.setVersion : undefined
+  }, extra);
 }
 
 function noteSetVersionFromResponse(data) {
   if (!data) return;
-  var version = data.version != null ? data.version : data.current_version;
-  applySetVersion(version, data.set_id, { allowRewind: true });
+  if (!window.APP_DATA) window.APP_DATA = {};
+  var result = ChatConversationState.noteSetVersionFromResponseTo(window.APP_DATA, data);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
 /** Sync version from an authoritative READ response (load_set / history_pair).
@@ -598,8 +576,9 @@ function noteSetVersionFromResponse(data) {
  *  we must never rewind below a version the client already observed. */
 function noteSetVersionFromRead(data) {
   if (!data) return;
-  var version = data.version != null ? data.version : data.current_version;
-  applySetVersion(version, data.set_id);
+  if (!window.APP_DATA) window.APP_DATA = {};
+  var result = ChatConversationState.noteSetVersionFromReadTo(window.APP_DATA, data);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
 /** Extract a human-readable message from an error-response body. */
@@ -620,24 +599,18 @@ function apiErrorText(text, fallback) {
 /** After chat/regenerate persist, CAS version advances by one. Update immediately
  *  so delete/reset don't race the async loadSets() refresh. */
 function noteLocalVersionBumpAfterPersist() {
-  if (window.APP_DATA.setVersion == null || window.APP_DATA.setVersion === '') return;
-  var next = Number(window.APP_DATA.setVersion) + 1;
-  if (Number.isNaN(next)) return;
-  applySetVersion(next, window.APP_DATA.lastSetId);
+  if (!window.APP_DATA) return;
+  var result = ChatConversationState.noteLocalVersionBumpAfterPersistTo(window.APP_DATA);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
-var HISTORY_PAGE_SIZE = 40;
-var HISTORY_OFFSET = 0;
-var HISTORY_TOTAL = 0;
-var HISTORY_HAS_MORE = false;
-var HISTORY_LOADING_OLDER = false;
-var HISTORY_SET_GEN = 0;
+// History window and set-generation fencing (static/conversation-state.js).
+// Single authority for offset/total/has-more/loading/generation.
+var historyWindow = ChatConversationState.createHistoryWindow(ChatConversationState.HISTORY_PAGE_SIZE);
+var HISTORY_PAGE_SIZE = ChatConversationState.HISTORY_PAGE_SIZE;
 
 function resetHistoryWindow() {
-  HISTORY_OFFSET = 0;
-  HISTORY_TOTAL = 0;
-  HISTORY_HAS_MORE = false;
-  HISTORY_LOADING_OLDER = false;
+  historyWindow.reset();
 }
 
 function liveUserPairIndex(userMessageElement) {
@@ -646,7 +619,7 @@ function liveUserPairIndex(userMessageElement) {
   var nodes = document.querySelectorAll('#chat-content .message.user-message');
   var i = Array.prototype.indexOf.call(nodes, el);
   if (i < 0) return -1;
-  return HISTORY_OFFSET + i;
+  return ChatConversationState.userPairIndexForDomIndex(historyWindow.getOffset(), i);
 }
 
 function isLocalOnlyTurn(el) {
@@ -697,9 +670,10 @@ function paintFailedAiTurn($user, errorText) {
 function reindexUserPairIndices() {
   var nodes = document.querySelectorAll('#chat-content .message.user-message');
   for (var i = 0; i < nodes.length; i++) {
-    nodes[i].setAttribute('data-pair-index', String(HISTORY_OFFSET + i));
+    var pairIndex = ChatConversationState.userPairIndexForDomIndex(historyWindow.getOffset(), i);
+    nodes[i].setAttribute('data-pair-index', String(pairIndex));
     var img = nodes[i].querySelector('img.chat-image');
-    if (img) img.setAttribute('data-pair-index', String(HISTORY_OFFSET + i));
+    if (img) img.setAttribute('data-pair-index', String(pairIndex));
   }
 }
 
@@ -747,7 +721,7 @@ function submitResetChat(isRetry) {
     .then(result => {
       if (result.data && result.data.error === 'version_conflict') {
         noteSetVersionFromResponse(result.data);
-        if (!isRetry) return submitResetChat(true);
+        if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitResetChat(true);
         appendMessage('The chat was updated elsewhere while resetting. Please try again.', 'error-message');
         return;
       }
@@ -1720,15 +1694,16 @@ function updateLoadOlderBar() {
   var bar = ensureLoadOlderBar();
   if (!bar) return;
   var btn = document.getElementById('load-older-btn');
-  if (HISTORY_HAS_MORE && HISTORY_OFFSET > 0) {
+  var snap = historyWindow.snapshot();
+  if (snap.hasMore && snap.offset > 0) {
     bar.hidden = false;
     if (btn) {
-      btn.disabled = !!HISTORY_LOADING_OLDER;
-      btn.textContent = HISTORY_LOADING_OLDER
+      btn.disabled = !!snap.loadingOlder;
+      btn.textContent = snap.loadingOlder
         ? 'Loading…'
-        : (HISTORY_OFFSET === 1
+        : (snap.offset === 1
           ? 'Load older message'
-          : 'Load older messages (' + HISTORY_OFFSET + ' earlier)');
+          : 'Load older messages (' + snap.offset + ' earlier)');
     }
   } else {
     bar.hidden = true;
@@ -1764,14 +1739,11 @@ function appendHistoryPair(userMsg, aiMsg, pairIndex, mountOpts) {
 }
 
 function applyHistoryPage(data, mode) {
-  var pairs = (data && data.history) ? data.history : [];
-  var start = data && data.history_start != null ? Number(data.history_start) : 0;
-  if (Number.isNaN(start)) start = 0;
-  HISTORY_TOTAL = data && data.history_total != null ? Number(data.history_total) : pairs.length;
-  HISTORY_HAS_MORE = !!(data && data.has_more);
-  HISTORY_OFFSET = start;
+  var page = historyWindow.applyPage(data, mode);
+  var pairs = page.pairs;
+  var start = page.start;
 
-  if (mode === 'prepend') {
+  if (page.mode === 'prepend') {
     var chat = document.getElementById('chat-content');
     var prevHeight = chat ? chat.scrollHeight : 0;
     var prevTop = chat ? chat.scrollTop : 0;
@@ -1806,14 +1778,17 @@ function applyHistoryPage(data, mode) {
 }
 
 function loadOlderMessages() {
-  if (!HISTORY_HAS_MORE || HISTORY_LOADING_OLDER || HISTORY_OFFSET <= 0) return;
   if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
-  HISTORY_LOADING_OLDER = true;
+  var req = historyWindow.beginOlderLoad({
+    setId: window.APP_DATA.lastSetId,
+    setName: window.APP_DATA.lastSet
+  });
+  if (!req) return;
   updateLoadOlderBar();
-  var before = HISTORY_OFFSET;
-  var gen = HISTORY_SET_GEN;
-  var setId = window.APP_DATA.lastSetId;
-  var setName = window.APP_DATA.lastSet;
+  var before = req.before;
+  var gen = req.gen;
+  var setId = req.setId;
+  var setName = req.setName;
   withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
     return fetch('/load_set', {
       method: 'POST',
@@ -1821,7 +1796,7 @@ function loadOlderMessages() {
       body: JSON.stringify({
         set_id: setId,
         set_name: setName,
-        limit: HISTORY_PAGE_SIZE,
+        limit: req.limit,
         before: before,
         thumbnails: true
       })
@@ -1831,13 +1806,13 @@ function loadOlderMessages() {
     if (!r.ok) throw new Error('Failed to load older messages');
     return r.json();
   }).then(function(data) {
-    if (gen !== HISTORY_SET_GEN) return;
+    if (!historyWindow.isLiveGen(gen)) return;
     noteSetVersionFromRead(data);
     applyHistoryPage(data, 'prepend');
   }).catch(function(err) {
     console.error('Failed to load older messages:', err);
   }).then(function() {
-    HISTORY_LOADING_OLDER = false;
+    historyWindow.noteOlderSettled();
     updateLoadOlderBar();
   });
 }
@@ -2027,26 +2002,22 @@ function appendMessage(message, className, pairIndex, mountOpts) {
   return $messageElement;
 }
 
-let currentAbortController = null;
-let chatRequestSeq = 0;
+// Request fencing and aborts (static/conversation-state.js): single owner
+// of the sequence and the live AbortController.
+var chatRequests = ChatConversationState.createChatRequestTracker();
 
 function beginChatRequest() {
-  chatRequestSeq += 1;
-  if (currentAbortController) {
-    try { currentAbortController.abort(); } catch (e) { /* ignore */ }
-  }
-  currentAbortController = new AbortController();
+  var seq = chatRequests.begin();
   setGeneratingState(true);
-  return chatRequestSeq;
+  return seq;
 }
 
 function isLiveChatRequest(seq) {
-  return seq === chatRequestSeq;
+  return chatRequests.isLive(seq);
 }
 
 function finishChatRequest(seq) {
-  if (!isLiveChatRequest(seq)) return false;
-  currentAbortController = null;
+  if (!chatRequests.finish(seq)) return false;
   syncSendButtonState();
   return true;
 }
@@ -2056,17 +2027,13 @@ function isVoiceTtsActive() {
 }
 
 function syncSendButtonState() {
-  const generating = !!currentAbortController;
+  const generating = chatRequests.isGenerating();
   const voiceTts = !!window.voiceModeActive && isVoiceTtsActive();
   setGeneratingState(generating || voiceTts);
 }
 
 function abortChatRequestQuietly() {
-  chatRequestSeq += 1;
-  if (currentAbortController) {
-    try { currentAbortController.abort(); } catch (e) { /* ignore */ }
-    currentAbortController = null;
-  }
+  chatRequests.abortQuietly();
 }
 
 function sleepMs(ms) {
@@ -2112,10 +2079,7 @@ function handleStopClick() {
   if (typeof window.stopAllTtsPlayback === 'function') {
     window.stopAllTtsPlayback();
   }
-  if (currentAbortController) {
-    currentAbortController.abort();
-    currentAbortController = null;
-  }
+  chatRequests.stopForUser();
   syncSendButtonState();
 }
 
@@ -2644,7 +2608,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     if (currentRawText === 'Thinking...') return true;
     const isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
     const regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
-    return isLastAi && regenDisabled && (currentAbortController !== null);
+    return isLastAi && regenDisabled && chatRequests.isGenerating();
   }
 
   function discoverAbsolute() {
@@ -2882,7 +2846,8 @@ window.regenerateMessage = function regenerateMessage(button) {
   const $previousUserMessage = $aiMessageElement.prev('.message.user-message');
   if ($previousUserMessage.length === 0) return;
   let userText = ($previousUserMessage.attr('data-original') || ($previousUserMessage.find('.user-message-text').text() || $previousUserMessage.text() || '').replace(/^\s*You:\s*/, '')).trim();
-  if ($previousUserMessage.attr('data-local-only') === '1') {
+  // Ghost (never-saved) turns resend via /chat; only saved turns regenerate.
+  if (ChatConversationState.resolveRegenerateAction($previousUserMessage.attr('data-local-only') === '1') === 'resend-chat') {
     if (typeof window.sendMessage === 'function') {
       window.sendMessage({ reuseLastUser: true, message: userText });
     }
@@ -2918,7 +2883,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
 
   fetchWithGenerateRetry('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
-    signal: currentAbortController.signal,
+    signal: chatRequests.signal(),
     body: JSON.stringify(activeSetPayload({
       message: userText,
       system_prompt: $('#user-system-prompt').val(),
@@ -2938,7 +2903,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq)) {
           // Adopt the authoritative version and replay the regeneration once.
           noteSetVersionFromResponse(errData);
-          if (!opts.versionRetried) {
+          if (ChatConversationState.shouldRetryVersionOnce(opts.versionRetried)) {
             return window.performRegeneration(aiMessageElement, userText, pairIndex, { versionRetried: true });
           }
           throw new Error('Chat state changed elsewhere; please try again.');
@@ -3115,7 +3080,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
     if (!result) return;
     if (result.data && result.data.error === 'version_conflict') {
       applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
-      if (!isRetry) {
+      if (ChatConversationState.shouldRetryVersionOnce(isRetry)) {
         return handleDeleteMessage(buttonElement, true);
       }
       return handleVersionConflict(null, result.data);
@@ -3143,7 +3108,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
       noteSetVersionFromResponse(result.data);
       aiMessageElement.remove();
       userMessageElement.remove();
-      if (HISTORY_TOTAL > 0) HISTORY_TOTAL -= 1;
+      historyWindow.noteDeletedPersisted();
       reindexUserPairIndices();
       updateLoadOlderBar();
       return;
@@ -3172,7 +3137,11 @@ function handleDeleteMessage(buttonElement, isRetry) {
 function handleForkMessage(buttonElement, isRetry) {
   const $user = $(buttonElement).closest('.message.user-message');
   if (!$user.length) return;
-  if ($user.attr('data-local-only') === '1' || isLocalOnlyTurn($user)) {
+  // Only saved turns can be branched; ghost turns must send first.
+  if (!ChatConversationState.canForkTurn(ChatConversationState.isGhostTurn({
+    attrLocalOnly: $user.attr('data-local-only'),
+    computedLocalOnly: isLocalOnlyTurn($user)
+  }))) {
     appendMessage('Send this message first — only saved turns can be branched.', 'error-message');
     return;
   }
@@ -3188,7 +3157,7 @@ function handleForkMessage(buttonElement, isRetry) {
   .then(result => {
     if (result.data && result.data.error === 'version_conflict') {
       applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
-      if (!isRetry) return handleForkMessage(buttonElement, true);
+      if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return handleForkMessage(buttonElement, true);
       return handleVersionConflict(null, result.data);
     }
     if (result.ok && result.data && result.data.status === 'success') {
@@ -3807,8 +3776,7 @@ $(document).ready(function() {
       }
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
-      HISTORY_SET_GEN += 1;
-      var loadGen = HISTORY_SET_GEN;
+      var loadGen = historyWindow.beginSetLoad();
       savePreferences();
       function fetchSet() {
         return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
@@ -3818,7 +3786,7 @@ $(document).ready(function() {
             body: JSON.stringify({
               set_id: setId,
               set_name: setName,
-              limit: HISTORY_PAGE_SIZE,
+              limit: historyWindow.getPageSize(),
               thumbnails: true
             })
           });
@@ -3841,7 +3809,7 @@ $(document).ready(function() {
         })
         .then(r => r.json())
         .then(data => {
-          if (loadGen !== HISTORY_SET_GEN) return;
+          if (!historyWindow.isLiveGen(loadGen)) return;
           if (data.name) window.APP_DATA.lastSet = data.name;
           noteSetVersionFromResponse(data);
           if (data.name) $opt.attr('data-name', data.name).text(data.name);
@@ -3917,7 +3885,7 @@ $(document).ready(function() {
           });
         } else if (data.error === 'version_conflict') {
           noteSetVersionFromResponse(data);
-          if (!isRetry) return submitRenameSet(setId, oldName, newName, true);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitRenameSet(setId, oldName, newName, true);
           appendMessage('The chat was updated elsewhere. Please try renaming again.', 'error-message');
         } else {
           appendMessage(data.error || 'Failed to rename set', 'error-message');
@@ -3953,7 +3921,7 @@ $(document).ready(function() {
           if (data.status === 'success') { loadSets(); appendMessage('Deleted set: ' + setName, 'system-message'); }
           else if (data.error === 'version_conflict') {
             noteSetVersionFromResponse(data);
-            if (!isRetry) return submitDeleteSet(setId, setName, true);
+            if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitDeleteSet(setId, setName, true);
             appendMessage('The chat was updated elsewhere. Please try deleting again.', 'error-message');
           }
           else { appendMessage(data.error || 'Failed to delete set', 'error-message'); }
@@ -4001,7 +3969,7 @@ $(document).ready(function() {
           // Sync the authoritative version and retry once — e.g. a chat turn
           // finalized (or a prompt updated from another tab) since page load.
           noteSetVersionFromResponse(data);
-          if (!isRetry) return saveSystemPromptNow(sysPromptText, true);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return saveSystemPromptNow(sysPromptText, true);
           appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
         else appendMessage(data.error || 'Failed to save system prompt.', 'error-message');
@@ -4038,7 +4006,7 @@ $(document).ready(function() {
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
           noteSetVersionFromResponse(data);
-          if (!isRetry) return saveMemoryNow(memText, true);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return saveMemoryNow(memText, true);
           appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
         else appendMessage(data.error || 'Failed to save memory.', 'error-message');
@@ -4088,10 +4056,15 @@ $(document).ready(function() {
       pairIndex = liveUserPairIndex($pendingUserMessage);
     } else {
       const $ghost = $('#chat-content .message.user-message').last();
-      if ($ghost.attr('data-local-only') === '1') {
+      if (ChatConversationState.isGhostTurn({
+        attrLocalOnly: $ghost.attr('data-local-only'),
+        computedLocalOnly: false
+      })) {
         removeLocalOnlyTurn($ghost);
       }
-      pairIndex = HISTORY_OFFSET + document.querySelectorAll('#chat-content .message.user-message').length;
+      pairIndex = ChatConversationState.userPairIndexForDomIndex(
+        historyWindow.getOffset(),
+        document.querySelectorAll('#chat-content .message.user-message').length);
       appendMessage(fullMessage, 'user-message', pairIndex);
       $pendingUserMessage = $('#chat-content .message.user-message').last();
     }
@@ -4110,7 +4083,7 @@ $(document).ready(function() {
     fetchWithGenerateRetry('/chat', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      signal: currentAbortController.signal,
+      signal: chatRequests.signal(),
       body: JSON.stringify(requestData)
     })
       .then(response => {
@@ -4124,7 +4097,7 @@ $(document).ready(function() {
               // updated, or a turn finalized, elsewhere mid-flight). Adopt the
               // authoritative version and replay this turn once.
               noteSetVersionFromResponse(errData);
-              if (!opts.versionRetried) {
+              if (ChatConversationState.shouldRetryVersionOnce(opts.versionRetried)) {
                 return sendMessage({
                   reuseLastUser: true,
                   message: fullMessage,
@@ -4243,7 +4216,7 @@ $(document).ready(function() {
                 if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
-              HISTORY_TOTAL = Math.max(HISTORY_TOTAL, pairIndex + 1);
+              historyWindow.noteChatPersisted(pairIndex);
               clearLocalOnlyTurn($pendingUserMessage, $targetElement);
               noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
@@ -5004,7 +4977,7 @@ $(document).ready(function() {
       if (raw === 'Thinking...') return true;
       const isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
       const regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
-      return isLastAi && regenDisabled && currentAbortController !== null;
+      return isLastAi && regenDisabled && chatRequests.isGenerating();
     }
 
     function discoverSentences() {
@@ -5649,10 +5622,7 @@ $(document).ready(function() {
     if (!opts.ttsAlreadyStopped) {
       stopAllTtsPlayback();
     }
-    if (currentAbortController) {
-      currentAbortController.abort();
-      currentAbortController = null;
-      chatRequestSeq += 1;
+    if (chatRequests.interruptForVoiceTurn()) {
       const $lastAI = $('#chat-content .message.ai-message').last();
       if ($lastAI.length) {
         const $text = $lastAI.find('.ai-message-text');
@@ -5756,7 +5726,7 @@ $(document).ready(function() {
     if (!text) return;
     timing = timing || {};
     const $lastUser = $('#chat-content .message.user-message').last();
-    const generating = !!currentAbortController || $('#send-button').hasClass('is-generating');
+    const generating = chatRequests.isGenerating() || $('#send-button').hasClass('is-generating');
     const ttsActive = !!(voiceModeTtsSessionActive || voiceModeTtsPlaying);
     if (shouldAmendLastVoiceTurn({
       lastUserExists: $lastUser.length > 0,

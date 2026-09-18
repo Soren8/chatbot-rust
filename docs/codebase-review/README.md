@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 031 — verified data request context](#session-031--verified-data-request-context-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 032 — browser conversation/request/history-window state](#session-032--browser-conversationrequesthistory-window-state-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-nine committed batches through session 031. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: thirty committed batches through session 032. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 032 — browser conversation/request/history-window state, 2026-09-18
+
+Primary review is complete and the changes are committed as `Own browser conversation and request state`. The pre-commit account below records the implementation and review corrections. The user authorizes test-interface migrations throughout this refactor, retaining behavioral regression coverage. Full-suite evidence was independently checked; provider configuration validation passed.
+
+MOD-009 partial remediation (uncommitted, pending primary commit review): `static/conversation-state.js` owns set-version transitions, exact set-identity payloads, retry-once decisions, request-sequence plus set-generation fencing, ghost-turn routing, history-window offsets/pagination and the three abort behaviors behind one tested API. `static/chat.js` holds one history window plus one request tracker and keeps DOM rendering, option syncing and voice routing callbacks; `window.APP_DATA` stays the single version store with no parallel `HISTORY_*`/`chatRequestSeq`/`currentAbortController` globals. Eight characterization tests passed before extraction; the same assertions now target the shared unit plus chat delegation, with a new Node behavior fixture covering version/retry/fencing/ghost/pagination/abort transitions. TTS sentence/exhaustion/queue fixtures drive generating state through the real tracker, and `js_syntax` parses the new unit. Primary review fixes are applied: voice interrupt bumps only when generation was active, user stop and voice interrupt abort uncaught with nothing yet cleared (begin/quiet keep the catching helper), no silent null controller fallback, test-only APIs (`versionConflictAction`, `noteOlderResponse`, `resolveDeleteAction`, unused getters) removed with tests on the production paths, the delete missing-AI branch restored separately, and idle-interrupt plus abort-throw regressions added. Evidence: baseline job `20260918T141205-0b9db85a36a0`, review-final job `20260918T144643-e8f88bd1db7d` (85 ok suites, exit 0; logs `temp/test-logs/modularity-mod009-{baseline-20260918T141000Z,final-20260918T143000Z,final-20260918T144500Z,review-final-20260918T150500Z}.log`, the two middle logs being the superseded final attempt and its test-corrected rerun). Voice lifecycle, inference settings and distribution ownership remain open; phase-1 completion review remains pending.
 
 ## Session 031 — verified data request context, 2026-09-18
 

@@ -7,6 +7,7 @@ fn native_js_lookahead_orders_refills_retries_and_cancels() {
     let run = Command::new("node")
         .arg(root.join("chatbot-server/tests/fixtures/native_tts_queue_test.js"))
         .arg(root.join("static/chat.js"))
+        .arg(root.join("static/conversation-state.js"))
         .output().expect("test image must provide the JS behavior-test runtime");
     assert!(run.status.success(), "JS queue behavior: {}", String::from_utf8_lossy(&run.stderr));
 }
