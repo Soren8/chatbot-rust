@@ -14,7 +14,7 @@
 
 use std::{
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -81,7 +81,18 @@ impl RememberStore {
         let base = env::var("HOST_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./data"));
-        let dir = base.join(TOKENS_DIR);
+        Self::open(&base)
+    }
+
+    /// Open (creating) the remember-token store rooted at `root`.
+    ///
+    /// Explicit input ownership for composed application services: each
+    /// service passes its own root instead of sharing `HOST_DATA_DIR`.
+    /// Creates the same `remember_tokens` directory as [`RememberStore::new`]
+    /// and performs no environment reads. Locking and rotation semantics are
+    /// unchanged.
+    pub fn open(root: &Path) -> Result<Self, RememberError> {
+        let dir = root.join(TOKENS_DIR);
         if !dir.exists() {
             fs::create_dir_all(&dir)?;
         }

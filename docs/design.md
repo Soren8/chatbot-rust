@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+`UserStore::open(root)` and `RememberStore::open(root)` support explicit storage roots; their `new()` compatibility APIs still resolve `HOST_DATA_DIR` per call. User-store verifier enrollment and checking also accept an explicit HMAC secret through `_with_secret` methods. Compatibility verification preserves one record read and only resolves configuration when a verifier exists. These constructors enable independent services; production account handlers still use the compatibility APIs.
+
 Chat/regenerate routes use leased prepare APIs. A non-cloneable `GenerationLease` binds the prepared session and owns completion or release; the stream guard owns its persistence closure. An unpolled body releases without saving, post-poll cancellation saves partial text (including empty text), and provider errors release without saving. Settlement still resolves the current entry by session ID; expiry/recreation semantics are a separate unresolved issue. Direct prepare/finalize compatibility APIs retain their existing behavior.
 
 History caches private store-produced `LogicalSnapshot` values. Chunked commits return normalized image-reference text for cache insertion; public `SetSnapshot` remains a compatibility DTO. `load` expands images into an owned copy, while `load_logical` preserves references consistently across warm/cold reads. Whole-blob migration and literal undecodable image markers keep their supported representations.

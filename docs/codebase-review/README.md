@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 023 — router resource ownership](#session-023--router-resource-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 024 — account storage inputs](#session-024--account-storage-inputs-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-one committed batches through session 023. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-two committed batches through session 024. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 024 — account storage inputs, 2026-09-18
+
+MOD-003 partial remediation: explicit roots for user/remember stores and explicit verifier secrets enable isolated service construction. Existing constructors, file layouts, key-verifier migration, token rotation and global config timing remain compatible. Primary caught a duplicate verifier read in the compatibility wrapper; it now compares the single loaded record. Five new tests cover account/password/preferences/salt isolation, verifier roots/secrets, token isolation/rotation, constructor layout compatibility and early-return config laziness. Existing tests remain intact; production callers still use ambient account dependencies.
+
+Full final `20260918T070651-1df3e3adeb52` and reviewed final `20260918T071408-72c5505f8b38` passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod003-account-inputs-20260918T070651Z.log` and `modularity-mod003-account-inputs-reviewed-final-20260918T071408Z.log`. Primary reviewed both source files and the full new test binary. Commit title: `Expose explicit account storage roots and verifier secrets`, based on `0b50f21`.
 
 ## Session 023 — router resource ownership, 2026-09-18
 

@@ -3,7 +3,7 @@ use std::{
     env, fmt,
     fs::{self, File},
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -122,6 +122,17 @@ impl UserStore {
         let base = env::var("HOST_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./data"));
+        Self::open(&base)
+    }
+
+    /// Open (creating) the account file store rooted at `root`.
+    ///
+    /// Explicit input ownership for composed application services: each
+    /// service passes its own root instead of sharing `HOST_DATA_DIR`.
+    /// Creates the same paths/defaults as [`UserStore::new`] and performs
+    /// no environment reads.
+    pub fn open(root: &Path) -> Result<Self, UserStoreError> {
+        let base = root.to_path_buf();
         if !base.exists() {
             fs::create_dir_all(&base)?;
         }
@@ -218,11 +229,10 @@ impl UserStore {
             .join(format!("{normalised_username}_kv"))
     }
 
-    fn compute_key_verifier(key: &[u8]) -> [u8; 32] {
+    fn compute_key_verifier_with_secret(key: &[u8], secret: &[u8]) -> [u8; 32] {
         type HmacSha256 = Hmac<Sha256>;
-        let secret = config::app_config().secret_key.clone();
         let mut mac =
-            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts arbitrary key lengths");
+            HmacSha256::new_from_slice(secret).expect("HMAC accepts arbitrary key lengths");
         mac.update(KEY_VERIFIER_LABEL);
         mac.update(key);
         mac.finalize().into_bytes().into()
@@ -256,8 +266,24 @@ impl UserStore {
     }
 
     pub fn ensure_key_verifier(&self, username: &str, key: &[u8]) -> Result<(), UserStoreError> {
+        // Invalid names report `Crypto` without initializing the global config.
+        normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let secret = config::app_config().secret_key.clone();
+        self.ensure_key_verifier_with_secret(username, key, secret.as_bytes())
+    }
+
+    /// Enroll or check the key verifier using an explicitly provided HMAC
+    /// secret. Independently configured application services pass their own
+    /// secret so verifier roots stay isolated. Performs no config reads and
+    /// shares the on-disk format with [`UserStore::ensure_key_verifier`].
+    pub fn ensure_key_verifier_with_secret(
+        &self,
+        username: &str,
+        key: &[u8],
+        secret: &[u8],
+    ) -> Result<(), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
-        let expected = Self::compute_key_verifier(key);
+        let expected = Self::compute_key_verifier_with_secret(key, secret);
 
         if let Some(record) = self.load_key_verifier_record(&normalised)? {
             if !constant_time_eq(&record.verifier, &expected) {
@@ -274,13 +300,36 @@ impl UserStore {
     }
 
     pub fn verify_encryption_key(&self, username: &str, key: &[u8]) -> Result<bool, UserStoreError> {
+        // Invalid names report `Crypto` and missing verifiers report `false`,
+        // both without initializing the global config. The loaded record is
+        // compared directly so the verifier is read exactly once.
+        let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let Some(record) = self.load_key_verifier_record(&normalised)? else {
+            return Ok(false);
+        };
+        let secret = config::app_config().secret_key.clone();
+        Ok(constant_time_eq(
+            &record.verifier,
+            &Self::compute_key_verifier_with_secret(key, secret.as_bytes()),
+        ))
+    }
+
+    /// Check the key verifier against an explicitly provided HMAC secret.
+    /// Performs no config reads; returns `false` when no verifier is
+    /// enrolled, matching [`UserStore::verify_encryption_key`].
+    pub fn verify_encryption_key_with_secret(
+        &self,
+        username: &str,
+        key: &[u8],
+        secret: &[u8],
+    ) -> Result<bool, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let Some(record) = self.load_key_verifier_record(&normalised)? else {
             return Ok(false);
         };
         Ok(constant_time_eq(
             &record.verifier,
-            &Self::compute_key_verifier(key),
+            &Self::compute_key_verifier_with_secret(key, secret),
         ))
     }
 
