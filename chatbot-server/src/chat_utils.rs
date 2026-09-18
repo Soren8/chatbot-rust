@@ -10,7 +10,7 @@ use chatbot_core::{
 use anyhow::Error;
 use regex::Regex;
 use serde_json::{json, Value};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use crate::http_error::{map_response_build_err, HttpError};
 use tracing::warn;
@@ -93,33 +93,27 @@ impl Drop for ChatLockGuard {
     }
 }
 
-/// Ensures session lock + history finalize run even when the client aborts
-/// mid-stream (browser Stop button / dropped response body).
+/// Settles the owned generation lease when streaming ends or is dropped.
 ///
-/// Without this, cancel leaves the generate-lock held and/or omits the chat
-/// pair from durable history, so a subsequent edit/regenerate fails with 4xx.
+/// Success persists the final text; a marked provider error releases without
+/// persisting. A dropped guard persists partial text unless a provider error
+/// was marked.
 pub struct StreamCompletionGuard {
-    lock: Arc<std::sync::Mutex<ChatLockGuard>>,
-    /// Set once lock is released and (if applicable) history is finalized.
-    settled: bool,
+    on_persist: Option<Box<dyn FnOnce(&str) -> Result<Vec<String>, ()> + Send>>,
     /// Provider stream error: unlock only, do not persist tainted text.
     skip_persist: bool,
-    on_persist: Option<Box<dyn FnOnce(&str) -> Result<Vec<String>, ()> + Send>>,
     response_text: String,
     save_thoughts: bool,
 }
 
 impl StreamCompletionGuard {
     pub fn new(
-        lock: Arc<std::sync::Mutex<ChatLockGuard>>,
         save_thoughts: bool,
         on_persist: impl FnOnce(&str) -> Result<Vec<String>, ()> + Send + 'static,
     ) -> Self {
         Self {
-            lock,
-            settled: false,
-            skip_persist: false,
             on_persist: Some(Box::new(on_persist)),
+            skip_persist: false,
             response_text: String::new(),
             save_thoughts,
         }
@@ -143,54 +137,35 @@ impl StreamCompletionGuard {
 
     /// Normal completion (stream finished without provider error).
     pub fn complete_success(&mut self) -> Vec<String> {
-        if self.settled {
-            return Vec::new();
-        }
-        self.settled = true;
         if self.skip_persist {
-            self.lock.lock().unwrap().release_if_needed();
+            self.complete_without_persist();
             return Vec::new();
         }
-        let text = self.final_text();
         match self.on_persist.take() {
-            Some(persist) => match persist(&text) {
-                Ok(extras) => {
-                    // finalize unlocks the session entry; prevent double-unlock on Drop.
-                    self.lock.lock().unwrap().mark_released();
-                    extras
-                }
+            Some(persist) => match persist(&self.final_text()) {
+                Ok(extras) => extras,
                 Err(()) => {
-                    self.lock.lock().unwrap().release_if_needed();
                     vec!["\n[Error] Failed to persist chat history".to_string()]
                 }
             },
-            None => {
-                self.lock.lock().unwrap().release_if_needed();
-                Vec::new()
-            }
+            None => Vec::new(),
         }
     }
 
-    /// Provider error path: unlock without writing history.
+    /// Release without persisting.
     pub fn complete_without_persist(&mut self) {
-        if self.settled {
-            return;
-        }
-        self.settled = true;
         self.skip_persist = true;
         self.on_persist.take();
-        self.lock.lock().unwrap().release_if_needed();
     }
 }
 
 impl Drop for StreamCompletionGuard {
     fn drop(&mut self) {
-        if self.settled {
+        if self.on_persist.is_none() {
             return;
         }
-        // Client cancelled / body dropped before the stream loop finished.
-        // Persist whatever partial assistant text we have so Stop → Edit works
-        // (pair exists for regenerate) and always release the generate-lock.
+        // Persist partial text on cancel; release without persisting after a
+        // marked provider error.
         if self.skip_persist {
             self.complete_without_persist();
         } else {

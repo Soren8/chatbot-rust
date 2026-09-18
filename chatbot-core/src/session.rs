@@ -388,6 +388,150 @@ pub fn release_session_lock(session_id: &str) {
     }
 }
 
+/// Owns settlement for one successful prepare.
+///
+/// The lease binds the prepare-time session and settles by session ID
+/// through the current entry. It never holds the entry across awaits and
+/// cannot be cloned.
+#[derive(Debug)]
+pub struct GenerationLease {
+    session: SessionContext,
+    settled: bool,
+}
+
+impl GenerationLease {
+    fn new(session: SessionContext) -> Self {
+        Self { session, settled: false }
+    }
+
+    /// Session settled by this lease.
+    pub fn session_id(&self) -> &str {
+        &self.session.session_id
+    }
+
+    fn settle(&mut self) {
+        if !self.settled {
+            self.settled = true;
+            release_session_lock(&self.session.session_id);
+        }
+    }
+
+    /// Persist a `/chat` turn with the bound session, then settle.
+    pub fn complete_chat(
+        mut self,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> Vec<String> {
+        let extras = chat_finalize_with_capture(
+            &self.session,
+            set_name,
+            user_message,
+            assistant_response,
+            encryption_key,
+            prepare_capture,
+        );
+        // The finalize above already settled this session.
+        self.settled = true;
+        extras
+    }
+
+    /// Persist a `/regenerate` turn with the bound session, then settle.
+    pub fn complete_regenerate(
+        mut self,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        insertion_index: Option<usize>,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> Vec<String> {
+        let extras = regenerate_finalize_with_capture(
+            &self.session,
+            set_name,
+            user_message,
+            assistant_response,
+            insertion_index,
+            encryption_key,
+            prepare_capture,
+        );
+        // The finalize above already settled this session.
+        self.settled = true;
+        extras
+    }
+
+    /// Settle without persisting.
+    pub fn release_without_persist(mut self) {
+        self.settle();
+    }
+}
+
+impl Drop for GenerationLease {
+    fn drop(&mut self) {
+        self.settle();
+    }
+}
+
+/// Successful leased chat prepare: context with its settlement lease.
+///
+/// On success, `context` and `lease` are `Some`; on error, `error` is `Some`
+/// with no lease.
+pub struct LeasedChatPrepare {
+    pub context: Option<ChatContext>,
+    pub lease: Option<GenerationLease>,
+    pub error: Option<PrepareError>,
+}
+
+/// Prepare a chat generation and bind its settlement lease.
+pub fn chat_prepare_leased(
+    session: &SessionContext,
+    request: &ChatRequestData<'_>,
+    provider: &ProviderConfig,
+    encryption_key: Option<&EncryptionKey>,
+) -> LeasedChatPrepare {
+    let ChatPrepareResult { context, error } = chat_prepare(session, request, provider, encryption_key);
+    let lease = context.as_ref().map(|_| GenerationLease::new(session.clone()));
+    LeasedChatPrepare {
+        context,
+        lease,
+        error,
+    }
+}
+
+/// Successful leased regenerate prepare: context, replace index, and lease.
+///
+/// On success, `context` and `lease` are `Some`; on error, `error` is `Some`
+/// with no lease.
+pub struct LeasedRegeneratePrepare {
+    pub context: Option<ChatContext>,
+    pub insertion_index: Option<usize>,
+    pub lease: Option<GenerationLease>,
+    pub error: Option<PrepareError>,
+}
+
+/// Prepare regeneration and bind its settlement lease.
+pub fn regenerate_prepare_leased(
+    session: &SessionContext,
+    request: &RegenerateRequestData<'_>,
+    provider: &ProviderConfig,
+    encryption_key: Option<&EncryptionKey>,
+) -> LeasedRegeneratePrepare {
+    let RegeneratePrepareResult {
+        context,
+        insertion_index,
+        error,
+    } = regenerate_prepare(session, request, provider, encryption_key);
+    let lease = context.as_ref().map(|_| GenerationLease::new(session.clone()));
+    LeasedRegeneratePrepare {
+        context,
+        insertion_index,
+        lease,
+        error,
+    }
+}
+
 fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), ServiceResponse> {
     if !data.requires_cipher {
         return Ok(());
@@ -1608,6 +1752,245 @@ mod tests {
         assert_eq!(after[0], ("User1".into(), "AI1".into()));
         assert_eq!(after[1], ("User1 more words".into(), "joined-reply".into()));
 
+        release_session_lock(session_id);
+    }
+
+    fn lease_test_provider() -> ProviderConfig {
+        ProviderConfig {
+            provider_name: "default".to_string(),
+            provider_type: "openai".to_string(),
+            tier: None,
+            model_name: "default".to_string(),
+            context_size: Some(4096),
+            base_url: "http://localhost".to_string(),
+            api_key: None,
+            allowed_providers: vec![],
+            request_timeout: None,
+            rate_limit_retries: None,
+            rate_limit_max_wait_secs: None,
+            test_chunks: None,
+            search: false,
+            xai_search: true,
+            xai_zdr: false,
+        }
+    }
+
+    fn lease_test_chat_request<'a>() -> ChatRequestData<'a> {
+        ChatRequestData {
+            message: "hello",
+            system_prompt: None,
+            set_name: Some("default"),
+            set_id: None,
+            model_name: None,
+            encrypted: false,
+            send_thoughts: false,
+        }
+    }
+
+    #[test]
+    fn leased_chat_prepare_holds_lock_until_explicit_release() {
+        let session_id = "guest_test-lease-holds-lock";
+        let session = SessionContext {
+            session_id: session_id.to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+
+        let prepared = chat_prepare_leased(&session, &lease_test_chat_request(), &provider, None);
+        assert!(prepared.error.is_none());
+        assert!(prepared.context.is_some());
+        let lease = prepared.lease.expect("success must mint a lease");
+        assert_eq!(lease.session_id(), session_id);
+
+        // Lock is held: a second prepare reports Busy, never blocking.
+        let busy = chat_prepare(&session, &lease_test_chat_request(), &provider, None);
+        assert!(
+            matches!(
+                busy.error,
+                Some(PrepareError::Policy(PreparePolicyError::Busy))
+            ),
+            "expected Busy while the lease is outstanding: {:?}",
+            busy.error
+        );
+
+        // Explicit release without persisting frees the lock and saves nothing.
+        lease.release_without_persist();
+        assert!(session_history(session_id).is_empty());
+
+        let retry = chat_prepare(&session, &lease_test_chat_request(), &provider, None);
+        assert!(retry.error.is_none());
+        assert!(retry.context.is_some());
+        release_session_lock(session_id);
+    }
+
+    #[test]
+    fn leased_chat_complete_persists_and_settles_exactly_once() {
+        let session_id = "guest_test-lease-complete-once";
+        let session = SessionContext {
+            session_id: session_id.to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+
+        let prepared = chat_prepare_leased(&session, &lease_test_chat_request(), &provider, None);
+        assert!(prepared.error.is_none());
+        let lease = prepared.lease.expect("success must mint a lease");
+
+        let extras = lease.complete_chat("default", "hello", "hi there", None, None);
+        assert!(extras.is_empty());
+        assert_eq!(
+            session_history(session_id),
+            vec![("hello".to_string(), "hi there".to_string())]
+        );
+
+        // The lock is free after completion.
+        let retry = chat_prepare(&session, &lease_test_chat_request(), &provider, None);
+        assert!(retry.error.is_none());
+        release_session_lock(session_id);
+    }
+
+    #[test]
+    fn completing_one_lease_leaves_another_session_busy() {
+        let session_a = SessionContext {
+            session_id: "guest_test-lease-two-a".to_string(),
+            username: None,
+        };
+        let session_b = SessionContext {
+            session_id: "guest_test-lease-two-b".to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+
+        let prepared_a =
+            chat_prepare_leased(&session_a, &lease_test_chat_request(), &provider, None);
+        let prepared_b =
+            chat_prepare_leased(&session_b, &lease_test_chat_request(), &provider, None);
+        assert!(prepared_a.error.is_none());
+        assert!(prepared_b.error.is_none());
+        let lease_a = prepared_a.lease.expect("success must mint a lease");
+        let lease_b = prepared_b.lease.expect("success must mint a lease");
+        assert_eq!(lease_a.session_id(), "guest_test-lease-two-a");
+        assert_eq!(lease_b.session_id(), "guest_test-lease-two-b");
+
+        let extras = lease_a.complete_chat("default", "a user", "a answer", None, None);
+        assert!(extras.is_empty());
+
+        // Completing A settled only A: B is still locked.
+        let busy_b = chat_prepare(&session_b, &lease_test_chat_request(), &provider, None);
+        assert!(
+            matches!(
+                busy_b.error,
+                Some(PrepareError::Policy(PreparePolicyError::Busy))
+            ),
+            "expected B to stay Busy after A completed: {:?}",
+            busy_b.error
+        );
+
+        // A is reusable and B persisted nothing.
+        let retry_a = chat_prepare(&session_a, &lease_test_chat_request(), &provider, None);
+        assert!(retry_a.error.is_none());
+        release_session_lock("guest_test-lease-two-a");
+        assert_eq!(
+            session_history("guest_test-lease-two-a"),
+            vec![("a user".to_string(), "a answer".to_string())]
+        );
+        assert!(session_history("guest_test-lease-two-b").is_empty());
+
+        lease_b.release_without_persist();
+        let retry_b = chat_prepare(&session_b, &lease_test_chat_request(), &provider, None);
+        assert!(retry_b.error.is_none());
+        release_session_lock("guest_test-lease-two-b");
+    }
+
+    #[test]
+    fn dropped_lease_releases_without_persisting() {
+        let session_id = "guest_test-lease-drop-releases";
+        let session = SessionContext {
+            session_id: session_id.to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+
+        let prepared = chat_prepare_leased(&session, &lease_test_chat_request(), &provider, None);
+        assert!(prepared.error.is_none());
+        drop(prepared.lease.expect("success must mint a lease"));
+
+        assert!(session_history(session_id).is_empty());
+        let retry = chat_prepare(&session, &lease_test_chat_request(), &provider, None);
+        assert!(retry.error.is_none());
+        release_session_lock(session_id);
+    }
+
+    #[test]
+    fn leased_prepare_error_mints_no_lease_and_holds_no_lock() {
+        let session_id = "guest_test-lease-error-no-lock";
+        let session = SessionContext {
+            session_id: session_id.to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+        let bad = ChatRequestData {
+            message: "   ",
+            system_prompt: None,
+            set_name: Some("default"),
+            set_id: None,
+            model_name: None,
+            encrypted: false,
+            send_thoughts: false,
+        };
+
+        let prepared = chat_prepare_leased(&session, &bad, &provider, None);
+        assert!(prepared.context.is_none());
+        assert!(prepared.lease.is_none());
+        assert!(matches!(
+            prepared.error,
+            Some(PrepareError::Validation(
+                PrepareValidationError::MessageRequired
+            ))
+        ));
+
+        // No lock was ever taken: an immediate retry prepares cleanly.
+        let retry = chat_prepare(&session, &lease_test_chat_request(), &provider, None);
+        assert!(retry.error.is_none());
+        release_session_lock(session_id);
+    }
+
+    #[test]
+    fn leased_regenerate_complete_replaces_and_releases() {
+        let session_id = "guest_test-lease-regen-complete";
+        SessionStore::global().entry(session_id);
+        update_session_history(session_id, &[("u1".to_string(), "a1".to_string())]);
+
+        let session = SessionContext {
+            session_id: session_id.to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+        let request = RegenerateRequestData {
+            set_id: None,
+            message: "u1",
+            system_prompt: None,
+            set_name: Some("default"),
+            model_name: None,
+            encrypted: false,
+            pair_index: Some(0),
+            send_thoughts: false,
+        };
+
+        let prepared = regenerate_prepare_leased(&session, &request, &provider, None);
+        assert!(prepared.error.is_none());
+        assert_eq!(prepared.insertion_index, Some(0));
+        let lease = prepared.lease.expect("success must mint a lease");
+
+        let extras = lease.complete_regenerate("default", "u1", "a2", Some(0), None, None);
+        assert!(extras.is_empty());
+        assert_eq!(
+            session_history(session_id),
+            vec![("u1".to_string(), "a2".to_string())]
+        );
+
+        let retry = regenerate_prepare(&session, &request, &provider, None);
+        assert!(retry.error.is_none());
         release_session_lock(session_id);
     }
 }

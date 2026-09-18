@@ -11,23 +11,22 @@ use bytes::Bytes;
 use chatbot_core::{
     chat,
     config::{app_config, get_provider_config},
-    session::{self, ChatRequestData, SessionContext},
+    session::{self, ChatRequestData},
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
 use tracing::{debug, error};
 
 use crate::chat_utils::{
-    error_as_saved_chat_turn, provider_error_parts, service_error_message, ChatLockGuard,
+    error_as_saved_chat_turn, provider_error_parts, service_error_message,
     StreamCompletionGuard,
 };
 use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_prepare_history_err,
     map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
     HttpError,
-use crate::identity::RequestIdentity;
 };
+use crate::identity::RequestIdentity;
 use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
 
 #[derive(Deserialize)]
@@ -56,8 +55,8 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
     }
 
-    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let (parts, body) = request.into_parts();
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 5 * 1024 * 1024)
@@ -173,7 +172,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         send_thoughts,
     };
 
-    let prepare = session::chat_prepare(
+    let prepare = session::chat_prepare_leased(
         &session_context,
         &request_data,
         &provider_config,
@@ -233,13 +232,18 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     let context = prepare.context.ok_or_else(|| {
         api_error(StatusCode::INTERNAL_SERVER_ERROR, "missing chat context")
     })?;
-
-    let lock_guard = Arc::new(Mutex::new(ChatLockGuard::new(context.session_id.clone())));
+    // The lease settles this generation.
+    let lease = prepare.lease.ok_or_else(|| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "missing generation lease",
+        )
+    })?;
 
     let provider = match build_provider(provider_type.as_str(), &context.provider) {
         Ok(provider) => provider,
         Err(err) => {
-            lock_guard.lock().unwrap().release_if_needed();
+            lease.release_without_persist();
             let (setup_msg, _) = provider_error_parts(&err);
             return error_as_saved_chat_turn(
                 &session_context,
@@ -264,7 +268,6 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     let messages = map_core_messages(&prepared.messages);
 
-    let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
     let prepare_capture = context.prepare_capture.clone();
     let user_message = payload.message.clone();
@@ -281,7 +284,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         Ok(stream) => stream,
         Err(err) => {
             error!(?err, "provider stream setup failed");
-            lock_guard.lock().unwrap().release_if_needed();
+            lease.release_without_persist();
             let (req_msg, _) = provider_error_parts(&err);
             return error_as_saved_chat_turn(
                 &session_context,
@@ -294,29 +297,24 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         }
     };
 
-    let stream_lock = lock_guard.clone();
-    let session_for_guard = session_context_for_finalize.clone();
     let set_name_for_guard = set_name.clone();
     let user_message_for_guard = user_message.clone();
     let enc_for_guard = encryption_key_for_finalize.clone();
     let capture_for_guard = prepare_capture.clone();
 
     let stream = stream! {
+        // The persist closure owns the lease. Dropping an unpolled stream
+        // releases it without persisting.
         let mut guard = StreamCompletionGuard::new(
-            stream_lock,
             save_thoughts,
-            move |final_response| {
-                finalize_chat(
-                    &session_for_guard,
+            move |final_response: &str| -> Result<Vec<String>, ()> {
+                Ok(lease.complete_chat(
                     &set_name_for_guard,
                     &user_message_for_guard,
                     final_response,
                     enc_for_guard.as_ref(),
                     capture_for_guard.clone(),
-                )
-                .map_err(|err| {
-                    error!(?err, "chat_finalize failed");
-                })
+                ))
             },
         );
 
@@ -363,29 +361,10 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(body_stream))
-        .map_err(|err| {
-            lock_guard.lock().unwrap().release_if_needed();
-            map_response_build_err(err, "chat::post::response")
-        })?;
+        // The lease moved into the stream; dropping the body releases it
+        // without persisting.
+        .map_err(|err| map_response_build_err(err, "chat::post::response"))?;
 
     debug!("/chat request handled via Rust path");
     Ok(response)
-}
-
-fn finalize_chat(
-    session: &SessionContext,
-    set_name: &str,
-    user_message: &str,
-    assistant_response: &str,
-    encryption_key: Option<&chatbot_core::enc_key::EncryptionKey>,
-    prepare_capture: Option<chatbot_core::history::PrepareCapture>,
-) -> Result<Vec<String>> {
-    Ok(session::chat_finalize_with_capture(
-        session,
-        set_name,
-        user_message,
-        assistant_response,
-        encryption_key,
-        prepare_capture,
-    ))
 }

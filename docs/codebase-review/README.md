@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 021 — router identity composition](#session-021--router-identity-composition-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 022 — generation settlement ownership](#session-022--generation-settlement-ownership-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: nineteen committed batches through session 021. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty committed batches through session 022. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -278,3 +278,13 @@ Six route tests prove cross-router cookie/CSRF/login isolation, default-global c
 Baseline reused preceding green `20260918T045405-b76137ee7465`. Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Final `20260918T052122-07de4775eb68`, reviewed final `20260918T053800-0895f05d4d11`: passed, including provider-config validation. Logs: `temp/test-logs/modularity-mod003-router-identity-{final,reviewed-final}.log`; failed new-fixture attempts are preserved under `*-final-attempt1-red.log` (rate-limit environment precedence) and `*-reviewed-final-attempt1-red.log` (global initialization shared between tests, corrected by dedicated binary). Primary reviewed every migrated call site, startup/layer wiring, purge and seven tests.
 
 Local commit title: `Compose HTTP identity through router and background tasks`, based on `c678656`. Nineteen remediation batches complete; broader application composition and phase-1 completion review remain open.
+
+## Session 022 — generation settlement ownership, 2026-09-18
+
+MOD-006 partial remediation: production routes use leased prepare APIs. Non-cloneable `GenerationLease` binds the prepare-time session, delegates persistence/unlock to the existing core finalizers and suppresses its fallback drop release after completion. The stream guard owns the lease-capturing closure and no longer shares a second lock/released flag with handlers. Primary required identity binding inside the lease so completion cannot select another session. Existing prepare/finalize APIs and public `ChatLockGuard` remain compatibility surfaces.
+
+Eight route characterizations passed unchanged before/after extraction: chat/regenerate success, provider error, pre-poll cancel, partial cancel, polled-but-empty cancel, unknown-model saved error and regeneration partial replacement. Six new core tests verify owned release/completion/error/drop and that completing A leaves B busy. Primary reviewed all production edits and tests. Setup failures retain release-before-saved-turn order; response-build failure releases on body drop before returning. Neither branch is forced through fault injection. ID-based expiry/recreation, pre-prepare error-turn unlock behavior and post-commit mirror policy are preserved, not fixed. Typed finalizer outcomes remain open.
+
+Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Baseline `20260918T060140-c76ad550bbb3`, final `20260918T061029-d46f9161ae3c`, reviewed final `20260918T062005-6eeefbb38a9b`: passed including provider-config validation. Logs: `temp/test-logs/modularity-mod006-lease-{baseline,final,reviewed-final}.log`. A compile-error baseline attempt is preserved (`20260918T055504-e8a65113ff79`); a further new-fixture lifetime failure was corrected before the green baseline, with no separate log available in the named evidence set. Existing tests were unchanged.
+
+Local commit title: `Bind generation settlement to an owned lease`, based on `f09a65d`. Twenty remediation batches complete; phase 1 remains open and its main-model read-only completion review is still pending.
