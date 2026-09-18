@@ -1,4 +1,15 @@
-"""FastAPI voice service — TTS (Kokoro) and STT (Parakeet)."""
+"""FastAPI voice service — TTS (Kokoro) and STT (Parakeet).
+
+``create_app`` builds the app; ``lifespan`` resolves settings, takes the
+owned ``InferenceService``, and loads it — including factory-injected test
+services, so tests exercise the same startup path and failure. Every route
+uses ``request.app.state.inference_service``. Startup load failures propagate
+and the app never starts degraded. HTTP shapes: TTS 400/500 with
+``application/octet-stream`` + ``X-Sample-Rate``; STT 400/422/500 with WAV
+staging cleaned via ``os.unlink`` in ``finally``; health reports the owned
+service's flags. Streaming keeps the thread→queue bridge: unbounded, no
+disconnect cancellation, no shutdown join.
+"""
 
 import asyncio
 import logging
@@ -6,36 +17,60 @@ import os
 import tempfile
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import models
 from .audio_utils import webm_to_wav_bytes
+from .service import InferenceService
+from .settings import VoiceSettings, resolve_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-PARAKEET_SR = 16_000  # Parakeet TDT expects 16 kHz input
+router = APIRouter()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    models.load_models()
+    pending_service: InferenceService | None = app.state.pending_service
+    pending_settings: VoiceSettings | None = app.state.pending_settings
+    if pending_service is not None:
+        service = pending_service
+        settings = pending_settings or service.settings
+    else:
+        settings = pending_settings or resolve_settings()
+        service = InferenceService(settings)
+    service.load_models()
+    app.state.voice_settings = settings
+    app.state.inference_service = service
     yield
 
 
-app = FastAPI(title="Voice Service", lifespan=lifespan)
+def create_app(
+    settings: VoiceSettings | None = None,
+    inference_service: InferenceService | None = None,
+    audio_converter=None,
+) -> FastAPI:
+    """Build one voice-service app with lifespan-owned inference state."""
+    app = FastAPI(title="Voice Service", lifespan=lifespan)
+    app.state.pending_settings = settings
+    app.state.pending_service = inference_service
+    app.state.audio_converter = audio_converter or webm_to_wav_bytes
+    app.include_router(router)
+    return app
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
-@app.get("/health")
-def health():
+@router.get("/health")
+def health(request: Request):
+    service: InferenceService = request.app.state.inference_service
+    readiness = service.readiness()
     return {
         "status": "ok",
-        "kokoro_loaded": models._kokoro_loaded,
-        "stt_loaded": models._stt_loaded,
+        "kokoro_loaded": readiness["kokoro_loaded"],
+        "stt_loaded": readiness["stt_loaded"],
     }
 
 
@@ -46,14 +81,15 @@ class KokoroTtsRequest(BaseModel):
     voice: str = "af_heart"
 
 
-@app.post("/v1/tts/kokoro")
-async def kokoro_tts(req: KokoroTtsRequest):
+@router.post("/v1/tts/kokoro")
+async def kokoro_tts(req: KokoroTtsRequest, request: Request):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
 
+    service: InferenceService = request.app.state.inference_service
     try:
         pcm, sr = await asyncio.to_thread(
-            models.synthesize_kokoro,
+            service.synthesize_kokoro,
             text=req.text,
             voice=req.voice,
         )
@@ -68,14 +104,16 @@ async def kokoro_tts(req: KokoroTtsRequest):
     )
 
 
-@app.post("/v1/tts/kokoro/stream")
-async def kokoro_tts_stream(req: KokoroTtsRequest):
+@router.post("/v1/tts/kokoro/stream")
+async def kokoro_tts_stream(req: KokoroTtsRequest, request: Request):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
 
+    service: InferenceService = request.app.state.inference_service
+
     async def generator():
         try:
-            async for chunk in models.synthesize_kokoro_stream(
+            async for chunk in service.synthesize_kokoro_stream(
                 text=req.text,
                 voice=req.voice,
             ):
@@ -84,7 +122,7 @@ async def kokoro_tts_stream(req: KokoroTtsRequest):
             logger.exception("Kokoro TTS stream failed")
             raise HTTPException(status_code=500, detail=str(exc))
 
-    sr = models.kokoro_sample_rate()
+    sr = service.kokoro_sample_rate()
     return StreamingResponse(
         generator(),
         media_type="application/octet-stream",
@@ -94,15 +132,18 @@ async def kokoro_tts_stream(req: KokoroTtsRequest):
 
 # ── STT ───────────────────────────────────────────────────────────────────────
 
-@app.post("/v1/stt")
-async def stt(audio: UploadFile = File(...)):
+@router.post("/v1/stt")
+async def stt(request: Request, audio: UploadFile = File(...)):
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=400, detail="audio file is empty")
 
+    service: InferenceService = request.app.state.inference_service
+    converter = request.app.state.audio_converter
+
     # Convert any ffmpeg-compatible format to 16 kHz WAV for Parakeet
     try:
-        wav_bytes = webm_to_wav_bytes(raw, target_sr=PARAKEET_SR)
+        wav_bytes = converter(raw, target_sr=service.settings.parakeet_sample_rate)
     except Exception as exc:
         logger.exception("Audio conversion failed")
         raise HTTPException(status_code=422, detail=f"Audio conversion failed: {exc}")
@@ -112,7 +153,7 @@ async def stt(audio: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        text = await asyncio.to_thread(models.transcribe, tmp_path)
+        text = await asyncio.to_thread(service.transcribe, tmp_path)
     except Exception as exc:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -120,3 +161,8 @@ async def stt(audio: UploadFile = File(...)):
         os.unlink(tmp_path)
 
     return {"text": text}
+
+
+# Production app: constructed after all routes are registered so
+# include_router picks up the full shipped surface (uvicorn src.main:app).
+app = create_app()

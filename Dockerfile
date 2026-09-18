@@ -67,7 +67,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Test image with cargo available
 FROM rust-tools AS test
 # Execute native scheduler and JS queue behavior tests; js_syntax still uses oxc.
-RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless nodejs \
+# python3 + python3-yaml + minimal FastAPI run the CPU-only voice-service
+# lifecycle tests (injected fakes, no torch/GPU) driven by cargo in
+# voice_service_lifecycle.rs.
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless nodejs python3 python3-pip python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 # Toolchain lives outside /app so the dev bind-mount (./:/app) cannot hide cargo on CI.
 ENV CARGO_HOME=/opt/cargo
@@ -90,9 +93,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       cp -a /usr/local/cargo/registry /opt/cargo/ 2>/dev/null || true; \
       cp -a /usr/local/cargo/git /opt/cargo/ 2>/dev/null || true; \
     '
+# Minimal voice-service CPU test runtime: real FastAPI routing without GPU
+# deps (torch/nemo/kokoro stay out of the tests image). Pinned to the
+# test-resolved versions (fastapi/multipart match chatbot-cuda/requirements).
+RUN python3 -m pip install --break-system-packages --no-cache-dir "fastapi==0.141.1" "python-multipart==0.0.32" "httpx==0.28.1"
 COPY chatbot-core /app/chatbot-core
 COPY chatbot-server /app/chatbot-server
 COPY chatbot-test-support /app/chatbot-test-support
+COPY chatbot-cuda /app/chatbot-cuda
 COPY static /app/static
 # Integration tests inspect Android sources with compile-time include_str! calls.
 COPY android/app/src /app/android/app/src
