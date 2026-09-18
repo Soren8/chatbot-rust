@@ -10,6 +10,8 @@ Pure browser/native voice-text operations live in `static/voice-text.js`: senten
 
 HTTP identity lifecycle lives in `chatbot-core/src/session_identity.rs`: cookie/CSRF state, guest/user identity, login/logout rotation and identity expiry. `session.rs` re-exports its public API and composes HTTP/chat expiry counts; chat state, generation locks and orchestration remain in `session.rs`.
 
+`HttpSessionStore` can be constructed with an explicit timeout and receives CSRF policy per operation. The compatibility free functions use one lazy process-global instance, preserving first-use timeout capture and live CSRF configuration. Independently constructed stores share no identity state; router-level service composition remains separate work.
+
 Raw request Cookie/CSRF header parsing and client-IP selection live in `chatbot-server/src/request_context.rs`. Route handlers retain identity lookup and CSRF/authorization decisions; rate limiting uses the borrowed cookie accessor. `chat_utils::get_ip` is a compatibility re-export.
 
 Prompt packing in `chatbot-core::chat::prepare_prompt_messages` uses borrowed `PromptInput` (system prompt, memory, history, context size and thoughts flag). `prepare_chat_messages` adapts the session-owned `ChatContext` and resolves the provider's default context size for existing consumers.

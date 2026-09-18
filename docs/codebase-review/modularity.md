@@ -16,6 +16,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 ## MOD-003 — Process-global state bypasses application composition
 
+**Partial remediation (session 020):** owned `HttpSessionStore` accepts explicit timeout/CSRF inputs; independent instances are lifecycle-isolated. Compatibility delegates retain one lazy production instance, including early-return initialization timing. Five new tests and full suites pass. Router-level ownership, history/chat composition and ambient storage/config remain open.
+
 **Evidence:** `build_router` accepts only a static path. Core session stores capture config independently (`session.rs:153–163,471–481`); `HistoryService::global` captures storage/config separately (`history/api.rs:95–119`); config itself can reset (`config.rs:208–213`). `UserStore::new` and `RememberStore::new` independently read `HOST_DATA_DIR`; Brave reads its environment at each construction despite an `AppConfig.brave_api_key` field. TTS pending state and several HTTP clients have separate static owners.
 
 **Consequence:** constructing a router does not construct an isolated application. Runtime initialization, configuration, shutdown, and test isolation depend on first-use order and ambient process state. Resetting config does not reset services already derived from it. This strengthens TEST-001 without asserting that every test is currently failing.

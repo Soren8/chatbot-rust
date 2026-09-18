@@ -60,20 +60,28 @@ struct HttpSessionRecord {
     last_used: Instant,
 }
 
-struct HttpSessionStore {
+/// Owned HTTP identity state: cookie-indexed session records plus the
+/// resolved HTTP timeout. Two instances share nothing; production keeps one
+/// process-global instance behind the free functions below.
+pub struct HttpSessionStore {
     sessions: Mutex<HashMap<String, HttpSessionRecord>>,
     timeout: Duration,
 }
 
 impl HttpSessionStore {
+    /// Explicit owned construction from the resolved `session_timeout` value.
+    /// Applies the HTTP minimum-60s floor (chat's raw timeout stays separate).
+    pub fn new(session_timeout_secs: u64) -> Self {
+        HttpSessionStore {
+            sessions: Mutex::new(HashMap::new()),
+            timeout: Duration::from_secs(std::cmp::max(60, session_timeout_secs)),
+        }
+    }
+
     fn global() -> &'static HttpSessionStore {
         static STORE: Lazy<HttpSessionStore> = Lazy::new(|| {
             let config = config::app_config();
-            let timeout = Duration::from_secs(std::cmp::max(60, config.session_timeout));
-            HttpSessionStore {
-                sessions: Mutex::new(HashMap::new()),
-                timeout,
-            }
+            HttpSessionStore::new(config.session_timeout)
         });
         &STORE
     }
@@ -83,7 +91,7 @@ impl HttpSessionStore {
         sessions.retain(|_, record| now.duration_since(record.last_used) <= timeout);
     }
 
-    fn purge_expired(&self) -> usize {
+    pub(crate) fn purge_expired(&self) -> usize {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().unwrap();
         let before = sessions.len();
@@ -129,9 +137,9 @@ impl HttpSessionStore {
         (cookie_value, true)
     }
 
-    fn build_set_cookie(&self, value: &str) -> String {
+    fn build_set_cookie(&self, value: &str, csrf_enabled: bool) -> String {
         let max_age = self.timeout.as_secs().clamp(60, 31_536_000);
-        let secure = if config::app_config().csrf {
+        let secure = if csrf_enabled {
             " Secure;"
         } else {
             ""
@@ -139,6 +147,169 @@ impl HttpSessionStore {
         format!(
             "{SESSION_COOKIE_NAME}={value}; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age={max_age}"
         )
+    }
+
+    /// Bootstrap (or reuse) the session for `cookie_header`.
+    pub fn prepare_home_context(
+        &self,
+        cookie_header: Option<&str>,
+        csrf_enabled: bool,
+    ) -> Result<HomeBootstrap, SessionError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let now = Instant::now();
+        self.clean_expired(&mut sessions, now);
+
+        let (cookie_value, _) = self.ensure_record(&mut sessions, cookie_header, now);
+        let snapshot = sessions
+            .get(&cookie_value)
+            .expect("session record should exist")
+            .clone();
+        drop(sessions);
+
+        let session_id = session_identifier(&snapshot);
+        let username = snapshot.username.clone();
+        let csrf_token = snapshot.csrf_token.clone();
+        let set_cookie = self.build_set_cookie(&cookie_value, csrf_enabled);
+
+        Ok(HomeBootstrap {
+            session_id,
+            username,
+            csrf_token,
+            set_cookie,
+        })
+    }
+
+    pub fn validate_csrf_token(
+        &self,
+        cookie_header: Option<&str>,
+        token: Option<&str>,
+        csrf_enabled: bool,
+    ) -> Result<bool, SessionError> {
+        if !csrf_enabled {
+            return Ok(true);
+        }
+
+        let Some(token) = token else {
+            return Ok(false);
+        };
+
+        if token.is_empty() {
+            return Ok(false);
+        }
+
+        let mut sessions = self.sessions.lock().unwrap();
+        let now = Instant::now();
+        self.clean_expired(&mut sessions, now);
+
+        if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+            if let Some(record) = sessions.get_mut(&cookie_value) {
+                if now.duration_since(record.last_used) > self.timeout {
+                    sessions.remove(&cookie_value);
+                    return Ok(false);
+                }
+                record.last_used = now;
+                return Ok(constant_time_eq(
+                    record.csrf_token.as_bytes(),
+                    token.as_bytes(),
+                ));
+            }
+        }
+
+        Ok(false)
+    }
+
+    pub fn session_context(
+        &self,
+        cookie_header: Option<&str>,
+    ) -> Result<SessionContext, SessionError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let now = Instant::now();
+        self.clean_expired(&mut sessions, now);
+
+        let (cookie_value, _) = self.ensure_record(&mut sessions, cookie_header, now);
+        let snapshot = sessions
+            .get(&cookie_value)
+            .expect("session record should exist")
+            .clone();
+        drop(sessions);
+
+        let session_id = session_identifier(&snapshot);
+
+        Ok(SessionContext {
+            session_id,
+            username: snapshot.username.clone(),
+        })
+    }
+
+    /// Stable rate-limit identity without creating a session.
+    /// Prefers `user:{username}`, then `guest:{session_id}` for known cookies,
+    /// then `guest:{cookie}` for presented-but-unknown cookies. Callers should
+    /// fall back to an IP key when this returns `None`.
+    pub fn rate_limit_identity(&self, cookie_header: Option<&str>) -> Option<String> {
+        let cookie_value = extract_session_cookie(cookie_header)?;
+        let sessions = self.sessions.lock().unwrap();
+        if let Some(record) = sessions.get(&cookie_value) {
+            if let Some(username) = record.username.as_deref() {
+                return Some(format!("user:{username}"));
+            }
+            return Some(format!("guest:{}", session_identifier(record)));
+        }
+        Some(format!("guest:{cookie_value}"))
+    }
+
+    pub fn finalize_login(
+        &self,
+        cookie_header: Option<&str>,
+        username: &str,
+        csrf_enabled: bool,
+    ) -> Result<LoginFinalize, SessionError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let now = Instant::now();
+        self.clean_expired(&mut sessions, now);
+
+        if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+            sessions.remove(&cookie_value);
+        }
+
+        let (cookie_value, mut record) = self.new_record(now);
+        record.username = Some(username.to_string());
+        record.last_used = now;
+        let session_id = session_identifier(&record);
+        let csrf_token = record.csrf_token.clone();
+        let set_cookie = self.build_set_cookie(&cookie_value, csrf_enabled);
+        sessions.insert(cookie_value, record);
+        drop(sessions);
+
+        Ok(LoginFinalize {
+            session_id,
+            set_cookie,
+            csrf_token,
+        })
+    }
+
+    pub fn logout_user(
+        &self,
+        cookie_header: Option<&str>,
+        csrf_enabled: bool,
+    ) -> Result<LogoutFinalize, SessionError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let now = Instant::now();
+        self.clean_expired(&mut sessions, now);
+
+        if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+            sessions.remove(&cookie_value);
+        }
+
+        let (cookie_value, record) = self.new_record(now);
+        let session_id = session_identifier(&record);
+        let set_cookie = self.build_set_cookie(&cookie_value, csrf_enabled);
+        sessions.insert(cookie_value, record);
+        drop(sessions);
+
+        Ok(LogoutFinalize {
+            session_id,
+            set_cookie,
+        })
     }
 }
 
@@ -181,154 +352,70 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
+/// Production entry point: delegates to the single process-global store.
+/// The CSRF flag is read live per call; the store timeout was resolved once
+/// at first use.
 pub fn prepare_home_context(cookie_header: Option<&str>) -> Result<HomeBootstrap, SessionError> {
     let store = HttpSessionStore::global();
-    let mut sessions = store.sessions.lock().unwrap();
-    let now = Instant::now();
-    store.clean_expired(&mut sessions, now);
-
-    let (cookie_value, _) = store.ensure_record(&mut sessions, cookie_header, now);
-    let snapshot = sessions
-        .get(&cookie_value)
-        .expect("session record should exist")
-        .clone();
-    drop(sessions);
-
-    let session_id = session_identifier(&snapshot);
-    let username = snapshot.username.clone();
-    let csrf_token = snapshot.csrf_token.clone();
-    let set_cookie = store.build_set_cookie(&cookie_value);
-
-    Ok(HomeBootstrap {
-        session_id,
-        username,
-        csrf_token,
-        set_cookie,
-    })
+    let csrf_enabled = config::app_config().csrf;
+    store.prepare_home_context(cookie_header, csrf_enabled)
 }
 
+/// Production entry point: delegates to the single process-global store.
+/// The CSRF flag is read live per call. Disabled/missing/empty tokens return
+/// before the global store initializes, preserving the original first-use
+/// freeze sequence.
 pub fn validate_csrf_token(cookie_header: Option<&str>, token: Option<&str>) -> Result<bool, SessionError> {
-    if !config::app_config().csrf {
+    let csrf_enabled = config::app_config().csrf;
+    if !csrf_enabled {
         return Ok(true);
     }
-
     let Some(token) = token else {
         return Ok(false);
     };
-
     if token.is_empty() {
         return Ok(false);
     }
-
-    let store = HttpSessionStore::global();
-    let mut sessions = store.sessions.lock().unwrap();
-    let now = Instant::now();
-    store.clean_expired(&mut sessions, now);
-
-    if let Some(cookie_value) = extract_session_cookie(cookie_header) {
-        if let Some(record) = sessions.get_mut(&cookie_value) {
-            if now.duration_since(record.last_used) > store.timeout {
-                sessions.remove(&cookie_value);
-                return Ok(false);
-            }
-            record.last_used = now;
-            return Ok(constant_time_eq(
-                record.csrf_token.as_bytes(),
-                token.as_bytes(),
-            ));
-        }
-    }
-
-    Ok(false)
+    HttpSessionStore::global().validate_csrf_token(cookie_header, Some(token), csrf_enabled)
 }
 
+/// Production entry point: delegates to the single process-global store.
 pub fn session_context(cookie_header: Option<&str>) -> Result<SessionContext, SessionError> {
-    let store = HttpSessionStore::global();
-    let mut sessions = store.sessions.lock().unwrap();
-    let now = Instant::now();
-    store.clean_expired(&mut sessions, now);
-
-    let (cookie_value, _) = store.ensure_record(&mut sessions, cookie_header, now);
-    let snapshot = sessions
-        .get(&cookie_value)
-        .expect("session record should exist")
-        .clone();
-    drop(sessions);
-
-    let session_id = session_identifier(&snapshot);
-
-    Ok(SessionContext {
-        session_id,
-        username: snapshot.username.clone(),
-    })
+    HttpSessionStore::global().session_context(cookie_header)
 }
 
 /// Stable rate-limit identity without creating a session.
 /// Prefers `user:{username}`, then `guest:{session_id}` for known cookies,
 /// then `guest:{cookie}` for presented-but-unknown cookies. Callers should
 /// fall back to an IP key when this returns `None`.
+///
+/// Production entry point: delegates to the single process-global store.
+/// Missing/malformed headers return before the global store initializes,
+/// preserving the original first-use freeze sequence.
 pub fn rate_limit_identity(cookie_header: Option<&str>) -> Option<String> {
-    let cookie_value = extract_session_cookie(cookie_header)?;
-    let store = HttpSessionStore::global();
-    let sessions = store.sessions.lock().unwrap();
-    if let Some(record) = sessions.get(&cookie_value) {
-        if let Some(username) = record.username.as_deref() {
-            return Some(format!("user:{username}"));
-        }
-        return Some(format!("guest:{}", session_identifier(record)));
-    }
-    Some(format!("guest:{cookie_value}"))
+    extract_session_cookie(cookie_header)?;
+    HttpSessionStore::global().rate_limit_identity(cookie_header)
 }
 
+/// Production entry point: delegates to the single process-global store.
+/// The CSRF flag is read live per call; the store timeout was resolved once
+/// at first use.
 pub fn finalize_login(
     cookie_header: Option<&str>,
     username: &str,
 ) -> Result<LoginFinalize, SessionError> {
     let store = HttpSessionStore::global();
-    let mut sessions = store.sessions.lock().unwrap();
-    let now = Instant::now();
-    store.clean_expired(&mut sessions, now);
-
-    if let Some(cookie_value) = extract_session_cookie(cookie_header) {
-        sessions.remove(&cookie_value);
-    }
-
-    let (cookie_value, mut record) = store.new_record(now);
-    record.username = Some(username.to_string());
-    record.last_used = now;
-    let session_id = session_identifier(&record);
-    let csrf_token = record.csrf_token.clone();
-    let set_cookie = store.build_set_cookie(&cookie_value);
-    sessions.insert(cookie_value, record);
-    drop(sessions);
-
-    Ok(LoginFinalize {
-        session_id,
-        set_cookie,
-        csrf_token,
-    })
+    let csrf_enabled = config::app_config().csrf;
+    store.finalize_login(cookie_header, username, csrf_enabled)
 }
 
+/// Production entry point: delegates to the single process-global store.
+/// The CSRF flag is read live per call; the store timeout was resolved once
+/// at first use.
 pub fn logout_user(cookie_header: Option<&str>) -> Result<LogoutFinalize, SessionError> {
     let store = HttpSessionStore::global();
-    let mut sessions = store.sessions.lock().unwrap();
-    let now = Instant::now();
-    store.clean_expired(&mut sessions, now);
-
-    if let Some(cookie_value) = extract_session_cookie(cookie_header) {
-        sessions.remove(&cookie_value);
-    }
-
-    let (cookie_value, record) = store.new_record(now);
-    let session_id = session_identifier(&record);
-    let set_cookie = store.build_set_cookie(&cookie_value);
-    sessions.insert(cookie_value, record);
-    drop(sessions);
-
-    Ok(LogoutFinalize {
-        session_id,
-        set_cookie,
-    })
+    let csrf_enabled = config::app_config().csrf;
+    store.logout_user(cookie_header, csrf_enabled)
 }
 
 /// Crate-visible purge hook for the composed [`crate::session::purge_expired_sessions`].

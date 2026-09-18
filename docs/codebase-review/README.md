@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 019 — normalized history cache](#session-019--normalized-history-cache-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 020 — owned HTTP identity](#session-020--owned-http-identity-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: seventeen committed batches through session 019. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: eighteen committed batches through session 020. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -258,3 +258,13 @@ Seven new tests cover direct/captured append, regenerate, fork, warm/cold equiva
 Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Characterization baseline `20260918T035726-867d7f6352d5` passed after a preserved fixture-only failure (`20260918T035530-90f3ad4ec14a`, two handles to one redb file). Two new equivalence regressions failed as intended in `20260918T041821-110ced3c467c` and passed unchanged after correction. Final `20260918T042655-c48a4a364800`; reviewed final `20260918T043444-6c6e4d1e6375`, both passed including provider-config validation. Intermediate compile and V1-fork failures were preserved (`20260918T042401-f3e096e471dc`, `20260918T042454-005615f87381`). Logs: `temp/test-logs/modularity-mod005-snapshots-{baseline,normalize-red,normalize-final,reviewed-final}.log` and uniquely named failed-attempt logs.
 
 Local commit title: `Cache normalized logical history snapshots`, based on `4085b3b`. Seventeen remediation batches complete. MOD-005's cache-shape invariant and unused-facade bypasses are addressed; public compatibility DTOs and materialized prepare captures remain explicit boundaries, with slim captures/layered caching left for focused follow-up rather than claimed here. Phase 1 remains open.
+
+## Session 020 — owned HTTP identity, 2026-09-18
+
+MOD-003 partial remediation: `HttpSessionStore` owns identity state and accepts timeout at construction plus CSRF policy per operation. Six lifecycle operations have one implementation; existing free APIs delegate to the same single production global. HTTP minimum-60-second timeout, cookie flags, lookup creation rules and unknown-cookie rate identity are preserved. Four independent-store tests cover bootstrap/login/logout/CSRF isolation, noncreating lookup and timeout policy without ambient config.
+
+Primary found early-return delegates initially initialized the global too soon; the corrected CSRF-disabled/missing/empty and missing-cookie paths retain lazy initialization. A dedicated fifth test changes temporary config before first real bootstrap and verifies the later timeout wins. Primary reviewed the complete move, all five tests and final evidence. No clock-controlled expiry claim is made.
+
+Baseline is the preceding unchanged green suite `20260918T043444-6c6e4d1e6375`, reused without rerunning. Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Final `20260918T044642-d78a66509158`; reviewed final `20260918T045405-b76137ee7465`, both passed including provider-config validation and existing six identity boundary tests. Logs: `temp/test-logs/modularity-mod003-identity-owned-{final,reviewed-final}.log`.
+
+Local commit title: `Make HTTP identity state explicitly owned`, based on `c63c994`. Eighteen remediation batches complete. Production router composition still uses global APIs; MOD-003 and phase-1 completion review remain open.
