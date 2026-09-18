@@ -201,18 +201,6 @@ pub fn render_finalize_outcome(outcome: &FinalizeOutcome) -> Vec<String> {
     }
 }
 
-pub fn service_error_message(resp: &session::ServiceResponse) -> String {
-    serde_json::from_slice::<Value>(&resp.body)
-        .ok()
-        .and_then(|v| {
-            v.get("error")
-                .and_then(|e| e.as_str())
-                .map(|s| s.to_string())
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| String::from_utf8_lossy(&resp.body).into_owned())
-}
-
 /// Persist a /chat or /regenerate failure as a real history pair and return it
 /// as a 200 text/plain assistant turn so the client can regenerate.
 ///

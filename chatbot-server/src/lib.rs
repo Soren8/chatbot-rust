@@ -7,15 +7,11 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chatbot_core::{
-    logging,
-    session::ServiceResponse,
-    session_identity::HttpSessionStore,
-};
+use chatbot_core::{logging, session_identity::HttpSessionStore};
 use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 mod background;
 pub use background::{
@@ -126,9 +122,9 @@ async fn set_cross_origin_isolation_headers(
 /// Guarantee: every 5xx response that reaches a client is logged at ERROR
 /// level with request context. Handler-level helpers (`log_and_api_error`,
 /// `map_*_err`, `api_error`) log the underlying cause; this catches any 5xx
-/// built without such a log (direct Response builders, `build_response`
-/// ServiceResponses, future handlers). Mounted as the outermost layer so it
-/// observes the final status of every route, including nested services.
+/// built without such a log (direct Response builders, future handlers).
+/// Mounted as the outermost layer so it observes the final status of every
+/// route, including nested services.
 async fn log_server_error_responses(
     request: axum::extract::Request<Body>,
     next: Next,
@@ -399,61 +395,4 @@ pub fn resolve_static_root() -> PathBuf {
 
 async fn favicon() -> StatusCode {
     StatusCode::NO_CONTENT
-}
-
-pub(crate) fn build_response(
-    service_response: ServiceResponse,
-) -> Result<Response, http_error::HttpError> {
-    let status = StatusCode::from_u16(service_response.status)
-        .map_err(|_| http_error::api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid status"))?;
-
-    if service_response.status == 400 {
-        let preview: String = String::from_utf8_lossy(&service_response.body)
-            .chars()
-            .take(500)
-            .collect();
-        warn!(status = 400, body = %preview, "http 400");
-    }
-
-    let mut response = Response::builder()
-        .status(status)
-        .body(Body::from(service_response.body))
-        .map_err(|err| {
-            error!(?err, "failed to build response body");
-            http_error::api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })?;
-
-    {
-        let headers = response.headers_mut();
-        for (name, value) in service_response.headers {
-            if name.eq_ignore_ascii_case("transfer-encoding") {
-                continue;
-            }
-            let header_name = match HeaderName::from_bytes(name.as_bytes()) {
-                Ok(name) => name,
-                Err(err) => {
-                    error!(?err, "invalid header name: {name}");
-                    continue;
-                }
-            };
-
-            let header_value = match HeaderValue::from_str(&value) {
-                Ok(value) => value,
-                Err(err) => {
-                    error!(?err, "invalid header value for {header_name}");
-                    continue;
-                }
-            };
-
-            headers.append(header_name, header_value);
-        }
-    }
-
-    // Record server-side errors for test instrumentation so integration
-    // tests can assert no 500s were emitted during their run.
-    if service_response.status >= 500 {
-        test_instrumentation::record_error();
-    }
-
-    Ok(response)
 }

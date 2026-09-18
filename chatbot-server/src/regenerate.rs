@@ -19,12 +19,12 @@ use tracing::{debug, error};
 
 use crate::chat_utils::{
     error_as_saved_chat_turn_with_service, provider_error_parts, render_finalize_outcome,
-    service_error_message, StreamCompletionGuard,
+    StreamCompletionGuard,
 };
 use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_prepare_history_err,
     map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
-    HttpError,
+    map_session_operation_err, HttpError,
 };
 use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
 use crate::services::AppServices;
@@ -197,19 +197,20 @@ pub async fn handle_regenerate(
                 }
                 return Err(map_prepare_history_err(&history));
             }
-            session::PrepareError::Service(service) => {
-                if service.status == 400 && !payload.message.trim().is_empty() {
-                    let msg = service_error_message(&service);
+            session::PrepareError::Session(op) => {
+                if op == session::SessionOperationError::AuthenticatedBootstrapMisuse
+                    && !payload.message.trim().is_empty()
+                {
                     return error_as_saved_chat_turn_with_service(&chat,
                         &session_context,
                         payload.set_name.as_deref(),
                         &payload.message,
-                        &msg,
+                        op.message(),
                         encryption_key.as_ref(),
                         None,
                     );
                 }
-                return crate::build_response(service);
+                return Err(map_session_operation_err(&op));
             }
         }
     }

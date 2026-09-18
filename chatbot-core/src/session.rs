@@ -10,7 +10,6 @@ use std::{
 use dashmap::DashMap;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tracing::{debug, error, warn};
 
 pub use crate::session_identity::{
@@ -40,11 +39,41 @@ use crate::{
     user_store::{UserStoreError, DEFAULT_TIER},
 };
 
-#[derive(Debug, Clone)]
-pub struct ServiceResponse {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+/// Narrow typed session-operation failures (no HTTP transport).
+///
+/// Missing/invalid encryption key, user-store-unavailable, history/cache
+/// unavailable, guest custom-set denied, and authenticated bootstrap misuse.
+/// The server owns exact status/headers/body mapping; core only provides
+/// static [`Self::message`] text and preserves cause logging at the failure point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionOperationError {
+    MissingEncryptionKey,
+    InvalidEncryptionKey,
+    UserStoreUnavailable,
+    HistoryUnavailable,
+    GuestCustomSetDenied,
+    AuthenticatedBootstrapMisuse,
+}
+
+impl SessionOperationError {
+    pub fn message(&self) -> &'static str {
+        match self {
+            SessionOperationError::MissingEncryptionKey => {
+                "Encryption key required. Please unlock."
+            }
+            SessionOperationError::InvalidEncryptionKey => "Invalid encryption key.",
+            SessionOperationError::UserStoreUnavailable => {
+                "internal error while accessing user store"
+            }
+            SessionOperationError::HistoryUnavailable => {
+                "internal error while accessing chat history"
+            }
+            SessionOperationError::GuestCustomSetDenied => "Login required for custom sets",
+            SessionOperationError::AuthenticatedBootstrapMisuse => {
+                "authenticated session must load via history store"
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -147,8 +176,8 @@ impl PreparePolicyError {
 /// Narrow cloneable projection of [`HistoryError`] for the prepare path only:
 /// `HistoryError` itself is not `Clone`, so [`PrepareError`] (which is
 /// `Clone`) cannot carry it directly. Finalize paths keep matching on
-/// `HistoryError`; other `ServiceResponse` carriers (encryption, store,
-/// session init) are unchanged.
+/// `HistoryError`; other session-operation carriers (encryption, store,
+/// session init, mirror seal) use [`SessionOperationError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrepareHistoryError {
     Unauthorized,
@@ -170,19 +199,19 @@ impl PrepareHistoryError {
     }
 }
 
-/// Prepare outcome: validation, policy and history failures are typed;
-/// every other failure stays a carried service response.
+/// Prepare outcome: validation, policy, history and session-operation
+/// failures are typed; the server owns HTTP rendering.
 #[derive(Debug, Clone)]
 pub enum PrepareError {
     Validation(PrepareValidationError),
     Policy(PreparePolicyError),
     History(PrepareHistoryError),
-    Service(ServiceResponse),
+    Session(SessionOperationError),
 }
 
-impl From<ServiceResponse> for PrepareError {
-    fn from(response: ServiceResponse) -> Self {
-        PrepareError::Service(response)
+impl From<SessionOperationError> for PrepareError {
+    fn from(err: SessionOperationError) -> Self {
+        PrepareError::Session(err)
     }
 }
 
@@ -665,24 +694,24 @@ impl ChatService {
         Ok(())
     }
 
-    /// Owned key gate: same 401/500 strings as the free adapter, via the
-    /// owned/global validator above.
+    /// Owned key gate: typed projection of the validator above. The server
+    /// owns HTTP rendering.
     pub fn require_encryption_key<'a>(
         &self,
         username: Option<&str>,
         key: Option<&'a EncryptionKey>,
-    ) -> Result<Option<&'a EncryptionKey>, ServiceResponse> {
+    ) -> Result<Option<&'a EncryptionKey>, SessionOperationError> {
         match username {
             Some(name) => match self.validate_encryption_key_for_user(name, key) {
                 Ok(()) => Ok(key),
                 Err(EncryptionKeyValidationError::Missing) => {
-                    Err(unauthorized("Encryption key required. Please unlock."))
+                    Err(SessionOperationError::MissingEncryptionKey)
                 }
                 Err(EncryptionKeyValidationError::Invalid) => {
-                    Err(unauthorized("Invalid encryption key."))
+                    Err(SessionOperationError::InvalidEncryptionKey)
                 }
                 Err(EncryptionKeyValidationError::StoreUnavailable) => {
-                    Err(server_error("internal error while accessing user store"))
+                    Err(SessionOperationError::UserStoreUnavailable)
                 }
             },
             None => Ok(None),
@@ -746,15 +775,17 @@ impl ChatService {
         session: &SessionContext,
         set_name: &str,
         _key: Option<&EncryptionKey>,
-    ) -> Result<(), ServiceResponse> {
+    ) -> Result<(), SessionOperationError> {
         if session.username.is_some() {
             // Authed paths must use HistoryService + PrepareCapture, not sets.json.
-            return Err(invalid_request(
-                "authenticated session must load via history store",
-            ));
+            warn!(
+                error = SessionOperationError::AuthenticatedBootstrapMisuse.message(),
+                "bad request"
+            );
+            return Err(SessionOperationError::AuthenticatedBootstrapMisuse);
         }
         if set_name != "default" {
-            return Err(unauthorized("Login required for custom sets"));
+            return Err(SessionOperationError::GuestCustomSetDenied);
         }
         data.memory.clear();
         data.system_prompt = self.default_prompt_resolved();
@@ -1011,11 +1042,11 @@ impl ChatService {
                                         data.system_prompt = cap.system_prompt.clone();
                                     }
                                     data.history.clear();
-                                    if let Err(response) =
+                                    if let Err(_err) =
                                         seal_session_data(&mut data, key.as_bytes())
                                     {
                                         error!(
-                                            status = response.status,
+                                            status = 500,
                                             "failed to seal session cache after chat finalize"
                                         );
                                     }
@@ -1579,7 +1610,7 @@ impl ChatService {
         set_id: SetId,
         memory: &str,
         key: &EncryptionKey,
-    ) -> Result<(), ServiceResponse> {
+    ) -> Result<(), SessionOperationError> {
         let store = self.sessions();
         let entry = store.entry(session_id);
         let mut data = entry.data.lock().unwrap();
@@ -1605,7 +1636,7 @@ impl ChatService {
         set_id: SetId,
         prompt: &str,
         key: &EncryptionKey,
-    ) -> Result<(), ServiceResponse> {
+    ) -> Result<(), SessionOperationError> {
         let store = self.sessions();
         let entry = store.entry(session_id);
         let mut data = entry.data.lock().unwrap();
@@ -1633,7 +1664,7 @@ impl ChatService {
         history: &[(String, String)],
         encrypted: bool,
         key: Option<&EncryptionKey>,
-    ) -> Result<(), ServiceResponse> {
+    ) -> Result<(), SessionOperationError> {
         let store = self.sessions();
         let entry = store.entry(session_id);
         let mut data = entry.data.lock().unwrap();
@@ -1660,7 +1691,7 @@ impl ChatService {
         session_id: &str,
         username: Option<&str>,
         key: Option<&EncryptionKey>,
-    ) -> Result<Vec<(String, String)>, ServiceResponse> {
+    ) -> Result<Vec<(String, String)>, SessionOperationError> {
         let store = self.sessions();
         let Some(entry) = store.entries.get(session_id) else {
             return Ok(Vec::new());
@@ -1682,7 +1713,7 @@ impl ChatService {
         set_id: Option<SetId>,
         history: Vec<(String, String)>,
         key: Option<&EncryptionKey>,
-    ) -> Result<(), ServiceResponse> {
+    ) -> Result<(), SessionOperationError> {
         let store = self.sessions();
         let Some(entry) = store.entries.get(session_id) else {
             return Ok(());
@@ -1757,25 +1788,6 @@ impl ChatService {
     }
 }
 
-fn build_json_response(status: u16, payload: serde_json::Value) -> ServiceResponse {
-    let body = serde_json::to_vec(&payload).unwrap_or_else(|err| {
-        error!(?err, "failed to serialise error payload");
-        json!({"error": "internal server error"})
-            .to_string()
-            .into_bytes()
-    });
-    ServiceResponse {
-        status,
-        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
-        body,
-    }
-}
-
-fn invalid_request(message: &str) -> ServiceResponse {
-    warn!(error = message, "bad request");
-    build_json_response(400, json!({ "error": message }))
-}
-
 fn validation_failed(err: PrepareValidationError) -> PrepareError {
     warn!(error = err.message(), "bad request");
     PrepareError::Validation(err)
@@ -1808,14 +1820,6 @@ fn map_history_to_prepare(err: HistoryError) -> PrepareHistoryError {
             PrepareHistoryError::Internal
         }
     }
-}
-
-fn unauthorized(message: &str) -> ServiceResponse {
-    build_json_response(401, json!({ "error": message }))
-}
-
-fn server_error(message: &str) -> ServiceResponse {
-    build_json_response(500, json!({ "error": message }))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2053,7 +2057,7 @@ pub fn regenerate_prepare_leased(
     ChatService::global().regenerate_prepare_leased(session, request, provider, encryption_key)
 }
 
-fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), ServiceResponse> {
+fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), SessionOperationError> {
     if !data.requires_cipher {
         return Ok(());
     }
@@ -2068,7 +2072,7 @@ fn seal_session_data(data: &mut SessionData, key: &[u8]) -> Result<(), ServiceRe
         set_id: data.active_set_id.map(|id| id.to_string()),
     };
     let json = serde_json::to_string(&payload)
-        .map_err(|_| server_error("internal error while accessing chat history"))?;
+        .map_err(|_| SessionOperationError::HistoryUnavailable)?;
     let encrypted = fernet_crypto::encrypt_bytes(json.as_bytes(), key)
         .map_err(|err| map_fernet_error("failed to seal session cache", &err))?;
     data.cipher_blob = Some(encrypted);
@@ -2082,7 +2086,7 @@ fn unseal_session_data(
     data: &mut SessionData,
     key: &[u8],
     default_prompt: &str,
-) -> Result<(), ServiceResponse> {
+) -> Result<(), SessionOperationError> {
     if !data.requires_cipher {
         return Ok(());
     }
@@ -2095,7 +2099,7 @@ fn unseal_session_data(
     let decrypted = fernet_crypto::decrypt_bytes(blob, key)
         .map_err(|err| map_fernet_error("failed to decrypt session cache", &err))?;
     let payload: CachedSetPayload = serde_json::from_slice(&decrypted)
-        .map_err(|_| server_error("internal error while accessing chat history"))?;
+        .map_err(|_| SessionOperationError::HistoryUnavailable)?;
     data.memory = payload.memory;
     data.system_prompt = payload.system_prompt;
     data.history = payload.history;
@@ -2129,7 +2133,7 @@ pub fn validate_encryption_key_for_user(
 pub fn require_encryption_key<'a>(
     username: Option<&str>,
     key: Option<&'a EncryptionKey>,
-) -> Result<Option<&'a EncryptionKey>, ServiceResponse> {
+) -> Result<Option<&'a EncryptionKey>, SessionOperationError> {
     ChatService::global().require_encryption_key(username, key)
 }
 
@@ -2150,14 +2154,14 @@ fn resolve_test_chunks(provider: &ProviderConfig) -> Option<Vec<String>> {
     provider.test_chunks.clone()
 }
 
-fn map_fernet_error(context: &str, err: &FernetError) -> ServiceResponse {
+fn map_fernet_error(context: &str, err: &FernetError) -> SessionOperationError {
     error!(?err, "{context}");
-    server_error("internal error while accessing chat history")
+    SessionOperationError::HistoryUnavailable
 }
 
-fn map_store_error(context: &str, err: &UserStoreError) -> ServiceResponse {
+fn map_store_error(context: &str, err: &UserStoreError) -> SessionOperationError {
     error!(?err, "{context}");
-    server_error("internal error while accessing user store")
+    SessionOperationError::UserStoreUnavailable
 }
 
 /// Log a `UserStore` failure at the validation point and report it as a typed
@@ -2287,7 +2291,7 @@ pub fn update_session_memory_for_request(
     set_id: SetId,
     memory: &str,
     key: &EncryptionKey,
-) -> Result<(), ServiceResponse> {
+) -> Result<(), SessionOperationError> {
     ChatService::global().update_session_memory_for_request(
         session_id,
         username,
@@ -2304,7 +2308,7 @@ pub fn update_session_system_prompt_for_request(
     set_id: SetId,
     prompt: &str,
     key: &EncryptionKey,
-) -> Result<(), ServiceResponse> {
+) -> Result<(), SessionOperationError> {
     ChatService::global().update_session_system_prompt_for_request(
         session_id, username, set_id, prompt, key,
     )
@@ -2323,7 +2327,7 @@ pub fn replace_session_set(
     history: &[(String, String)],
     encrypted: bool,
     key: Option<&EncryptionKey>,
-) -> Result<(), ServiceResponse> {
+) -> Result<(), SessionOperationError> {
     ChatService::global().replace_session_set(
         session_id,
         username,
@@ -2340,7 +2344,7 @@ pub fn session_history_for_request(
     session_id: &str,
     username: Option<&str>,
     key: Option<&EncryptionKey>,
-) -> Result<Vec<(String, String)>, ServiceResponse> {
+) -> Result<Vec<(String, String)>, SessionOperationError> {
     ChatService::global().session_history_for_request(session_id, username, key)
 }
 
@@ -2351,7 +2355,7 @@ pub fn set_session_history_for_request(
     set_id: Option<SetId>,
     history: Vec<(String, String)>,
     key: Option<&EncryptionKey>,
-) -> Result<(), ServiceResponse> {
+) -> Result<(), SessionOperationError> {
     ChatService::global().set_session_history_for_request(session_id, username, set_id, history, key)
 }
 

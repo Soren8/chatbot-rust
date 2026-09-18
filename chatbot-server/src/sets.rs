@@ -5,13 +5,13 @@ use axum::{
 use chatbot_core::{
     chat_images,
     history::{self, HistoryError, HistoryService, SetId, SetVersion},
-    session,
 };
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
-    map_response_build_err, map_serialization_err, map_session_err, HttpError,
+    map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
+    HttpError,
 };
 use crate::identity::RequestIdentity;
 use crate::request_context::{extract_cookie, extract_csrf};
@@ -518,7 +518,7 @@ pub async fn handle_load_set(
 
     // Keep session set_id / memory / prompt in sync. Do not copy multi-MB history
     // into the session cipher (durable store is SoT for authed history).
-    if let Err(response) = chat.replace_session_set(
+    if let Err(err) = chat.replace_session_set(
         &session.session_id,
         Some(username),
         Some(loaded.set_id),
@@ -528,7 +528,7 @@ pub async fn handle_load_set(
         true,
         encryption_key.as_ref(),
     ) {
-        return build_service_response(response);
+        return Err(map_session_operation_err(&err));
     }
 
     let history_json = loaded
@@ -978,12 +978,6 @@ fn validate_csrf(
 
 fn history_error_to_http(err: HistoryError) -> HttpError {
     crate::chat_utils::history_error_to_http(err)
-}
-
-fn build_service_response(
-    response: session::ServiceResponse,
-) -> Result<Response<Body>, HttpError> {
-    crate::build_response(response)
 }
 
 fn build_json_response(

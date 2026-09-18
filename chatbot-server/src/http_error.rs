@@ -3,7 +3,7 @@ use chatbot_core::{
     history::HistoryError,
     session::{
         EncryptionKeyValidationError, PrepareHistoryError, PreparePolicyError,
-        PrepareValidationError, SessionError,
+        PrepareValidationError, SessionError, SessionOperationError,
     },
     user_store::UserStoreError,
 };
@@ -147,6 +147,46 @@ pub fn map_prepare_history_err(err: &PrepareHistoryError) -> HttpError {
         ),
         PrepareHistoryError::Forbidden => api_error(StatusCode::FORBIDDEN, "forbidden"),
         PrepareHistoryError::Internal => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing chat history" })),
+            )
+        }
+    }
+}
+
+/// Map a typed session-operation failure to its exact JSON error.
+///
+/// 401s render their original strings with no logging or counter, the single
+/// 400 renders via the raw-body 400 path (saved-turn handling stays in
+/// chat/regenerate handlers), and 500s record the error counter once with
+/// cause already logged in core. Response 5xx logging belongs to the outer
+/// middleware.
+pub fn map_session_operation_err(err: &SessionOperationError) -> HttpError {
+    match err {
+        SessionOperationError::MissingEncryptionKey => api_error(
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.",
+        ),
+        SessionOperationError::InvalidEncryptionKey => {
+            api_error(StatusCode::UNAUTHORIZED, "Invalid encryption key.")
+        }
+        SessionOperationError::GuestCustomSetDenied => {
+            api_error(StatusCode::UNAUTHORIZED, "Login required for custom sets")
+        }
+        SessionOperationError::AuthenticatedBootstrapMisuse => api_error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": err.message() }),
+        ),
+        SessionOperationError::UserStoreUnavailable => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing user store" })),
+            )
+        }
+        SessionOperationError::HistoryUnavailable => {
             crate::test_instrumentation::record_error();
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

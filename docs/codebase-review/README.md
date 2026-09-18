@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: [session 029 — typed persistence outcomes](#session-029--typed-persistence-outcomes-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 030 — typed session operations](#session-030--typed-session-operations-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: twenty-seven committed batches through session 029. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: twenty-eight committed batches through session 030. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 030 — typed session operations, 2026-09-18
+
+MOD-001 transport-carrier remediation: core session/key/mirror/bootstrap operations return `SessionOperationError`; prepare carries it as `PrepareError::Session`. Removed `ServiceResponse`, core HTTP serialization, server response reconstruction and serialized-error parsing. Server mapping preserves exact JSON/statuses, 400 body logging and one 500 counter increment. Cause logging and successful durable commits despite failed mirror sealing retain their existing policy. Public in-repo operation names remain, with typed Result errors; no repository tests consumed the removed transport type.
+
+Ten core and seven server tests cover typed gates, actual premium-tier store failure, invalid-key seal/unseal, mapper payloads/counters, guest custom-set HTTP rejection and scoped `/chat` store failure. Primary corrected a test that stopped at key validation before the tier gate and required actual HTTP 500 evidence. These new tests were added after extraction: the worker's baseline `20260918T094753-64c78f0f0f37` was an unchanged suite, not new before/after characterization. Parity additionally rests on primary source/caller review and unchanged existing route coverage. Final and reviewed-final suites passed; reviewed job `20260918T101218-76798be2b510` includes provider-config validation. Logs: `temp/test-logs/modularity-mod001-session-errors-{baseline-20260918T094750Z,final-20260918T100226Z,reviewed-final-20260918T101211Z}.log`. New-fixture failure remains in `final-20260918T095958Z.log` of that family. Commit title: `Replace core session HTTP carriers with typed errors`, based on `a8cd1c5`. Phase-1 completion review remains pending.
 
 ## Session 029 — typed persistence outcomes, 2026-09-18
 

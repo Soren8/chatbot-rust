@@ -10,6 +10,8 @@ Review revision: `7dc8a23` (application source unchanged from `4cda303`). Primar
 
 ## Overall assessment
 
+**Core transport update (session 030):** `ServiceResponse` and serialized error parsing are removed. Core prepare/session/mirror operations return typed errors; canonical finalization returns typed persistence outcomes. Server mapping/rendering owns HTTP and stream output. Legacy finalizer string APIs remain explicit compatibility adapters. Primary reviewed all migrated callers and passing full-suite evidence; see sessions 029–030.
+
 The existing crate/process split is broadly sensible. The largest problems are inside components and at lifecycle boundaries, rather than a need for more services or crates. Preserve the private redb implementation, pure history operations, shared browser UI, codec helpers, and small Android policy helpers. Extract cohesive owners from the orchestration code instead of distributing its mutable globals across more files.
 
 MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting review now includes the complete session implementation, both generation handlers, stream guards, and all history/memory/reset/preference handlers. The following findings extend that analysis. All MOD entries below are **confirmed structural findings**, **P2**, with **high source-based confidence**, unless stated otherwise. They are not verified fixes or dynamic bug reproductions.

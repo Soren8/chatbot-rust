@@ -2,15 +2,13 @@ use axum::{
     body::{self, Body},
     http::{header, Request, Response, StatusCode},
 };
-use chatbot_core::{
-    history::{self, HistoryError, HistoryService, SetId, SetVersion},
-    session,
-};
+use chatbot_core::history::{self, HistoryError, HistoryService, SetId, SetVersion};
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
-    map_response_build_err, map_serialization_err, map_session_err, HttpError,
+    map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
+    HttpError,
 };
 use crate::request_context::{extract_cookie, extract_csrf};
 use crate::services::AppServices;
@@ -146,14 +144,14 @@ pub async fn handle_update_memory(
             Err(err) => return Err(history_error_to_tuple(err)),
         };
 
-        if let Err(response) = chat.update_session_memory_for_request(
+        if let Err(err) = chat.update_session_memory_for_request(
             &session.session_id,
             username,
             snap.set_id,
             &memory_text,
             key,
         ) {
-            return build_service_response(response);
+            return Err(map_session_operation_err(&err));
         }
 
         build_json_response(
@@ -266,14 +264,14 @@ pub async fn handle_update_system_prompt(
             Err(err) => return Err(history_error_to_tuple(err)),
         };
 
-        if let Err(response) = chat.update_session_system_prompt_for_request(
+        if let Err(err) = chat.update_session_system_prompt_for_request(
             &session.session_id,
             username,
             snap.set_id,
             &system_prompt,
             key,
         ) {
-            return build_service_response(response);
+            return Err(map_session_operation_err(&err));
         }
 
         build_json_response(
@@ -396,14 +394,14 @@ pub async fn handle_delete_message(
             Ok(version) => {
                 // Authed history SoT is redb; session seal no longer stores history.
                 // Keep active set_id aligned without cloning multi-MB remaining pairs.
-                if let Err(response) = chat.set_session_history_for_request(
+                if let Err(err) = chat.set_session_history_for_request(
                     &session.session_id,
                     Some(username),
                     Some(set_id),
                     Vec::new(),
                     encryption_key.as_ref(),
                 ) {
-                    return build_service_response(response);
+                    return Err(map_session_operation_err(&err));
                 }
                 return build_json_response(
                     StatusCode::OK,
@@ -453,12 +451,6 @@ pub async fn handle_delete_message(
     history.remove(pair_index);
     chat.update_session_history(&session.session_id, &history);
     build_json_response(StatusCode::OK, json!({"status": "success"}))
-}
-
-fn build_service_response(
-    response: session::ServiceResponse,
-) -> Result<Response<Body>, HttpError> {
-    crate::build_response(response)
 }
 
 fn ensure_post(request: &Request<Body>) -> Result<(), HttpError> {
