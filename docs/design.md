@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+History caches private store-produced `LogicalSnapshot` values. Chunked commits return normalized image-reference text for cache insertion; public `SetSnapshot` remains a compatibility DTO. `load` expands images into an owned copy, while `load_logical` preserves references consistently across warm/cold reads. Whole-blob migration and literal undecodable image markers keep their supported representations.
+
 Pure browser/native voice-text operations live in `static/voice-text.js`: sentence splitting/completion, speech normalization, utterance joining, amend eligibility and caret-to-sentence lookup. `chat.js` delegates with an explicit amend window and retains playback/recording coordination. The template loads the shared unit before `chat.js`; server speech normalization remains a separate later stage.
 
 HTTP identity lifecycle lives in `chatbot-core/src/session_identity.rs`: cookie/CSRF state, guest/user identity, login/logout rotation and identity expiry. `session.rs` re-exports its public API and composes HTTP/chat expiry counts; chat state, generation locks and orchestration remain in `session.rs`.

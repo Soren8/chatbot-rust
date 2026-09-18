@@ -20,8 +20,8 @@ use crate::enc_key::EncryptionKey;
 use crate::history::crypto;
 use crate::history::ops::page_history;
 use crate::history::types::{
-    BlobFormat, HeaderV1, ImageId, ImagePayloadV1, ManifestPair, ManifestV1, PairId, PairPayloadV1,
-    SetId, SetPage, SetSnapshot, SetVersion, ThumbPayloadV1,
+    BlobFormat, HeaderV1, ImageId, ImagePayloadV1, LogicalSnapshot, ManifestPair, ManifestV1,
+    PairId, PairPayloadV1, SetId, SetPage, SetSnapshot, SetVersion, ThumbPayloadV1,
 };
 
 fn now_millis() -> u64 {
@@ -56,13 +56,15 @@ impl RedbHistoryStore {
         user_id: &str,
         set_id: SetId,
         key: &EncryptionKey,
-    ) -> Result<SetSnapshot, StoreError> {
+    ) -> Result<LogicalSnapshot, StoreError> {
         let meta = self.load_meta(user_id, set_id)?;
         if !meta.blob_format.is_chunked() {
             let snap = self.load_snapshot(user_id, set_id, key)?;
-            return Ok(snap);
+            return Ok(LogicalSnapshot::from_normalized(snap));
         }
-        self.load_logical_chunked(user_id, set_id, &meta, key)
+        Ok(LogicalSnapshot::from_normalized(
+            self.load_logical_chunked(user_id, set_id, &meta, key)?,
+        ))
     }
 
     fn load_logical_chunked(
@@ -130,30 +132,33 @@ impl RedbHistoryStore {
         })
     }
 
+    /// Expand a cached logical snapshot into the public materialized DTO.
+    /// The cache entry is never mutated: callers get an owned copy.
     pub fn materialize_snapshot(
         &self,
         user_id: &str,
-        logical: &SetSnapshot,
+        logical: &LogicalSnapshot,
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, StoreError> {
-        if logical.pair_ids.is_empty() {
-            return Ok(logical.clone());
+        let inner = logical.as_snapshot();
+        if inner.pair_ids.is_empty() {
+            return Ok(inner.clone());
         }
-        let meta = self.load_meta(user_id, logical.set_id)?;
+        let meta = self.load_meta(user_id, inner.set_id)?;
         if !meta.blob_format.is_chunked() {
-            return Ok(logical.clone());
+            return Ok(inner.clone());
         }
-        let manifest = self.load_manifest(user_id, logical.set_id, meta.version, key)?;
+        let manifest = self.load_manifest(user_id, inner.set_id, meta.version, key)?;
         let mut images: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
         for entry in &manifest.pairs {
             for image_id in &entry.image_ids {
-                if let Some(payload) = self.load_image_by_id(user_id, logical.set_id, *image_id, key)?
+                if let Some(payload) = self.load_image_by_id(user_id, inner.set_id, *image_id, key)?
                 {
                     images.insert(*image_id, (payload.mime, payload.bytes));
                 }
             }
         }
-        let mut snap = logical.clone();
+        let mut snap = inner.clone();
         for (user, _) in &mut snap.history {
             *user = materialize_full(user, &images);
         }
@@ -532,13 +537,17 @@ impl RedbHistoryStore {
         Ok(true)
     }
 
+    /// CAS commit of a chunked snapshot. Normalizes pair texts to
+    /// `[IMAGE:img:…]` refs **in place** (single `normalize_pair_for_commit`
+    /// pass, no re-decode) and returns the sealed logical shape for the cache
+    /// together with the new version.
     pub fn commit_chunked(
         &self,
         user_id: &str,
         expected: SetVersion,
-        snapshot: &SetSnapshot,
+        mut snapshot: SetSnapshot,
         key: &EncryptionKey,
-    ) -> Result<SetVersion, StoreError> {
+    ) -> Result<(SetVersion, LogicalSnapshot), StoreError> {
         let set_id = snapshot.set_id;
         if snapshot.pair_ids.len() != snapshot.history.len() {
             return Err(StoreError::InvalidInput);
@@ -608,13 +617,16 @@ impl RedbHistoryStore {
         let mut delete_pair_ids: HashSet<PairId> = old_by_id.keys().copied().collect();
         let mut delete_image_ids: HashSet<ImageId> = HashSet::new();
 
-        for (pair_id, (user, assistant)) in snapshot.pair_ids.iter().zip(snapshot.history.iter()) {
-            delete_pair_ids.remove(pair_id);
-            let stored_ids = old_by_id
-                .get(pair_id)
-                .map(|p| p.image_ids.as_slice())
-                .unwrap_or(&[]);
-            let norm = normalize_pair_for_commit(user, stored_ids);
+        for idx in 0..snapshot.history.len() {
+            let pair_id = snapshot.pair_ids[idx];
+            delete_pair_ids.remove(&pair_id);
+            let norm = {
+                let stored_ids = old_by_id
+                    .get(&pair_id)
+                    .map(|p| p.image_ids.as_slice())
+                    .unwrap_or(&[]);
+                normalize_pair_for_commit(&snapshot.history[idx].0, stored_ids)
+            };
             for dropped in &norm.dropped_image_ids {
                 delete_image_ids.insert(*dropped);
             }
@@ -628,7 +640,7 @@ impl RedbHistoryStore {
                     &mut thumb_writes,
                 )?;
             }
-            let generation = match old_by_id.get(pair_id) {
+            let generation = match old_by_id.get(&pair_id) {
                 Some(old) => {
                     let txn = self.db.begin_read()?;
                     let table = txn.open_table(PAIR_BLOBS)?;
@@ -637,14 +649,16 @@ impl RedbHistoryStore {
                     let stored = crypto::open_pair_v1(
                         user_id,
                         set_id,
-                        *pair_id,
+                        pair_id,
                         old.generation,
                         blob.value(),
                         key,
                     )?;
-                    if stored.user == norm.user && stored.assistant == *assistant {
+                    if stored.user == norm.user && stored.assistant == snapshot.history[idx].1 {
+                        // Already durable: keep ciphertext, record the ref shape.
+                        snapshot.history[idx].0 = norm.user;
                         new_manifest_pairs.push(ManifestPair {
-                            pair_id: *pair_id,
+                            pair_id,
                             generation: old.generation,
                             image_ids: norm.image_ids,
                         });
@@ -656,12 +670,14 @@ impl RedbHistoryStore {
             };
             let payload = PairPayloadV1 {
                 user: norm.user,
-                assistant: assistant.clone(),
+                assistant: snapshot.history[idx].1.clone(),
             };
-            let blob = crypto::seal_pair_v1(user_id, set_id, *pair_id, generation, &payload, key)?;
-            pair_writes.push((*pair_id, blob));
+            let blob = crypto::seal_pair_v1(user_id, set_id, pair_id, generation, &payload, key)?;
+            pair_writes.push((pair_id, blob));
+            // Move the sealed ref text back: no second copy of the user string.
+            snapshot.history[idx].0 = payload.user;
             new_manifest_pairs.push(ManifestPair {
-                pair_id: *pair_id,
+                pair_id,
                 generation,
                 image_ids: norm.image_ids,
             });
@@ -755,7 +771,11 @@ impl RedbHistoryStore {
         }
         txn.commit()?;
         debug!(%set_id, version = new_version.get(), "history chunked set committed");
-        Ok(new_version)
+        snapshot.version = new_version;
+        // Content commits never flip lifecycle `is_default`; the cached logical
+        // shape must carry the durable flag, not the caller's working copy.
+        snapshot.is_default = current_meta.is_default;
+        Ok((new_version, LogicalSnapshot::from_normalized(snapshot)))
     }
 
     pub fn delete_chunks_for_set(&self, set_id: SetId) -> Result<(), StoreError> {

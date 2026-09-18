@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use tracing::debug;
 
-use super::types::{SetId, SetSnapshot, SetSummary, SetVersion};
+use super::types::{LogicalSnapshot, SetId, SetSummary, SetVersion};
 
 const DEFAULT_CAPACITY: usize = 256;
 const DEFAULT_TTL: Duration = Duration::from_secs(3600);
@@ -22,8 +22,9 @@ const DEFAULT_TTL: Duration = Duration::from_secs(3600);
 #[derive(Clone)]
 struct CachedPlain {
     version: SetVersion,
-    /// Full decrypted snapshot (shared; clones of history only when a caller needs owned data).
-    snapshot: Arc<SetSnapshot>,
+    /// Normalized logical snapshot (shared; callers materialize an owned
+    /// `SetSnapshot` DTO only when they need expanded `data:` URLs).
+    snapshot: Arc<LogicalSnapshot>,
     last_used: Instant,
 }
 
@@ -59,13 +60,14 @@ impl SetCache {
         (user.to_owned(), set_id)
     }
 
-    /// Return a full snapshot only when the cached version matches `expected_version`.
+    /// Return the normalized logical snapshot only when the cached version
+    /// matches `expected_version`. Callers materialize `data:` URLs themselves.
     pub fn get_snapshot_if_version(
         &self,
         user: &str,
         set_id: SetId,
         expected_version: SetVersion,
-    ) -> Option<SetSnapshot> {
+    ) -> Option<LogicalSnapshot> {
         let map_key = Self::key(user, set_id);
         let entry = self.entries.get(&map_key)?;
         if entry.last_used.elapsed() > self.ttl {
@@ -99,9 +101,9 @@ impl SetCache {
                 let summary = SetSummary {
                     set_id,
                     version: entry.version,
-                    display_name: entry.snapshot.display_name.clone(),
+                    display_name: entry.snapshot.as_snapshot().display_name.clone(),
                     updated_at,
-                    is_default: entry.snapshot.is_default,
+                    is_default: entry.snapshot.as_snapshot().is_default,
                 };
                 drop(entry);
                 if let Some(mut e) = self.entries.get_mut(&map_key) {
@@ -133,13 +135,16 @@ impl SetCache {
         Some(summary)
     }
 
-    /// Insert or replace cache from a durable snapshot (no crypto — plaintext RAM only).
-    pub fn put_snapshot(&self, user: &str, snapshot: &SetSnapshot) {
-        let map_key = Self::key(user, snapshot.set_id);
+    /// Insert or replace cache from a durable-normalized logical snapshot (no
+    /// crypto — plaintext RAM only). Materialized `data:`-carrying snapshots
+    /// must be normalized by the store commit first; they never reach here.
+    pub fn put_snapshot(&self, user: &str, snapshot: &LogicalSnapshot) {
+        let inner = snapshot.as_snapshot();
+        let map_key = Self::key(user, inner.set_id);
         self.entries.insert(
             map_key.clone(),
             CachedPlain {
-                version: snapshot.version,
+                version: inner.version,
                 snapshot: Arc::new(snapshot.clone()),
                 last_used: Instant::now(),
             },
@@ -147,9 +152,9 @@ impl SetCache {
         self.summaries.insert(
             map_key,
             CachedSummary {
-                version: snapshot.version,
-                display_name: snapshot.display_name.clone(),
-                is_default: snapshot.is_default,
+                version: inner.version,
+                display_name: inner.display_name.clone(),
+                is_default: inner.is_default,
                 last_used: Instant::now(),
             },
         );
@@ -211,7 +216,7 @@ impl SetCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::types::SetId;
+    use crate::history::types::{SetId, SetSnapshot};
 
     #[test]
     fn round_trip_cache_entry() {
@@ -227,10 +232,12 @@ mod tests {
             pair_ids: Vec::new(),
             is_default: false,
         };
-        cache.put_snapshot("alice", &snap);
+        let logical = LogicalSnapshot::from_normalized(snap);
+        cache.put_snapshot("alice", &logical);
         let loaded = cache
             .get_snapshot_if_version("alice", set_id, SetVersion(3))
             .unwrap();
+        let loaded = loaded.as_snapshot();
         assert_eq!(loaded.version, SetVersion(3));
         assert_eq!(loaded.display_name, "work");
         assert_eq!(loaded.history.len(), 1);

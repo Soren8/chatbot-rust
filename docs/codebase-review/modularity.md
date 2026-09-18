@@ -38,6 +38,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 ## MOD-005 — History facade exposes bypasses and ambiguous snapshot representations
 
+**Representation remediation (session 019):** with explicit user approval, chunked warm-cache snapshots now use the same normalized image references as durable reads. Private store-produced `LogicalSnapshot` gates cache insertion; public materialization creates an owned copy. Commit returns its already-normalized output, preserving CAS and IDs without reloading. Seven new boundary tests and the full suite pass. Public `SetSnapshot` remains a compatibility DTO and prepare captures remain materialized; no layered-cache or projection-cost optimization is claimed.
+
 **Evidence:** `history/mod.rs:16–28` re-exports cache and storage-format payload types along with public operations. `HistoryService::commit_snapshot` (`api.rs:668–682`) accepts arbitrary public `SetSnapshot` fields and goes directly to the store, bypassing named operation validation/name uniqueness in the service. `SetSnapshot` represents both logical image references and materialized data URLs (`api.rs:185–223,377–388`); `remember_committed` caches its incoming shape rather than a distinct normalized type. Session prepare loads materialized snapshots; chunk commits normalize again (`store/chunks.rs:611–668`).
 
 **Consequence:** the advertised invariant-enforcing facade depends on caller discipline. The same type can mean a storage working representation, an HTTP-compatible read, or a prepare/commit capture. Internal schema changes leak into non-storage callers and create uncertainty about what belongs in cache.

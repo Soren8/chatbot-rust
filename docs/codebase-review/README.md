@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: [session 018 — shared voice text](#session-018--shared-voice-text-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 019 — normalized history cache](#session-019--normalized-history-cache-2026-09-18). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: sixteen committed batches through session 018. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: seventeen committed batches through session 019. Phase 1 remains in progress; the completion-review gate below still applies.
 
 Phase 1 of seven is modularity: the initial whole-codebase assessment is complete, and bounded remediation remains in progress. Phases 2–7 (simplicity, abstractions/reuse, security/privacy, performance, test quality, documentation) have not started. The user authorized continued phase-1 work and requested a main-model read-only review after phase-1 remediation, before phase 2. That review is still pending; individual passing batches do not mark phase 1 complete.
 
@@ -248,3 +248,13 @@ The user explicitly approved migrating source-bound voice tests. Existing deskto
 Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Initial three-helper checkpoint: final `20260918T030051-5a4c88dc44a5` passed, but its baseline had two expected wiring failures and an intermediate new-test failure log was overwritten. Expanded characterization baseline `20260918T032717-84ec40f7fe3c` and expanded final `20260918T033914-d74887b0a0b3` passed. Expanded failed attempts are preserved: baseline test expectations `20260918T032011-d92e70621661`, syntax error during extraction `20260918T033446-6992cbe5f3ee`. Logs use `temp/test-logs/modularity-mod009-voice-text-expanded-{baseline,baseline-red,final,final-red}.log`. Later history reviewed-final also passed with these changes. Provider configuration validation passed.
 
 Local commit title: `Extract shared browser and native voice text utilities`, based on `8a200d7`. Sixteen remediation batches complete; browser state/voice coordination and phase-1 completion review remain open. Host webserver rebuild/restart is required for the new image-baked asset and template wiring.
+
+## Session 019 — normalized history cache, 2026-09-18
+
+MOD-005 representation remediation: the user explicitly approved correcting warm `load_logical` output after characterization showed inline image data where cold reads returned references. Private `LogicalSnapshot` now marks store-produced snapshots; the cache accepts this type only. Existing commit normalization returns its sealed text for cache insertion, avoiding a second normalization pass or post-commit reload. Public materialized reads retain a separate owned copy; versions, IDs and CAS remain intact. Whole-blob migration returns its durable representation with no fabricated pair IDs. Primary rejected a substring-based invariant that would panic on accepted malformed image tags; store provenance establishes the boundary instead.
+
+Seven new tests cover direct/captured append, regenerate, fork, warm/cold equivalence and literal malformed-marker preservation. Materialized reads compare decoded image bytes and verify 32×32 dimensions; these are fixture-scale checks, not a large-photo benchmark. Mechanical cache/store unit-test signature changes retain every pre-task assertion. No handler/API migration was bundled.
+
+Full command: `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`. Characterization baseline `20260918T035726-867d7f6352d5` passed after a preserved fixture-only failure (`20260918T035530-90f3ad4ec14a`, two handles to one redb file). Two new equivalence regressions failed as intended in `20260918T041821-110ced3c467c` and passed unchanged after correction. Final `20260918T042655-c48a4a364800`; reviewed final `20260918T043444-6c6e4d1e6375`, both passed including provider-config validation. Intermediate compile and V1-fork failures were preserved (`20260918T042401-f3e096e471dc`, `20260918T042454-005615f87381`). Logs: `temp/test-logs/modularity-mod005-snapshots-{baseline,normalize-red,normalize-final,reviewed-final}.log` and uniquely named failed-attempt logs.
+
+Local commit title: `Cache normalized logical history snapshots`, based on `4085b3b`. Seventeen remediation batches complete. MOD-005's cache-shape invariant and unused-facade bypasses are addressed; public compatibility DTOs and materialized prepare captures remain explicit boundaries, with slim captures/layered caching left for focused follow-up rather than claimed here. Phase 1 remains open.

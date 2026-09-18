@@ -15,7 +15,7 @@ use super::cache::SetCache;
 use super::migration;
 use super::ops::{self, OpsError};
 use super::store::{RedbHistoryStore, StoreError};
-use super::types::{PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
+use super::types::{LogicalSnapshot, PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
 use crate::config::app_config;
 use crate::enc_key::EncryptionKey;
 
@@ -141,14 +141,11 @@ impl HistoryService {
         })
     }
 
-    fn remember(&self, user: &str, snap: &SetSnapshot) {
+    /// Cache a durable-normalized logical snapshot (no re-load/decrypt).
+    /// Only store-returned logical shapes reach here — never incoming
+    /// `data:`-carrying working copies.
+    fn remember(&self, user: &str, snap: &LogicalSnapshot) {
         self.cache.put_snapshot(user, snap);
-    }
-
-    /// Cache the post-commit snapshot without re-loading/decrypting from redb.
-    fn remember_committed(&self, user: &str, mut snap: SetSnapshot, version: SetVersion) {
-        snap.version = version;
-        self.remember(user, &snap);
     }
 
     /// Split a v0/v1 set into chunks if needed. Does not hold name-mutation locks.
@@ -182,15 +179,16 @@ impl HistoryService {
         }
     }
 
-    /// Load snapshot, preferring the process cache when durable meta version matches.
-    ///
-    /// After a set is format 2, the cache holds a **logical** snapshot (image refs).
+    /// Load the normalized logical snapshot, preferring the process cache when
+    /// durable meta version matches. The cache holds logical shapes only
+    /// (format-2 image refs); materialization happens at the public `load`
+    /// boundary on an owned copy.
     fn load_snapshot_cached(
         &self,
         user: &str,
         set_id: SetId,
         key: &EncryptionKey,
-    ) -> Result<SetSnapshot, HistoryError> {
+    ) -> Result<LogicalSnapshot, HistoryError> {
         self.ensure_chunked(user, set_id, key)?;
         match self.store.load_meta(user, set_id) {
             Ok(meta) => {
@@ -211,6 +209,7 @@ impl HistoryService {
     }
 
     /// Ref-shaped load for mutations. Format-2 pair texts use `[IMAGE:img:…]`.
+    /// Compatibility DTO: logically shaped, cloned out of the cached entry.
     pub fn load_logical(
         &self,
         user: &str,
@@ -219,7 +218,7 @@ impl HistoryService {
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        self.load_snapshot_cached(&user, set_id, key)
+        Ok(self.load_snapshot_cached(&user, set_id, key)?.into_snapshot())
     }
 
     pub fn load_page(
@@ -453,6 +452,7 @@ impl HistoryService {
             key,
         )?;
         // Cache an empty snapshot without a second redb decrypt round-trip.
+        // Imageless, so trivially in durable-normalized form.
         let snap = SetSnapshot {
             set_id: summary.set_id,
             version: summary.version,
@@ -463,7 +463,7 @@ impl HistoryService {
             pair_ids: Vec::new(),
             is_default: summary.is_default,
         };
-        self.remember(&user, &snap);
+        self.remember(&user, &LogicalSnapshot::from_normalized(snap));
         self.cache.put_summary(&user, &summary);
         Ok(summary)
     }
@@ -550,15 +550,16 @@ impl HistoryService {
             pair_ids,
             is_default: false,
         };
-        let v = self.store.commit_snapshot(&user, summary.version, &snap, key)?;
+        let (v, committed) =
+            self.store.commit_snapshot(&user, summary.version, snap, key)?;
         let final_summary = SetSummary {
             set_id: new_id,
             version: v,
-            display_name: snap.display_name.clone(),
+            display_name: committed.as_snapshot().display_name.clone(),
             updated_at: summary.updated_at,
             is_default: false,
         };
-        self.remember_committed(&user, snap, v);
+        self.remember(&user, &committed);
         self.cache.put_summary(&user, &final_summary);
         Ok(final_summary)
     }
@@ -606,19 +607,20 @@ impl HistoryService {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        if snap.version != expected {
+        let snap_ref = snap.as_snapshot();
+        if snap_ref.version != expected {
             return Err(HistoryError::Conflict {
-                current_version: snap.version,
+                current_version: snap_ref.version,
             });
         }
-        if snap.is_default {
+        if snap_ref.is_default {
             return Err(HistoryError::InvalidInput("cannot rename default set"));
         }
-        let next = ops::rename(&snap, new_name)?;
+        let next = ops::rename(snap_ref, new_name)?;
         // Reject collision with any other set (same name on self is a no-op rename).
         self.ensure_display_name_available(&user, &next.display_name, Some(set_id), key)?;
-        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        self.remember_committed(&user, next, v);
+        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 
@@ -652,12 +654,13 @@ impl HistoryService {
         self.ensure_migrated(&user, key)?;
         // Verify ownership + decrypt access (key valid) before delete
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        if snap.version != expected {
+        let snap_ref = snap.as_snapshot();
+        if snap_ref.version != expected {
             return Err(HistoryError::Conflict {
-                current_version: snap.version,
+                current_version: snap_ref.version,
             });
         }
-        if snap.is_default {
+        if snap_ref.is_default {
             return Err(HistoryError::InvalidInput("cannot delete default set"));
         }
         self.store.delete_set(&user, set_id, expected)?;
@@ -679,22 +682,23 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        if snap.version != expected {
+        let snap_ref = snap.as_snapshot();
+        if snap_ref.version != expected {
             return Err(HistoryError::Conflict {
-                current_version: snap.version,
+                current_version: snap_ref.version,
             });
         }
-        let mut next = ops::append_pair(&snap, user_msg, assistant_msg)?;
-        if snap.history.is_empty() && ops::is_auto_placeholder_name(&snap.display_name) {
+        let mut next = ops::append_pair(snap_ref, user_msg, assistant_msg)?;
+        if snap_ref.history.is_empty() && ops::is_auto_placeholder_name(&snap_ref.display_name) {
             let derived = ops::derive_chat_name_from_message(user_msg);
-            if derived != snap.display_name
+            if derived != snap_ref.display_name
                 && !derived.eq_ignore_ascii_case("default")
                 && !ops::is_auto_placeholder_name(&derived)
             {
                 let existing = self
                     .list_sets(&user, key)?
                     .into_iter()
-                    .filter(|s| s.set_id != snap.set_id)
+                    .filter(|s| s.set_id != snap_ref.set_id)
                     .map(|s| s.display_name)
                     .collect::<Vec<_>>();
                 next.display_name = if existing.iter().any(|e| e == &derived) {
@@ -704,8 +708,8 @@ impl HistoryService {
                 };
             }
         }
-        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        self.remember_committed(&user, next, v);
+        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 
@@ -743,10 +747,10 @@ impl HistoryService {
                 }
             }
         }
-        let v = self
+        let (v, committed) = self
             .store
-            .commit_snapshot(&user, capture.version, &next, key)?;
-        self.remember_committed(&user, next, v);
+            .commit_snapshot(&user, capture.version, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 
@@ -761,10 +765,10 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let next = ops::apply_regenerate(capture, assistant_response)?;
-        let v = self
+        let (v, committed) = self
             .store
-            .commit_snapshot(&user, capture.version, &next, key)?;
-        self.remember_committed(&user, next, v);
+            .commit_snapshot(&user, capture.version, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 
@@ -780,14 +784,15 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        if snap.version != expected {
+        let snap_version = snap.as_snapshot().version;
+        if snap_version != expected {
             return Err(HistoryError::Conflict {
-                current_version: snap.version,
+                current_version: snap_version,
             });
         }
-        let next = ops::delete_pair(snap, pair_index, expected_user_msg)?;
-        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        self.remember_committed(&user, next, v);
+        let next = ops::delete_pair(snap.into_snapshot(), pair_index, expected_user_msg)?;
+        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 
@@ -801,14 +806,15 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        if snap.version != expected {
+        let snap_version = snap.as_snapshot().version;
+        if snap_version != expected {
             return Err(HistoryError::Conflict {
-                current_version: snap.version,
+                current_version: snap_version,
             });
         }
-        let next = ops::reset_history(snap);
-        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        self.remember_committed(&user, next, v);
+        let next = ops::reset_history(snap.into_snapshot());
+        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 
@@ -823,14 +829,15 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        if snap.version != expected {
+        let snap_ref = snap.as_snapshot();
+        if snap_ref.version != expected {
             return Err(HistoryError::Conflict {
-                current_version: snap.version,
+                current_version: snap_ref.version,
             });
         }
-        let next = ops::update_memory(&snap, memory)?;
-        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        self.remember_committed(&user, next, v);
+        let next = ops::update_memory(snap_ref, memory)?;
+        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 
@@ -845,14 +852,15 @@ impl HistoryService {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        if snap.version != expected {
+        let snap_ref = snap.as_snapshot();
+        if snap_ref.version != expected {
             return Err(HistoryError::Conflict {
-                current_version: snap.version,
+                current_version: snap_ref.version,
             });
         }
-        let next = ops::update_system_prompt(&snap, prompt)?;
-        let v = self.store.commit_snapshot(&user, expected, &next, key)?;
-        self.remember_committed(&user, next, v);
+        let next = ops::update_system_prompt(snap_ref, prompt)?;
+        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        self.remember(&user, &committed);
         Ok(v)
     }
 

@@ -209,6 +209,40 @@ impl SetSnapshot {
     }
 }
 
+/// Durable-normalized snapshot: exactly what `load_logical` returns and what
+/// the store seals. Decodable format-2 attachments carry `[IMAGE:img:…]`
+/// refs; undecodable `[IMAGE:...]` sequences persist literally as opaque text
+/// by design, and whole-blob v0/v1 entries keep empty `pair_ids` with payload
+/// text as sealed.
+///
+/// Private to `history`. The process cache stores only this shape; public
+/// callers keep using `SetSnapshot` DTOs — materialized from
+/// `HistoryService::load`, logically shaped from `HistoryService::load_logical`.
+///
+/// Only the store may construct this type (load/commit output) plus imageless
+/// snapshots. The invariant is store provenance, not text shape: content
+/// checks here would panic on accepted opaque input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LogicalSnapshot(SetSnapshot);
+
+impl LogicalSnapshot {
+    pub(super) fn as_snapshot(&self) -> &SetSnapshot {
+        &self.0
+    }
+
+    pub(super) fn into_snapshot(self) -> SetSnapshot {
+        self.0
+    }
+
+    /// Wrap a snapshot already in durable normalized form: store
+    /// `load_logical` / commit output, or an imageless working copy. Never
+    /// wrap incoming working copies — commit normalizes first and returns
+    /// the sealed shape instead.
+    pub(super) fn from_normalized(snapshot: SetSnapshot) -> Self {
+        Self(snapshot)
+    }
+}
+
 /// List-sets row after decrypt (name only available with a valid key).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetSummary {

@@ -1,5 +1,11 @@
 # Chat History Storage & Access Refactor (redb)
 
+## Snapshot ownership
+
+The process cache stores private `LogicalSnapshot` values produced by durable loads/commits. For chunked sets, decodable images are represented by stable image references; undecodable image markers remain literal text. Whole-blob migration snapshots retain their stored representation until chunk conversion. `load_logical` returns the compatibility DTO with logical text; `load` materializes an owned copy without changing the cached entry.
+
+Commits return their normalized snapshot from the existing image-normalization pass, so cache insertion requires neither a second normalization pass nor a post-commit database reload. Version/CAS and pair IDs remain aligned with the committed snapshot. Materialized reads may now load image blobs that a previously mixed-shape warm entry retained inline; no measured end-to-end performance claim is made.
+
 | Field | Value |
 | :--- | :--- |
 | **Author** | TBD |
