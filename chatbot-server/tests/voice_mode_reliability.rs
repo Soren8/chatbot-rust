@@ -310,6 +310,9 @@ fn voice_mode_holds_screen_awake_for_the_session() {
     let plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
     );
+    let coordinator = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeSessionCoordinator.java"
+    );
     let tests = include_str!(
         "../../android/app/src/test/java/com/chatbot/app/audio/VoiceSessionKeepAwakeTest.java"
     );
@@ -320,8 +323,10 @@ fn voice_mode_holds_screen_awake_for_the_session() {
         "voice session must hold FLAG_KEEP_SCREEN_ON so auto screen sleep cannot kill VAD"
     );
     assert!(
-        plugin.contains("voiceSessionKeepAwake.enter")
-            && plugin.contains("voiceSessionKeepAwake.exit")
+        coordinator.contains("keepAwake.enter")
+            && coordinator.contains("keepAwake.exit")
+            && plugin.contains("sessionCoordinator.enterVoiceSession")
+            && plugin.contains("sessionCoordinator.exitVoiceSession")
             && plugin.contains("enterVoiceRoute")
             && plugin.contains("exitVoiceRoute"),
         "keep-awake must follow the voice-mode session, not TTS start/stop"
@@ -374,6 +379,9 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     let plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
     );
+    let coordinator = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeSessionCoordinator.java"
+    );
     let hooks = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeNativeHooks.java"
     );
@@ -418,9 +426,10 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     assert!(
         session.contains("startForeground")
             && session.contains("stopForeground")
-            && plugin.contains("VoiceModeForegroundSession.get()")
-            && plugin.contains("voiceForeground.enter")
-            && plugin.contains("voiceForeground.exit")
+            && coordinator.contains("foreground.enter")
+            && coordinator.contains("foreground.exit")
+            && plugin.contains("sessionCoordinator.enterVoiceSession")
+            && plugin.contains("sessionCoordinator.exitVoiceSession")
             && plugin.contains("enterVoiceRoute")
             && plugin.contains("exitVoiceRoute"),
         "FGS must follow the voice-mode session, not TTS start/stop"
@@ -454,7 +463,7 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     assert!(
         plugin.contains("stopFromNotification")
             && plugin.contains("voiceModeStopRequested")
-            && plugin.contains("stopVoiceMode"),
+            && coordinator.contains("stopVoiceMode"),
         "notification Stop must ask JS to stopVoiceMode and tear down native audio"
     );
     assert!(
@@ -541,6 +550,9 @@ fn voice_mode_pauses_during_phone_call() {
     let plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
     );
+    let coordinator = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeSessionCoordinator.java"
+    );
     let chat_js = include_str!("../../static/chat.js");
 
     assert!(
@@ -551,9 +563,10 @@ fn voice_mode_pauses_during_phone_call() {
         "native must watch MODE_IN_CALL and yield the voice-mode session"
     );
     assert!(
-        plugin.contains("NativeVoiceTtsPlugin.stopIfPresent")
-            && plugin.contains("stopRecording")
-            && plugin.contains("voiceAudioRoute.exit"),
+        coordinator.contains("stopPlayback")
+            && coordinator.contains("stopCapture")
+            && coordinator.contains("route.exit")
+            && plugin.contains("sessionCoordinator.pauseForPhoneCall"),
         "a phone call must stop TTS, release the mic, and drop MODE_IN_COMMUNICATION"
     );
     assert!(
@@ -834,13 +847,19 @@ fn native_tts_barge_in_on_initial_speech() {
     );
     assert!(
         function_contains(chat_js, "_onNativePcm", "_maybeStartUtterance")
-            && function_contains(chat_js, "_onNativePcm", "voiceModeTtsSessionActive"),
-        "speech start during a TTS session must use the utterance start gate"
+            && function_contains(chat_js, "_onNativePcm", "hasActiveVoiceSession"),
+        "speech start during a TTS session must use the utterance start gate on the owned flags-only session"
+    );
+    let voice_lifecycle = include_str!("../../static/voice-lifecycle.js");
+    assert!(
+        voice_lifecycle.contains("BARGE_IN_FRAMES_DESKTOP = 4")
+            && voice_lifecycle.contains("BARGE_IN_SPEECH_PROB = 0.85"),
+        "desktop barge-in thresholds live in the owned voice lifecycle"
     );
     assert!(
         function_contains(chat_js, "createVAD", "onSpeechRealStart")
             && function_contains_near(chat_js, "onSpeechRealStart", "handleBargeIn")
-            && function_contains(chat_js, "createVAD", "BARGE_IN_SPEECH_PROB"),
+            && function_contains(chat_js, "createVAD", "noteFrameProcessed"),
         "desktop Silero must barge in on confirmed / high-confidence speech, not the first suspected frame"
     );
     assert!(
@@ -1066,10 +1085,11 @@ fn native_voice_tts_decodes_opus_clips() {
 }
 
 /// Desktop `playTTS` is invoked from the ready block but is itself top-level,
-/// and it aborts the in-flight Voice Mode STT upload for barge-in. That
-/// controller and the barge-in counter must be top-level bindings: a `let`
-/// inside the ready closure is invisible to `playTTS`, which threw
-/// ReferenceError before every desktop voice-mode play and made TTS silent.
+/// and it aborts the in-flight Voice Mode STT upload for barge-in. The STT
+/// controller stays a top-level binding (a `let` inside the ready closure is
+/// invisible to `playTTS`, which threw ReferenceError before every desktop
+/// voice-mode play and made TTS silent); barge-in frames live in the owned
+/// voice lifecycle so top-level playTTS resets them through the owner.
 #[test]
 fn desktop_play_tts_shared_voice_state_is_top_level() {
     let chat_js = include_str!("../../static/chat.js");
@@ -1077,7 +1097,7 @@ fn desktop_play_tts_shared_voice_state_is_top_level() {
         .find("$(document).ready(function()")
         .expect("chat.js must keep the main ready block");
     let (top_level, _ready_block) = chat_js.split_at(ready_at);
-    for name in ["voiceSttAbortController", "bargeInFrames"] {
+    for name in ["voiceSttAbortController"] {
         let decl_prefix = format!("let {name} ");
         let indented_prefix = format!("  let {name} ");
         assert!(
@@ -1090,9 +1110,24 @@ fn desktop_play_tts_shared_voice_state_is_top_level() {
         );
     }
     assert!(
+        !top_level.contains("let bargeInFrames"),
+        "barge-in frames live in the owned voice lifecycle, not a parallel top-level binding"
+    );
+    assert!(
+        !chat_js.lines().any(|line| line.starts_with("  let bargeInFrames ")),
+        "bargeInFrames must not be redeclared inside the ready block"
+    );
+    let voice_lifecycle = include_str!("../../static/voice-lifecycle.js");
+    assert!(
+        voice_lifecycle.contains("bargeFrames")
+            && voice_lifecycle.contains("function noteFrameProcessed")
+            && voice_lifecycle.contains("resetBargeFrames"),
+        "the shared unit must own the barge-in counter and its frame gate"
+    );
+    assert!(
         function_contains(chat_js, "playTTS", "voiceSttAbortController")
-            && function_contains(chat_js, "playTTS", "bargeInFrames"),
-        "playTTS must keep aborting in-flight STT and resetting barge-in state"
+            && function_contains(chat_js, "playTTS", "beginDesktopPlayback"),
+        "playTTS must keep aborting in-flight STT and delegate the owned barge/session transition"
     );
 }
 
@@ -1411,12 +1446,17 @@ fn voice_mode_gui_stop_halts_tts_on_desktop_and_mobile() {
     assert!(
         chat_js.contains("stopAllTtsPlayback")
             && chat_js.contains("Click to stop speech")
-            && function_contains_near(chat_js, "CURRENT_AUDIO_BUTTON === playBtn", "stopAllTtsPlayback"),
+            && function_contains_near(chat_js, "isCurrentButton(playBtn)", "stopAllTtsPlayback"),
         "clicking the speaking message must use the shared stop"
     );
+    let voice_lifecycle = include_str!("../../static/voice-lifecycle.js");
     assert!(
-        function_contains(chat_js, "stopAllTtsPlayback", "NativeVoiceTts")
-            && function_contains(chat_js, "stopAllTtsPlayback", "stopCurrentDesktopTts"),
+        function_contains(chat_js, "stopAllTtsPlayback", "stopAllPlayback"),
+        "shared stop adapter must delegate to the owned lifecycle"
+    );
+    assert!(
+        function_contains(voice_lifecycle, "stopAllPlayback", "stopNative()")
+            && function_contains(voice_lifecycle, "stopAllPlayback", "stopDesktopPlayback()"),
         "shared stop must kill both native AudioTrack and desktop HTMLAudio"
     );
     assert!(
@@ -1680,12 +1720,12 @@ fn manual_tts_play_in_voice_mode_reliably_coexists_on_android_and_desktop() {
         "playNativeVoiceModeTts must filter out stale ended events that arrive before playback starts"
     );
 
-    // 3. Chat.js desktop playTTS resets bargeInFrames and aborts in-flight STT
+    // 3. Chat.js desktop playTTS resets owned barge frames and aborts in-flight STT
     let desktop_tts = function_body(chat_js, "playTTS")
         .expect("playTTS must be declared");
     assert!(
-        desktop_tts.contains("bargeInFrames = 0"),
-        "desktop playTTS must reset bargeInFrames on start"
+        desktop_tts.contains("beginDesktopPlayback"),
+        "desktop playTTS must delegate the owned begin (which resets barge frames on start)"
     );
     assert!(
         desktop_tts.contains("voiceSttAbortController.abort"),
@@ -1715,12 +1755,22 @@ fn native_tts_audio_focus_and_speaker_routing_during_voice_mode() {
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
     );
 
-    // 1. NativeMicPlugin does not steal audio focus while NativeVoiceTts session is active
+    // 1. NativeMicPlugin does not steal audio focus while the owned coordinator
+    // reports an active NativeVoiceTts session; the check moved cross-file.
     let reclaim = java_method_body(mic_plugin, "void reclaimAudioFocus(")
         .expect("reclaimAudioFocus must be declared");
     assert!(
-        reclaim.contains("isSessionActive"),
-        "reclaimAudioFocus must not steal focus while NativeVoiceTtsPlugin session is active"
+        reclaim.contains("isTtsSessionActive"),
+        "reclaimAudioFocus must not steal focus while the coordinator reports an active TTS session"
+    );
+    let coordinator = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeSessionCoordinator.java"
+    );
+    let tts_active = java_method_body(coordinator, "boolean isTtsSessionActive(")
+        .expect("isTtsSessionActive must be declared");
+    assert!(
+        tts_active.contains("isSessionActive"),
+        "coordinator isTtsSessionActive must reflect the NativeVoiceTtsPlugin session"
     );
 
     // 2. NativeVoiceTtsPlugin abandons audio focus and re-enables mic focus on stop
@@ -1966,8 +2016,8 @@ fn desktop_tts_playing_clip_is_owned_not_cached() {
         .find("fetchDesktopTtsClip(sessionId, text)")
         .expect("playOneTtsUtterance must fetch on a cache miss");
     let delete_pos = play_one
-        .rfind("desktopTtsPreloadCache.delete(cacheKey)")
-        .expect("playOneTtsUtterance must take the clip out of the preload cache");
+        .rfind("voiceLifecycle.deletePreload(cacheKey)")
+        .expect("playOneTtsUtterance must take the clip out of the owned preload cache");
     assert!(
         delete_pos > fetch_pos,
         "the preload-cache delete must come AFTER the fetch call so a cache-miss \

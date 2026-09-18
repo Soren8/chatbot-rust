@@ -16,13 +16,15 @@ const vm = require('node:vm');
 const chatJsPath = process.argv[2];
 const voiceTextPath = process.argv[3];
 const conversationStatePath = process.argv[4];
+const voiceLifecyclePath = process.argv[5];
 assert(
-  chatJsPath && voiceTextPath && conversationStatePath,
-  'usage: node tts_sentence_boundary_test.js <static/chat.js> <static/voice-text.js> <static/conversation-state.js>'
+  chatJsPath && voiceTextPath && conversationStatePath && voiceLifecyclePath,
+  'usage: node tts_sentence_boundary_test.js <static/chat.js> <static/voice-text.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
 );
 const source = fs.readFileSync(chatJsPath, 'utf8');
 const voiceText = require(voiceTextPath);
 const conversationState = require(conversationStatePath);
+const voiceLifecycleMod = require(voiceLifecyclePath);
 
 function extractTop(name) {
   const header = 'function ' + name + '(';
@@ -60,18 +62,36 @@ function desktopSession() {
     attr() { return ''; },
   };
   // Generating state comes from the real conversation request tracker, the
-  // single authority chat.js reads via chatRequests.isGenerating().
+  // single authority chat.js reads via chatRequests.isGenerating(). Lifecycle
+  // liveness/completion delegate to the real voice owner through coherent
+  // adapters (no copied algorithm).
   const chatRequests = conversationState.createChatRequestTracker();
   let liveSeq = chatRequests.begin();
+  const voiceLifecycle = voiceLifecycleMod.createVoiceLifecycle({
+    now: () => Date.now(),
+    createAudio: () => null,
+    createAbortController: () => new AbortController(),
+    revokeUrl: () => {},
+    resetPlayButton: () => {},
+    clearMessageUi: () => {},
+    syncSendButton: () => {},
+    isVoiceModeActive: () => false,
+    stopNativePlayback: () => {},
+  });
+  voiceLifecycle.stopDesktopPlayback();
+  voiceLifecycle.beginDesktopPlayback({});
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); }, log() {}, debug() {}, warn() {} },
     Promise, Set, Map,
     setTimeout(fn) { state.timers.push(fn); return state.timers.length; },
     clearTimeout() {},
     $() { return element; },
-    chatRequests,
-    desktopTtsIsLive(id) { return state.live && id === 1; },
-    completeDesktopTtsPlayback() { state.completed++; state.live = false; },
+    chatRequests, voiceLifecycle,
+    desktopTtsIsLive(id) { return state.live && voiceLifecycle.isLiveDesktop(id); },
+    completeDesktopTtsPlayback(button) {
+      voiceLifecycle.completeDesktopPlayback(button);
+      state.completed++; state.live = false;
+    },
     preloadDesktopTtsSentence(sessionId, text) { state.preloaded.push(String(text)); },
     playOneTtsUtterance(sessionId, text) { state.played.push(String(text)); return Promise.resolve(true); },
     getMessageTtsText() { return context.sanitizeForTTS(state.raw); },
@@ -122,15 +142,25 @@ function nativeSession() {
   let timer = 0;
   const chatRequests = conversationState.createChatRequestTracker();
   let liveSeq = chatRequests.begin();
+  const voiceLifecycle = voiceLifecycleMod.createVoiceLifecycle({
+    now: () => Date.now(),
+    createAudio: () => null,
+    createAbortController: () => new AbortController(),
+    revokeUrl: () => {},
+    resetPlayButton: () => {},
+    clearMessageUi: () => {},
+    syncSendButton: () => {},
+    isVoiceModeActive: () => false,
+    stopNativePlayback: () => {},
+  });
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); } },
     AbortController, Promise, Set, Map,
     setTimeout() { return ++timer; }, clearTimeout() {},
-    $() { return element; }, chatRequests,
-    CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
-    voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
+    $() { return element; }, chatRequests, voiceLifecycle,
+    nativeMicBridge: null,
+    voiceSttAbortController: null,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
-    voiceModeTtsSessionActive: false, voiceModeTtsPlaying: false,
     MAX_TTS_SENTENCE_RETRIES: 3, MAX_NATIVE_TTS_LOOKAHEAD: 4,
     getMessageTtsText: () => '',
     withCsrf: headers => headers,
@@ -138,9 +168,14 @@ function nativeSession() {
     cancelNativeTtsToken: token => cancelled.push(token),
     sleepMs: () => Promise.resolve(),
     isRetryableVoiceStatus: status => status === 429 || status >= 500,
-    stopCurrentDesktopTts() {}, resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
-    syncSendButtonState() {}, onVoiceModeTtsStarted() {},
-    finishNativeVoiceTts() { state.finished++; },
+    stopCurrentDesktopTts() { voiceLifecycle.stopDesktopPlayback(); },
+    stopAllTtsPlayback(opts) { voiceLifecycle.stopAllPlayback(opts); },
+    resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
+    syncSendButtonState() {},
+    onVoiceModeTtsStarted() { voiceLifecycle.notePlaybackStarted(); },
+    finishNativeVoiceTts(generation, button) {
+      if (voiceLifecycle.finishNativePlayback(generation, button)) state.finished++;
+    },
     reportVoice(k, m) { state.reports.push(k + ':' + m); },
     appendMessage(t) { state.chatErrors.push(String(t)); },
     fetchVoiceRetry(url, options) {
@@ -169,8 +204,9 @@ function nativeSession() {
   context.sanitizeForTTS = voiceText.sanitizeForTTS;
   context.getMessageTtsText = () => context.sanitizeForTTS(state.raw);
   context.invalidateNativeVoiceTts = () => {
-    context.nativeVoiceTtsGeneration++;
+    voiceLifecycle.invalidateNativeSession();
     context.nativeVoiceTtsSessionPromise = null;
+    context.nativeVoiceTtsSessionListener = null;
   };
   vm.runInContext(nativeSrc, context);
   context.playNativeVoiceModeTts({}, {});

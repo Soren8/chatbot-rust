@@ -4,7 +4,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(process.argv[2], 'utf8');
 const conversationState = require(process.argv[3]);
-assert(process.argv[3], 'usage: node native_tts_queue_test.js <static/chat.js> <static/conversation-state.js>');
+const voiceLifecycleMod = require(process.argv[4]);
+assert(
+  process.argv[3] && process.argv[4],
+  'usage: node native_tts_queue_test.js <static/chat.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
+);
 const start = source.indexOf('  function playNativeVoiceModeTts(');
 const end = source.indexOf('  window.playNativeVoiceModeTts =', start);
 assert(start >= 0 && end > start, 'native TTS entry point must be available');
@@ -29,14 +33,27 @@ function session(sentences, generating = false, modern = true) {
   // single authority chat.js reads via chatRequests.isGenerating().
   const chatRequests = conversationState.createChatRequestTracker();
   if (generating) chatRequests.begin();
+  // Lifecycle comes from the real voice owner: desktop/native share one
+  // owner, generations gate stale work. Coherent adapters below delegate to
+  // it instead of copying the algorithm.
+  const voiceLifecycle = voiceLifecycleMod.createVoiceLifecycle({
+    now: () => Date.now(),
+    createAudio: () => null,
+    createAbortController: () => new AbortController(),
+    revokeUrl: () => {},
+    resetPlayButton: () => {},
+    clearMessageUi: () => {},
+    syncSendButton: () => {},
+    isVoiceModeActive: () => true,
+    stopNativePlayback: () => {},
+  });
   const context = vm.createContext({
     console: { error() {} }, AbortController, Promise, Set, Map,
     setTimeout() { return ++timer; }, clearTimeout() {},
-    $() { return element; }, chatRequests,
-    CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
-    voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
+    $() { return element; }, chatRequests, voiceLifecycle,
+    nativeMicBridge: null,
+    voiceSttAbortController: null,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
-    voiceModeTtsSessionActive: false, voiceModeTtsPlaying: false,
     MAX_TTS_SENTENCE_RETRIES: 3, MAX_NATIVE_TTS_LOOKAHEAD: 4,
     sanitizeForTTS: text => text,
     getMessageTtsText: () => state.sentences.join(' '),
@@ -47,9 +64,15 @@ function session(sentences, generating = false, modern = true) {
     cancelNativeTtsToken: token => cancelled.push(token),
     sleepMs: () => Promise.resolve(),
     isRetryableVoiceStatus: status => status === 429 || status >= 500,
-    stopCurrentDesktopTts() {}, resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
-    syncSendButtonState() {}, onVoiceModeTtsStarted() {},
-    finishNativeVoiceTts() { state.ended++; },
+    stopCurrentDesktopTts() { voiceLifecycle.stopDesktopPlayback(); },
+    stopAllTtsPlayback(opts) { voiceLifecycle.stopAllPlayback(opts); },
+    resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
+    syncSendButtonState() {},
+    onVoiceModeTtsStarted() { voiceLifecycle.notePlaybackStarted(); },
+    onVoiceModeTtsEnded() { voiceLifecycle.notePlaybackEnded(); },
+    finishNativeVoiceTts(generation, button) {
+      if (voiceLifecycle.finishNativePlayback(generation, button)) state.ended++;
+    },
     fetchVoiceRetry(url, options) {
       return new Promise((resolve, reject) => {
         posts.push({ text: JSON.parse(options.body).text, reject,
@@ -70,12 +93,13 @@ function session(sentences, generating = false, modern = true) {
     } }
   });
   context.invalidateNativeVoiceTts = () => {
-    context.nativeVoiceTtsGeneration++;
+    voiceLifecycle.invalidateNativeSession();
     context.nativeVoiceTtsSessionPromise = null;
+    context.nativeVoiceTtsSessionListener = null;
   };
   vm.runInContext(source.slice(start, end), context);
   context.playNativeVoiceModeTts({}, generating ? {} : { sentences });
-  return { posts, enqueued, cancelled, state, context,
+  return { posts, enqueued, cancelled, state, context, voiceLifecycle,
     consume(token) { state.listener({ type: 'clipConsumed', generation: 1, url: 'https://chat/tts_stream/' + token }); }
   };
 }
@@ -117,7 +141,7 @@ async function streamingTextFillsWindowWithoutWaitingForGenerationToEnd() {
   assert.deepEqual(s.posts.map(p => p.text), ['One.', 'Two.', 'Three.'],
     'completed streaming sentences overlap token requests while fragments wait');
   assert.equal(s.state.ended, 0, 'generation still active');
-  s.context.CURRENT_AUDIO.stop();
+  s.voiceLifecycle.stopAllPlayback();
 }
 
 async function failedHeadRetriesInOrderWithoutRepostingReadyTail() {
@@ -136,7 +160,7 @@ async function failedHeadRetriesInOrderWithoutRepostingReadyTail() {
 async function stopCancelsLateTokensWithoutEnqueueingThem() {
   const s = session(['One.', 'Two.']);
   await flush();
-  s.context.CURRENT_AUDIO.stop();
+  s.voiceLifecycle.stopAllPlayback();
   s.posts[0].resolve('late-one');
   s.posts[1].resolve('late-two');
   await flush();

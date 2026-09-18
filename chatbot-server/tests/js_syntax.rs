@@ -29,6 +29,18 @@ fn first_party_static_js_parses() {
         "static/session-client.js",
         include_str!("../../static/session-client.js"),
     );
+    assert_script_parses(
+        "static/voice-lifecycle.js",
+        include_str!("../../static/voice-lifecycle.js"),
+    );
+    assert_script_parses(
+        "static/credential-metadata.js",
+        include_str!("../../static/credential-metadata.js"),
+    );
+    assert_script_parses(
+        "static/credential-crypto.js",
+        include_str!("../../static/credential-crypto.js"),
+    );
     assert_script_parses("static/login.js", include_str!("../../static/login.js"));
     assert_script_parses(
         "static/native-audio.js",

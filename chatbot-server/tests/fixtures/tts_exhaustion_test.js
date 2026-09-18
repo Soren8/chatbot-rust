@@ -11,13 +11,29 @@ const vm = require('node:vm');
 const chatJsPath = process.argv[2];
 const voiceTextPath = process.argv[3];
 const conversationStatePath = process.argv[4];
+const voiceLifecyclePath = process.argv[5];
 assert(
-  chatJsPath && voiceTextPath && conversationStatePath,
-  'usage: node tts_exhaustion_test.js <static/chat.js> <static/voice-text.js> <static/conversation-state.js>'
+  chatJsPath && voiceTextPath && conversationStatePath && voiceLifecyclePath,
+  'usage: node tts_exhaustion_test.js <static/chat.js> <static/voice-text.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
 );
 const source = fs.readFileSync(chatJsPath, 'utf8');
 const voiceText = require(voiceTextPath);
 const conversationState = require(conversationStatePath);
+const voiceLifecycleMod = require(voiceLifecyclePath);
+
+function makeOwner(voiceMode) {
+  return voiceLifecycleMod.createVoiceLifecycle({
+    now: () => Date.now(),
+    createAudio: () => null,
+    createAbortController: () => new AbortController(),
+    revokeUrl: () => {},
+    resetPlayButton: () => {},
+    clearMessageUi: () => {},
+    syncSendButton: () => {},
+    isVoiceModeActive: () => !!voiceMode,
+    stopNativePlayback: () => {},
+  });
+}
 
 function extractTop(name) {
   const header = 'function ' + name + '(';
@@ -55,6 +71,9 @@ function desktopStreamingSession() {
     addClass() { return this; }, removeClass() { return this; }, html() { return this; },
     attr() { return ''; },
   };
+  const voiceLifecycle = makeOwner(false);
+  voiceLifecycle.stopDesktopPlayback();
+  voiceLifecycle.beginDesktopPlayback({});
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); }, log() {}, debug() {}, warn() {} },
     Promise, Set, Map,
@@ -62,8 +81,12 @@ function desktopStreamingSession() {
     clearTimeout() {},
     $() { return element; },
     chatRequests: (() => { const t = conversationState.createChatRequestTracker(); return t; })(),
-    desktopTtsIsLive(id) { return state.live && id === 1; },
-    completeDesktopTtsPlayback() { state.completed++; state.live = false; },
+    voiceLifecycle,
+    desktopTtsIsLive(id) { return state.live && voiceLifecycle.isLiveDesktop(id); },
+    completeDesktopTtsPlayback(button) {
+      voiceLifecycle.completeDesktopPlayback(button);
+      state.completed++; state.live = false;
+    },
     preloadDesktopTtsSentence() {},
     playOneTtsUtterance(sessionId, text) { state.played.push(String(text)); return Promise.resolve(false); },
     getMessageTtsText() { return context.sanitizeForTTS(state.raw); },
@@ -97,13 +120,20 @@ function fixedListSession() {
     played: [], completed: 0, chatErrors: [], reports: [], consoleErrors: [],
     timers: [], live: true,
   };
+  const voiceLifecycle = makeOwner(false);
+  voiceLifecycle.stopDesktopPlayback();
+  voiceLifecycle.beginDesktopPlayback({});
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); }, log() {}, debug() {}, warn() {} },
     Promise, Set, Map,
     setTimeout(fn) { state.timers.push(fn); return state.timers.length; },
     clearTimeout() {},
-    desktopTtsIsLive(id) { return state.live && id === 1; },
-    completeDesktopTtsPlayback() { state.completed++; state.live = false; },
+    voiceLifecycle,
+    desktopTtsIsLive(id) { return state.live && voiceLifecycle.isLiveDesktop(id); },
+    completeDesktopTtsPlayback(button) {
+      voiceLifecycle.completeDesktopPlayback(button);
+      state.completed++; state.live = false;
+    },
     preloadDesktopTtsSentence() {},
     playOneTtsUtterance(sessionId, text) { state.played.push(String(text)); return Promise.resolve(false); },
     MAX_TTS_SENTENCE_RETRIES: 3,
@@ -143,16 +173,17 @@ function nativeFailingSession() {
     prop(name, value) { if (value !== undefined) return this; return true; },
     addClass() { return this; }, html() { return this; },
   };
+  const voiceLifecycle = makeOwner(false);
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); } },
     AbortController, Promise, Set, Map,
     setTimeout() { return 1; }, clearTimeout() {},
     $() { return element; },
     chatRequests: (() => { const t = conversationState.createChatRequestTracker(); return t; })(),
-    CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
-    voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
+    voiceLifecycle,
+    nativeMicBridge: null,
+    voiceSttAbortController: null,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
-    voiceModeTtsSessionActive: false, voiceModeTtsPlaying: false,
     MAX_TTS_SENTENCE_RETRIES: 3, MAX_NATIVE_TTS_LOOKAHEAD: 4,
     getMessageTtsText: () => '',
     withCsrf: headers => headers,
@@ -160,9 +191,14 @@ function nativeFailingSession() {
     cancelNativeTtsToken: token => cancelled.push(token),
     sleepMs: () => Promise.resolve(),
     isRetryableVoiceStatus: status => status === 429 || status >= 500,
-    stopCurrentDesktopTts() {}, resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
-    syncSendButtonState() {}, onVoiceModeTtsStarted() {},
-    finishNativeVoiceTts() { state.finished++; },
+    stopCurrentDesktopTts() { voiceLifecycle.stopDesktopPlayback(); },
+    stopAllTtsPlayback(opts) { voiceLifecycle.stopAllPlayback(opts); },
+    resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
+    syncSendButtonState() {},
+    onVoiceModeTtsStarted() { voiceLifecycle.notePlaybackStarted(); },
+    finishNativeVoiceTts(generation, button) {
+      if (voiceLifecycle.finishNativePlayback(generation, button)) state.finished++;
+    },
     reportVoice(k, m) { state.reports.push(k + ':' + m); },
     appendMessage(t) { state.chatErrors.push(String(t)); },
     fetchVoiceRetry(url, options) {
@@ -189,8 +225,9 @@ function nativeFailingSession() {
   context.sanitizeForTTS = voiceText.sanitizeForTTS;
   context.getMessageTtsText = () => context.sanitizeForTTS(state.raw);
   context.invalidateNativeVoiceTts = () => {
-    context.nativeVoiceTtsGeneration++;
+    voiceLifecycle.invalidateNativeSession();
     context.nativeVoiceTtsSessionPromise = null;
+    context.nativeVoiceTtsSessionListener = null;
   };
   vm.runInContext(nativeSrc, context);
   context.playNativeVoiceModeTts({}, {});
@@ -225,16 +262,17 @@ function nativeReplacementHarness() {
     prop(name, value) { if (value !== undefined) return this; return true; },
     addClass() { return this; }, html() { return this; },
   };
+  const voiceLifecycle = makeOwner(false);
   const context = vm.createContext({
     console: { error(...a) { state.consoleErrors.push(a.join(' ')); } },
     AbortController, Promise, Set, Map,
     setTimeout() { return 1; }, clearTimeout() {},
     $() { return element; },
     chatRequests: (() => { const t = conversationState.createChatRequestTracker(); t.begin(); return t; })(),
-    CURRENT_AUDIO: null, CURRENT_AUDIO_BUTTON: null, nativeMicBridge: null,
-    voiceSttAbortController: null, nativeVoiceTtsGeneration: 0,
+    voiceLifecycle,
+    nativeMicBridge: null,
+    voiceSttAbortController: null,
     nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
-    voiceModeTtsSessionActive: false, voiceModeTtsPlaying: false,
     MAX_TTS_SENTENCE_RETRIES: 3, MAX_NATIVE_TTS_LOOKAHEAD: 4,
     getMessageTtsText() { return context.sanitizeForTTS(texts[state.phase]); },
     withCsrf: headers => headers,
@@ -242,10 +280,14 @@ function nativeReplacementHarness() {
     cancelNativeTtsToken: token => cancelled.push(token),
     sleepMs: () => new Promise(resolve => sleepers.push(resolve)),
     isRetryableVoiceStatus: status => status === 429 || status >= 500,
-    stopCurrentDesktopTts() {}, resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
-    stopAllTtsPlayback() {},
-    syncSendButtonState() {}, onVoiceModeTtsStarted() {},
-    finishNativeVoiceTts(generation) { finishedGens.push(generation); },
+    stopCurrentDesktopTts() { voiceLifecycle.stopDesktopPlayback(); },
+    resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
+    stopAllTtsPlayback(opts) { voiceLifecycle.stopAllPlayback(opts); },
+    syncSendButtonState() {},
+    onVoiceModeTtsStarted() { voiceLifecycle.notePlaybackStarted(); },
+    finishNativeVoiceTts(generation, button) {
+      if (voiceLifecycle.finishNativePlayback(generation, button)) finishedGens.push(generation);
+    },
     reportVoice(k, m) { state.reports.push(k + ':' + m); },
     appendMessage(t) { state.chatErrors.push(String(t)); },
     fetchVoiceRetry(url, options) {
@@ -283,8 +325,9 @@ function nativeReplacementHarness() {
   context.splitSentences = voiceText.splitSentences;
   context.sanitizeForTTS = voiceText.sanitizeForTTS;
   context.invalidateNativeVoiceTts = () => {
-    context.nativeVoiceTtsGeneration++;
+    voiceLifecycle.invalidateNativeSession();
     context.nativeVoiceTtsSessionPromise = null;
+    context.nativeVoiceTtsSessionListener = null;
   };
   vm.runInContext(nativeSrc, context);
   return {

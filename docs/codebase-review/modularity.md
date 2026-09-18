@@ -116,6 +116,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 **Partial remediation (session 032, committed as `94fd1fa`):** shared `conversation-state.js` owns set-version transitions, set-identity payloads, retry-once decisions, request-sequence plus set-generation fencing, ghost-turn routing, history-window offsets/pagination and the three abort behaviors behind one tested API. `static/chat.js` holds one history window plus one request tracker and keeps DOM rendering, option syncing and voice routing callbacks; `window.APP_DATA` stays the single version store. TTS sentence/exhaustion/queue fixtures drive generating state through the real tracker. Review fixes applied: voice interrupt bumps only when active, user stop and voice interrupt abort uncaught (begin/quiet catch), no null-controller fallback, test-only APIs removed, delete branches kept separate, idle-interrupt and abort-throw regressions added. Voice lifecycle, inference settings and distribution ownership remain open.
 
+**Partial remediation (session 038, pending as `Own voice lifecycle and credential boundaries`):** `static/voice-lifecycle.js` owns the single browser TTS flags/cooldown/barge/session/audio lifecycle with explicit callbacks and no `window`/`document` reach; `chat.js` keeps queue/VAD orchestration with exact error/order flags. Review fixed gate error/ordering/exception. Rendering/queue/VAD behavior stays in `chat.js`; see session 038 checkpoint for evidence.
+
 **Evidence:** all 6,355 lines of `static/chat.js` were read. It initializes config/native bridges and patches global fetch (79–354), owns history/version state (544–765), renders messages (959–1401,1968–2067), owns generation (2069–2159,3182–3393,4384–4695), implements TTS (1442–1612,2161–3149,5317–5652), and owns VAD/voice lifecycle (4869–6304). The main ready closure exports selected functions to `window` while other helpers reference outer mutable state.
 
 **Consequence:** state ownership depends on lexical scope and document-ready timing. Request/version logic reads selected DOM options; playback determines whether generation continues from the last AI node, button disabled state, and a global abort controller. Splitting the file without replacing those implicit dependencies would preserve the coupling.
@@ -160,6 +162,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 
 **Correction boundary:** keep the existing small `VoiceAudioRoute`, `VoiceSessionKeepAwake`, `VoiceModeForegroundSession`, decoder and download queue units. Extract a session coordinator from the microphone plugin, with explicit resource ownership, generation-aware commands/events, and truthful platform-operation results. Preserve native stop when JS is unavailable; unify event delivery rather than removing necessary background safeguards.
 
+**Partial remediation (session 038, pending as `Own voice lifecycle and credential boundaries`):** `VoiceModeSessionCoordinator` owns route/keep-awake/FGS/phone/notification composition with mic plugin hooks and no new locks (call-time static TTS compatibility, TTS plugin unchanged; dual-event and FGS semantics unchanged). Review fixed a new native lock risk and an abandoned-rendezvous lifecycle risk. See session 038 checkpoint for evidence.
+
 **Verification:** phone call, notification stop, permission/start failure, activity/WebView replacement, Bluetooth routing, in-flight download/capture teardown, and exact-once effective transitions. Retain the dual barge-in invariant without retuning thresholds.
 
 ## MOD-013 — Android Auto screen implements a separate product workflow
@@ -179,6 +183,8 @@ MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting revie
 **Consequence:** the module/interface suggests both HttpOnly-cookie credentials and JS-readable key storage are supported responsibilities. Dormant or compatibility APIs obscure the intended privacy boundary; hiding a button does not narrow the native plugin surface.
 
 **Correction boundary:** enumerate actual callers and required migration paths, then separate account-cache metadata, login derivation and native sealed-credential storage. Remove obsolete callable key-export interfaces only after compatibility decisions; retain migration of necessary stored records. Evaluate the key-return path as a security finding before treating this as cosmetic cleanup.
+
+**Partial remediation (session 038, pending as `Own voice lifecycle and credential boundaries`):** `credential-metadata.js` + `credential-crypto.js` own real slot policy/algorithms behind required UMD imports before `enc-key.js`; `CredentialCookies` + `SealedCredentialPayload` own names/parsing/builders and the `org.json` codec, preserving keystore/biometric and the legacy export surface with no security fix. Review rejected custom JSON. MOD-014 legacy export and SEC-003 stay deferred with behavior unchanged. See session 038 checkpoint for evidence.
 
 **Verification:** remembered/unchecked login, multi-account forget/rotation, native keystore migration, device-lock fallback and JS-accessible plugin methods. Do not lose cached accounts or change derivation parameters during extraction.
 

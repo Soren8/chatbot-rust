@@ -1119,33 +1119,31 @@ function scrollToBottom() {
   }
 }
 
-let CURRENT_AUDIO = null;
-let CURRENT_AUDIO_BUTTON = null;
-/**
- * Desktop TTS controller (play-button + click-a-sentence).
- * session bumps on every stop so in-flight async work cannot affect the next play.
- * Uses one HTMLAudioElement — fully reset on stop so 2nd/3rd plays work after reload-only bugs.
- */
-let desktopTtsSession = 0;
-let desktopTtsAudio = null;
-let desktopTtsAbort = null;
-let desktopTtsPreloadCache = new Map();
-let desktopTtsCurrentBlobUrl = null;
-/** True while voice-mode TTS session is active (queued sentences). */
-let voiceModeTtsSessionActive = false;
-/** True while TTS audio is actively playing. */
-let voiceModeTtsPlaying = false;
-/**
- * In-flight desktop Voice Mode STT upload. Kept top-level because playTTS
- * (also top-level) aborts it for barge-in; a ready-block `let` is invisible
- * there and threw ReferenceError before every desktop voice-mode play.
- */
+// Voice lifecycle lives in static/voice-lifecycle.js; chat keeps DOM
+// rendering, VAD/stream capture, STT upload and the sentence-queue pumps.
+var voiceLifecycle = ChatVoiceLifecycle.createVoiceLifecycle({
+  now: function () { return Date.now(); },
+  createAudio: function () { return new Audio(); },
+  createAbortController: function () { return new AbortController(); },
+  revokeUrl: function (url) { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } },
+  resetPlayButton: function (button) { resetPlayButtonUi(button); },
+  clearMessageUi: function () { clearMessageTtsPlayingUi(); },
+  syncSendButton: function () {
+    if (typeof syncSendButtonState === 'function') syncSendButtonState();
+  },
+  isVoiceModeActive: function () { return !!window.voiceModeActive; },
+  stopNativePlayback: function () {
+    if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
+      window.NativeVoiceTts.stop().catch(function () {});
+    }
+  }
+});
+// Thresholds are owned; chat keeps read-only aliases.
+const TTS_LISTEN_COOLDOWN_MS = ChatVoiceLifecycle.TTS_LISTEN_COOLDOWN_MS;
+const BARGE_IN_FRAMES_DESKTOP = ChatVoiceLifecycle.BARGE_IN_FRAMES_DESKTOP;
+const BARGE_IN_SPEECH_PROB = ChatVoiceLifecycle.BARGE_IN_SPEECH_PROB;
+/** In-flight desktop voice-mode STT upload; top-level so playTTS can abort it. */
 let voiceSttAbortController = null;
-/** High-confidence Silero frames (~32 ms each) counted toward desktop barge-in. */
-let bargeInFrames = 0;
-/** Do not start utterances until this timestamp (ms) — lets AEC settle after TTS. */
-let voiceModeListenCooldownUntil = 0;
-const TTS_LISTEN_COOLDOWN_MS = 400;
 /** Bounded requeue attempts for a native TTS sentence on a spotty link. */
 const MAX_TTS_SENTENCE_RETRIES = 3;
 /** Includes token requests, downloads, ready clips, and the clip being written to AudioTrack. */
@@ -1156,21 +1154,12 @@ const MAX_TTS_CLIP_ATTEMPTS = 2;
 const TTS_CLIP_RETRY_BACKOFF_MS = 400;
 
 function clearDesktopTtsPreloads() {
-  if (desktopTtsCurrentBlobUrl) {
-    try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
-    desktopTtsCurrentBlobUrl = null;
-  }
-  desktopTtsPreloadCache.forEach(function (promise) {
-    Promise.resolve(promise).then(function (clip) {
-      if (clip && clip.cleanUp) clip.cleanUp();
-    }).catch(function () {});
-  });
-  desktopTtsPreloadCache.clear();
+  voiceLifecycle.clearPreloads();
 }
 
 
 function armTtsListenCooldown() {
-  voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
+  voiceLifecycle.armListenCooldown();
 }
 
 function resetPlayButtonUi(button) {
@@ -1179,10 +1168,7 @@ function resetPlayButtonUi(button) {
 }
 
 function getDesktopTtsAudio() {
-  if (!desktopTtsAudio) {
-    desktopTtsAudio = new Audio();
-  }
-  return desktopTtsAudio;
+  return voiceLifecycle.getDesktopAudio();
 }
 
 /**
@@ -1191,17 +1177,7 @@ function getDesktopTtsAudio() {
  * blocking so the 1st play works and the 2nd (after async /tts) silently fails.
  */
 function resetDesktopTtsAudioElement() {
-  const audio = desktopTtsAudio;
-  if (!audio) return;
-  audio.onended = null;
-  audio.onerror = null;
-  audio.onloadeddata = null;
-  try { audio.pause(); } catch (e) { /* ignore */ }
-  try {
-    // Clear the resource without load() so the element keeps its user-activation media slot.
-    audio.removeAttribute('src');
-    audio.src = '';
-  } catch (e) { /* ignore */ }
+  voiceLifecycle.resetDesktopAudioElement();
 }
 
 /**
@@ -1247,48 +1223,19 @@ function primeDesktopTtsAudioFromGesture() {
 
 /**
  * Stop desktop TTS completely. Safe to call when idle.
- * Always bumps desktopTtsSession so any prior async chain becomes a no-op.
+ * Always bumps the owned desktop session so any prior async chain becomes a no-op.
  */
 function stopCurrentDesktopTts() {
-  desktopTtsSession += 1;
-  if (desktopTtsAbort) {
-    try { desktopTtsAbort.abort(); } catch (e) { /* ignore */ }
-    desktopTtsAbort = null;
-  }
-  clearDesktopTtsPreloads();
-  resetDesktopTtsAudioElement();
-  const prevBtn = CURRENT_AUDIO_BUTTON;
-  CURRENT_AUDIO = null;
-  CURRENT_AUDIO_BUTTON = null;
-  voiceModeTtsSessionActive = false;
-  voiceModeTtsPlaying = false;
-  resetPlayButtonUi(prevBtn);
-  clearMessageTtsPlayingUi();
-  if (typeof syncSendButtonState === 'function') {
-    syncSendButtonState();
-  }
+  voiceLifecycle.stopDesktopPlayback();
 }
 
 function completeDesktopTtsPlayback(button) {
-  clearDesktopTtsPreloads();
-  CURRENT_AUDIO = null;
-  CURRENT_AUDIO_BUTTON = null;
-  resetPlayButtonUi(button);
-  clearMessageTtsPlayingUi();
-  resetDesktopTtsAudioElement();
-  voiceModeTtsSessionActive = false;
-  voiceModeTtsPlaying = false;
-  if (window.voiceModeActive) {
-    armTtsListenCooldown();
-  }
-  if (typeof syncSendButtonState === 'function') {
-    syncSendButtonState();
-  }
+  voiceLifecycle.completeDesktopPlayback(button);
 }
 
 
 function desktopTtsIsLive(sessionId) {
-  return sessionId === desktopTtsSession && CURRENT_AUDIO && CURRENT_AUDIO.sessionId === sessionId;
+  return voiceLifecycle.isLiveDesktop(sessionId);
 }
 
 function disablePremiumModels() {
@@ -1764,7 +1711,7 @@ function finishChatRequest(seq) {
 }
 
 function isVoiceTtsActive() {
-  return !!(CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying);
+  return voiceLifecycle.isTtsActive();
 }
 
 function syncSendButtonState() {
@@ -2039,11 +1986,11 @@ function fetchDesktopTtsClip(sessionId, text) {
   if (!cleaned) return Promise.resolve(null);
 
   const cacheKey = sessionId + ':' + cleaned;
-  if (desktopTtsPreloadCache.has(cacheKey)) {
-    return desktopTtsPreloadCache.get(cacheKey);
+  if (voiceLifecycle.hasPreload(cacheKey)) {
+    return voiceLifecycle.getPreload(cacheKey);
   }
 
-  const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
+  const signal = voiceLifecycle.getDesktopAbortSignal();
   const promise = fetchVoiceRetry('/tts', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
@@ -2086,11 +2033,11 @@ function fetchDesktopTtsClip(sessionId, text) {
     return clip;
   })
   .catch(function (err) {
-    desktopTtsPreloadCache.delete(cacheKey);
+    voiceLifecycle.deletePreload(cacheKey);
     throw err;
   });
 
-  desktopTtsPreloadCache.set(cacheKey, promise);
+  voiceLifecycle.setPreload(cacheKey, promise);
   return promise;
 }
 
@@ -2099,7 +2046,7 @@ function preloadDesktopTtsSentence(sessionId, text) {
   const cleaned = sanitizeForTTS(text);
   if (!cleaned) return;
   const cacheKey = sessionId + ':' + cleaned;
-  if (desktopTtsPreloadCache.has(cacheKey)) return;
+  if (voiceLifecycle.hasPreload(cacheKey)) return;
   fetchDesktopTtsClip(sessionId, text).catch(function () {});
 }
 
@@ -2113,10 +2060,10 @@ function playOneTtsUtterance(sessionId, text) {
   if (!cleaned) return Promise.resolve(true);
 
   const cacheKey = sessionId + ':' + cleaned;
-  const cached = desktopTtsPreloadCache.get(cacheKey);
+  const cached = voiceLifecycle.getPreload(cacheKey);
 
   // Retries token fetch and clip GET via fetchVoiceRetry
-  const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
+  const signal = voiceLifecycle.getDesktopAbortSignal();
   const getClipPromise = cached
     ? Promise.resolve(cached)
     : fetchDesktopTtsClip(sessionId, text);
@@ -2125,7 +2072,7 @@ function playOneTtsUtterance(sessionId, text) {
   // clearDesktopTtsPreloads can revoke its URL mid-play, and finish()'s
   // revoke lets a later pump retry replay the same dead URL (blob 404s).
   // finish()/cleanUp owns the URL from here on.
-  desktopTtsPreloadCache.delete(cacheKey);
+  voiceLifecycle.deletePreload(cacheKey);
 
   return getClipPromise.then(function (clip) {
     if (!desktopTtsIsLive(sessionId) || !clip || !clip.blob) return false;
@@ -2146,11 +2093,9 @@ function playOneTtsUtterance(sessionId, text) {
         audio.onerror = null;
         const playedUrl = clip.blobUrl;
         clip.cleanUp();
-        if (playedUrl && desktopTtsCurrentBlobUrl === playedUrl) {
-          desktopTtsCurrentBlobUrl = null;
-        }
+        voiceLifecycle.releaseBlobUrlIfCurrent(playedUrl);
         if (window.voiceModeActive) {
-          voiceModeTtsPlaying = false;
+          voiceLifecycle.noteDesktopClipFinished();
           if (typeof window.notifyVoiceModeTtsEnded === 'function') {
             window.notifyVoiceModeTtsEnded();
           }
@@ -2199,10 +2144,7 @@ function playOneTtsUtterance(sessionId, text) {
           return;
         }
         clip.blobUrl = freshUrl;
-        if (desktopTtsCurrentBlobUrl && desktopTtsCurrentBlobUrl !== clip.blobUrl) {
-          try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
-        }
-        desktopTtsCurrentBlobUrl = clip.blobUrl;
+        voiceLifecycle.adoptBlobUrl(clip.blobUrl);
         audio.onended = function () { finish(true); };
         audio.onerror = function () {
           // Never swallow the cause: the sentence pump only reports the
@@ -2217,7 +2159,7 @@ function playOneTtsUtterance(sessionId, text) {
         };
         audio.src = clip.blobUrl;
         if (window.voiceModeActive) {
-          voiceModeTtsPlaying = true;
+          voiceLifecycle.noteDesktopClipStarted();
           if (typeof window.notifyVoiceModeTtsStarted === 'function') {
             window.notifyVoiceModeTtsStarted();
           }
@@ -2480,7 +2422,7 @@ window.playTTS = function playTTS(button, options) {
   options = options || {};
 
   // Toggle stop when this control is already the active speaker.
-  if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
+  if (voiceLifecycle.isCurrentButton(button)) {
     if (typeof window.stopAllTtsPlayback === 'function') {
       window.stopAllTtsPlayback();
     } else {
@@ -2498,25 +2440,12 @@ window.playTTS = function playTTS(button, options) {
 
   const $messageElement = $(button).closest('.message');
   // stopCurrentDesktopTts bumped the session; this play owns the new value.
-  const sessionId = desktopTtsSession;
-  desktopTtsAbort = new AbortController();
-
-  CURRENT_AUDIO = {
-    sessionId: sessionId,
-    stop: function () { stopCurrentDesktopTts(); }
-  };
-  CURRENT_AUDIO_BUTTON = button;
-  if (window.voiceModeActive) {
-    bargeInFrames = 0;
+  const sessionId = voiceLifecycle.beginDesktopPlayback(button, function () {
     if (voiceSttAbortController) {
       try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
       voiceSttAbortController = null;
     }
-    voiceModeTtsSessionActive = true;
-    if (typeof syncSendButtonState === 'function') {
-      syncSendButtonState();
-    }
-  }
+  });
 
   $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
   $messageElement.addClass('tts-is-playing');
@@ -2700,7 +2629,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               try {
                 $target.find('.regenerate-button').prop('disabled', false);
                 const playBtn = $target.find('.play-button').prop('disabled', false);
-                if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+                if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
               var $regenUser = $target.prev('.message.user-message');
@@ -2721,7 +2650,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
             try {
               $target.find('.regenerate-button').prop('disabled', false);
               const playBtn = $target.find('.play-button').prop('disabled', false);
-              if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+              if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
             finishChatRequest(seq);
           });
@@ -2739,7 +2668,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         try {
           $target.find('.regenerate-button').prop('disabled', false);
           const playBtn = $target.find('.play-button').prop('disabled', false);
-          if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+          if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
         } catch (e) {}
         finishChatRequest(seq);
       });
@@ -3150,7 +3079,7 @@ $(document).ready(function() {
       el.classList.remove('tts-can-play');
       return;
     }
-    const isPlaying = !!(CURRENT_AUDIO && $(el).closest('.message').find('.play-button')[0] === CURRENT_AUDIO_BUTTON);
+    const isPlaying = voiceLifecycle.isCurrentButton($(el).closest('.message').find('.play-button')[0]);
     el.classList.add('tts-can-play');
     el.setAttribute(
       'title',
@@ -3184,7 +3113,7 @@ $(document).ready(function() {
       ttsHoverRaf = null;
     }
     this.classList.remove('tts-can-play');
-    if (CURRENT_AUDIO && $(this).closest('.message').find('.play-button')[0] === CURRENT_AUDIO_BUTTON) {
+    if (voiceLifecycle.isCurrentButton($(this).closest('.message').find('.play-button')[0])) {
       this.setAttribute('title', 'Click to stop speech');
     } else {
       this.removeAttribute('title');
@@ -3216,7 +3145,7 @@ $(document).ready(function() {
     if (!playBtn) return;
 
     // While this message is speaking: click always stops (do not start another).
-    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === playBtn) {
+    if (voiceLifecycle.isCurrentButton(playBtn)) {
       clearTtsHoverHighlight();
       if (typeof window.stopAllTtsPlayback === 'function') {
         window.stopAllTtsPlayback();
@@ -3928,7 +3857,7 @@ $(document).ready(function() {
               try {
                 $targetElement.find('.regenerate-button').prop('disabled', false);
                 const playBtn = $targetElement.find('.play-button').prop('disabled', false);
-                if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+                if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
               historyWindow.noteChatPersisted(pairIndex);
@@ -3949,7 +3878,7 @@ $(document).ready(function() {
             try {
               $targetElement.find('.regenerate-button').prop('disabled', false);
               const playBtn = $targetElement.find('.play-button').prop('disabled', false);
-              if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+              if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
             try { console.error('Stream read failed:', err); } catch (e) {}
             const errText = err && err.message ? err.message : String(err);
@@ -3969,7 +3898,7 @@ $(document).ready(function() {
           try {
             $lastAI.find('.regenerate-button').prop('disabled', false);
             const playBtn = $lastAI.find('.play-button').prop('disabled', false);
-            if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+            if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
           } catch (e) {}
         } else {
           const errText = error && error.message ? error.message : String(error);
@@ -4171,9 +4100,8 @@ $(document).ready(function() {
   let voiceModeStream = null;
   let vadSttInProgress = false;
   let voiceModeSessionGeneration = 0;
-  // High-confidence Silero frames (~32 ms each) before desktop barge-in.
-  const BARGE_IN_FRAMES_DESKTOP = 4;
-  const BARGE_IN_SPEECH_PROB = 0.85;
+  // Barge-in thresholds live in the owned voice lifecycle (top-level aliases
+  // above); the VAD frame gate delegates via voiceLifecycle.noteFrameProcessed.
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
   // Native mic bridge for Voice Mode on Android
   let nativeMicBridge = null;
@@ -4269,7 +4197,7 @@ $(document).ready(function() {
   /** Phase 2: stop TTS now if real speech is confirmed. Not called from _endUtterance. */
   NativeMicUtteranceVAD.prototype._maybeBargeIn = function _maybeBargeIn() {
     if (this.bargeInFired) return;
-    if (!(voiceModeTtsSessionActive || voiceModeTtsPlaying)) return;
+    if (!voiceLifecycle.hasActiveVoiceSession()) return;
     if (!NativeAudio.pcm16RealSpeechDetected(this.speechLikeMs, this.voicedMs)) return;
     this.bargeInFired = true;
     nativeLog('VAD', 'barge-in on real speech likeMs=' + this.speechLikeMs
@@ -4329,20 +4257,20 @@ $(document).ready(function() {
 
     // During TTS: record from speech-like start (Silero onSpeechStart). Barge-in
     // only after real speech (REAL_SPEECH_MS + voicing), not on cough/"hey".
-    if (voiceModeTtsSessionActive || voiceModeTtsPlaying) {
+    if (voiceLifecycle.hasActiveVoiceSession()) {
       const started = this._maybeStartUtterance(copy, rms, true);
       if (this.inSpeech && !started) {
         this._accumulateUtterance(copy, rms, frameMs);
       }
       if (this.chunkCount % 50 === 0) {
-        nativeLog('VAD', 'pcm#' + this.chunkCount + ' ttsSess=1 ttsPlay=' + voiceModeTtsPlaying
+        nativeLog('VAD', 'pcm#' + this.chunkCount + ' ttsSess=1 ttsPlay=' + voiceLifecycle.snapshot().playing
           + ' inSpeech=' + this.inSpeech + ' speechMs=' + this.speechActiveMs
           + ' rms=' + Math.round(rms));
       }
       return;
     }
 
-    if (now < voiceModeListenCooldownUntil) {
+    if (voiceLifecycle.isInCooldown()) {
       return;
     }
 
@@ -4353,7 +4281,7 @@ $(document).ready(function() {
 
     if (this.chunkCount % 50 === 0) {
       nativeLog('VAD', 'pcm#' + this.chunkCount + ' inSpeech=' + this.inSpeech
-        + ' ttsPlay=' + voiceModeTtsPlaying + ' rms=' + Math.round(rms));
+        + ' ttsPlay=' + voiceLifecycle.snapshot().playing + ' rms=' + Math.round(rms));
     }
   };
 
@@ -4539,7 +4467,7 @@ $(document).ready(function() {
   };
 
   function onVoiceModeTtsStarted() {
-    voiceModeTtsPlaying = true;
+    voiceLifecycle.notePlaybackStarted();
     if (nativeMicBridge && nativeMicBridge.onTtsPlaybackStarted) {
       nativeMicBridge.onTtsPlaybackStarted();
     }
@@ -4547,7 +4475,7 @@ $(document).ready(function() {
   }
 
   function onVoiceModeTtsEnded() {
-    voiceModeTtsPlaying = false;
+    voiceLifecycle.notePlaybackEnded();
     nativeLog('VAD', 'TTS playback ended');
   }
 
@@ -4556,7 +4484,6 @@ $(document).ready(function() {
 
   let nativeVoiceTtsSessionListener = null;
   let nativeVoiceTtsSessionPromise = null;
-  let nativeVoiceTtsGeneration = 0;
 
   function nativeVoiceTtsStreamUrl(token) {
     return window.location.origin + '/tts_stream/' + encodeURIComponent(token);
@@ -4572,7 +4499,7 @@ $(document).ready(function() {
   }
 
   function invalidateNativeVoiceTts() {
-    nativeVoiceTtsGeneration += 1;
+    voiceLifecycle.invalidateNativeSession();
     if (nativeVoiceTtsSessionListener) {
       const listener = nativeVoiceTtsSessionListener;
       nativeVoiceTtsSessionListener = null;
@@ -4586,30 +4513,21 @@ $(document).ready(function() {
   }
 
   function finishNativeVoiceTts(generation, button) {
-    if (generation !== nativeVoiceTtsGeneration) return;
-    onVoiceModeTtsEnded();
-    voiceModeTtsSessionActive = false;
-    voiceModeTtsPlaying = false;
-    if (CURRENT_AUDIO && CURRENT_AUDIO.nativeGeneration === generation) {
-      CURRENT_AUDIO = null;
-      CURRENT_AUDIO_BUTTON = null;
-      resetPlayButtonUi(button);
-      clearMessageTtsPlayingUi();
-    }
-    if (nativeVoiceTtsSessionListener) {
-      const listener = nativeVoiceTtsSessionListener;
-      nativeVoiceTtsSessionListener = null;
-      Promise.resolve(listener).then(function (handle) {
-        if (handle && typeof handle.remove === 'function') {
-          handle.remove();
+    voiceLifecycle.finishNativePlayback(generation, button, {
+      onEnded: onVoiceModeTtsEnded,
+      cleanup: function () {
+        if (nativeVoiceTtsSessionListener) {
+          const listener = nativeVoiceTtsSessionListener;
+          nativeVoiceTtsSessionListener = null;
+          Promise.resolve(listener).then(function (handle) {
+            if (handle && typeof handle.remove === 'function') {
+              handle.remove();
+            }
+          }).catch(function () {});
         }
-      }).catch(function () {});
-    }
-    nativeVoiceTtsSessionPromise = null;
-    if (window.voiceModeActive) {
-      armTtsListenCooldown();
-    }
-    syncSendButtonState();
+        nativeVoiceTtsSessionPromise = null;
+      }
+    });
   }
 
   function playNativeVoiceModeTts(button, options) {
@@ -4618,11 +4536,11 @@ $(document).ready(function() {
       window.playTTS(button, options);
       return;
     }
-    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
+    if (voiceLifecycle.isCurrentButton(button)) {
       stopAllTtsPlayback();
       return;
     }
-    if (CURRENT_AUDIO) stopAllTtsPlayback();
+    if (voiceLifecycle.hasCurrentAudio()) stopAllTtsPlayback();
 
     invalidateNativeVoiceTts();
     const nativeVoiceTtsStopPromise = window.NativeVoiceTts.stop().catch(function () {});
@@ -4638,7 +4556,6 @@ $(document).ready(function() {
       voiceSttAbortController = null;
     }
 
-    const generation = nativeVoiceTtsGeneration;
     const voiceTtsAbortController = new AbortController();
     const ttsSignal = voiceTtsAbortController.signal;
     const $messageElement = $(button).closest('.message');
@@ -4657,12 +4574,7 @@ $(document).ready(function() {
     const queuedNativeClips = new Map();
     const isFixedList = !!(options.sentences && options.sentences.length);
 
-    voiceModeTtsSessionActive = true;
-    voiceModeTtsPlaying = false;
-    CURRENT_AUDIO_BUTTON = button;
-    CURRENT_AUDIO = {
-      nativeGeneration: generation,
-      stop: function () {
+    const generation = voiceLifecycle.beginNativePlayback(button, function () {
         stopped = true;
         teardownObserver();
         pendingNativeTtsTokens.forEach(function (token) {
@@ -4671,20 +4583,18 @@ $(document).ready(function() {
         pendingNativeTtsTokens.clear();
         try { voiceTtsAbortController.abort(); } catch (e) { /* ignore */ }
         invalidateNativeVoiceTts();
-        voiceModeTtsSessionActive = false;
-        voiceModeTtsPlaying = false;
+        voiceLifecycle.noteNativeManualStop();
         resetPlayButtonUi(button);
         clearMessageTtsPlayingUi();
         window.NativeVoiceTts.stop().catch(function () {});
-      }
-    };
+      });
     $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
     $messageElement.addClass('tts-is-playing');
     $messageElement.find('.ai-message-text').addClass('tts-is-playing');
     syncSendButtonState();
 
     function live() {
-      return !stopped && generation === nativeVoiceTtsGeneration;
+      return !stopped && voiceLifecycle.isLiveNativeGeneration(generation);
     }
 
     function isStillGenerating() {
@@ -4721,7 +4631,7 @@ $(document).ready(function() {
         if (nativeBackpressure) lookahead = Math.min(MAX_NATIVE_TTS_LOOKAHEAD, res.maxQueuedClips);
         let nativeStarted = false;
         nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
-          if (!data || generation !== nativeVoiceTtsGeneration) return;
+          if (!data || !voiceLifecycle.isLiveNativeGeneration(generation)) return;
           if (nativeSessionGen && data.generation && data.generation !== nativeSessionGen) return;
           if (data.type === 'started') {
             nativeStarted = true;
@@ -5177,20 +5087,13 @@ $(document).ready(function() {
       },
       onSpeechRealStart: hooks.onSpeechRealStart || function () {
         nativeLog('VAD', 'onSpeechRealStart');
-        if (CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying) {
+        if (isVoiceTtsActive()) {
           handleBargeIn();
         }
       },
       onFrameProcessed: hooks.onFrameProcessed || function (probs) {
-        const ttsActive = CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying;
-        if (ttsActive && probs.isSpeech > BARGE_IN_SPEECH_PROB) {
-          bargeInFrames++;
-          if (bargeInFrames >= BARGE_IN_FRAMES_DESKTOP) {
-            bargeInFrames = 0;
-            handleBargeIn();
-          }
-        } else {
-          bargeInFrames = 0;
+        if (voiceLifecycle.noteFrameProcessed(probs.isSpeech)) {
+          handleBargeIn();
         }
       },
       onSpeechEnd: hooks.onSpeechEnd || function (audio) {
@@ -5218,34 +5121,7 @@ $(document).ready(function() {
   }
 
   function stopAllTtsPlayback(opts) {
-    opts = opts || {};
-    if (stopAllTtsPlayback._busy) return;
-    stopAllTtsPlayback._busy = true;
-    try {
-      voiceModeTtsPlaying = false;
-      voiceModeTtsSessionActive = false;
-      if (opts.preserveListen) {
-        voiceModeListenCooldownUntil = 0;
-      } else {
-        armTtsListenCooldown();
-      }
-      const audio = CURRENT_AUDIO;
-      if (audio && audio.stop) {
-        try { audio.stop(); } catch (e) { /* ignore */ }
-      }
-      if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
-        window.NativeVoiceTts.stop().catch(function () {});
-      }
-      stopCurrentDesktopTts();
-      if (CURRENT_AUDIO_BUTTON) {
-        resetPlayButtonUi(CURRENT_AUDIO_BUTTON);
-        CURRENT_AUDIO_BUTTON = null;
-      }
-      clearMessageTtsPlayingUi();
-      syncSendButtonState();
-    } finally {
-      stopAllTtsPlayback._busy = false;
-    }
+    voiceLifecycle.stopAllPlayback(opts);
   }
   window.stopAllTtsPlayback = stopAllTtsPlayback;
 
@@ -5279,7 +5155,7 @@ $(document).ready(function() {
     if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
       window.NativeMic.exitVoiceRoute().catch(function () {});
     }
-    bargeInFrames = 0;
+    voiceLifecycle.resetBargeFrames();
     lastVoiceSpeechEndedAt = 0;
     lastVoiceUtteranceStartedAt = 0;
     persistVoiceModeWanted(false);
@@ -5442,7 +5318,7 @@ $(document).ready(function() {
     timing = timing || {};
     const $lastUser = $('#chat-content .message.user-message').last();
     const generating = chatRequests.isGenerating() || $('#send-button').hasClass('is-generating');
-    const ttsActive = !!(voiceModeTtsSessionActive || voiceModeTtsPlaying);
+    const ttsActive = voiceLifecycle.hasActiveVoiceSession();
     if (shouldAmendLastVoiceTurn({
       lastUserExists: $lastUser.length > 0,
       generating: generating,

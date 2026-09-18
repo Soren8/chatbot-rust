@@ -8,15 +8,46 @@
   // Per-account slots are keyed by the username so the login page can list
   // cached accounts (and forget them) by name. Only accounts whose login had
   // "Remember this computer" checked get a slot. The Fernet key is not stored
-  // here — it lives in HttpOnly cookies.
-  const SLOT_PREFIX = 'acct:';
-  // Cached accounts stay in the login dropdown for at most this long,
-  // matching the 30-day remember token.
-  const MAX_CACHED_ACCOUNT_AGE_MS = 30 * 24 * 3600 * 1000;
+  // here — it lives in HttpOnly cookies. Slot naming, visibility and
+  // recency policy are owned by ChatCredentialMetadata; derivation, wrap
+  // and PRF algorithms by ChatCredentialCrypto (wired before this script).
   // Pre-multi-account entries; removed once a slotted login overwrites them.
   const LEGACY_WRAPPED_KEY_ID = 'wrapped-data-key';
   const LEGACY_MODE_KEY = 'storage-mode';
   const LEGACY_WEBAUTHN_CRED_ID = 'webauthn-cred';
+
+  // These units are required. Slot policy and crypto algorithms live
+  // there; this script keeps store lifecycle plus the EncKey surface and
+  // passes browser capabilities explicitly.
+  function metadataOwner() {
+    const owner = global.ChatCredentialMetadata;
+    if (!owner) {
+      throw new Error('ChatCredentialMetadata unit required before enc-key.js');
+    }
+    return owner;
+  }
+
+  function cryptoUnit() {
+    const owner = global.ChatCredentialCrypto;
+    if (!owner) {
+      throw new Error('ChatCredentialCrypto unit required before enc-key.js');
+    }
+    return owner;
+  }
+
+  // Browser capabilities passed explicitly to the crypto owner per call.
+  // Reads stay lazy (per operation, at call time) so an operation never
+  // requires a capability it does not use, and capability access for the
+  // encrypt probe happens inside the owner's try (false, not reject).
+  function cryptoEnv() {
+    return {
+      get subtle() { return crypto.subtle; },
+      get getRandomValues() { return crypto.getRandomValues.bind(crypto); },
+      get TextEncoderImpl() { return TextEncoder; },
+      get atobImpl() { return atob; },
+      get btoaImpl() { return btoa; }
+    };
+  }
 
   let cachedKey = null;
 
@@ -102,24 +133,6 @@
     });
   }
 
-  async function generateWrapKey() {
-    return crypto.subtle.generateKey(
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
-  }
-
-  async function wrapKeyCanEncrypt(wrapKey) {
-    try {
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrapKey, new Uint8Array([0]));
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   async function ensureWrapKey() {
     let existing = await idbGet(WRAP_KEY_ID);
     if (existing && (await wrapKeyCanEncrypt(existing))) {
@@ -129,7 +142,7 @@
       await idbDelete(WRAP_KEY_ID);
       const keys = await idbGetAllKeys();
       for (const key of keys) {
-        if (typeof key === 'string' && key.startsWith(SLOT_PREFIX)) {
+        if (metadataOwner().isAccountSlotKey(key)) {
           await idbDelete(key);
         }
       }
@@ -139,62 +152,25 @@
     return wrapKey;
   }
 
-  function encodeBase64(bytes) {
-    let binary = '';
-    bytes.forEach((b) => {
-      binary += String.fromCharCode(b);
-    });
-    return btoa(binary);
+  // Thin adapters over the crypto owner (algorithms live there).
+  async function generateWrapKey() {
+    return cryptoUnit().generateWrapKey({ subtle: crypto.subtle });
   }
 
-  function decodeBase64(value) {
-    const binary = atob(value);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
+  async function wrapKeyCanEncrypt(wrapKey) {
+    return cryptoUnit().wrapKeyCanEncrypt(wrapKey, cryptoEnv());
   }
 
   async function wrapDataKey(rawKeyB64, aesKey) {
-    const raw = decodeBase64(rawKeyB64);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, raw);
-    return { iv: Array.from(iv), wrapped: Array.from(new Uint8Array(encrypted)) };
+    return cryptoUnit().wrapDataKey(rawKeyB64, aesKey, cryptoEnv());
   }
 
   async function unwrapDataKey(record, aesKey) {
-    const iv = new Uint8Array(record.iv);
-    const ciphertext = new Uint8Array(record.wrapped);
-    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
-    return encodeBase64(new Uint8Array(plain));
+    return cryptoUnit().unwrapDataKey(record, aesKey, cryptoEnv());
   }
 
   async function deriveKeyFromPassword(password, saltB64) {
-    const enc = new TextEncoder();
-    const passwordKey = await crypto.subtle.importKey(
-      'raw',
-      enc.encode(password),
-      { name: 'PBKDF2' },
-      false,
-      ['deriveBits']
-    );
-    const saltStr = atob(saltB64);
-    const salt = new Uint8Array(saltStr.length);
-    for (let i = 0; i < saltStr.length; i += 1) {
-      salt[i] = saltStr.charCodeAt(i);
-    }
-    const derivedBits = await crypto.subtle.deriveBits(
-      {
-        name: 'PBKDF2',
-        salt,
-        iterations: 100000,
-        hash: 'SHA-256',
-      },
-      passwordKey,
-      256
-    );
-    return encodeBase64(new Uint8Array(derivedBits));
+    return cryptoUnit().deriveKeyFromPassword(password, saltB64, cryptoEnv());
   }
 
   function currentUsername() {
@@ -205,15 +181,11 @@
   }
 
   function slotKey(username) {
-    const name = username || currentUsername();
-    if (!name) {
-      throw new Error('No account selected for key storage');
-    }
-    return SLOT_PREFIX + String(name).trim();
+    return metadataOwner().slotKeyFor(username, currentUsername());
   }
 
   async function slotIdByHash(hash) {
-    return SLOT_PREFIX + String(hash || '').toLowerCase();
+    return metadataOwner().SLOT_PREFIX + String(hash || '').toLowerCase();
   }
 
   async function removeLegacySlots() {
@@ -313,25 +285,7 @@
   async function listCachedAccounts() {
     try {
       const entries = await idbGetAllEntries();
-      return entries
-        .filter((entry) => (
-          typeof entry.key === 'string' &&
-          entry.key.startsWith(SLOT_PREFIX) &&
-          entry.value
-        ))
-        .map((entry) => ({
-          username: entry.key.slice(SLOT_PREFIX.length),
-          remembered: entry.value.remembered !== false,
-          updatedAt: entry.value.updatedAt || 0,
-        }))
-        // Only accounts whose login had "Remember this computer" checked appear
-        // in the dropdown. Legacy hashed-slot entries from the old scheme are
-        // unusable now (the server no longer maps hashes) and are hidden too.
-        .filter((entry) => entry.remembered && !/^[0-9a-f]{64}$/.test(entry.username))
-        // Hide slots older than 30 days so a stale username is not offered.
-        .filter((entry) => entry.updatedAt && (Date.now() - entry.updatedAt) <= MAX_CACHED_ACCOUNT_AGE_MS)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .map((entry) => entry.username);
+      return metadataOwner().filterCachedAccounts(entries, Date.now());
     } catch (err) {
       console.debug('enc-key: unable to list cached accounts', err);
       return [];
@@ -356,7 +310,7 @@
     }
     const keys = await idbGetAllKeys();
     for (const key of keys) {
-      if (typeof key === 'string' && key.startsWith(SLOT_PREFIX)) {
+      if (metadataOwner().isAccountSlotKey(key)) {
         await idbDelete(key);
       }
     }
@@ -375,18 +329,7 @@
   }
 
   async function supportsWebAuthnPrf() {
-    if (!global.PublicKeyCredential) {
-      return false;
-    }
-    if (typeof global.PublicKeyCredential.getClientCapabilities !== 'function') {
-      return false;
-    }
-    try {
-      const caps = await global.PublicKeyCredential.getClientCapabilities();
-      return !!(caps && caps.prf === true);
-    } catch (_) {
-      return false;
-    }
+    return cryptoUnit().supportsWebAuthnPrf({ credentialCtor: global.PublicKeyCredential });
   }
 
   async function registerWebAuthnDeviceLock(displayName) {
@@ -430,7 +373,7 @@
         extensions: {
           prf: {
             eval: {
-              first: new TextEncoder().encode('chatbot-enc-key-wrap-v1'),
+              first: cryptoUnit().prfEvalBytes({ TextEncoderImpl: TextEncoder }),
             },
           },
         },
@@ -441,13 +384,7 @@
     if (!prfResults || !prfResults.first) {
       throw new Error('WebAuthn PRF extension unavailable during enrollment');
     }
-    const prfKey = await crypto.subtle.importKey(
-      'raw',
-      prfResults.first,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
+    const prfKey = await cryptoUnit().importPrfKey(prfResults.first, { subtle: crypto.subtle });
     const wrapped = await wrapDataKey(rawKeyB64, prfKey);
     const key = await slotKey(username);
     await idbSet(key, {
@@ -512,7 +449,7 @@
         extensions: {
           prf: {
             eval: {
-              first: new TextEncoder().encode('chatbot-enc-key-wrap-v1'),
+              first: cryptoUnit().prfEvalBytes({ TextEncoderImpl: TextEncoder }),
             },
           },
         },
@@ -523,13 +460,7 @@
     if (!prfResults || !prfResults.first) {
       throw new Error('WebAuthn PRF extension unavailable');
     }
-    const prfKey = await crypto.subtle.importKey(
-      'raw',
-      prfResults.first,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
+    const prfKey = await cryptoUnit().importPrfKey(prfResults.first, { subtle: crypto.subtle });
     if (!record.wrapped) {
       throw new Error('No wrapped encryption key stored');
     }
@@ -543,8 +474,7 @@
       const key = slotKey(username);
       const record = await idbGet(key);
       if (record) {
-        record.updatedAt = Date.now();
-        await idbSet(key, record);
+        await idbSet(key, metadataOwner().touchSlotRecord(record, Date.now()));
       }
     } catch (_) {}
   }
@@ -569,14 +499,9 @@
   async function purgeNonRememberedSlots() {
     try {
       const entries = await idbGetAllEntries();
-      for (const entry of entries) {
-        if (typeof entry.key !== 'string' || !entry.key.startsWith(SLOT_PREFIX) || !entry.value) {
-          continue;
-        }
-        if (entry.value.remembered !== false) {
-          continue;
-        }
-        await removeSlot(entry.key.slice(SLOT_PREFIX.length));
+      const usernames = metadataOwner().purgeableSlotUsernames(entries);
+      for (const username of usernames) {
+        await removeSlot(username);
       }
     } catch (err) {
       console.debug('enc-key: unable to purge non-remembered slots', err);
