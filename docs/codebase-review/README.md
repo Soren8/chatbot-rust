@@ -1,10 +1,18 @@
 # Codebase review program
 
-Latest resume point: session 043 — generation-entry ownership (below). Earlier checkpoints record their original scope and status.
+Latest resume point: session 044 — native lifecycle confirmation (below). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-one batches through session 043. Session 041 is committed as `7a34c6f`; session 042 as `ada3876`; session 043 is recorded by commit title `Bind generation leases to acquired entries`. Phase 1 remains in progress.
+Current remediation count: forty-two batches through session 044. Session 043 is committed as `b288bd2`; session 044 is recorded by commit title `Confirm native foreground ownership and sequence voice events`. Phase 1 completion review follows this boundary.
+
+## Session 044 — native lifecycle confirmation, 2026-09-19
+
+MOD-012 distinguishes accepted foreground requests from platform-confirmed activation. Only successful `startForeground` for the reserved generation confirms the session; biometric resume bypass checks that confirmation. Failed starts allow retry. Service lifetime owns its accepted token, so stale starts/destroys and exit callbacks cannot clear or confirm a newer request. The pure service protocol selects acquisition, orphan release or stale-event ignore; Android performs the platform calls and resource handling.
+
+The coordinator gives each native pause/resume/notification-stop transition one process-wide monotonic ID. Capacitor and eval deliveries share that ID; the browser's imported gate consumes it once and rejects reordered older events. This retains the background bridge compatibility path without two effective transitions. Legacy ID-less calls remain compatible and do not gain an exactly-once guarantee. Native cleanup still works without JS acknowledgement. Foreground failure does not terminate foreground-screen mic capture; confirmation reports the actual service state.
+
+Main reviewed the production diff and required fixes for stale service destruction, stale intent rebinding, reserved-token propagation, exit reconciliation and coordinator recreation. Final full suite `temp/test-logs/mod012d-green.log`, job `20260919T122234-7106689b41e8`, passed exit 0 untruncated, including provider validation, 38 Java coordinator/session behaviors and the executable voice-event gate tests. Physical-debug build `20260919T122843-45d33cd739bc` passed; artifact `temp/test-logs/mod012d-physical-debug.apk` (12,083,364 bytes), log `mod012d-apk.log`. Suite and APK share snapshot `c0a494b4661ed8ed5879d23aaaed28b8540387897ff68428661b6e3bfdf468df`. This is compile/CPU evidence, not device validation. Deploy requires the updated APK plus a host webserver rebuild/restart for the JS assets.
 
 ## Session 043 — generation-entry ownership, 2026-09-19
 

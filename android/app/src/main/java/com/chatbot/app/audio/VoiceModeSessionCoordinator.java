@@ -1,5 +1,7 @@
 package com.chatbot.app.audio;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * Owns handheld voice-mode session composition for Capacitor voice mode.
  *
@@ -27,10 +29,24 @@ package com.chatbot.app.audio;
  *   <li>destroy stops mic (not TTS) and exits resources with no events.</li>
  *   <li>foreground enter returns the {@code enter} result, not
  *       {@code isActive()}: a second enter while active returns false.</li>
+ *   <li>foreground results distinguish request from platform confirmation:
+ *       {@code foreground} is request acceptance, {@code foregroundActive} is
+ *       the outstanding request, and {@code foregroundConfirmed} is the live
+ *       snapshot: false until the service confirms asynchronously, true on a
+ *       repeat enter while the session is already confirmed.</li>
  * </ul>
  *
- * <p>Pure-Java: no Android or Capacitor imports. Production wires real
- * backends; tests inject fakes alongside the real resource classes.
+ * <p>Event delivery: the Capacitor listener channel ({@code notifyPhoneCall},
+ * {@code notifyNotificationStop}) is the owned effective delivery for phone
+ * pause/resume and notification stop. It is registered in the page before any
+ * voice session can exist (sessions start JS-driven via
+ * {@code enterVoiceRoute}), and native cleanup never depends on JS
+ * acknowledging: pause releases TTS/mic/resources before emitting, and
+ * notification stop tears down native audio after emitting even when the
+ * bridge is dead. The {@code evalJs} fallback stays because a reloaded or
+ * half-torn-down bridge can lose listener registrations while still
+ * evaluating window functions; JS pause/resume handlers are idempotent so the
+ * dual delivery applies exactly one transition.
  */
 public final class VoiceModeSessionCoordinator {
     /** Mic capture owned by NativeMicPlugin. */
@@ -49,9 +65,9 @@ public final class VoiceModeSessionCoordinator {
 
     /** Capacitor dual notify + bridge eval, implemented thinly by the owner. */
     public interface SessionEvents {
-        void notifyPhoneCall(boolean active);
+        void notifyPhoneCall(boolean active, long transitionId);
 
-        void notifyNotificationStop();
+        void notifyNotificationStop(long transitionId);
 
         void evalJs(String script);
     }
@@ -63,12 +79,25 @@ public final class VoiceModeSessionCoordinator {
         void keepWebViewAlive();
     }
 
-    public static final String PAUSE_SCRIPT =
-            "if (window.pauseVoiceModeForPhoneCall) window.pauseVoiceModeForPhoneCall();";
-    public static final String RESUME_SCRIPT =
-            "if (window.resumeVoiceModeAfterPhoneCall) window.resumeVoiceModeAfterPhoneCall();";
-    public static final String NOTIFICATION_STOP_SCRIPT =
-            "if (window.stopVoiceMode) window.stopVoiceMode();";
+    /**
+     * Eval scripts carrying the transition ID. Pause, resume and stop each
+     * arrive twice (owned Capacitor listener plus the evalJs fallback) with
+     * one monotonic ID; the page gate applies each logical event once and
+     * rejects reordered stale ones.
+     */
+    public static String pauseScript(long transitionId) {
+        return "if (window.pauseVoiceModeForPhoneCall) window.pauseVoiceModeForPhoneCall("
+                + transitionId + ");";
+    }
+
+    public static String resumeScript(long transitionId) {
+        return "if (window.resumeVoiceModeAfterPhoneCall) window.resumeVoiceModeAfterPhoneCall("
+                + transitionId + ");";
+    }
+
+    public static String notificationStopScript(long transitionId) {
+        return "if (window.stopVoiceMode) window.stopVoiceMode(" + transitionId + ");";
+    }
 
     /** Mirrors the enterVoiceRoute JSObject fields. */
     public static final class EnterResult {
@@ -79,10 +108,11 @@ public final class VoiceModeSessionCoordinator {
         public final boolean keepAwakeActive;
         public final boolean foreground;
         public final boolean foregroundActive;
+        public final boolean foregroundConfirmed;
 
         public EnterResult(boolean applied, boolean active, boolean bluetooth,
                 boolean keepAwake, boolean keepAwakeActive,
-                boolean foreground, boolean foregroundActive) {
+                boolean foreground, boolean foregroundActive, boolean foregroundConfirmed) {
             this.applied = applied;
             this.active = active;
             this.bluetooth = bluetooth;
@@ -90,6 +120,7 @@ public final class VoiceModeSessionCoordinator {
             this.keepAwakeActive = keepAwakeActive;
             this.foreground = foreground;
             this.foregroundActive = foregroundActive;
+            this.foregroundConfirmed = foregroundConfirmed;
         }
     }
 
@@ -101,16 +132,18 @@ public final class VoiceModeSessionCoordinator {
         public final boolean keepAwakeActive;
         public final boolean foreground;
         public final boolean foregroundActive;
+        public final boolean foregroundConfirmed;
 
         public ExitResult(boolean applied, boolean active,
                 boolean keepAwake, boolean keepAwakeActive,
-                boolean foreground, boolean foregroundActive) {
+                boolean foreground, boolean foregroundActive, boolean foregroundConfirmed) {
             this.applied = applied;
             this.active = active;
             this.keepAwake = keepAwake;
             this.keepAwakeActive = keepAwakeActive;
             this.foreground = foreground;
             this.foregroundActive = foregroundActive;
+            this.foregroundConfirmed = foregroundConfirmed;
         }
     }
 
@@ -125,6 +158,13 @@ public final class VoiceModeSessionCoordinator {
     private final SessionEvents events;
     private final PlatformHooks platform;
     private boolean pausedForPhoneCall;
+    /**
+     * Process-wide transition IDs shared by every coordinator instance. The
+     * page gate outlives plugin/coordinator recreation, so a per-instance
+     * counter restarting at zero would have all new events silently ignored
+     * until it catches up past the gate's last consumed ID.
+     */
+    private static final AtomicLong TRANSITION_IDS = new AtomicLong();
 
     /**
      * Production wiring: owns fresh route/keep-awake sessions and the shared
@@ -187,6 +227,10 @@ public final class VoiceModeSessionCoordinator {
         return foreground != null && foreground.isActive();
     }
 
+    public boolean isForegroundConfirmed() {
+        return foreground != null && foreground.isConfirmed();
+    }
+
     public boolean isTtsSessionActive() {
         TtsControl current = tts;
         return current != null && current.isSessionActive();
@@ -212,7 +256,7 @@ public final class VoiceModeSessionCoordinator {
         return new EnterResult(applied,
                 isRouteActive(), bluetooth,
                 keepAwakeEntered, isKeepAwakeActive(),
-                foregroundEntered, isForegroundActive());
+                foregroundEntered, isForegroundActive(), isForegroundConfirmed());
     }
 
     /** Restores pre-voice-mode routing and clears any phone-call pause. */
@@ -223,7 +267,7 @@ public final class VoiceModeSessionCoordinator {
         boolean foregroundExited = foreground != null && foreground.exit(foregroundBackend);
         return new ExitResult(applied, isRouteActive(),
                 keepAwakeExited, isKeepAwakeActive(),
-                foregroundExited, isForegroundActive());
+                foregroundExited, isForegroundActive(), isForegroundConfirmed());
     }
 
     /**
@@ -258,8 +302,9 @@ public final class VoiceModeSessionCoordinator {
             foreground.exit(foregroundBackend);
         }
         if (events != null) {
-            events.notifyPhoneCall(true);
-            events.evalJs(PAUSE_SCRIPT);
+            long id = TRANSITION_IDS.incrementAndGet();
+            events.notifyPhoneCall(true, id);
+            events.evalJs(pauseScript(id));
         }
         return true;
     }
@@ -276,8 +321,9 @@ public final class VoiceModeSessionCoordinator {
         }
         pausedForPhoneCall = false;
         if (events != null) {
-            events.notifyPhoneCall(false);
-            events.evalJs(RESUME_SCRIPT);
+            long id = TRANSITION_IDS.incrementAndGet();
+            events.notifyPhoneCall(false, id);
+            events.evalJs(resumeScript(id));
         }
         return true;
     }
@@ -285,8 +331,9 @@ public final class VoiceModeSessionCoordinator {
     /** Lock-screen Stop: asks JS first, then tears down native audio. */
     public void notificationStop() {
         if (events != null) {
-            events.evalJs(NOTIFICATION_STOP_SCRIPT);
-            events.notifyNotificationStop();
+            long id = TRANSITION_IDS.incrementAndGet();
+            events.evalJs(notificationStopScript(id));
+            events.notifyNotificationStop(id);
         }
         TtsControl currentTts = tts;
         if (currentTts != null) {

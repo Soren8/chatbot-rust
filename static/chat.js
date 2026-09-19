@@ -3628,6 +3628,12 @@ $(document).ready(function() {
   let voiceModeStream = null;
   let vadSttInProgress = false;
   let voiceModeSessionGeneration = 0;
+  // Central gate for native pause/resume/stop: each logical event arrives
+  // twice (owned Capacitor listener plus the evalJs fallback) sharing one
+  // monotonic coordinator transition ID. Only strictly newer IDs apply, so
+  // duplicates collapse and a reordered stale event cannot invalidate a
+  // newer session. One gate per page lifetime; never reset per session.
+  var voiceTransitionGate = ChatVoiceEvents.createTransitionGate();
   // Barge-in thresholds live in the owned voice lifecycle (top-level aliases
   // above); the VAD frame gate delegates via voiceLifecycle.noteFrameProcessed.
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
@@ -3947,7 +3953,8 @@ $(document).ready(function() {
           const routeRes = await window.NativeMic.enterVoiceRoute();
           reportVoice('VOICE', 'enterVoiceRoute ok active=' + (routeRes && routeRes.active)
             + ' bluetooth=' + (routeRes && routeRes.bluetooth)
-            + ' foreground=' + (routeRes && routeRes.foreground));
+            + ' foreground=' + (routeRes && routeRes.foreground)
+            + ' foregroundConfirmed=' + (routeRes && routeRes.foregroundConfirmed));
         }
         startingNativeBridge = new ChatVoiceCapture.NativeMicUtteranceVAD(createNativeVadHost(), function (err) {
           nativeLog('VAD', err == null ? 'Native mic error' : String(err));
@@ -4104,7 +4111,10 @@ $(document).ready(function() {
     stopAllTtsPlayback({ preserveListen: true });
   }
 
-  function stopVoiceMode() {
+  function stopVoiceMode(transitionId) {
+    // Dual delivery (listener + evalJs fallback) shares one coordinator
+    // transition ID; the central gate applies each logical stop once.
+    if (!voiceTransitionGate.claim(transitionId)) return;
     voiceModeSessionGeneration += 1;
     reportVoice('VOICE', 'voice session stopped');
     if (voiceSttAbortController) {
@@ -4141,7 +4151,11 @@ $(document).ready(function() {
   }
   window.stopVoiceMode = stopVoiceMode;
 
-  function pauseVoiceModeForPhoneCall() {
+  function pauseVoiceModeForPhoneCall(transitionId) {
+    // Dual delivery (listener + evalJs fallback) shares one coordinator
+    // transition ID; the central gate applies each logical pause once and
+    // rejects a reordered stale pause after a newer resume.
+    if (!voiceTransitionGate.claim(transitionId)) return;
     if (!window.voiceModeActive && !voiceModeWanted()) return;
     voiceModeSessionGeneration += 1;
     if (voiceSttAbortController) {
@@ -4166,20 +4180,23 @@ $(document).ready(function() {
   }
   window.pauseVoiceModeForPhoneCall = pauseVoiceModeForPhoneCall;
 
-  function resumeVoiceModeAfterPhoneCall() {
+  function resumeVoiceModeAfterPhoneCall(transitionId) {
+    // Dual delivery (listener + evalJs fallback) shares one coordinator
+    // transition ID; the central gate applies each logical resume once.
+    if (!voiceTransitionGate.claim(transitionId)) return;
     if (!voiceModeWanted()) return;
     startVoiceMode(1);
   }
   window.resumeVoiceModeAfterPhoneCall = resumeVoiceModeAfterPhoneCall;
 
   if (window.NativeMic && window.NativeMic.addListener) {
-    window.NativeMic.addListener('voiceModeStopRequested', function () {
+    window.NativeMic.addListener('voiceModeStopRequested', function (data) {
       // Always invalidate a start already waiting on permission/native setup.
-      stopVoiceMode();
+      stopVoiceMode(data && data.transitionId);
     });
     window.NativeMic.addListener('voiceModePhoneCall', function (data) {
-      if (data && data.active) pauseVoiceModeForPhoneCall();
-      else resumeVoiceModeAfterPhoneCall();
+      if (data && data.active) pauseVoiceModeForPhoneCall(data.transitionId);
+      else resumeVoiceModeAfterPhoneCall(data && data.transitionId);
     });
   }
 

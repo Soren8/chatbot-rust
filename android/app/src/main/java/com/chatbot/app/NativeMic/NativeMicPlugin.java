@@ -301,10 +301,12 @@ public class NativeMicPlugin extends Plugin {
                 sessionCoordinator.enterVoiceSession();
         FileLogger.log(TAG, "enterVoiceRoute applied=" + entered.applied
                 + " active=" + entered.active + " bluetooth=" + entered.bluetooth
-                + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground);
+                + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
+                + " foregroundConfirmed=" + entered.foregroundConfirmed);
         ClientLogReporter.report("VOICE", "voice: enterVoiceRoute applied=" + entered.applied
                 + " active=" + entered.active + " bluetooth=" + entered.bluetooth
-                + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground);
+                + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
+                + " foregroundConfirmed=" + entered.foregroundConfirmed);
         JSObject result = new JSObject();
         result.put("applied", entered.applied);
         result.put("active", entered.active);
@@ -313,6 +315,7 @@ public class NativeMicPlugin extends Plugin {
         result.put("keepAwakeActive", entered.keepAwakeActive);
         result.put("foreground", entered.foreground);
         result.put("foregroundActive", entered.foregroundActive);
+        result.put("foregroundConfirmed", entered.foregroundConfirmed);
         call.resolve(result);
     }
 
@@ -332,6 +335,7 @@ public class NativeMicPlugin extends Plugin {
         result.put("keepAwakeActive", exited.keepAwakeActive);
         result.put("foreground", exited.foreground);
         result.put("foregroundActive", exited.foregroundActive);
+        result.put("foregroundConfirmed", exited.foregroundConfirmed);
         call.resolve(result);
     }
 
@@ -642,13 +646,21 @@ public class NativeMicPlugin extends Plugin {
     private final class ForegroundServiceBackend implements VoiceModeForegroundSession.Backend {
         @Override
         public boolean startForeground() {
+            return startForeground(VoiceModeForegroundSession.get().currentGeneration());
+        }
+
+        @Override
+        public boolean startForeground(long generation) {
             Context ctx = getContext();
             if (ctx == null) {
                 return false;
             }
             try {
-                VoiceModeForegroundService.start(ctx);
-                return true;
+                // Honest request acceptance: true means the platform start was
+                // issued for this exact generation, not that the service is
+                // foregrounded. Confirmation arrives asynchronously via the
+                // session generation token.
+                return VoiceModeForegroundService.start(ctx, generation);
             } catch (Exception e) {
                 FileLogger.log(TAG, "startForeground failed: " + e.getMessage(), e);
                 return false;
@@ -861,17 +873,19 @@ public class NativeMicPlugin extends Plugin {
 
     private final class CoordinatorEvents implements VoiceModeSessionCoordinator.SessionEvents {
         @Override
-        public void notifyPhoneCall(boolean active) {
+        public void notifyPhoneCall(boolean active, long transitionId) {
             JSObject ret = new JSObject();
             ret.put("type", "phoneCall");
             ret.put("active", active);
+            ret.put("transitionId", transitionId);
             notifyListeners("voiceModePhoneCall", ret);
         }
 
         @Override
-        public void notifyNotificationStop() {
+        public void notifyNotificationStop(long transitionId) {
             JSObject ret = new JSObject();
             ret.put("type", "stop");
+            ret.put("transitionId", transitionId);
             notifyListeners("voiceModeStopRequested", ret);
         }
 

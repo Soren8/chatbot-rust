@@ -253,14 +253,16 @@ public final class VoiceModeSessionCoordinatorTest {
         int phoneFalse;
         int stopNotified;
         final List<String> evals = new ArrayList<>();
+        final List<Long> transitionIds = new ArrayList<>();
 
         FakeEvents(SharedLog log) {
             this.log = log;
         }
 
         @Override
-        public void notifyPhoneCall(boolean active) {
+        public void notifyPhoneCall(boolean active, long transitionId) {
             log.add("events.phone:" + active);
+            transitionIds.add(transitionId);
             if (active) {
                 phoneTrue++;
             } else {
@@ -269,8 +271,9 @@ public final class VoiceModeSessionCoordinatorTest {
         }
 
         @Override
-        public void notifyNotificationStop() {
+        public void notifyNotificationStop(long transitionId) {
             log.add("events.stop");
+            transitionIds.add(transitionId);
             stopNotified++;
         }
 
@@ -432,9 +435,12 @@ public final class VoiceModeSessionCoordinatorTest {
         check(!f.keepAwake.isActive(), "pause must release keep-awake");
         check(!f.foreground.isActive(), "pause must release the FGS");
         check(f.events.phoneTrue == 1, "pause must notify phone active once");
+        long pauseId = f.events.transitionIds.get(0);
         check(f.events.evals.size() == 1
-                && f.events.evals.get(0).equals(VoiceModeSessionCoordinator.PAUSE_SCRIPT),
-                "pause must eval the pause script");
+                && f.events.evals.get(0).equals(VoiceModeSessionCoordinator.pauseScript(pauseId)),
+                "pause must eval the pause script carrying the transition ID");
+        check(f.events.transitionIds.size() == 1,
+                "pause emits one transition ID");
         checkOrder(f.log,
                 "tts.stop",
                 "mic.stop",
@@ -442,7 +448,7 @@ public final class VoiceModeSessionCoordinatorTest {
                 "keepAwake.set:false",
                 "foreground.stop",
                 "events.phone:true",
-                "events.eval:" + VoiceModeSessionCoordinator.PAUSE_SCRIPT);
+                "events.eval:" + VoiceModeSessionCoordinator.pauseScript(pauseId));
     }
 
     private static void pauseWhenOnlyMicCapturingStillPauses() {
@@ -493,17 +499,22 @@ public final class VoiceModeSessionCoordinatorTest {
         check(resumed, "resume must report true after pause");
         check(!f.coordinator.isPausedForPhoneCall(), "resume must clear the flag");
         check(f.events.phoneFalse == 1, "resume must notify phone inactive");
+        check(f.events.transitionIds.size() == 2
+                && f.events.transitionIds.get(1) > f.events.transitionIds.get(0),
+                "resume carries a newer transition ID than pause");
         check(f.events.evals.size() == 2
-                && f.events.evals.get(1).equals(VoiceModeSessionCoordinator.RESUME_SCRIPT),
-                "resume must eval the resume script");
+                && f.events.evals.get(1).equals(VoiceModeSessionCoordinator.resumeScript(
+                        f.events.transitionIds.get(1))),
+                "resume must eval the resume script carrying its own transition ID");
         check(!f.route.isActive(), "resume must not re-enter the route");
         check(!f.keepAwake.isActive(), "resume must not re-enter keep-awake");
         check(!f.foreground.isActive(), "resume must not restart the FGS");
         check(f.foregroundBackend.startCalls == foregroundStarts,
                 "resume must not start the FGS again");
+        long resumeId = f.events.transitionIds.get(1);
         checkOrder(f.log,
                 "events.phone:false",
-                "events.eval:" + VoiceModeSessionCoordinator.RESUME_SCRIPT);
+                "events.eval:" + VoiceModeSessionCoordinator.resumeScript(resumeId));
     }
 
     private static void notificationStopEvalsThenNotifiesThenStopsThenExits() {
@@ -515,14 +526,17 @@ public final class VoiceModeSessionCoordinatorTest {
         f.coordinator.notificationStop();
 
         check(f.events.evals.size() == 1
-                && f.events.evals.get(0).equals(VoiceModeSessionCoordinator.NOTIFICATION_STOP_SCRIPT),
-                "notification stop must eval stopVoiceMode");
+                && f.events.evals.get(0).equals(
+                        VoiceModeSessionCoordinator.notificationStopScript(
+                                f.events.transitionIds.get(0))),
+                "notification stop must eval stopVoiceMode carrying the transition ID");
         check(f.events.stopNotified == 1, "notification stop must notify once");
         check(!f.route.isActive(), "notification stop must release the route");
         check(!f.keepAwake.isActive(), "notification stop must release keep-awake");
         check(!f.foreground.isActive(), "notification stop must release the FGS");
+        long stopId = f.events.transitionIds.get(0);
         checkOrder(f.log,
-                "events.eval:" + VoiceModeSessionCoordinator.NOTIFICATION_STOP_SCRIPT,
+                "events.eval:" + VoiceModeSessionCoordinator.notificationStopScript(stopId),
                 "events.stop",
                 "tts.stop",
                 "mic.stop",
@@ -537,7 +551,11 @@ public final class VoiceModeSessionCoordinatorTest {
         f.coordinator.notificationStop();
 
         check(f.events.stopNotified == 1, "idle notification stop must still notify");
-        check(f.events.evals.size() == 1, "idle notification stop must still eval JS");
+        check(f.events.evals.size() == 1
+                && f.events.evals.get(0).equals(
+                        VoiceModeSessionCoordinator.notificationStopScript(
+                                f.events.transitionIds.get(0))),
+                "idle notification stop must still eval JS with the transition ID");
         check(f.tts.stops == 1 && f.mic.stops == 1,
                 "idle notification stop still stops TTS/mic before exiting");
     }
@@ -649,6 +667,338 @@ public final class VoiceModeSessionCoordinatorTest {
         check(f.events.phoneFalse == 0, "exit must not emit the resume event");
     }
 
+    private static void foregroundRequestIsUnconfirmedUntilServiceConfirms() {
+        Fixture f = new Fixture();
+
+        VoiceModeSessionCoordinator.EnterResult result = f.coordinator.enterVoiceSession();
+
+        check(result.foreground, "foreground request must be accepted");
+        check(result.foregroundActive, "foreground stays requested after enter");
+        check(!result.foregroundConfirmed, "platform confirmation is async; enter must not claim it");
+        check(f.foreground.isActive(), "session stays requested after enter");
+        check(!f.foreground.isConfirmed(), "request acceptance is not platform confirmation");
+        check(!f.coordinator.isForegroundConfirmed(), "coordinator must not report confirmed yet");
+
+        f.foreground.onServiceConfirmed(f.foreground.currentGeneration());
+
+        check(f.foreground.isConfirmed(), "matching service confirmation must confirm the session");
+        check(f.coordinator.isForegroundConfirmed(), "coordinator must expose the confirmed state");
+    }
+
+    private static void promotionFailureClearsRequestAndAllowsRetry() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long generation = f.foreground.currentGeneration();
+
+        f.foreground.onServiceStartFailed(generation);
+
+        check(!f.foreground.isActive(), "promotion failure must release the request");
+        check(!f.foreground.isConfirmed(), "promotion failure must never confirm");
+        check(!f.coordinator.isForegroundConfirmed(), "coordinator must not report confirmed");
+
+        VoiceModeSessionCoordinator.EnterResult retry = f.coordinator.enterVoiceSession();
+        check(retry.foreground, "retry after promotion failure must be accepted");
+        check(f.foreground.currentGeneration() != generation,
+                "retry must mint a fresh request generation");
+        check(!f.foreground.isConfirmed(), "retry starts unconfirmed");
+    }
+
+    private static void backendStartFailureStaysUnrequestedAndRetryable() {
+        Fixture f = new Fixture();
+        f.foregroundBackend.available = false;
+
+        VoiceModeSessionCoordinator.EnterResult result = f.coordinator.enterVoiceSession();
+
+        check(!result.foreground, "failed request must report false");
+        check(!result.foregroundActive, "failed request must not mark requested");
+        check(!result.foregroundConfirmed, "failed request must not claim confirmation");
+        check(!f.foreground.isActive() && !f.foreground.isConfirmed(),
+                "failed startup leaves no session state");
+
+        f.foregroundBackend.available = true;
+        check(f.coordinator.enterVoiceSession().foreground,
+                "retry after failed startup must be accepted");
+    }
+
+    private static void staleConfirmationAfterStopIsIgnored() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long generation = f.foreground.currentGeneration();
+        f.coordinator.exitVoiceSession();
+
+        f.foreground.onServiceConfirmed(generation);
+
+        check(!f.foreground.isActive(), "late confirm must not re-request the session");
+        check(!f.foreground.isConfirmed(), "late confirm after stop must stay unconfirmed");
+        check(!f.coordinator.isForegroundConfirmed(), "coordinator must stay unconfirmed");
+    }
+
+    private static void wrongGenerationConfirmationIsIgnored() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long generation = f.foreground.currentGeneration();
+
+        f.foreground.onServiceConfirmed(generation + 1);
+
+        check(f.foreground.isActive(), "stale generation must not release the request");
+        check(!f.foreground.isConfirmed(), "wrong-generation confirm must stay unconfirmed");
+        check(!f.coordinator.isForegroundConfirmed(), "coordinator must stay unconfirmed");
+    }
+
+    private static void repeatedEnterKeepsSingleRequest() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "first request must be accepted");
+        long generation = f.foreground.currentGeneration();
+
+        VoiceModeSessionCoordinator.EnterResult second = f.coordinator.enterVoiceSession();
+
+        check(!second.foreground, "second enter while requested must report false");
+        check(second.foregroundActive, "session stays requested after repeat enter");
+        check(f.foreground.currentGeneration() == generation,
+                "repeat enter must not mint a new request token");
+
+        f.foreground.onServiceConfirmed(generation + 1);
+        check(!f.foreground.isConfirmed(), "no new token exists for a stale confirm to hit");
+        f.foreground.onServiceConfirmed(generation);
+        check(f.foreground.isConfirmed(), "the original token still confirms");
+    }
+
+    private static void exitAfterConfirmClearsConfirmation() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        f.foreground.onServiceConfirmed(f.foreground.currentGeneration());
+        check(f.foreground.isConfirmed(), "setup must be confirmed");
+
+        VoiceModeSessionCoordinator.ExitResult result = f.coordinator.exitVoiceSession();
+
+        check(!result.foregroundActive, "exit must release the request");
+        check(!result.foregroundConfirmed, "exit must clear the confirmation");
+        check(!f.foreground.isActive() && !f.foreground.isConfirmed(),
+                "confirmation must not survive exit");
+        check(f.coordinator.enterVoiceSession().foreground,
+                "re-enter after stop must be accepted");
+    }
+
+    private static void destroyClearsConfirmation() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        f.foreground.onServiceConfirmed(f.foreground.currentGeneration());
+        check(f.foreground.isConfirmed(), "setup must be confirmed");
+
+        f.coordinator.destroy();
+
+        check(!f.foreground.isActive(), "destroy must release the request");
+        check(!f.foreground.isConfirmed(), "destroy must clear the confirmation");
+        check(f.coordinator.enterVoiceSession().foreground,
+                "re-enter after destroy must be accepted");
+    }
+
+    private static void doubleConfirmIsASingleTransition() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long generation = f.foreground.currentGeneration();
+
+        f.foreground.onServiceConfirmed(generation);
+        f.foreground.onServiceConfirmed(generation);
+
+        check(f.foreground.isConfirmed(), "repeat confirm keeps the single confirmed state");
+        check(f.foreground.isActive(), "repeat confirm must not release the request");
+    }
+
+    private static void serviceDestroyClearsRequestedAndConfirmed() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        f.foreground.onServiceConfirmed(f.foreground.currentGeneration());
+        check(f.foreground.isConfirmed(), "setup must be confirmed");
+
+        f.foreground.onServiceDestroyed(f.foreground.currentGeneration());
+
+        check(!f.foreground.isActive() && !f.foreground.isConfirmed(),
+                "service destroy clears requested and confirmed");
+        check(f.coordinator.enterVoiceSession().foreground,
+                "re-enter after service destroy must be accepted");
+    }
+
+    private static void repeatEnterWhileConfirmedReportsLiveSnapshot() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        f.foreground.onServiceConfirmed(f.foreground.currentGeneration());
+        check(f.foreground.isConfirmed(), "setup must be confirmed");
+
+        VoiceModeSessionCoordinator.EnterResult second = f.coordinator.enterVoiceSession();
+
+        check(!second.foreground, "repeat enter while requested must report false");
+        check(second.foregroundActive, "session stays requested after repeat enter");
+        check(second.foregroundConfirmed,
+                "confirmed flag must reflect the live snapshot, not a hardcoded false");
+    }
+
+    private static void staleServiceDestroyKeepsNewerRequest() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long first = f.foreground.currentGeneration();
+        f.foreground.onServiceConfirmed(first);
+        f.coordinator.exitVoiceSession();
+        check(f.coordinator.enterVoiceSession().foreground, "re-enter must be accepted");
+        long second = f.foreground.currentGeneration();
+        check(second != first, "re-enter must mint a fresh token");
+
+        f.foreground.onServiceDestroyed(first);
+
+        check(f.foreground.isActive(), "stale destroy must not release the newer request");
+        check(f.foreground.currentGeneration() == second, "newer token must survive");
+        check(!f.foreground.isConfirmed(), "newer request is still unconfirmed");
+        f.foreground.onServiceConfirmed(second);
+        check(f.foreground.isConfirmed(), "newer token still confirms after stale destroy");
+        f.foreground.onServiceDestroyed(second);
+        check(!f.foreground.isActive() && !f.foreground.isConfirmed(),
+                "current destroy clears the newer request");
+    }
+
+    private static void destroyWithUnknownGenerationClearsNothing() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long generation = f.foreground.currentGeneration();
+
+        f.foreground.onServiceDestroyed(-1L);
+
+        check(f.foreground.isActive(), "unattributed destroy must not release the request");
+        f.foreground.onServiceConfirmed(generation);
+        check(f.foreground.isConfirmed(), "attributed confirm still applies afterwards");
+    }
+
+    private static void exitReconcilesAgainstTokenAfterInterleavedReenter() {
+        Fixture f = new Fixture();
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        final VoiceModeForegroundSession session = f.foreground;
+        final long first = session.currentGeneration();
+        VoiceModeForegroundSession.Backend interleaving = new VoiceModeForegroundSession.Backend() {
+            @Override
+            public boolean startForeground() {
+                return true;
+            }
+
+            @Override
+            public boolean stopForeground() {
+                session.onServiceDestroyed(first);
+                session.enter(f.foregroundBackend);
+                return true;
+            }
+        };
+
+        boolean released = session.exit(interleaving);
+
+        check(!released, "a superseded exit no longer owns the session");
+        check(session.isActive(), "the newer request survives the old exit");
+        check(session.currentGeneration() != first, "re-enter minted a fresh token");
+        session.onServiceConfirmed(session.currentGeneration());
+        check(session.isConfirmed(), "the newer token confirms");
+    }
+
+    private static void backendReceivesReservedToken() {
+        Fixture f = new Fixture();
+        final long[] seen = {-1L};
+        VoiceModeForegroundSession.Backend tokenBackend = new VoiceModeForegroundSession.Backend() {
+            @Override
+            public boolean startForeground() {
+                return true;
+            }
+
+            @Override
+            public boolean startForeground(long generation) {
+                seen[0] = generation;
+                return true;
+            }
+
+            @Override
+            public boolean stopForeground() {
+                return true;
+            }
+        };
+
+        check(f.foreground.enter(tokenBackend), "token request must be accepted");
+
+        check(seen[0] != -1L, "enter must use the token overload");
+        check(seen[0] == f.foreground.currentGeneration(),
+                "backend must receive the reserved token, not a call-time re-read");
+    }
+
+    private static void eventTransitionIdsIncreaseAcrossPauseResumeStop() {
+        Fixture f = new Fixture();
+        f.coordinator.enterVoiceSession();
+        f.mic.capturing = true;
+        check(f.coordinator.pauseForPhoneCall(), "setup pause must act");
+        check(f.coordinator.resumeAfterPhoneCall(), "setup resume must act");
+        f.coordinator.notificationStop();
+
+        check(f.events.transitionIds.size() == 3,
+                "one transition ID per pause/resume/stop event");
+        check(f.events.transitionIds.get(0) < f.events.transitionIds.get(1)
+                && f.events.transitionIds.get(1) < f.events.transitionIds.get(2),
+                "transition IDs must increase monotonically, got " + f.events.transitionIds);
+        check(f.events.evals.get(0).equals(
+                VoiceModeSessionCoordinator.pauseScript(f.events.transitionIds.get(0))),
+                "pause eval must carry its own transition ID");
+        check(f.events.evals.get(1).equals(
+                VoiceModeSessionCoordinator.resumeScript(f.events.transitionIds.get(1))),
+                "resume eval must carry its own transition ID");
+        check(f.events.evals.get(2).equals(
+                VoiceModeSessionCoordinator.notificationStopScript(f.events.transitionIds.get(2))),
+                "stop eval must carry its own transition ID");
+    }
+
+    private static void transitionIdsIncreaseAcrossCoordinatorInstances() {
+        Fixture first = new Fixture();
+        Fixture second = new Fixture();
+        first.coordinator.enterVoiceSession();
+        first.mic.capturing = true;
+        check(first.coordinator.pauseForPhoneCall(), "first instance pause must act");
+        second.coordinator.enterVoiceSession();
+        second.mic.capturing = true;
+        check(second.coordinator.pauseForPhoneCall(), "second instance pause must act");
+
+        long firstId = first.events.transitionIds.get(0);
+        long secondId = second.events.transitionIds.get(0);
+
+        check(secondId > firstId,
+                "a recreated coordinator must not restart IDs or the page gate ignores its events");
+    }
+
+    private static void staleStartPreservesBoundTokenUntilRealDestroy() {
+        Fixture f = new Fixture();
+        VoiceModeForegroundSession.ServiceLifecycle lifecycle =
+                new VoiceModeForegroundSession.ServiceLifecycle(f.foreground);
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long current = f.foreground.currentGeneration();
+
+        check(lifecycle.onStarted(current, true)
+                        == VoiceModeForegroundSession.ServiceLifecycle.StartOutcome.ACQUIRE,
+                "start for the current token acquires");
+        check(f.foreground.isConfirmed(), "current token confirmed");
+        check(lifecycle.onStarted(current - 1, true)
+                        == VoiceModeForegroundSession.ServiceLifecycle.StartOutcome.IGNORE_STALE,
+                "delayed stale start must not acquire");
+        check(f.foreground.isConfirmed(), "stale start keeps the current confirmation");
+        lifecycle.onDestroyed();
+        check(!f.foreground.isActive() && !f.foreground.isConfirmed(),
+                "destroy after a stale start still clears the owned token");
+    }
+
+    private static void orphanStartReleasesWithoutAcquiring() {
+        Fixture f = new Fixture();
+        VoiceModeForegroundSession.ServiceLifecycle lifecycle =
+                new VoiceModeForegroundSession.ServiceLifecycle(f.foreground);
+        check(f.coordinator.enterVoiceSession().foreground, "setup request must be accepted");
+        long current = f.foreground.currentGeneration();
+        f.coordinator.exitVoiceSession();
+
+        check(lifecycle.onStarted(current, true)
+                        == VoiceModeForegroundSession.ServiceLifecycle.StartOutcome.RELEASE_ORPHAN,
+                "late start with nobody owning the session must release, not acquire");
+        check(!f.foreground.isActive() && !f.foreground.isConfirmed(),
+                "orphan start leaves no session state");
+    }
+
     private static int countPrefix(SharedLog log, String prefix) {
         int count = 0;
         for (String step : log.snapshot()) {
@@ -679,6 +1029,25 @@ public final class VoiceModeSessionCoordinatorTest {
         enterWithForegroundFailureKeepsPartialEnter();
         exitFailureKeepsSessionMarkedActive();
         exitClearsPauseSetByPhoneCall();
-        System.out.println("VoiceModeSessionCoordinatorTest: all 19 behaviors passed");
+        foregroundRequestIsUnconfirmedUntilServiceConfirms();
+        promotionFailureClearsRequestAndAllowsRetry();
+        backendStartFailureStaysUnrequestedAndRetryable();
+        staleConfirmationAfterStopIsIgnored();
+        wrongGenerationConfirmationIsIgnored();
+        repeatedEnterKeepsSingleRequest();
+        exitAfterConfirmClearsConfirmation();
+        destroyClearsConfirmation();
+        doubleConfirmIsASingleTransition();
+        serviceDestroyClearsRequestedAndConfirmed();
+        repeatEnterWhileConfirmedReportsLiveSnapshot();
+        staleServiceDestroyKeepsNewerRequest();
+        destroyWithUnknownGenerationClearsNothing();
+        exitReconcilesAgainstTokenAfterInterleavedReenter();
+        backendReceivesReservedToken();
+        eventTransitionIdsIncreaseAcrossPauseResumeStop();
+        transitionIdsIncreaseAcrossCoordinatorInstances();
+        staleStartPreservesBoundTokenUntilRealDestroy();
+        orphanStartReleasesWithoutAcquiring();
+        System.out.println("VoiceModeSessionCoordinatorTest: all 38 behaviors passed");
     }
 }

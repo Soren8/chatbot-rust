@@ -21,6 +21,9 @@ import com.chatbot.app.util.FileLogger;
  */
 public class VoiceModeForegroundService extends Service {
     public static final String ACTION_START = "com.chatbot.app.START_VOICE_MODE";
+    private static final String EXTRA_GENERATION = "com.chatbot.app.VOICE_MODE_GENERATION";
+    /** Service instance never bound to a request intent (never started). */
+    private static final long NO_GENERATION = -1;
     private static final String TAG = "VoiceModeFgs";
     private static final int FGS_TYPE = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
     /** Chromium freezes a background WebView after a few minutes; re-resume before that. */
@@ -28,6 +31,9 @@ public class VoiceModeForegroundService extends Service {
 
     private PowerManager.WakeLock cpuWakeLock;
     private ConnectivityManager.NetworkCallback networkCallback;
+    /** Session protocol: bound token is set only on accepted confirmation. */
+    private final VoiceModeForegroundSession.ServiceLifecycle serviceLifecycle =
+            new VoiceModeForegroundSession.ServiceLifecycle(VoiceModeForegroundSession.get());
     private final Handler keepAliveHandler = new Handler(Looper.getMainLooper());
     private final Runnable keepAliveTick = new Runnable() {
         @Override
@@ -38,21 +44,43 @@ public class VoiceModeForegroundService extends Service {
         }
     };
 
-    public static void start(Context context) {
+    /**
+     * Ask the platform to start the service. Returns request acceptance only:
+     * true means the start intent was handed to the platform without error,
+     * not that the service is foregrounded. The service confirms via
+     * {@code VoiceModeForegroundSession.onServiceConfirmed} after
+     * {@code startForeground} succeeds, carrying the echoed request
+     * generation; callers must not treat true as platform activation.
+     */
+    public static boolean start(Context context) {
         if (context == null) {
-            return;
+            return false;
+        }
+        return start(context, VoiceModeForegroundSession.get().currentGeneration());
+    }
+
+    /**
+     * Token overload: labels the start with the exact reserved request
+     * generation instead of re-reading the current one at call time.
+     */
+    public static boolean start(Context context, long generation) {
+        if (context == null) {
+            return false;
         }
         try {
             Context app = context.getApplicationContext();
             Intent intent = new Intent(app, VoiceModeForegroundService.class);
             intent.setAction(ACTION_START);
+            intent.putExtra(EXTRA_GENERATION, generation);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 app.startForegroundService(intent);
             } else {
                 app.startService(intent);
             }
+            return true;
         } catch (Exception e) {
             FileLogger.log(TAG, "start failed: " + e.getMessage(), e);
+            return false;
         }
     }
 
@@ -82,11 +110,22 @@ public class VoiceModeForegroundService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        promoteToForeground();
-        acquireCpuWakeLock();
-        acquireNetwork();
-        startKeepAlive();
-        FileLogger.log(TAG, "onStartCommand action=" + intent.getAction());
+        long generation = intent.getLongExtra(EXTRA_GENERATION, NO_GENERATION);
+        switch (serviceLifecycle.onStarted(generation, promoteToForeground())) {
+            case ACQUIRE:
+                acquireCpuWakeLock();
+                acquireNetwork();
+                startKeepAlive();
+                FileLogger.log(TAG, "onStartCommand action=" + intent.getAction());
+                break;
+            case RELEASE_ORPHAN:
+                // Nobody owns the session: release this orphan. A stale
+                // failure/confirm never stops a newer service (IGNORE_STALE).
+                stopSelf();
+                break;
+            case IGNORE_STALE:
+                break;
+        }
         return START_NOT_STICKY;
     }
 
@@ -95,6 +134,7 @@ public class VoiceModeForegroundService extends Service {
         stopKeepAlive();
         releaseNetwork();
         releaseCpuWakeLock();
+        serviceLifecycle.onDestroyed();
         FileLogger.log(TAG, "onDestroy");
         super.onDestroy();
     }
@@ -104,7 +144,12 @@ public class VoiceModeForegroundService extends Service {
         return null;
     }
 
-    private void promoteToForeground() {
+    /**
+     * Promote to a microphone foreground service. Returns true only after
+     * {@code startForeground} succeeds; false leaves confirmation unset and
+     * the caller must not acquire session resources.
+     */
+    private boolean promoteToForeground() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
@@ -116,9 +161,10 @@ public class VoiceModeForegroundService extends Service {
                         VoiceModeNotification.NOTIFICATION_ID,
                         VoiceModeNotification.build(this));
             }
+            return true;
         } catch (Exception e) {
             FileLogger.log(TAG, "promoteToForeground failed: " + e.getMessage(), e);
-            stopSelf();
+            return false;
         }
     }
 

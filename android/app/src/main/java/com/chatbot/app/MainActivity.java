@@ -161,7 +161,10 @@ public class MainActivity extends BridgeActivity {
         if (backgroundedAt > 0) {
             long elapsed = SystemClock.elapsedRealtime() - backgroundedAt;
             if (elapsed >= RESUME_LOCK_GRACE_MS) {
-                if (!VoiceModeForegroundSession.get().isActive() && isUserLoggedIn()) {
+                // Security gate: only a platform-confirmed foreground service
+                // bypasses the lock. A merely requested (unconfirmed) session
+                // must not skip biometric unlock.
+                if (!VoiceModeForegroundSession.get().isConfirmed() && isUserLoggedIn()) {
                     lockApp();
                     return;
                 }
@@ -353,6 +356,9 @@ public class MainActivity extends BridgeActivity {
     }
 
 
+    // Liveness only (not a security bypass): keep the JS loop running while a
+    // voice-mode foreground request is outstanding. The resume biometric lock
+    // above instead requires isConfirmed().
     public void keepVoiceWebViewRunning() {
         if (!VoiceModeForegroundSession.get().isActive()) {
             return;
