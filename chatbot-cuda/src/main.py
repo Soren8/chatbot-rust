@@ -7,15 +7,19 @@ uses ``request.app.state.inference_service``. Startup load failures propagate
 and the app never starts degraded. HTTP shapes: TTS 400/500 with
 ``application/octet-stream`` + ``X-Sample-Rate``; STT 400/422/500 with WAV
 staging cleaned via ``os.unlink`` in ``finally``; health reports the owned
-service's flags. Streaming keeps the thread→queue bridge: unbounded, no
-disconnect cancellation, no shutdown join.
+service's flags. Streaming uses a service-owned daemon thread per request with
+a bounded queue (``STREAM_BUFFER_SIZE`` backpressure): consumer close/cancel
+signals the producer at the next sentence boundary, and lifespan teardown
+cancels all active streams and joins their threads off the event loop, then
+rejects new streams. In-flight GPU inference for the current sentence cannot
+be interrupted (cooperative boundary).
 """
 
 import asyncio
 import logging
 import os
 import tempfile
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -44,7 +48,10 @@ async def lifespan(app: FastAPI):
     service.load_models()
     app.state.voice_settings = settings
     app.state.inference_service = service
-    yield
+    try:
+        yield
+    finally:
+        await service.aclose()
 
 
 def create_app(
@@ -113,11 +120,14 @@ async def kokoro_tts_stream(req: KokoroTtsRequest, request: Request):
 
     async def generator():
         try:
-            async for chunk in service.synthesize_kokoro_stream(
-                text=req.text,
-                voice=req.voice,
-            ):
-                yield chunk
+            async with aclosing(
+                service.synthesize_kokoro_stream(
+                    text=req.text,
+                    voice=req.voice,
+                )
+            ) as stream:
+                async for chunk in stream:
+                    yield chunk
         except Exception as exc:
             logger.exception("Kokoro TTS stream failed")
             raise HTTPException(status_code=500, detail=str(exc))

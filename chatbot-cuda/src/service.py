@@ -4,15 +4,29 @@ One ``InferenceService`` per process, built in FastAPI lifespan from
 ``VoiceSettings`` and shared by all routes via ``app.state``. ``load_models``
 loads Kokoro only for ``tts_provider == "kokoro"`` and always loads STT;
 load failures raise (only Kokoro warmup and ``torch.compile`` warn and
-continue). Streaming uses a daemon thread feeding an unbounded asyncio queue:
-no backpressure, no disconnect cancellation, no shutdown join.
+continue). Streaming lifecycle: each ``synthesize_kokoro_stream`` registers
+service-owned producer work (daemon thread + bounded asyncio queue,
+``STREAM_BUFFER_SIZE``) in ``_active`` under ``_lock``. The producer posts one
+``run_coroutine_threadsafe`` put future per item (bytes, error, or sentinel;
+never resubmitted, never evicted) and polls it with cancellation. The consumer
+only signals ``cancel`` and never unregisters; the producer unregisters after
+exit. Lifespan teardown ``aclose`` cancels all work and joins threads off the
+event loop under one total ``_SHUTDOWN_JOIN_TIMEOUT`` deadline, warning about
+and retaining still-alive workers.
+
+Cooperative boundary (honest): an in-flight pipeline ``next()`` (GPU
+inference) cannot be forcibly stopped; cancellation applies at the next
+boundary. ``_lock`` is held only for set/flag updates, never across queue
+waits or thread joins. Loop posts tolerate a closed loop.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
+import time
 from typing import Any, AsyncGenerator, Callable, Optional
 
 from .settings import VoiceSettings
@@ -23,6 +37,11 @@ PcmConverter = Callable[[Any], bytes]
 KokoroFactory = Callable[[str], Any]
 SttFactory = Callable[[str], Any]
 
+STREAM_BUFFER_SIZE = 4
+_OFFER_POLL_TIMEOUT = 0.02
+_GET_POLL_TIMEOUT = 0.05
+_SHUTDOWN_JOIN_TIMEOUT = 5.0
+
 
 def default_pcm_converter(audio: Any) -> bytes:
     """Historical ``float32 -> int16`` conversion (requires numpy/torch)."""
@@ -32,6 +51,24 @@ def default_pcm_converter(audio: Any) -> bytes:
         audio = audio.cpu().numpy()
     clipped = np.clip(audio, -1.0, 1.0)
     return (clipped * 32767).astype(np.int16).tobytes()
+
+
+class _ActiveStream:
+    """Small concrete owner for one streaming producer thread."""
+
+    __slots__ = ("queue", "cancel", "loop", "thread", "done")
+
+    def __init__(
+        self,
+        queue: asyncio.Queue,
+        cancel: threading.Event,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self.queue = queue
+        self.cancel = cancel
+        self.loop = loop
+        self.thread: threading.Thread | None = None
+        self.done = threading.Event()
 
 
 class InferenceService:
@@ -53,6 +90,9 @@ class InferenceService:
         self._kokoro_factory = kokoro_factory
         self._stt_factory = stt_factory
         self._pcm_converter: PcmConverter = pcm_converter or default_pcm_converter
+        self._lock = threading.Lock()
+        self._active: set[_ActiveStream] = set()
+        self._shutting_down = False
 
     # ── Explicit readiness ────────────────────────────────────────────────
 
@@ -206,38 +246,177 @@ class InferenceService:
     ) -> AsyncGenerator[bytes, None]:
         """Yield PCM chunks sentence by sentence as Kokoro produces them.
 
-        A background thread runs the Kokoro generator (which blocks on GPU
-        inference per sentence) and posts each chunk to an asyncio queue so
-        the event loop stays responsive between sentences.
-
-        Unresolved: unbounded queue, no consumer-cancellation ownership, no
-        shutdown join. Preserved as-is in this batch.
+        A service-owned daemon thread runs the Kokoro generator (which blocks
+        on GPU inference per sentence) and posts each chunk to a bounded
+        asyncio queue (``STREAM_BUFFER_SIZE``), so a slow consumer applies
+        backpressure instead of growing memory without bound. Bytes, errors,
+        and the end sentinel share one offer path with no eviction, preserving
+        order. Closing the generator (disconnect, task cancel, ``aclose``) or
+        service ``aclose`` signals the producer, which stops at the next
+        sentence boundary; an in-flight pipeline ``next()`` cannot be forcibly
+        stopped. A short ``wait_for`` on each ``queue.get`` lets the consumer
+        notice cancellation without needing a sentinel.
         """
         if not self._kokoro_loaded:
             raise RuntimeError("Kokoro TTS not loaded")
 
-        loop = asyncio.get_event_loop()
-        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._shutting_down:
+                raise RuntimeError("Kokoro streaming is shut down")
+            queue: asyncio.Queue = asyncio.Queue(maxsize=STREAM_BUFFER_SIZE)
+            stream = _ActiveStream(queue, threading.Event(), loop)
+            stream.thread = threading.Thread(
+                target=self._run_stream,
+                args=(stream, text, voice),
+                daemon=True,
+                name="kokoro-stream",
+            )
+            self._active.add(stream)
+        try:
+            stream.thread.start()
+        except Exception:
+            with self._lock:
+                self._active.discard(stream)
+            raise
 
-        def _generate() -> None:
-            try:
-                for _, _, audio in self._kokoro_pipeline(text, voice=voice):
-                    chunk = self._pcm_converter(audio)
-                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
-            except Exception as exc:
-                loop.call_soon_threadsafe(queue.put_nowait, exc)
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=_GET_POLL_TIMEOUT
+                    )
+                except TimeoutError:
+                    if stream.cancel.is_set():
+                        return
+                    continue
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        except (GeneratorExit, asyncio.CancelledError):
+            stream.cancel.set()
+            raise
+        finally:
+            stream.cancel.set()
 
-        threading.Thread(target=_generate, daemon=True).start()
+    def active_stream_count(self) -> int:
+        """Number of registered in-flight streaming producers."""
+        with self._lock:
+            return len(self._active)
 
-        while True:
-            item = await queue.get()
-            if item is None:
+    async def aclose(self) -> None:
+        """Cancel all active streams and join their threads off the loop.
+
+        Idempotent: marks shutdown (new streams are rejected), signals every
+        registered producer, then joins under one total
+        ``_SHUTDOWN_JOIN_TIMEOUT`` deadline in a worker thread. Still-alive
+        workers are logged and stay tracked until they actually exit. The lock
+        is never held across waits or joins.
+        """
+        with self._lock:
+            self._shutting_down = True
+            streams = list(self._active)
+        for stream in streams:
+            stream.cancel.set()
+        if streams:
+            await asyncio.to_thread(self._join_all, streams)
+
+    @staticmethod
+    def _join_all(streams: list[_ActiveStream]) -> None:
+        deadline = time.monotonic() + _SHUTDOWN_JOIN_TIMEOUT
+        for stream in streams:
+            if time.monotonic() >= deadline:
                 break
-            if isinstance(item, Exception):
-                raise item
-            yield item
+            thread = stream.thread
+            if thread is not None:
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        alive = [
+            stream
+            for stream in streams
+            if stream.thread is not None and stream.thread.is_alive()
+        ]
+        if alive:
+            logger.warning(
+                "TTS shutdown timed out with %d streaming worker(s) still "
+                "running; they stay tracked until exit",
+                len(alive),
+            )
+
+    def _run_stream(self, stream: _ActiveStream, text: str, voice: str) -> None:
+        """Producer body: sentences become PCM on the bounded queue.
+
+        Never raises: pipeline/converter failures are offered as the terminal
+        queue item so the consumer sees them in order. Cancel is checked
+        before and after each pipeline ``next()``; cancelled output is never
+        converted. Always closes the iterator if supported, sets ``done``,
+        and unregisters, even when the loop is already closed.
+        """
+        iterator = None
+        try:
+            try:
+                iterator = iter(self._kokoro_pipeline(text, voice=voice))
+            except Exception as exc:
+                self._offer(stream, exc)
+            else:
+                while True:
+                    if stream.cancel.is_set():
+                        break
+                    try:
+                        _, _, audio = next(iterator)
+                    except StopIteration:
+                        self._offer(stream, None)
+                        break
+                    except Exception as exc:
+                        self._offer(stream, exc)
+                        break
+                    if stream.cancel.is_set():
+                        break
+                    try:
+                        chunk = self._pcm_converter(audio)
+                    except Exception as exc:
+                        self._offer(stream, exc)
+                        break
+                    if not self._offer(stream, chunk):
+                        break
+        finally:
+            if iterator is not None:
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            stream.done.set()
+            with self._lock:
+                self._active.discard(stream)
+
+    def _offer(self, stream: _ActiveStream, item: object) -> bool:
+        """Offer one queue item via a single put future; never resubmits.
+
+        Waits on the same future, polling for cancel/closed loop, then cancels
+        that future and reports False. Never raises.
+        """
+        loop = stream.loop
+        if loop.is_closed():
+            return False
+        coro = stream.queue.put(item)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            coro.close()
+            return False
+        while True:
+            try:
+                future.result(timeout=_OFFER_POLL_TIMEOUT)
+                return True
+            except concurrent.futures.TimeoutError:
+                if stream.cancel.is_set() or loop.is_closed():
+                    future.cancel()
+                    return False
+            except Exception:
+                return False
 
     def transcribe(self, audio_path: str) -> str:
         """Transcribe a WAV file (16 kHz mono) and return the text."""

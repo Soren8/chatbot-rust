@@ -1,10 +1,18 @@
 # Codebase review program
 
-Latest resume point: session 041 — event-fed playback sources (below). Earlier checkpoints record their original scope and status.
+Latest resume point: session 042 — streaming inference lifetime (below). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: thirty-nine batches through session 041. Session 038 is committed as `7a17270`; session 039 as `d9463bc`; session 040 as `327d6dc`; session 041 is recorded by commit title `Feed playback from owned message state`. Phase 1 remains in progress.
+Current remediation count: forty batches through session 042. Session 041 is committed as `7a34c6f`; session 042 is recorded by commit title `Own bounded inference streaming lifetime`. Phase 1 remains in progress.
+
+## Session 042 — streaming inference lifetime, 2026-09-19
+
+MOD-015 streaming work now belongs to the inference service. Each producer has a bounded four-chunk queue, one outstanding thread-to-loop put, cooperative cancellation and tracked lifetime until producer exit. The HTTP wrapper explicitly closes its inner stream. Lifespan shutdown rejects new streams, signals producers and joins off-loop with one five-second deadline. In-flight GPU inference cannot be forcibly interrupted; workers exceeding that deadline are logged and remain tracked until exit. Normal success/error delivery preserves buffered PCM order without eviction. Failed thread starts remove their registration.
+
+Main review rejected the initial passing implementation: terminal delivery could evict audio, acknowledgement retries could duplicate audio, and consumer closure could discard still-running producer ownership. Added regressions reproduced these failures; subsequent review also required explicit route closure and failed-start cleanup. Full final suite passed in job `20260919T074955-28a9f3062a7e`, log `temp/test-logs/mod015-routes-green-20260919T074955Z.log`, exit 0, untruncated, including 50 CPU voice-service tests and provider-config validation. Reds are retained in `mod015-exact-red2-20260919T060814Z.log` and `mod015-routes-red2-20260919T074157Z.log`. Tests use fake inference; GPU/device execution is not claimed.
+
+Remaining completion review: generation-lease acquisition/settlement and native lifecycle truthfulness/event ownership. Broad documentation review remains in its later phase. Host rebuild/restart of voice-service is required to deploy this behavior.
 
 ## Session 041 — event-fed playback sources, 2026-09-19
 
