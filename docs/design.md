@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Android foreground stops propagate stopped/already-stopped/failure outcomes through the platform adapter. Failed stops retain session ownership; successful outcomes reconcile only the initiating generation. Platform start/stop calls are serialized separately from the session monitor so an older stop cannot follow a replacement start.
+
 The voice service tracks non-streaming Kokoro/STT jobs alongside streaming producers. A cancelled waiter does not interrupt inference or release its STT staging file; the worker cleans up before delivering its result. Lifespan shutdown rejects new jobs and joins all worker types off-loop under one shared bounded deadline, retaining work that has not exited.
 
 Desktop playback cancellation settles active clip promises and disposes queue-owned subscriptions, observers and timers. The voice lifecycle registers both clip and queue disposers so direct lifecycle stops and UI stop/replacement paths share cleanup; cancellation does not emit normal completion notifications.

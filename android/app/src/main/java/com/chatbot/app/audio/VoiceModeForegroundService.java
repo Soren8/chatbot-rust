@@ -26,6 +26,8 @@ public class VoiceModeForegroundService extends Service {
     private static final long NO_GENERATION = -1;
     private static final String TAG = "VoiceModeFgs";
     private static final int FGS_TYPE = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+    /** Serializes platform start/stop calls with generation revalidation. */
+    private static final Object PLATFORM_LOCK = new Object();
     /** Chromium freezes a background WebView after a few minutes; re-resume before that. */
     private static final long KEEP_ALIVE_INTERVAL_MS = 15_000;
 
@@ -68,14 +70,16 @@ public class VoiceModeForegroundService extends Service {
             return false;
         }
         try {
-            Context app = context.getApplicationContext();
-            Intent intent = new Intent(app, VoiceModeForegroundService.class);
-            intent.setAction(ACTION_START);
-            intent.putExtra(EXTRA_GENERATION, generation);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                app.startForegroundService(intent);
-            } else {
-                app.startService(intent);
+            synchronized (PLATFORM_LOCK) {
+                Context app = context.getApplicationContext();
+                Intent intent = new Intent(app, VoiceModeForegroundService.class);
+                intent.setAction(ACTION_START);
+                intent.putExtra(EXTRA_GENERATION, generation);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    app.startForegroundService(intent);
+                } else {
+                    app.startService(intent);
+                }
             }
             return true;
         } catch (Exception e) {
@@ -84,15 +88,61 @@ public class VoiceModeForegroundService extends Service {
         }
     }
 
-    public static void stop(Context context) {
+    /**
+     * Stops the service. Returns {@code STOPPED} when the platform stopped
+     * it, {@code ALREADY_STOPPED} when no instance was running, and
+     * {@code FAILED} when the platform call threw.
+     */
+    public static VoiceModeForegroundSession.Backend.StopOutcome stop(Context context) {
         if (context == null) {
-            return;
+            return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
         }
         try {
-            context.getApplicationContext().stopService(
-                    new Intent(context.getApplicationContext(), VoiceModeForegroundService.class));
+            synchronized (PLATFORM_LOCK) {
+                Context app = context.getApplicationContext();
+                boolean stopped = app.stopService(
+                        new Intent(app, VoiceModeForegroundService.class));
+                return stopped
+                        ? VoiceModeForegroundSession.Backend.StopOutcome.STOPPED
+                        : VoiceModeForegroundSession.Backend.StopOutcome.ALREADY_STOPPED;
+            }
         } catch (Exception e) {
             FileLogger.log(TAG, "stop failed: " + e.getMessage(), e);
+            return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
+        }
+    }
+
+    /**
+     * Stops only the owning generation. A stale token never touches the
+     * platform. The generation is revalidated inside the serialized platform
+     * section immediately before the stop call.
+     */
+    public static VoiceModeForegroundSession.Backend.StopOutcome stop(
+            Context context, long generation) {
+        if (context == null) {
+            return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
+        }
+        try {
+            synchronized (PLATFORM_LOCK) {
+                VoiceModeForegroundSession session = VoiceModeForegroundSession.get();
+                if (!session.isActive()
+                        || generation != session.currentGeneration()) {
+                    return VoiceModeForegroundSession.Backend.StopOutcome.ALREADY_STOPPED;
+                }
+                Context app = context.getApplicationContext();
+                if (!session.isActive()
+                        || generation != session.currentGeneration()) {
+                    return VoiceModeForegroundSession.Backend.StopOutcome.ALREADY_STOPPED;
+                }
+                boolean stopped = app.stopService(
+                        new Intent(app, VoiceModeForegroundService.class));
+                return stopped
+                        ? VoiceModeForegroundSession.Backend.StopOutcome.STOPPED
+                        : VoiceModeForegroundSession.Backend.StopOutcome.ALREADY_STOPPED;
+            }
+        } catch (Exception e) {
+            FileLogger.log(TAG, "stop failed: " + e.getMessage(), e);
+            return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
         }
     }
 

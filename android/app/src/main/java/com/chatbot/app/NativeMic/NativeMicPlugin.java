@@ -674,11 +674,26 @@ public class NativeMicPlugin extends Plugin {
                 return false;
             }
             try {
-                VoiceModeForegroundService.stop(ctx);
-                return true;
+                return VoiceModeForegroundService.stop(ctx)
+                        != VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
             } catch (Exception e) {
                 FileLogger.log(TAG, "stopForeground failed: " + e.getMessage(), e);
                 return false;
+            }
+        }
+
+        @Override
+        public VoiceModeForegroundSession.Backend.StopOutcome stopForeground(
+                long generation) {
+            Context ctx = getContext();
+            if (ctx == null) {
+                return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
+            }
+            try {
+                return VoiceModeForegroundService.stop(ctx, generation);
+            } catch (Exception e) {
+                FileLogger.log(TAG, "stopForeground failed: " + e.getMessage(), e);
+                return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
             }
         }
     }

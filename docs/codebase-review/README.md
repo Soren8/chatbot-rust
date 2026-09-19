@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: session 049 — production inference jobs verified; native stop outcomes remain. Earlier checkpoints record their original scope and status.
+Latest resume point: session 050 — all four follow-ups implemented; main-model phase-one completion review pending. Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-five batches through session 049. **Phase 1 remains open following the fresh review at `d5fef48`. Native stop outcomes remain; phases 2–7 have not started.**
+Current remediation count: forty-six batches through session 050. **All four session-046 ownership follow-ups are implemented and verified; phase-one completion review remains pending. Phases 2–7 have not started.**
+
+## Session 050 — native foreground stop outcomes, 2026-09-19
+
+MOD-012-A propagates stopped, already-stopped and failed platform outcomes from the real service through NativeMic to the foreground session. Failed stops retain requested/confirmed ownership for retry; accepted or already-stopped outcomes release only the initiating generation. Platform start/stop calls share a serialization lock, with generation revalidation inside the stop boundary; session monitors are not held across backend calls. Existing confirmation, stale destroy, notification cleanup, event sequencing and barge-in contracts are retained.
+
+Initial real-adapter red: `mod012a-red-20260919T194211Z.log`, job `20260919T194211-820249fd018e`. Main review caught a check-to-stop race; a new deterministic adapter regression reproduced old-stop-after-new-start (`mod012a-r2-red-20260919T200138Z.log`, job `20260919T200138-9a71422e8428`). Final full trusted suite: `temp/test-logs/mod012a-r2-green-20260919T200723Z.log`, job `20260919T200724-9fbb3c375cdd`, exit 0, untruncated, including 12 new foreground-stop/service behaviors and provider validation. Physical-debug build: `mod012a-r2-apk-20260919T201434Z.log`, job `20260919T201434-4ea80932e2ab`; artifact `temp/mod012a-r2-physical-debug.apk`, 12,088,504 bytes, SHA256 `8108589804f33897f9a61232c0fcf406ab9d1bebac14c5a971690c7abd5a633a`. Suite/build share snapshot `be184ae8d91b1d13db1cda62c2b4114dec90e9f6abfa17b1e31fcdd89b54cce9`. Main inspected the production service/session/plugin stop path and fake-platform harness. This establishes CPU/compile behavior, not phone lifecycle validation.
 
 ## Session 049 — production inference jobs, 2026-09-19
 

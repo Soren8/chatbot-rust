@@ -28,7 +28,18 @@ public final class VoiceModeForegroundSession {
 
     public interface Backend {
         /**
-          * Request the microphone foreground service and its notification.
+         * Honest platform stop outcome. {@code STOPPED} and
+         * {@code ALREADY_STOPPED} both release the session; only
+         * {@code FAILED} keeps it requested so a retry is allowed.
+         */
+        enum StopOutcome {
+            STOPPED,
+            ALREADY_STOPPED,
+            FAILED
+        }
+
+        /**
+         * Request the microphone foreground service and its notification.
          *
          * @return true if the platform request was accepted (not that the
          *     service is already foregrounded; confirmation arrives later via
@@ -38,10 +49,8 @@ public final class VoiceModeForegroundSession {
         boolean startForeground();
 
         /**
-         * Token overload: the session passes the reserved request generation
-         * so the backend labels the exact request instead of re-reading the
-         * current one at call time. The default keeps callers that only know
-         * the no-arg call working with identical semantics.
+         * Token overload: labels the start with the reserved request
+         * generation.
          */
         default boolean startForeground(long generation) {
             return startForeground();
@@ -51,8 +60,22 @@ public final class VoiceModeForegroundSession {
          * Stop the service and dismiss the notification.
          *
          * @return false if stop failed (keep the session marked requested).
+         *     An already-stopped platform counts as success and clears.
          */
         boolean stopForeground();
+
+        /**
+         * Token overload: stops only the owning generation. Maps true to
+         * {@code STOPPED}, false and throws to {@code FAILED}; stale tokens
+         * report {@code ALREADY_STOPPED} without platform touch.
+         */
+        default StopOutcome stopForeground(long generation) {
+            try {
+                return stopForeground() ? StopOutcome.STOPPED : StopOutcome.FAILED;
+            } catch (RuntimeException e) {
+                return StopOutcome.FAILED;
+            }
+        }
     }
 
     public static VoiceModeForegroundSession get() {
@@ -119,11 +142,9 @@ public final class VoiceModeForegroundSession {
 
     /**
      * Stop the FGS. Returns false when not requested, {@code backend} is
-     * null, the stop is rejected, or a destroy plus re-enter minted a newer
-     * token during the stop (the older call no longer owns the session and
-     * must not clear the newer request). A confirmed session becomes
-     * unconfirmed; a late confirm for the released generation is ignored
-     * afterwards.
+     * null, the platform reports failure, or a destroy plus re-enter minted
+     * a newer token during the stop. An already-stopped platform clears like
+     * a successful stop; only a failure keeps the request.
      */
     public boolean exit(Backend backend) {
         final long generation;
@@ -133,14 +154,17 @@ public final class VoiceModeForegroundSession {
             }
             generation = requestGeneration;
         }
-        boolean stopped;
+        Backend.StopOutcome outcome;
         try {
-            stopped = backend.stopForeground();
+            outcome = backend.stopForeground(generation);
         } catch (RuntimeException e) {
-            stopped = false;
+            outcome = Backend.StopOutcome.FAILED;
         }
         synchronized (this) {
-            if (!stopped || generation != requestGeneration) {
+            if (generation != requestGeneration) {
+                return false;
+            }
+            if (outcome == null || outcome == Backend.StopOutcome.FAILED) {
                 return false;
             }
             requested = false;
