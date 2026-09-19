@@ -10,14 +10,16 @@ const ttsPlaybackPath = process.argv[2];
 const voiceTextPath = process.argv[3];
 const conversationStatePath = process.argv[4];
 const voiceLifecyclePath = process.argv[5];
+const playbackSourcePath = process.argv[6];
 assert(
-  ttsPlaybackPath && voiceTextPath && conversationStatePath && voiceLifecyclePath,
-  'usage: node tts_exhaustion_test.js <static/tts-playback.js> <static/voice-text.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
+  ttsPlaybackPath && voiceTextPath && conversationStatePath && voiceLifecyclePath && playbackSourcePath,
+  'usage: node tts_exhaustion_test.js <static/tts-playback.js> <static/voice-text.js> <static/conversation-state.js> <static/voice-lifecycle.js> <static/playback-source.js>'
 );
 const ttsPlayback = require(ttsPlaybackPath);
 const voiceText = require(voiceTextPath);
 const conversationState = require(conversationStatePath);
 const voiceLifecycleMod = require(voiceLifecyclePath);
+const playbackSource = require(playbackSourcePath);
 
 function makeOwner(voiceMode) {
   return voiceLifecycleMod.createVoiceLifecycle({
@@ -39,21 +41,31 @@ async function flush() {
 
 function desktopStreamingSession() {
   const state = {
-    raw: 'First sentence here. Second sentence here.', generating: false,
+    raw: 'First sentence here. Second sentence here.',
     played: [], completed: 0, chatErrors: [], reports: [], consoleErrors: [],
     timers: [], observer: null, live: true,
   };
   const voiceLifecycle = makeOwner(false);
   voiceLifecycle.stopDesktopPlayback();
   voiceLifecycle.beginDesktopPlayback({});
+  // Settled text through the shared explicit source, bound finished the way
+  // chat binds settled history; the queue reads only the source.
+  const chatRequests = conversationState.createChatRequestTracker();
+  const source = playbackSource.createMessageSource({
+    sanitize: voiceText.sanitizeForTTS,
+    isTrackerGenerating: () => chatRequests.isGenerating(),
+    isTrackerLive: (s) => chatRequests.isLive(s),
+    boundSeq: null,
+  });
+  source.publish({ original: state.raw, fallbackVisible: '' });
+  source.finish();
   const deps = {
     isLive: (id) => state.live && voiceLifecycle.isLiveDesktop(id),
     onComplete: (button) => {
       voiceLifecycle.completeDesktopPlayback(button);
       state.completed++; state.live = false;
     },
-    getText: () => voiceText.sanitizeForTTS(state.raw),
-    isGenerating: () => false,
+    source: source,
     split: voiceText.splitSentences,
     terminator: voiceText.sentenceEndsWithTerminator,
     preload: () => {},
@@ -121,13 +133,22 @@ function nativeFailingSession() {
   const enqueued = [];
   const cancelled = [];
   const state = {
-    raw: 'One here now. Two here now.', generating: false,
+    raw: 'One here now. Two here now.',
     ended: 0, finished: 0, listener: null, observer: null,
     chatErrors: [], reports: [], consoleErrors: [],
   };
   const voiceLifecycle = makeOwner(false);
   let sessionPromise = null;
   let sessionListener = null;
+  const chatRequests = conversationState.createChatRequestTracker();
+  const source = playbackSource.createMessageSource({
+    sanitize: voiceText.sanitizeForTTS,
+    isTrackerGenerating: () => chatRequests.isGenerating(),
+    isTrackerLive: (s) => chatRequests.isLive(s),
+    boundSeq: null,
+  });
+  source.publish({ original: state.raw, fallbackVisible: '' });
+  source.finish();
   const bridge = {
     stop: async () => {},
     beginSession: async () => ({ generation: 1, maxQueuedClips: 4 }),
@@ -135,14 +156,12 @@ function nativeFailingSession() {
     enqueue: async (url) => { enqueued.push(url.split('/').pop()); },
     markEndOfQueue: async () => { state.ended++; },
   };
-  const chatRequests = conversationState.createChatRequestTracker();
   const deps = {
     voiceLifecycle,
     split: voiceText.splitSentences,
     terminator: voiceText.sentenceEndsWithTerminator,
     sanitize: voiceText.sanitizeForTTS,
-    getText: () => voiceText.sanitizeForTTS(state.raw),
-    isGenerating: () => false,
+    source: source,
     observeChanges: (cb) => { state.observer = cb; return () => { state.observer = null; }; },
     fetchVoiceRetry: (url, options) => {
       return new Promise((resolve, reject) => {
@@ -236,13 +255,22 @@ function nativeReplacementHarness() {
   });
   const bridge = mkBridge();
   function mkDeps() {
+    const source = playbackSource.createMessageSource({
+      sanitize: voiceText.sanitizeForTTS,
+      isTrackerGenerating: () => chatRequests.isGenerating(),
+      isTrackerLive: (s) => chatRequests.isLive(s),
+      boundSeq: chatRequests.seq(),
+    });
+    function publish() {
+      source.publish({ original: texts[state.phase], fallbackVisible: '' });
+    }
+    publish();
     return {
       voiceLifecycle,
       split: voiceText.splitSentences,
       terminator: voiceText.sentenceEndsWithTerminator,
       sanitize: voiceText.sanitizeForTTS,
-      getText: () => voiceText.sanitizeForTTS(texts[state.phase]),
-      isGenerating: () => chatRequests.isGenerating(),
+      source: source,
       observeChanges: (cb) => { observers.push(cb); return () => {}; },
       fetchVoiceRetry: (url, options) => {
         return new Promise((resolve, reject) => {
@@ -291,15 +319,26 @@ function nativeReplacementHarness() {
   }
   // First session uses its own deps; replacement invalidates generation via
   // the shared lifecycle owner, mirroring chat's invalidateNativeVoiceTts.
+  const allDeps = [];
   const depsA = mkDeps();
+  allDeps.push(depsA);
   ttsPlayback.playNativeVoiceModeTts(depsA, {}, {});
   return {
     posts, enqueued, cancelled, stops, finishedGens, observers, state, texts,
     enqueueCalls, deferredOldRejections, chatRequests,
     playReplacement(btn) {
       const depsB = mkDeps();
+      allDeps.push(depsB);
       ttsPlayback.playNativeVoiceModeTts(depsB, btn, {});
       return depsB;
+    },
+    publishCurrent() {
+      // New text arriving on the live message is a source publish event, the
+      // way chat's stream append callbacks publish (only the live session's
+      // source moves; the replaced session stays dead).
+      const current = texts[state.phase];
+      const live = allDeps[allDeps.length - 1];
+      if (live && live.source) live.source.publish({ original: current, fallbackVisible: '' });
     },
     wake() {
       const pending = sleepers.splice(0);
@@ -362,6 +401,7 @@ function nativeReplacementHarness() {
     assert.equal(t.deferredOldRejections.length, 1, 'old final attempt must be in flight before replacement');
     t.playReplacement(btnB);
     t.state.phase = 'B';
+    t.publishCurrent();
     await flush();
     assert.deepEqual(t.posts.map(p => p.text), ['Apple apple.', 'Cherry cherry.'], 'new session queues after replacement');
     t.posts.slice(1).forEach((p, i) => p.resolve('new-' + i));

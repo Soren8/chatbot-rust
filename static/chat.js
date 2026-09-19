@@ -443,6 +443,13 @@ function paintFailedAiTurn($user, errorText) {
   if (!$ai.length) return $();
   replaceChildrenNative($ai[0], buildAiErrorChildren(errorText));
   markLocalOnlyTurn($user, $ai);
+  // Terminal chrome: settle the bound stream source keeping its last
+  // published text, or bind a finished empty source for a fresh shell.
+  var failedHost = $ai[0];
+  var failedSource = messagePlaybackSources.get(failedHost) || null;
+  if (failedSource) failedSource.finish();
+  else bindMessagePlaybackSource(failedHost, { original: '', visible: '', boundSeq: null, finished: true });
+  if (liveStreamPlaybackSource === failedSource) liveStreamPlaybackSource = null;
   return $ai;
 }
 
@@ -1234,6 +1241,9 @@ function appendHistoryPair(userMsg, aiMsg, pairIndex, mountOpts) {
   var formattedAi = formatAiMessage(aiMsg);
   var $aiMsg = appendAiHistoryMessage(formattedAi, opts);
   $aiMsg.attr('data-original', aiMsg);
+  // Settled history seeds its source from the known message data; the null
+  // sequence means it never reports generating, however busy the tracker is.
+  bindMessagePlaybackSource($aiMsg[0], { original: aiMsg, visible: '', boundSeq: null, finished: true });
 }
 
 function applyHistoryPage(data, mode) {
@@ -1263,6 +1273,10 @@ function applyHistoryPage(data, mode) {
   }
 
   var $chat = $('#chat-content');
+  // Replacing the page detaches every bubble; finish the live stream source
+  // so its queue completes instead of following the detached stream.
+  if (liveStreamPlaybackSource) liveStreamPlaybackSource.finish();
+  liveStreamPlaybackSource = null;
   $chat.empty();
   ensureLoadOlderBar();
   for (var j = 0; j < pairs.length; j++) {
@@ -1537,22 +1551,73 @@ function sanitizeForTTS(text) {
   return ChatVoiceText.sanitizeForTTS(text);
 }
 
-/** Full TTS source text for an AI message (data-original preferred, then visible DOM). */
-function getMessageTtsText($messageElement) {
-  let fullText = $messageElement.attr('data-original') || '';
-  if (fullText) {
-    fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-  }
-  if (!fullText) {
-    const $textClone = $messageElement.find('.ai-message-text').clone();
-    $textClone.find('.thinking-container').remove();
-    $textClone.find('.regenerate-container').remove();
-    fullText = $textClone.text().trim();
-  }
-  fullText = sanitizeForTTS(fullText);
-  if (fullText === 'Thinking...') return '';
-  if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
-  return fullText;
+// Per-message TTS playback sources, keyed by AI message host. Stream sites
+// publish the strings they render; begin/finish/cancel/failure sites bind
+// or settle against the request-tracker sequence. No progress is inferred
+// from buttons or rendered text; the adapter observer stays a text-change
+// wakeup backstop only.
+var messagePlaybackSources = new WeakMap();
+var liveStreamPlaybackSource = null;
+
+function messagePlaybackSourceDeps(boundSeq) {
+  return {
+    sanitize: function (text) { return sanitizeForTTS(text); },
+    isTrackerGenerating: function () { return chatRequests.isGenerating(); },
+    isTrackerLive: function (s) { return chatRequests.isLive(s); },
+    boundSeq: boundSeq
+  };
+}
+
+// Bind a host to a sequence, ending any prior source so replaced sessions
+// do not leak.
+function bindMessagePlaybackSource(hostEl, site) {
+  site = site || {};
+  var prev = hostEl ? messagePlaybackSources.get(hostEl) : null;
+  if (prev) prev.finish();
+  var source = ChatPlaybackSource.createMessageSource(
+    messagePlaybackSourceDeps(site.boundSeq != null ? site.boundSeq : null));
+  source.publish({ original: site.original || '', fallbackVisible: site.visible || '' });
+  if (site.finished) source.finish();
+  if (hostEl) messagePlaybackSources.set(hostEl, source);
+  return source;
+}
+
+// Migrate a host's source to a replacement generation in one atomic restart.
+function retargetMessagePlaybackSource(hostEl, seq) {
+  var source = hostEl ? messagePlaybackSources.get(hostEl) : null;
+  if (!source) return bindMessagePlaybackSource(hostEl, { original: '', visible: '', boundSeq: seq });
+  source.retarget(seq, { original: '', fallbackVisible: '' });
+  return source;
+}
+
+function lookupMessagePlaybackSource(hostEl) {
+  var source = hostEl ? messagePlaybackSources.get(hostEl) : null;
+  if (source) return source;
+  // Every AI bubble with a play button is bound at its creation site; a
+  // missing entry plays silent instead of inferring from the DOM.
+  var silent = ChatPlaybackSource.createMessageSource(messagePlaybackSourceDeps(null));
+  silent.finish();
+  return silent;
+}
+
+// Text event from a producing/updating site; drops when nothing is bound.
+function publishMessagePlaybackText($messageElement, original, visible) {
+  var host = $messageElement && $messageElement[0];
+  var source = host && messagePlaybackSources.get(host);
+  if (source) source.publish({ original: original || '', fallbackVisible: visible || '' });
+}
+
+// Terminal progress event; text is kept so queued sentences drain.
+function finishMessagePlayback($messageElement) {
+  var host = $messageElement && $messageElement[0];
+  var source = host && messagePlaybackSources.get(host);
+  if (source) source.finish();
+  if (liveStreamPlaybackSource === source) liveStreamPlaybackSource = null;
+}
+
+// Canonical wire shape for data-original and source publishes alike.
+function combinedAiOriginal(fullVisibleText, fullThinkingText) {
+  return fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
 }
 
 /**
@@ -1816,20 +1881,17 @@ function playFixedSentenceList(sessionId, button, sentences) {
  */
 function playMessageBodyTts(sessionId, button, $messageElement) {
   // Streaming desktop queue lives in static/tts-playback.js using the single
-  // voice lifecycle + voice-text. Visible text/progress arrive via explicit
-  // source callbacks; MutationObserver scheduling stays in this adapter.
+  // voice lifecycle + voice-text. Answer text/progress arrive via the shared
+  // per-message source bound at this message's creation/update/settle sites;
+  // this adapter only looks the source up by message host. The
+  // MutationObserver below stays solely as a text-change wakeup backstop for
+  // the queue (existing latency behavior) and never supplies progress.
   var textEl = $messageElement.find('.ai-message-text')[0];
+  var source = lookupMessagePlaybackSource($messageElement[0]);
   return ChatTtsPlayback.playMessageBodyTts({
     isLive: function (id) { return desktopTtsIsLive(id); },
     onComplete: function (btn) { completeDesktopTtsPlayback(btn); },
-    getText: function () { return getMessageTtsText($messageElement); },
-    isGenerating: function () {
-      var currentRawText = $messageElement.find('.ai-message-text').text().trim();
-      if (currentRawText === 'Thinking...') return true;
-      var isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
-      var regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
-      return isLastAi && regenDisabled && chatRequests.isGenerating();
-    },
+    source: source,
     split: function (text) { return splitSentences(text); },
     terminator: function (text) { return sentenceEndsWithTerminator(text); },
     preload: function (id, text) { preloadDesktopTtsSentence(id, text); },
@@ -1842,7 +1904,7 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     isVoiceModeActive: function () { return !!window.voiceModeActive; },
     observeChanges: function (onChange) {
       if (textEl && typeof MutationObserver === 'function') {
-        var obs = new MutationObserver(onChange);
+        var obs = new MutationObserver(function () { onChange(); });
         obs.observe(textEl, { childList: true, subtree: true, characterData: true });
         return function () { try { obs.disconnect(); } catch (e) { /* ignore */ } };
       }
@@ -1968,6 +2030,10 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
   }
 
   const seq = beginChatRequest();
+  // Same bubble, replacement generation: migrate its playback source so an
+  // active queue continues seamlessly into the new text, and autoplay finds
+  // the fresh sequence.
+  liveStreamPlaybackSource = retargetMessagePlaybackSource($target[0], seq);
 
   fetchWithGenerateRetry('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
@@ -2029,7 +2095,8 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
              $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
           }
       }
-      $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+      $target.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+      publishMessagePlaybackText($target, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
     }
     function appendThinking(content) {
       if (!content) return;
@@ -2054,7 +2121,8 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
 
       $thinkingContent.text(fullThinkingText);
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
-      $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+      $target.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+      publishMessagePlaybackText($target, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
     }
     function processBuffer(chunk) {
       ChatStreamDecoder.pushChunk(streamState, chunk, {
@@ -2067,7 +2135,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           reader.read().then(({done, value}) => {
             if (done) {
               // Regenerate does not flush: the residual stays dropped.
-              const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
+              const finalAiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
               $target.attr('data-original', finalAiOriginal);
               
               try {
@@ -2076,6 +2144,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
                 if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
+              finishMessagePlayback($target);
               var $regenUser = $target.prev('.message.user-message');
               clearLocalOnlyTurn($regenUser, $target);
               noteLocalVersionBumpAfterPersist();
@@ -2097,6 +2166,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
             finishChatRequest(seq);
+            finishMessagePlayback($target);
           });
         }
         read();
@@ -2115,6 +2185,10 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
         } catch (e) {}
         finishChatRequest(seq);
+        // The [Stopped] suffix lives in visible DOM only; the source keeps
+        // the last published original, so it is never spoken. Error chrome
+        // likewise keeps the last published partial text.
+        finishMessagePlayback($target);
       });
 };
 
@@ -3213,6 +3287,9 @@ $(document).ready(function() {
         appendMessage(null, 'ai-message');
 
         const $targetElement = $('.ai-message:last-child');
+        // Bind this bubble's playback source to the new request sequence
+        // before any text streams or autoplay fires.
+        liveStreamPlaybackSource = bindMessagePlaybackSource($targetElement[0], { original: '', visible: '', boundSeq: seq });
 
         if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           const playBtn = $targetElement.find('.play-button')[0];
@@ -3249,7 +3326,8 @@ $(document).ready(function() {
                  $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
               }
           }
-          $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+          $targetElement.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+          publishMessagePlaybackText($targetElement, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
         }
         function appendThinking(content) {
           if (!content) return;
@@ -3274,7 +3352,8 @@ $(document).ready(function() {
 
           $thinkingContentElement.text(fullThinkingText);
           if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
-          $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+          $targetElement.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+          publishMessagePlaybackText($targetElement, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
         }
         function processChunk(chunk) {
           ChatStreamDecoder.pushChunk(streamState, chunk, {
@@ -3295,7 +3374,7 @@ $(document).ready(function() {
             if (done) {
               flushStreamRemainder();
               
-              const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
+              const finalAiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
               $targetElement.attr('data-original', finalAiOriginal);
 
               try {
@@ -3304,6 +3383,7 @@ $(document).ready(function() {
                 if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
+              finishMessagePlayback($targetElement);
               historyWindow.noteChatPersisted(pairIndex);
               clearLocalOnlyTurn($pendingUserMessage, $targetElement);
               noteLocalVersionBumpAfterPersist();
@@ -3329,6 +3409,7 @@ $(document).ready(function() {
             flushStreamRemainder();
             appendVisible('\n[Error] The response stream was interrupted.');
             finishChatRequest(seq);
+            finishMessagePlayback($targetElement);
           });
         }
         readStream();
@@ -3344,6 +3425,9 @@ $(document).ready(function() {
             const playBtn = $lastAI.find('.play-button').prop('disabled', false);
             if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
           } catch (e) {}
+          // Visible-only suffix; the source keeps the last published
+          // original so it is never spoken.
+          finishMessagePlayback($lastAI);
         } else {
           const errText = error && error.message ? error.message : String(error);
           if ($pendingUserMessage.length) {
@@ -3690,46 +3774,45 @@ $(document).ready(function() {
   }
 
   // Native sentence queue lives in static/tts-playback.js using the single
-  // voice lifecycle + voice-text. DOM/event composition (message element,
-  // MutationObserver scheduling, button UI, STT abort, VAD reset) stays here
-  // via explicit source callbacks; protocols/retries are not rewritten.
+  // voice lifecycle + voice-text. DOM/event composition (message identity,
+  // text-change wakeup, button UI, STT abort, VAD reset) stays here via
+  // explicit source callbacks; protocols/retries are not rewritten.
   function playNativeVoiceModeTts(button, options) {
     options = options || {};
-    // The message element initializes inside the owned queue at the exact
+    // The message host is associated inside the owned queue at the exact
     // original point (after teardown/stop/reset, before queue fields), so
-    // the bridge-availability/toggle early paths touch no DOM. Every getter
-    // below reads the initialized context.
+    // the bridge-availability/toggle early paths touch no DOM. The lookup
+    // below resolves the source bound at this message's creation/update
+    // sites; every text/progress read goes through that source.
     var messageContext = null;
-    return ChatTtsPlayback.playNativeVoiceModeTts({
+    var queueDeps = {
       voiceLifecycle: voiceLifecycle,
       split: function (text) { return splitSentences(text); },
       terminator: function (text) { return sentenceEndsWithTerminator(text); },
       sanitize: function (text) { return sanitizeForTTS(text); },
+      // Published by initMessageContext at the original association point.
+      source: null,
       initMessageContext: function () {
         var $messageElement = $(button).closest('.message');
         messageContext = {
           element: $messageElement,
           textEl: $messageElement.find('.ai-message-text')[0]
         };
+        queueDeps.source = lookupMessagePlaybackSource($messageElement[0]);
       },
-      getText: function () { return getMessageTtsText(messageContext.element); },
-      isGenerating: function () {
-        var raw = messageContext.element.find('.ai-message-text').text().trim();
-        if (raw === 'Thinking...') return true;
-        var isLastAi = messageContext.element.is($('#chat-content .message.ai-message').last());
-        var regenDisabled = messageContext.element.find('.regenerate-button').prop('disabled');
-        return isLastAi && regenDisabled && chatRequests.isGenerating();
-      },
+      fetchVoiceRetry: function (url, buildOptions, attempts) { return fetchVoiceRetry(url, buildOptions, attempts); },
+      // Wake-only backstop for text changes; progress comes from the source.
       observeChanges: function (onChange) {
         var textEl = messageContext.textEl;
         if (textEl && typeof MutationObserver === 'function') {
-          var obs = new MutationObserver(onChange);
+          var obs = new MutationObserver(function () {
+            onChange();
+          });
           obs.observe(textEl, { childList: true, subtree: true, characterData: true });
           return function () { try { obs.disconnect(); } catch (e) { /* ignore */ } };
         }
         return null;
       },
-      fetchVoiceRetry: function (url, buildOptions, attempts) { return fetchVoiceRetry(url, buildOptions, attempts); },
       withCsrf: function (headers) { return withCsrf(headers); },
       sleepMs: function (ms) { return sleepMs(ms); },
       isRetryableVoiceStatus: function (status) { return isRetryableVoiceStatus(status); },
@@ -3775,7 +3858,8 @@ $(document).ready(function() {
       finishNative: function (gen, btn) { finishNativeVoiceTts(gen, btn); },
       fallbackPlay: function (btn, opts) { window.playTTS(btn, opts); },
       createAbortController: function () { return new AbortController(); }
-    }, button, options);
+    };
+    return ChatTtsPlayback.playNativeVoiceModeTts(queueDeps, button, options);
   }
   window.playNativeVoiceModeTts = playNativeVoiceModeTts;
 
@@ -4114,6 +4198,9 @@ $(document).ready(function() {
         }
         $lastAI.find('.regenerate-button').prop('disabled', false);
         $lastAI.find('.play-button').prop('disabled', false);
+        // Interrupted turn settles here; its source ends with the last
+        // published text while the replacement request binds fresh.
+        finishMessagePlayback($lastAI);
       }
     }
     if (voiceAmendTimer) {

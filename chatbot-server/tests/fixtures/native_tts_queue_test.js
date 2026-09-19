@@ -13,9 +13,10 @@ const assert = require('node:assert/strict');
 const ttsPlayback = require(process.argv[2]);
 const conversationState = require(process.argv[3]);
 const voiceLifecycleMod = require(process.argv[4]);
+const playbackSource = require(process.argv[5]);
 assert(
-  process.argv[2] && process.argv[3] && process.argv[4],
-  'usage: node native_tts_queue_test.js <static/tts-playback.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
+  process.argv[2] && process.argv[3] && process.argv[4] && process.argv[5],
+  'usage: node native_tts_queue_test.js <static/tts-playback.js> <static/conversation-state.js> <static/voice-lifecycle.js> <static/playback-source.js>'
 );
 
 async function flush() {
@@ -29,9 +30,21 @@ function session(sentences, generating = false, modern = true) {
   const state = { generating, sentences, ended: 0, listener: null, observer: null };
   let timer = 0;
   // Generating state comes from the real conversation request tracker, the
-  // single authority the owned queue reads via isGenerating().
+  // single authority the shared per-message source reads via
+  // isTrackerGenerating/isTrackerLive. Text/progress travel through that
+  // explicit source, fed the way chat feeds it (bind, publish, finish);
+  // the queue reads only the source.
   const chatRequests = conversationState.createChatRequestTracker();
   if (generating) chatRequests.begin();
+  const source = playbackSource.createMessageSource({
+    sanitize: text => text,
+    isTrackerGenerating: () => chatRequests.isGenerating(),
+    isTrackerLive: (s) => chatRequests.isLive(s),
+    boundSeq: chatRequests.seq(),
+  });
+  function publish() {
+    source.publish({ original: state.sentences.join(' '), fallbackVisible: '' });
+  }
   // Lifecycle comes from the real voice owner: desktop/native share one
   // owner, generations gate stale work. Coherent adapters below delegate to
   // it instead of copying the algorithm.
@@ -60,8 +73,7 @@ function session(sentences, generating = false, modern = true) {
     split: () => state.sentences.map(text => ({ text })),
     terminator: text => /[.!?]$/.test(text),
     sanitize: text => text,
-    getText: () => state.sentences.join(' '),
-    isGenerating: () => chatRequests.isGenerating(),
+    source: source,
     observeChanges: (callback) => { state.observer = callback; return () => { state.observer = null; }; },
     fetchVoiceRetry(url, options) {
       return new Promise((resolve, reject) => {
@@ -107,8 +119,10 @@ function session(sentences, generating = false, modern = true) {
     fallbackPlay() {},
     createAbortController: () => new AbortController(),
   };
+  publish();
   ttsPlayback.playNativeVoiceModeTts(deps, {}, generating ? {} : { sentences });
   return { posts, enqueued, cancelled, state, voiceLifecycle,
+    restream() { publish(); },
     consume(token) { state.listener({ type: 'clipConsumed', generation: 1, url: 'https://chat/tts_stream/' + token }); }
   };
 }
@@ -140,13 +154,20 @@ function earlyPathHarness(overrides) {
     enqueue: async () => {},
     markEndOfQueue: async () => {},
   };
+  const harnessSource = playbackSource.createMessageSource({
+    sanitize: text => text,
+    isTrackerGenerating: () => false,
+    isTrackerLive: () => true,
+    boundSeq: null,
+  });
+  harnessSource.publish({ original: 'Hello there.', fallbackVisible: '' });
+  harnessSource.finish();
   const deps = {
     voiceLifecycle,
     split: () => [{ text: 'Hello there.' }],
     terminator: () => true,
     sanitize: text => text,
-    getText: () => 'Hello there.',
-    isGenerating: () => false,
+    source: harnessSource,
     observeChanges: () => null,
     fetchVoiceRetry: () => {
       order.push('token');
@@ -183,7 +204,7 @@ function earlyPathHarness(overrides) {
     finishNative() {},
     fallbackPlay: (btn, opts) => { calls.fallback.push([btn, opts]); },
     createAbortController: () => { order.push('abortCtl'); return new AbortController(); },
-    initMessageContext: () => { order.push('context'); calls.contextInits++; },
+    initMessageContext: () => { order.push('context'); calls.contextInits++; deps.source = harnessSource; },
   };
   return { deps, voiceLifecycle, order, calls };
 }
@@ -261,6 +282,9 @@ async function streamingTextFillsWindowWithoutWaitingForGenerationToEnd() {
   const s = session(['One.'], true);
   await flush();
   s.state.sentences = ['One.', 'Two.', 'Three.', 'unfinished'];
+  // Newly streamed text arrives as a source publish event (the way chat's
+  // append callbacks publish); the observer backstop just re-wakes.
+  s.restream();
   s.state.observer();
   await flush();
   assert.deepEqual(s.posts.map(p => p.text), ['One.', 'Two.', 'Three.'],

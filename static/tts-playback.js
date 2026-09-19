@@ -9,10 +9,14 @@
 
   // Owned desktop/native TTS sentence queues and desktop clip pipeline.
   // Single owner for the streaming discover/pump/retry loops; chat keeps
-  // DOM/event composition (button UI, STT abort, VAD reset, MutationObserver
-  // scheduling via observeChanges) and wires explicit adapters to the shared
+  // DOM/event composition (button UI, STT abort, VAD reset, text-change
+  // wakeup via observeChanges) and wires explicit adapters to the shared
   // single voice lifecycle (isLive/onComplete/preload cache/adopt/release),
   // voice-text (split/sanitize/terminator) and HTTP/native/platform helpers.
+  // Answer text/progress arrive ONLY through the explicit per-message source
+  // (static/playback-source.js), published at chat's generation/rendering
+  // transitions; queues wake on source.subscribe plus the observeChanges
+  // backstop and poll fallback, and never infer progress from buttons/DOM.
   // No globals, no duplicate mutable authority, no new locks. Error strings,
   // retry bounds/backoffs, callback order and generation guards match the
   // original chat.js pumps exactly; protocols/retries are not rewritten.
@@ -27,7 +31,8 @@
   // setTimeout(fn, ms).
   //
   // Desktop queue deps (playFixedSentenceList / playMessageBodyTts):
-  // isLive(sessionId), onComplete(button), getText(), isGenerating(),
+  // isLive(sessionId), onComplete(button), source (explicit per-message
+  // playback source: getText()/isGenerating()/subscribe()),
   // split(text), terminator(text), preload(sessionId, text),
   // playOne(sessionId, text), reportVoice(kind, msg), appendMessage(text, cls),
   // logError(msg...), setTimeout(fn, ms), clearTimeout(id),
@@ -35,9 +40,11 @@
   //
   // Native queue deps (playNativeVoiceModeTts):
   // voiceLifecycle (single owner for generation guards/notes), split,
-  // terminator, sanitize, initMessageContext() (DOM read at the original
-  // point; getText/isGenerating/observeChanges/setButtonPlaying read the
-  // initialized context), getText(), isGenerating(),
+  // terminator, sanitize, source (explicit per-message playback source set by
+  // initMessageContext at the original point; getText/isGenerating/subscribe
+  // read the initialized source),
+  // initMessageContext() (message association at the original
+  // point; source reads the initialized context),
   // observeChanges(onChange),
   // fetchVoiceRetry, withCsrf, sleepMs(ms), isRetryableVoiceStatus(status),
   // getNativeBridge() -> NativeVoiceTts|null, streamUrl(token),
@@ -328,8 +335,9 @@
   function playMessageBodyTts(deps, sessionId, button) {
     var isLive = deps.isLive;
     var onComplete = deps.onComplete;
-    var getText = deps.getText;
-    var isGenerating = deps.isGenerating;
+    var source = deps.source;
+    var getText = function () { return source.getText(); };
+    var isGenerating = function () { return source.isGenerating(); };
     var split = deps.split;
     var terminator = deps.terminator;
     var preload = deps.preload;
@@ -346,6 +354,7 @@
     var queue = [];
     var running = false;
     var disconnectObserver = null;
+    var disconnectSource = null;
     var pollTimer = null;
     var sentenceRetries = 0;
     var retryScheduled = false;
@@ -386,6 +395,10 @@
       if (disconnectObserver) {
         try { disconnectObserver(); } catch (e) { /* ignore */ }
         disconnectObserver = null;
+      }
+      if (disconnectSource) {
+        try { disconnectSource(); } catch (e) { /* ignore */ }
+        disconnectSource = null;
       }
       if (pollTimer) {
         clearTimeoutFn(pollTimer);
@@ -466,6 +479,11 @@
     if (typeof observeChanges === 'function') {
       disconnectObserver = observeChanges(onTextChanged) || null;
     }
+    // Primary wakeup is the event-fed source; the DOM observer above stays
+    // only as a text-change backstop and never supplies progress.
+    if (source && typeof source.subscribe === 'function') {
+      disconnectSource = source.subscribe(onTextChanged) || null;
+    }
 
     pump();
   }
@@ -476,8 +494,12 @@
     var split = deps.split;
     var terminator = deps.terminator;
     var sanitize = deps.sanitize;
-    var getText = deps.getText;
-    var isGenerating = deps.isGenerating;
+    // Explicit per-message source, initialized by initMessageContext at the
+    // original point below; local wrappers keep discover/pump call sites
+    // unchanged while text/progress come from the shared owner.
+    var source = deps.source || null;
+    var getText = function () { return source.getText(); };
+    var isGenerating = function () { return source.isGenerating(); };
     var observeChanges = deps.observeChanges;
     var fetchVoiceRetry = deps.fetchVoiceRetry;
     var withCsrf = deps.withCsrf;
@@ -534,8 +556,10 @@
     // Message context initializes here — the exact original point of the
     // $(button).closest('.message') read (after teardown/stop/reset, before
     // queue fields) — so bridge-availability/toggle early paths touch no DOM
-    // and later reads cannot shift.
+    // and later reads cannot shift. The adapter publishes the explicit
+    // per-message source on deps at this point.
     if (typeof deps.initMessageContext === 'function') deps.initMessageContext();
+    source = deps.source || source;
     var pendingNativeTtsTokens = new Set();
     var stopped = false;
     var consumedSentences = 0;
@@ -653,12 +677,17 @@
     }
 
     var disconnectObserver = null;
+    var disconnectSource = null;
     var pollTimer = null;
 
     function teardownObserver() {
       if (disconnectObserver) {
         try { disconnectObserver(); } catch (e) { /* ignore */ }
         disconnectObserver = null;
+      }
+      if (disconnectSource) {
+        try { disconnectSource(); } catch (e) { /* ignore */ }
+        disconnectSource = null;
       }
       if (pollTimer) {
         clearTimeoutFn(pollTimer);
@@ -817,6 +846,11 @@
 
     if (typeof observeChanges === 'function') {
       disconnectObserver = observeChanges(onTextChanged) || null;
+    }
+    // Primary wakeup is the event-fed source; the DOM observer above stays
+    // only as a text-change backstop and never supplies progress.
+    if (source && typeof source.subscribe === 'function') {
+      disconnectSource = source.subscribe(onTextChanged) || null;
     }
 
     pump();

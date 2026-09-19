@@ -38,6 +38,10 @@ fn first_party_static_js_parses() {
         include_str!("../../static/chat-renderer.js"),
     );
     assert_script_parses(
+        "static/playback-source.js",
+        include_str!("../../static/playback-source.js"),
+    );
+    assert_script_parses(
         "static/tts-playback.js",
         include_str!("../../static/tts-playback.js"),
     );

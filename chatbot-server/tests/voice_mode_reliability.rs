@@ -1779,18 +1779,27 @@ fn manual_tts_play_in_voice_mode_reliably_coexists_on_android_and_desktop() {
         "desktop playTTS must abort in-flight voice STT"
     );
 
-    // 4. isGenerating adapters check message-specific generating status, not
-    // global abort controller; owned queues take it as an explicit callback.
-    let desktop_body = function_body(chat_js, "playMessageBodyTts")
-        .expect("playMessageBodyTts adapter must be declared");
+    // 4. Message-specific generating status (not the global abort
+    // controller) is event-fed: each message source binds its own request
+    // sequence plus an explicit finished flag, so completed messages never
+    // stall on global generation and live ones follow their own request.
+    // Both adapters resolve the bound source by message host; nothing in
+    // the integration seam infers progress from buttons or rendered text.
     assert!(
-        desktop_body.contains("regenerate-button"),
-        "desktop adapter isGenerating must check regenerate-button/last-message to avoid falsely stalling completed messages"
+        function_contains(chat_js, "playMessageBodyTts", "lookupMessagePlaybackSource")
+            && function_contains(chat_js, "playNativeVoiceModeTts", "lookupMessagePlaybackSource"),
+        "both adapters must resolve the bound per-message source"
     );
-    assert!(
-        native_tts.contains("regenerate-button"),
-        "native adapter isGenerating must check regenerate-button/last-message to avoid falsely stalling completed messages"
-    );
+    for entry in ["playMessageBodyTts", "playNativeVoiceModeTts"] {
+        let body =
+            function_body(chat_js, entry).unwrap_or_else(|| panic!("{entry} must be declared"));
+        for dom_progress in ["regenerate-button", "Thinking...", "is-generating"] {
+            assert!(
+                !body.contains(dom_progress),
+                "{entry} must not infer progress from rendered state; found: {dom_progress}"
+            );
+        }
+    }
     assert!(
         native_owned.contains("isGenerating()"),
         "owned native queue must gate trailing fragments and polling on the explicit isGenerating callback"

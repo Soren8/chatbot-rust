@@ -14,14 +14,16 @@ const ttsPlaybackPath = process.argv[2];
 const voiceTextPath = process.argv[3];
 const conversationStatePath = process.argv[4];
 const voiceLifecyclePath = process.argv[5];
+const playbackSourcePath = process.argv[6];
 assert(
-  ttsPlaybackPath && voiceTextPath && conversationStatePath && voiceLifecyclePath,
-  'usage: node tts_sentence_boundary_test.js <static/tts-playback.js> <static/voice-text.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
+  ttsPlaybackPath && voiceTextPath && conversationStatePath && voiceLifecyclePath && playbackSourcePath,
+  'usage: node tts_sentence_boundary_test.js <static/tts-playback.js> <static/voice-text.js> <static/conversation-state.js> <static/voice-lifecycle.js> <static/playback-source.js>'
 );
 const ttsPlayback = require(ttsPlaybackPath);
 const voiceText = require(voiceTextPath);
 const conversationState = require(conversationStatePath);
 const voiceLifecycleMod = require(voiceLifecyclePath);
+const playbackSource = require(playbackSourcePath);
 
 async function flush() {
   for (let i = 0; i < 80; i++) await Promise.resolve();
@@ -29,7 +31,7 @@ async function flush() {
 
 function desktopSession() {
   const state = {
-    raw: '', domText: '', generating: true, played: [], preloaded: [],
+    raw: '', played: [], preloaded: [],
     completed: 0, chatErrors: [], reports: [], consoleErrors: [], timers: [],
     observer: null, live: true,
   };
@@ -48,17 +50,25 @@ function desktopSession() {
   });
   voiceLifecycle.stopDesktopPlayback();
   voiceLifecycle.beginDesktopPlayback({});
+  // Answer text/progress travel through the shared explicit source, fed the
+  // way chat feeds it: bound at message creation, published per update,
+  // finished when the generation settles. The queue reads only the source.
+  const source = playbackSource.createMessageSource({
+    sanitize: voiceText.sanitizeForTTS,
+    isTrackerGenerating: () => chatRequests.isGenerating(),
+    isTrackerLive: (s) => chatRequests.isLive(s),
+    boundSeq: liveSeq,
+  });
+  function publish() {
+    source.publish({ original: state.raw, fallbackVisible: '' });
+  }
   const deps = {
     isLive: (id) => state.live && voiceLifecycle.isLiveDesktop(id),
     onComplete: (button) => {
       voiceLifecycle.completeDesktopPlayback(button);
       state.completed++; state.live = false;
     },
-    getText: () => voiceText.sanitizeForTTS(state.raw),
-    isGenerating: () => {
-      if (String(state.domText).trim() === 'Thinking...') return true;
-      return chatRequests.isGenerating();
-    },
+    source: source,
     split: voiceText.splitSentences,
     terminator: voiceText.sentenceEndsWithTerminator,
     preload: (sessionId, text) => { state.preloaded.push(String(text)); },
@@ -71,18 +81,20 @@ function desktopSession() {
     isVoiceModeActive: () => false,
     observeChanges: (cb) => { state.observer = cb; return () => { state.observer = null; }; },
   };
+  publish();
   ttsPlayback.playMessageBodyTts(deps, 1, {});
   return {
     state,
     stream(raw) {
-      state.raw = raw; state.domText = raw;
-      if (!chatRequests.isGenerating()) liveSeq = chatRequests.begin();
+      state.raw = raw;
+      publish();
       state.observer();
     },
     finish(raw) {
-      if (raw !== undefined) { state.raw = raw; state.domText = raw; }
-      state.generating = false;
+      if (raw !== undefined) { state.raw = raw; }
+      publish();
       if (chatRequests.isGenerating()) chatRequests.finish(liveSeq);
+      source.finish();
       state.observer();
     },
   };
@@ -120,13 +132,21 @@ function nativeSession() {
     markEndOfQueue: async () => { state.ended++; },
   };
   const button = {};
+  const source = playbackSource.createMessageSource({
+    sanitize: voiceText.sanitizeForTTS,
+    isTrackerGenerating: () => chatRequests.isGenerating(),
+    isTrackerLive: (s) => chatRequests.isLive(s),
+    boundSeq: liveSeq,
+  });
+  function publish() {
+    source.publish({ original: state.raw, fallbackVisible: '' });
+  }
   const deps = {
     voiceLifecycle,
     split: voiceText.splitSentences,
     terminator: voiceText.sentenceEndsWithTerminator,
     sanitize: voiceText.sanitizeForTTS,
-    getText: () => voiceText.sanitizeForTTS(state.raw),
-    isGenerating: () => chatRequests.isGenerating(),
+    source: source,
     observeChanges: (cb) => { state.observer = cb; return () => { state.observer = null; }; },
     fetchVoiceRetry: (url, options) => {
       return new Promise((resolve, reject) => {
@@ -174,18 +194,20 @@ function nativeSession() {
     fallbackPlay: () => {},
     createAbortController: () => new AbortController(),
   };
+  publish();
   ttsPlayback.playNativeVoiceModeTts(deps, button, {});
   return {
     posts, enqueued, cancelled, state,
     stream(raw) {
       state.raw = raw;
-      if (!chatRequests.isGenerating()) liveSeq = chatRequests.begin();
+      publish();
       state.observer();
     },
     finish(raw) {
       if (raw !== undefined) state.raw = raw;
-      state.generating = false;
+      publish();
       if (chatRequests.isGenerating()) chatRequests.finish(liveSeq);
+      source.finish();
       state.observer();
     },
   };

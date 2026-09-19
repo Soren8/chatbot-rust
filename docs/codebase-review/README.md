@@ -1,10 +1,20 @@
 # Codebase review program
 
-Latest resume point: session 040 — core prepare input isolation (below). Earlier checkpoints record their original scope and status.
+Latest resume point: session 041 — event-fed playback sources (below). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: thirty-eight batches through session 040. Session 038 is committed as `7a17270`; session 039 as `d9463bc`; session 040 is recorded by commit title `Isolate owned chat preparation from ambient fake chunks`. Phase 1 remains in progress.
+Current remediation count: thirty-nine batches through session 041. Session 038 is committed as `7a17270`; session 039 as `d9463bc`; session 040 as `327d6dc`; session 041 is recorded by commit title `Feed playback from owned message state`. Phase 1 remains in progress.
+
+## Session 041 — event-fed playback sources, 2026-09-19
+
+`static/playback-source.js` supplies one per-message text/progress source to both playback queues. History binds settled message data; chat and regeneration bind a request sequence and publish the same visible/thinking strings used for rendering; completion, failures, voice interruption and history replacement settle sources. Queue progress no longer reads disabled buttons, placeholder text or last-message DOM position. Mutation observers remain wake-only backstops alongside the existing polling intervals. Exact sentence-click arrays, voice-text normalization and retry policy remain unchanged.
+
+Main review rejected an intermediate implementation that merely refreshed DOM-derived state into the source. The corrected implementation publishes application events. Review then caught non-atomic regeneration restart: a finished source stayed finished and notified with stale text. `retarget` now resets sequence, text and terminal state before one notification. A new regression failed before that correction and passes unchanged on both actual desktop/native queues.
+
+Characterization baseline passed in job `20260919T023317-e66a8e4adc4a`. Final reviewed implementation passed the full suite in job `20260919T041125-4dc5d03f5aad`, log `temp/test-logs/modularity-mod009-playback-final-20260919T041125Z.log`, exit 0, untruncated, provider-config validation included. Boundary tests passed 7/7 and characterization/regression tests 9/9. Intermediate failures and the restart red (`20260919T040453-fd3af0d88866`) remain under `temp/test-logs/modularity-mod009-playback-*`. Main inspected the source, integration diff, regression and evidence. No device/browser end-to-end execution is claimed.
+
+Next: voice-service work lifetime, generation-entry settlement and native lifecycle result/event dispositions. Documentation-wide review remains in its later phase.
 
 ## Session 040 — core prepare input isolation, 2026-09-19
 
