@@ -66,37 +66,6 @@ pub use crate::enc_key_cookies::{
 };
 pub use crate::request_context::get_ip;
 
-pub struct ChatLockGuard {
-    session_id: String,
-    released: bool,
-}
-
-impl ChatLockGuard {
-    pub fn new(session_id: String) -> Self {
-        Self {
-            session_id,
-            released: false,
-        }
-    }
-
-    pub fn mark_released(&mut self) {
-        self.released = true;
-    }
-
-    pub fn release_if_needed(&mut self) {
-        if !self.released {
-            session::release_session_lock(&self.session_id);
-            self.released = true;
-        }
-    }
-}
-
-impl Drop for ChatLockGuard {
-    fn drop(&mut self) {
-        self.release_if_needed();
-    }
-}
-
 /// Settles the owned generation lease when streaming ends or is dropped.
 ///
 /// Success persists the final text; a marked provider error releases without
@@ -204,13 +173,14 @@ pub fn render_finalize_outcome(outcome: &FinalizeOutcome) -> Vec<String> {
     }
 }
 
-/// Persist a /chat or /regenerate failure as a real history pair and return it
-/// as a 200 text/plain assistant turn so the client can regenerate.
+/// Persist a preprepare failure as a real history pair and return it as a 200
+/// text/plain assistant turn so the client can regenerate.
 ///
 /// Scoped variant: persists through the router's injected [`ChatService`] so
 /// the saved error turn lands in that router's session mirror and durable
-/// history only. All chat/regenerate saved-error-turn fallbacks must use the
-/// same injected service as their prepare path.
+/// history only. Acquires its own generation lock or skips persistence when
+/// busy, never unlocking another generation. Setup failures after a successful
+/// prepare must persist through their acquired lease instead of calling this.
 pub fn error_as_saved_chat_turn_with_service(
     chat: &ChatService,
     session: &session::SessionContext,
@@ -228,17 +198,19 @@ pub fn error_as_saved_chat_turn_with_service(
         insertion_index,
         "saving /chat or /regenerate error as assistant turn"
     );
-    if let Some(idx) = insertion_index {
-        let _ = chat.regenerate_finalize_outcome(
-            session,
-            set,
-            user_message,
-            &assistant,
-            Some(idx),
-            encryption_key,
-        );
-    } else {
-        let _ = chat.chat_finalize_outcome(session, set, user_message, &assistant, encryption_key);
+    if chat.try_acquire_generation(&session.session_id) {
+        if let Some(idx) = insertion_index {
+            let _ = chat.regenerate_finalize_outcome(
+                session,
+                set,
+                user_message,
+                &assistant,
+                Some(idx),
+                encryption_key,
+            );
+        } else {
+            let _ = chat.chat_finalize_outcome(session, set, user_message, &assistant, encryption_key);
+        }
     }
     Response::builder()
         .status(StatusCode::OK)

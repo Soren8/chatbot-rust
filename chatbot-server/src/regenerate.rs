@@ -14,7 +14,7 @@ use chatbot_core::{
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::chat_utils::{
     error_as_saved_chat_turn_with_service, provider_error_parts, render_finalize_outcome,
@@ -241,16 +241,29 @@ pub async fn handle_regenerate(
     ) {
         Ok(provider) => provider,
         Err(err) => {
-            lease.release_without_persist();
             let (setup_msg, _) = provider_error_parts(&err);
-            return error_as_saved_chat_turn_with_service(&chat,
-                &session_context,
-                Some(context.set_name.as_str()),
-                payload.message.as_str(),
-                &setup_msg,
-                encryption_key.as_ref(),
+            let assistant = format!("[Error] {setup_msg}");
+            warn!(
+                error = %setup_msg,
+                user_chars = payload.message.chars().count(),
                 insertion_index,
+                "saving /chat or /regenerate error as assistant turn"
             );
+            let _ = lease.complete_regenerate_outcome(
+                context.set_name.as_str(),
+                payload.message.as_str(),
+                &assistant,
+                insertion_index,
+                encryption_key.as_ref(),
+                context.prepare_capture.clone(),
+            );
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("X-Accel-Buffering", "no")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .body(Body::from(assistant))
+                .map_err(|err| map_response_build_err(err, "regenerate::setup_error"));
         }
     };
 
@@ -291,16 +304,29 @@ pub async fn handle_regenerate(
         Ok(stream) => stream,
         Err(err) => {
             error!(?err, "provider stream setup failed");
-            lease.release_without_persist();
             let (req_msg, _) = provider_error_parts(&err);
-            return error_as_saved_chat_turn_with_service(&chat,
-                &session_context,
-                Some(set_name.as_str()),
-                user_message.as_str(),
-                &req_msg,
-                encryption_key.as_ref(),
+            let assistant = format!("[Error] {req_msg}");
+            warn!(
+                error = %req_msg,
+                user_chars = user_message.chars().count(),
                 insertion_index,
+                "saving /chat or /regenerate error as assistant turn"
             );
+            let _ = lease.complete_regenerate_outcome(
+                set_name.as_str(),
+                user_message.as_str(),
+                &assistant,
+                insertion_index,
+                encryption_key.as_ref(),
+                prepare_capture.clone(),
+            );
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("X-Accel-Buffering", "no")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .body(Body::from(assistant))
+                .map_err(|err| map_response_build_err(err, "regenerate::setup_error"));
         }
     };
 

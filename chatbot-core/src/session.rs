@@ -356,7 +356,17 @@ impl ChatSessionStore {
     fn clean_expired(&self) {
         let now = Instant::now();
         let timeout = self.timeout;
+        // Lock discipline: `retain` holds this key's DashMap shard across the
+        // locked-check and the removal decision, and `acquire_locked_entry`
+        // holds the same shard's entry guard across get-or-insert and the
+        // `try_lock` CAS. The two therefore serialize per shard: purge can
+        // neither observe unlocked-then-remove a concurrently locking entry,
+        // nor remove an entry another thread just locked. Locked entries are
+        // retained without touching their data mutex.
         self.entries.retain(|session_id, entry| {
+            if entry.locked.load(Ordering::SeqCst) {
+                return true;
+            }
             let data = entry.data.lock().unwrap();
             let expired = now.duration_since(data.last_used) > timeout;
             if expired {
@@ -454,10 +464,43 @@ impl ChatSessionStore {
         &self.default_prompt
     }
 
+    /// Acquire the generation lock for `session_id`, creating the entry when
+    /// missing. Returns the locked entry, or `None` when already locked.
+    ///
+    /// Atomicity: the DashMap entry guard for this key's shard is held across
+    /// the get-or-insert AND the `try_lock` CAS, serializing with
+    /// `clean_expired`'s `retain` on the same shard (see its lock-discipline
+    /// note). Callers receive the exact `Arc` they locked — never a later
+    /// relookup — so an expiry recreation cannot substitute another entry.
+    fn acquire_locked_entry(&self, session_id: &str) -> Option<Arc<SessionEntry>> {
+        match self.entries.entry(session_id.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(occupied) => {
+                let arc = Arc::clone(occupied.get());
+                if arc.try_lock() {
+                    Some(arc)
+                } else {
+                    None
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                let requires_cipher = !session_id.starts_with(SESSION_GUEST_PREFIX);
+                let entry = Arc::new(SessionEntry::new(&self.default_prompt, requires_cipher));
+                // Fresh entries start unlocked; claim the lock while the shard
+                // guard is still held so a concurrent purge observes locked.
+                // The CAS runs unconditionally: debug_assert compiles out in
+                // release builds and must never carry the side effect.
+                let acquired = entry.try_lock();
+                debug_assert!(acquired, "fresh entry starts unlocked");
+                let inserted = vacant.insert(entry);
+                Some(Arc::clone(&*inserted))
+            }
+        }
+    }
+
     /// Owned generation-lock acquire. Creates the session when missing, like
     /// the prepare path. Returns false when the session is already locked.
     pub fn try_acquire_generation(&self, session_id: &str) -> bool {
-        self.entry(session_id).try_lock()
+        self.acquire_locked_entry(session_id).is_some()
     }
 
     /// Owned generation-lock release. No-op when the session does not exist.
@@ -929,44 +972,70 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> ChatPrepareResult {
+        self.chat_prepare_internal(session, request, provider, encryption_key)
+            .0
+    }
+
+    /// Prepare plus the acquired entry. The returned `Arc` is the exact entry
+    /// locked during acquisition (never a map relookup), so callers that mint
+    /// a lease from it cannot observe an expiry recreation. Dropping the
+    /// `Arc` does not release the lock: the map still holds the entry locked.
+    fn chat_prepare_internal(
+        &self,
+        session: &SessionContext,
+        request: &ChatRequestData<'_>,
+        provider: &ProviderConfig,
+        encryption_key: Option<&EncryptionKey>,
+    ) -> (ChatPrepareResult, Option<Arc<SessionEntry>>) {
         let store = self.sessions();
         store.clean_expired();
 
         if request.message.trim().is_empty() {
-            return ChatPrepareResult {
-                context: None,
-                error: Some(validation_failed(
-                    PrepareValidationError::MessageRequired,
-                )),
-            };
+            return (
+                ChatPrepareResult {
+                    context: None,
+                    error: Some(validation_failed(
+                        PrepareValidationError::MessageRequired,
+                    )),
+                },
+                None,
+            );
         }
 
         let set_name = match normalise_set_name(request.set_name) {
             Ok(name) => name,
             Err(err) => {
-                return ChatPrepareResult {
-                    context: None,
-                    error: Some(err),
-                }
+                return (
+                    ChatPrepareResult {
+                        context: None,
+                        error: Some(err),
+                    },
+                    None,
+                )
             }
         };
         let resolved_set_id = match parse_optional_set_id(request.set_id) {
             Ok(id) => id,
             Err(err) => {
-                return ChatPrepareResult {
-                    context: None,
-                    error: Some(err),
-                }
+                return (
+                    ChatPrepareResult {
+                        context: None,
+                        error: Some(err),
+                    },
+                    None,
+                )
             }
         };
 
-        let entry = store.entry(&session.session_id);
-        if !entry.try_lock() {
-            return ChatPrepareResult {
-                context: None,
-                error: Some(PrepareError::Policy(PreparePolicyError::Busy)),
-            };
-        }
+        let Some(entry) = store.acquire_locked_entry(&session.session_id) else {
+            return (
+                ChatPrepareResult {
+                    context: None,
+                    error: Some(PrepareError::Policy(PreparePolicyError::Busy)),
+                },
+                None,
+            );
+        };
 
         let context = match self.build_chat_context(
             session,
@@ -980,17 +1049,23 @@ impl ChatService {
             Ok(ctx) => ctx,
             Err(err) => {
                 entry.unlock();
-                return ChatPrepareResult {
-                    context: None,
-                    error: Some(err),
-                };
+                return (
+                    ChatPrepareResult {
+                        context: None,
+                        error: Some(err),
+                    },
+                    None,
+                );
             }
         };
 
-        ChatPrepareResult {
-            context: Some(context),
-            error: None,
-        }
+        (
+            ChatPrepareResult {
+                context: Some(context),
+                error: None,
+            },
+            Some(entry),
+        )
     }
 
     /// Owned chat finalize with capture: commit then mirror then unlock, with the
@@ -1008,87 +1083,114 @@ impl ChatService {
         prepare_capture: Option<PrepareCapture>,
     ) -> FinalizeOutcome {
         let store = self.sessions();
-        let mut outcome = FinalizeOutcome::NoSession;
-
         if let Some(entry) = store.entries.get(&session.session_id) {
-            {
-                let mut data = entry.data.lock().unwrap();
-                data.last_used = Instant::now();
+            return self.chat_finalize_on_entry(
+                &entry,
+                session,
+                set_name,
+                user_message,
+                assistant_response,
+                encryption_key,
+                prepare_capture,
+            );
+        }
+        FinalizeOutcome::NoSession
+    }
 
-                if let Some(username) = session.username.as_deref() {
-                    match self.require_encryption_key(Some(username), encryption_key) {
-                        Ok(Some(key)) => {
-                            let commit = if let Some(capture) = prepare_capture.as_ref() {
-                                self.history_for_commit().and_then(|hs| {
-                                    hs.commit_chat_append(
+    /// Settle an acquired entry: commit then mirror then unlock that entry.
+    ///
+    /// Operates on the provided entry only, never the current map entry, so
+    /// an expiry recreation cannot redirect persistence or unlock another
+    /// generation. The compatibility `*_outcome_with_capture` wrappers resolve
+    /// the current entry and delegate here.
+    fn chat_finalize_on_entry(
+        &self,
+        entry: &Arc<SessionEntry>,
+        session: &SessionContext,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> FinalizeOutcome {
+        let mut outcome = FinalizeOutcome::NoSession;
+        {
+            let mut data = entry.data.lock().unwrap();
+            data.last_used = Instant::now();
+
+            if let Some(username) = session.username.as_deref() {
+                match self.require_encryption_key(Some(username), encryption_key) {
+                    Ok(Some(key)) => {
+                        let commit = if let Some(capture) = prepare_capture.as_ref() {
+                            self.history_for_commit().and_then(|hs| {
+                                hs.commit_chat_append(
+                                    username,
+                                    capture,
+                                    user_message,
+                                    assistant_response,
+                                    key,
+                                )
+                            })
+                        } else {
+                            match self.load_history_snapshot(username, None, set_name, key) {
+                                Ok(snap) => self.history_for_commit().and_then(|hs| {
+                                    hs.append_pair(
                                         username,
-                                        capture,
+                                        snap.set_id,
+                                        snap.version,
                                         user_message,
                                         assistant_response,
                                         key,
                                     )
-                                })
-                            } else {
-                                match self.load_history_snapshot(username, None, set_name, key) {
-                                    Ok(snap) => self.history_for_commit().and_then(|hs| {
-                                        hs.append_pair(
-                                            username,
-                                            snap.set_id,
-                                            snap.version,
-                                            user_message,
-                                            assistant_response,
-                                            key,
-                                        )
-                                    }),
-                                    Err(_) => Err(HistoryError::Internal),
+                                }),
+                                Err(_) => Err(HistoryError::Internal),
+                            }
+                        };
+                        match commit {
+                            Ok(_) => {
+                                // Cache already updated by HistoryService; do not re-load
+                                // multi-MB history into the session just to seal empty.
+                                if let Some(cap) = prepare_capture.as_ref() {
+                                    data.active_set_id = Some(cap.set_id);
+                                    data.memory = cap.memory.clone();
+                                    data.system_prompt = cap.system_prompt.clone();
                                 }
-                            };
-                            match commit {
-                                Ok(_) => {
-                                    // Cache already updated by HistoryService; do not re-load
-                                    // multi-MB history into the session just to seal empty.
-                                    if let Some(cap) = prepare_capture.as_ref() {
-                                        data.active_set_id = Some(cap.set_id);
-                                        data.memory = cap.memory.clone();
-                                        data.system_prompt = cap.system_prompt.clone();
-                                    }
-                                    data.history.clear();
-                                    if let Err(_err) =
-                                        seal_session_data(&mut data, key.as_bytes())
-                                    {
-                                        error!(
-                                            status = 500,
-                                            "failed to seal session cache after chat finalize"
-                                        );
-                                    }
-                                    outcome = FinalizeOutcome::DurableCommitted;
+                                data.history.clear();
+                                if let Err(_err) =
+                                    seal_session_data(&mut data, key.as_bytes())
+                                {
+                                    error!(
+                                        status = 500,
+                                        "failed to seal session cache after chat finalize"
+                                    );
                                 }
-                                Err(HistoryError::Conflict { .. }) => {
-                                    outcome = FinalizeOutcome::Conflict;
-                                }
-                                Err(HistoryError::InvalidInput(msg)) => {
-                                    error!(%msg, "failed to commit chat history");
-                                    outcome = FinalizeOutcome::InvalidInput(msg.to_owned());
-                                }
-                                Err(err) => {
-                                    error!(?err, "failed to commit chat history");
-                                    outcome = FinalizeOutcome::StoreFailure;
-                                }
+                                outcome = FinalizeOutcome::DurableCommitted;
+                            }
+                            Err(HistoryError::Conflict { .. }) => {
+                                outcome = FinalizeOutcome::Conflict;
+                            }
+                            Err(HistoryError::InvalidInput(msg)) => {
+                                error!(%msg, "failed to commit chat history");
+                                outcome = FinalizeOutcome::InvalidInput(msg.to_owned());
+                            }
+                            Err(err) => {
+                                error!(?err, "failed to commit chat history");
+                                outcome = FinalizeOutcome::StoreFailure;
                             }
                         }
-                        _ => {
-                            outcome = FinalizeOutcome::KeyValidationFailed;
-                        }
                     }
-                } else {
-                    data.history
-                        .push((user_message.to_owned(), assistant_response.to_owned()));
-                    outcome = FinalizeOutcome::GuestUpdated;
+                    _ => {
+                        outcome = FinalizeOutcome::KeyValidationFailed;
+                    }
                 }
+            } else {
+                data.history
+                    .push((user_message.to_owned(), assistant_response.to_owned()));
+                outcome = FinalizeOutcome::GuestUpdated;
             }
-
-            entry.unlock();
         }
+
+        entry.unlock();
 
         outcome
     }
@@ -1321,48 +1423,72 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> RegeneratePrepareResult {
+        self.regenerate_prepare_internal(session, request, provider, encryption_key)
+            .0
+    }
+
+    /// Regenerate prepare plus the acquired entry; same handoff guarantee as
+    /// [`ChatService::chat_prepare_internal`].
+    fn regenerate_prepare_internal(
+        &self,
+        session: &SessionContext,
+        request: &RegenerateRequestData<'_>,
+        provider: &ProviderConfig,
+        encryption_key: Option<&EncryptionKey>,
+    ) -> (RegeneratePrepareResult, Option<Arc<SessionEntry>>) {
         let store = self.sessions();
         store.clean_expired();
 
         if request.message.trim().is_empty() {
-            return RegeneratePrepareResult {
-                context: None,
-                insertion_index: None,
-                error: Some(validation_failed(
-                    PrepareValidationError::MessageRequired,
-                )),
-            };
+            return (
+                RegeneratePrepareResult {
+                    context: None,
+                    insertion_index: None,
+                    error: Some(validation_failed(
+                        PrepareValidationError::MessageRequired,
+                    )),
+                },
+                None,
+            );
         }
 
         let set_name = match normalise_set_name(request.set_name) {
             Ok(name) => name,
             Err(err) => {
-                return RegeneratePrepareResult {
-                    context: None,
-                    insertion_index: None,
-                    error: Some(err),
-                }
+                return (
+                    RegeneratePrepareResult {
+                        context: None,
+                        insertion_index: None,
+                        error: Some(err),
+                    },
+                    None,
+                )
             }
         };
         let resolved_set_id = match parse_optional_set_id(request.set_id) {
             Ok(id) => id,
             Err(err) => {
-                return RegeneratePrepareResult {
-                    context: None,
-                    insertion_index: None,
-                    error: Some(err),
-                }
+                return (
+                    RegeneratePrepareResult {
+                        context: None,
+                        insertion_index: None,
+                        error: Some(err),
+                    },
+                    None,
+                )
             }
         };
 
-        let entry = store.entry(&session.session_id);
-        if !entry.try_lock() {
-            return RegeneratePrepareResult {
-                context: None,
-                insertion_index: None,
-                error: Some(PrepareError::Policy(PreparePolicyError::Busy)),
-            };
-        }
+        let Some(entry) = store.acquire_locked_entry(&session.session_id) else {
+            return (
+                RegeneratePrepareResult {
+                    context: None,
+                    insertion_index: None,
+                    error: Some(PrepareError::Policy(PreparePolicyError::Busy)),
+                },
+                None,
+            );
+        };
 
         match self.build_regenerate_context(
             session,
@@ -1373,18 +1499,24 @@ impl ChatService {
             &entry,
             encryption_key,
         ) {
-            Ok((context, insertion_index)) => RegeneratePrepareResult {
-                context: Some(context),
-                insertion_index,
-                error: None,
-            },
+            Ok((context, insertion_index)) => (
+                RegeneratePrepareResult {
+                    context: Some(context),
+                    insertion_index,
+                    error: None,
+                },
+                Some(entry),
+            ),
             Err(err) => {
                 entry.unlock();
-                RegeneratePrepareResult {
-                    context: None,
-                    insertion_index: None,
-                    error: Some(err),
-                }
+                (
+                    RegeneratePrepareResult {
+                        context: None,
+                        insertion_index: None,
+                        error: Some(err),
+                    },
+                    None,
+                )
             }
         }
     }
@@ -1404,94 +1536,118 @@ impl ChatService {
         prepare_capture: Option<PrepareCapture>,
     ) -> FinalizeOutcome {
         let store = self.sessions();
-        let mut outcome = FinalizeOutcome::NoSession;
-
         if let Some(entry) = store.entries.get(&session.session_id) {
-            {
-                let mut data = entry.data.lock().unwrap();
-                data.last_used = Instant::now();
+            return self.regenerate_finalize_on_entry(
+                &entry,
+                session,
+                set_name,
+                user_message,
+                assistant_response,
+                insertion_index,
+                encryption_key,
+                prepare_capture,
+            );
+        }
+        FinalizeOutcome::NoSession
+    }
 
-                if let Some(username) = session.username.as_deref() {
-                    match self.require_encryption_key(Some(username), encryption_key) {
-                        Ok(Some(key)) => {
-                            let commit = if let Some(mut capture) = prepare_capture.clone() {
-                                if capture.insertion_index.is_none() {
-                                    if let Some(idx) = insertion_index {
-                                        capture = capture.with_regenerate(idx, user_message);
-                                    }
-                                }
-                                self.history_for_commit().and_then(|hs| {
-                                    hs.commit_regenerate(
-                                        username,
-                                        &capture,
-                                        assistant_response,
-                                        key,
-                                    )
-                                })
-                            } else {
-                                match self.load_history_snapshot(username, None, set_name, key) {
-                                    Ok(snap) => {
-                                        let mut cap = PrepareCapture::from_snapshot(&snap);
-                                        if let Some(idx) = insertion_index {
-                                            cap = cap.with_regenerate(idx, user_message);
-                                        }
-                                        self.history_for_commit().and_then(|hs| {
-                                            hs.commit_regenerate(
-                                                username,
-                                                &cap,
-                                                assistant_response,
-                                                key,
-                                            )
-                                        })
-                                    }
-                                    Err(_) => Err(HistoryError::Internal),
-                                }
-                            };
-                            match commit {
-                                Ok(_) => {
-                                    if let Some(cap) = prepare_capture.as_ref() {
-                                        data.active_set_id = Some(cap.set_id);
-                                        data.memory = cap.memory.clone();
-                                        data.system_prompt = cap.system_prompt.clone();
-                                    }
-                                    data.history.clear();
-                                    let _ = seal_session_data(&mut data, key.as_bytes());
-                                    outcome = FinalizeOutcome::DurableCommitted;
-                                }
-                                Err(HistoryError::Conflict { .. }) => {
-                                    outcome = FinalizeOutcome::Conflict;
-                                }
-                                Err(HistoryError::InvalidInput(msg)) => {
-                                    error!(%msg, "failed to commit regenerate history");
-                                    outcome = FinalizeOutcome::InvalidInput(msg.to_owned());
-                                }
-                                Err(err) => {
-                                    error!(?err, "failed to commit regenerate history");
-                                    outcome = FinalizeOutcome::StoreFailure;
+    /// Settle an acquired regenerate entry, same ownership as the chat path.
+    fn regenerate_finalize_on_entry(
+        &self,
+        entry: &Arc<SessionEntry>,
+        session: &SessionContext,
+        set_name: &str,
+        user_message: &str,
+        assistant_response: &str,
+        insertion_index: Option<usize>,
+        encryption_key: Option<&EncryptionKey>,
+        prepare_capture: Option<PrepareCapture>,
+    ) -> FinalizeOutcome {
+        let mut outcome = FinalizeOutcome::NoSession;
+        {
+            let mut data = entry.data.lock().unwrap();
+            data.last_used = Instant::now();
+
+            if let Some(username) = session.username.as_deref() {
+                match self.require_encryption_key(Some(username), encryption_key) {
+                    Ok(Some(key)) => {
+                        let commit = if let Some(mut capture) = prepare_capture.clone() {
+                            if capture.insertion_index.is_none() {
+                                if let Some(idx) = insertion_index {
+                                    capture = capture.with_regenerate(idx, user_message);
                                 }
                             }
-                        }
-                        _ => {
-                            outcome = FinalizeOutcome::KeyValidationFailed;
+                            self.history_for_commit().and_then(|hs| {
+                                hs.commit_regenerate(
+                                    username,
+                                    &capture,
+                                    assistant_response,
+                                    key,
+                                )
+                            })
+                        } else {
+                            match self.load_history_snapshot(username, None, set_name, key) {
+                                Ok(snap) => {
+                                    let mut cap = PrepareCapture::from_snapshot(&snap);
+                                    if let Some(idx) = insertion_index {
+                                        cap = cap.with_regenerate(idx, user_message);
+                                    }
+                                    self.history_for_commit().and_then(|hs| {
+                                        hs.commit_regenerate(
+                                            username,
+                                            &cap,
+                                            assistant_response,
+                                            key,
+                                        )
+                                    })
+                                }
+                                Err(_) => Err(HistoryError::Internal),
+                            }
+                        };
+                        match commit {
+                            Ok(_) => {
+                                if let Some(cap) = prepare_capture.as_ref() {
+                                    data.active_set_id = Some(cap.set_id);
+                                    data.memory = cap.memory.clone();
+                                    data.system_prompt = cap.system_prompt.clone();
+                                }
+                                data.history.clear();
+                                let _ = seal_session_data(&mut data, key.as_bytes());
+                                outcome = FinalizeOutcome::DurableCommitted;
+                            }
+                            Err(HistoryError::Conflict { .. }) => {
+                                outcome = FinalizeOutcome::Conflict;
+                            }
+                            Err(HistoryError::InvalidInput(msg)) => {
+                                error!(%msg, "failed to commit regenerate history");
+                                outcome = FinalizeOutcome::InvalidInput(msg.to_owned());
+                            }
+                            Err(err) => {
+                                error!(?err, "failed to commit regenerate history");
+                                outcome = FinalizeOutcome::StoreFailure;
+                            }
                         }
                     }
-                } else {
-                    let pair = (user_message.to_owned(), assistant_response.to_owned());
-                    if let Some(index) = insertion_index {
-                        if index < data.history.len() {
-                            data.history[index] = pair;
-                        } else {
-                            data.history.push(pair);
-                        }
+                    _ => {
+                        outcome = FinalizeOutcome::KeyValidationFailed;
+                    }
+                }
+            } else {
+                let pair = (user_message.to_owned(), assistant_response.to_owned());
+                if let Some(index) = insertion_index {
+                    if index < data.history.len() {
+                        data.history[index] = pair;
                     } else {
                         data.history.push(pair);
                     }
-                    outcome = FinalizeOutcome::GuestUpdated;
+                } else {
+                    data.history.push(pair);
                 }
+                outcome = FinalizeOutcome::GuestUpdated;
             }
-
-            entry.unlock();
         }
+
+        entry.unlock();
 
         outcome
     }
@@ -1567,8 +1723,8 @@ impl ChatService {
     }
 
     /// Owned leased chat prepare: binds this service clone plus the
-    /// prepare-time session. Completion/drop releases the same service by
-    /// current-ID lookup; expiry/recreation semantics are unchanged.
+    /// prepare-time session and its acquired entry. Completion/drop settles
+    /// that entry only, never the current map entry.
     pub fn chat_prepare_leased(
         &self,
         session: &SessionContext,
@@ -1576,11 +1732,21 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> LeasedChatPrepare {
-        let ChatPrepareResult { context, error } =
-            self.chat_prepare(session, request, provider, encryption_key);
-        let lease = context
-            .as_ref()
-            .map(|_| GenerationLease::new(self.clone(), session.clone()));
+        let (result, entry) =
+            self.chat_prepare_internal(session, request, provider, encryption_key);
+        let ChatPrepareResult { context, error } = result;
+        // The lease takes the acquired entry directly: no map relookup, so a
+        // concurrent expiry recreation cannot substitute another entry between
+        // locking and minting.
+        let lease = match (&context, entry) {
+            (Some(_), Some(entry)) => {
+                Some(GenerationLease::new(self.clone(), session.clone(), entry))
+            }
+            _ => {
+                debug_assert!(context.is_none(), "success must hand an entry");
+                None
+            }
+        };
         LeasedChatPrepare {
             context,
             lease,
@@ -1588,7 +1754,8 @@ impl ChatService {
         }
     }
 
-    /// Owned leased regenerate prepare, binding this service clone.
+    /// Owned leased regenerate prepare, binding this service clone plus the
+    /// acquired entry.
     pub fn regenerate_prepare_leased(
         &self,
         session: &SessionContext,
@@ -1596,14 +1763,23 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> LeasedRegeneratePrepare {
+        let (result, entry) =
+            self.regenerate_prepare_internal(session, request, provider, encryption_key);
         let RegeneratePrepareResult {
             context,
             insertion_index,
             error,
-        } = self.regenerate_prepare(session, request, provider, encryption_key);
-        let lease = context
-            .as_ref()
-            .map(|_| GenerationLease::new(self.clone(), session.clone()));
+        } = result;
+        // Direct handoff, never a relookup (see `chat_prepare_leased`).
+        let lease = match (&context, entry) {
+            (Some(_), Some(entry)) => {
+                Some(GenerationLease::new(self.clone(), session.clone(), entry))
+            }
+            _ => {
+                debug_assert!(context.is_none(), "success must hand an entry");
+                None
+            }
+        };
         LeasedRegeneratePrepare {
             context,
             insertion_index,
@@ -2226,22 +2402,33 @@ impl std::fmt::Debug for ChatService {
 
 /// Owns settlement for one successful prepare.
 ///
-/// The lease binds its service clone plus the prepare-time session and settles
-/// by session ID through the current entry of that same service. It never
-/// holds the entry across awaits and cannot be cloned. Expiry/recreation
-/// semantics are unchanged from the ID-lookup path.
-#[derive(Debug)]
+/// The lease binds its service clone plus the prepare-time session and its
+/// acquired entry. Settlement operates on that entry only, never the current
+/// map entry, so an expiry recreation cannot redirect persistence or unlock
+/// another generation. The entry `Arc` is held across awaits without holding
+/// any lock; the lease cannot be cloned.
 pub struct GenerationLease {
     service: ChatService,
     session: SessionContext,
+    entry: Arc<SessionEntry>,
     settled: bool,
 }
 
+impl std::fmt::Debug for GenerationLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenerationLease")
+            .field("session_id", &self.session.session_id)
+            .field("settled", &self.settled)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GenerationLease {
-    fn new(service: ChatService, session: SessionContext) -> Self {
+    fn new(service: ChatService, session: SessionContext, entry: Arc<SessionEntry>) -> Self {
         Self {
             service,
             session,
+            entry,
             settled: false,
         }
     }
@@ -2254,15 +2441,15 @@ impl GenerationLease {
     fn settle(&mut self) {
         if !self.settled {
             self.settled = true;
-            self.service.release_session_lock(&self.session.session_id);
+            self.entry.unlock();
         }
     }
 
     /// Persist a `/chat` turn with the bound session, then settle.
     ///
     /// Canonical typed completion: consumes the lease and settles the same
-    /// finalize-then-unlock flow. The legacy `Vec<String>` wrapper renders
-    /// this outcome once with no extra IO.
+    /// finalize-then-unlock flow on the acquired entry. The legacy
+    /// `Vec<String>` wrapper renders this outcome once with no extra IO.
     pub fn complete_chat_outcome(
         mut self,
         set_name: &str,
@@ -2271,7 +2458,8 @@ impl GenerationLease {
         encryption_key: Option<&EncryptionKey>,
         prepare_capture: Option<PrepareCapture>,
     ) -> FinalizeOutcome {
-        let outcome = self.service.chat_finalize_outcome_with_capture(
+        let outcome = self.service.chat_finalize_on_entry(
+            &self.entry,
             &self.session,
             set_name,
             user_message,
@@ -2279,7 +2467,7 @@ impl GenerationLease {
             encryption_key,
             prepare_capture,
         );
-        // The finalize above already settled this session.
+        // The finalize above already settled the acquired entry.
         self.settled = true;
         outcome
     }
@@ -2318,7 +2506,8 @@ impl GenerationLease {
         encryption_key: Option<&EncryptionKey>,
         prepare_capture: Option<PrepareCapture>,
     ) -> FinalizeOutcome {
-        let outcome = self.service.regenerate_finalize_outcome_with_capture(
+        let outcome = self.service.regenerate_finalize_on_entry(
+            &self.entry,
             &self.session,
             set_name,
             user_message,
@@ -2327,7 +2516,7 @@ impl GenerationLease {
             encryption_key,
             prepare_capture,
         );
-        // The finalize above already settled this session.
+        // The finalize above already settled the acquired entry.
         self.settled = true;
         outcome
     }
@@ -3108,5 +3297,249 @@ mod tests {
         let retry = regenerate_prepare(&session, &request, &provider, None);
         assert!(retry.error.is_none());
         release_session_lock(session_id);
+    }
+
+    #[test]
+    fn old_lease_does_not_unlock_recreated_entry() {
+        use crate::history::HistoryService;
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let redb_path = temp.path().join("history.redb");
+        let data_dir = temp.path().join("legacy");
+        std::fs::create_dir_all(&data_dir).expect("legacy dir");
+        let history =
+            HistoryService::open_with_data_dir(&redb_path, &data_dir, "You are helpful.".to_string())
+                .expect("open history");
+        let sessions = Arc::new(ChatSessionStore::new(
+            3600,
+            "You are helpful.".to_string(),
+        ));
+        let service = ChatService::new(
+            Arc::clone(&sessions),
+            Arc::new(history),
+            temp.path().join("accounts"),
+            "mod006-arc-isolation".to_string(),
+        );
+
+        let session = SessionContext {
+            session_id: "guest_mod006_arc_isolation".to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+
+        let first =
+            service.chat_prepare_leased(&session, &lease_test_chat_request(), &provider, None);
+        assert!(first.error.is_none());
+        let lease1 = first.lease.expect("first must mint a lease");
+        {
+            let resident = sessions
+                .entries
+                .get(&session.session_id)
+                .expect("leased entry is mapped");
+            assert!(
+                std::sync::Arc::ptr_eq(&lease1.entry, &*resident),
+                "lease must hand the acquired entry directly, not a relookup"
+            );
+        }
+
+        // Simulate expiry recreation bypassing the retain-locked guard: drop
+        // the locked entry from the map while the old lease is outstanding.
+        sessions.entries.remove(&session.session_id);
+
+        let second =
+            service.chat_prepare_leased(&session, &lease_test_chat_request(), &provider, None);
+        assert!(second.error.is_none());
+        let lease2 = second.lease.expect("second must mint a lease after recreation");
+        {
+            let resident = sessions
+                .entries
+                .get(&session.session_id)
+                .expect("recreated entry is mapped");
+            assert!(
+                !std::sync::Arc::ptr_eq(&lease1.entry, &*resident),
+                "recreated entry must differ from the old lease's entry"
+            );
+            assert!(
+                std::sync::Arc::ptr_eq(&lease2.entry, &*resident),
+                "second lease must hand the recreated entry directly"
+            );
+        }
+
+        // Completing the old lease must settle only its acquired entry, never
+        // the recreated one.
+        let _ = lease1.complete_chat("default", "old user", "old answer", None, None);
+
+        assert_eq!(
+            service.session_history(&session.session_id),
+            Vec::<(String, String)>::new(),
+            "old lease must not persist into the recreated entry"
+        );
+        let third = service.chat_prepare(&session, &lease_test_chat_request(), &provider, None);
+        assert!(
+            matches!(
+                third.error,
+                Some(PrepareError::Policy(PreparePolicyError::Busy))
+            ),
+            "recreated entry must stay locked after old lease settles, got: {:?}",
+            third.error
+        );
+
+        lease2.release_without_persist();
+    }
+
+    /// Force an entry expired without sleeping: tests control `last_used`
+    /// directly instead of waiting out the timeout.
+    fn force_entry_expired(store: &ChatSessionStore, session_id: &str) {
+        use std::time::{Duration, Instant};
+        if let Some(entry) = store.entries.get(session_id) {
+            entry.data.lock().unwrap().last_used = Instant::now() - Duration::from_secs(7200);
+        }
+    }
+
+    fn owned_unit_service(
+        secret: &str,
+    ) -> (
+        tempfile::TempDir,
+        ChatService,
+        std::sync::Arc<ChatSessionStore>,
+    ) {
+        use crate::history::HistoryService;
+        use std::sync::Arc;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let redb_path = temp.path().join("history.redb");
+        let data_dir = temp.path().join("legacy");
+        std::fs::create_dir_all(&data_dir).expect("legacy dir");
+        let history =
+            HistoryService::open_with_data_dir(&redb_path, &data_dir, "You are helpful.".to_string())
+                .expect("open history");
+        let sessions = Arc::new(ChatSessionStore::new(
+            3600,
+            "You are helpful.".to_string(),
+        ));
+        let service = ChatService::new(
+            Arc::clone(&sessions),
+            Arc::new(history),
+            temp.path().join("accounts"),
+            secret.to_string(),
+        );
+        (temp, service, sessions)
+    }
+
+    #[test]
+    fn locked_entries_survive_purge_deterministically() {
+        let store = ChatSessionStore::new(3600, "prompt".to_string());
+        let session_id = "guest_mod006_retain_locked_deterministic";
+
+        let entry = store
+            .acquire_locked_entry(session_id)
+            .expect("first acquire succeeds");
+        force_entry_expired(&store, session_id);
+
+        assert_eq!(
+            store.purge_expired(),
+            0,
+            "locked entries must be retained, not evicted"
+        );
+        assert!(
+            store.acquire_locked_entry(session_id).is_none(),
+            "locked entry must stay busy across purge"
+        );
+
+        entry.unlock();
+        assert_eq!(
+            store.purge_expired(),
+            1,
+            "unlocked expired entry is purged once released"
+        );
+    }
+
+    #[test]
+    fn second_prepare_stays_busy_after_forced_expiry() {
+        let (_temp, service, sessions) = owned_unit_service("mod006-busy-deterministic");
+        let session = SessionContext {
+            session_id: "guest_mod006_busy_deterministic".to_string(),
+            username: None,
+        };
+        let provider = lease_test_provider();
+
+        let first =
+            service.chat_prepare_leased(&session, &lease_test_chat_request(), &provider, None);
+        assert!(first.error.is_none());
+        let lease = first.lease.expect("first prepare must mint a lease");
+
+        force_entry_expired(&sessions, &session.session_id);
+        assert_eq!(sessions.purge_expired(), 0);
+
+        let second = service.chat_prepare(&session, &lease_test_chat_request(), &provider, None);
+        assert!(
+            matches!(
+                second.error,
+                Some(PrepareError::Policy(PreparePolicyError::Busy))
+            ),
+            "second prepare must stay busy while the first lease is outstanding, got: {:?}",
+            second.error
+        );
+
+        lease.release_without_persist();
+    }
+
+    /// Acquire/purge handoff invariant: a split get-then-lock plus map
+    /// relookup can hand a detached entry (purge observes unlocked, a lock
+    /// wins on the detached `Arc`, relookup then misses). Staged
+    /// deterministically below with forced expiry and explicit purge/lock
+    /// steps. The fixed path is immune by construction (`acquire_locked_entry`
+    /// holds the entry guard across get-or-insert and CAS; leases hand the
+    /// acquired `Arc` with no relookup).
+    #[test]
+    fn split_get_lock_relookup_hazard_shape() {
+        use std::sync::Arc;
+        let store = Arc::new(ChatSessionStore::new(3600, "prompt".to_string()));
+        let session_id = "guest_mod006_race_shape";
+
+        // Plant an expired unlocked entry deterministically.
+        store.entries.remove(session_id);
+        store.update_history(session_id, &[]);
+        force_entry_expired(&store, session_id);
+
+        // Old split pattern, staged: obtain the Arc first (as `entry()` did),
+        // let purge win completely, then lock the detached Arc.
+        let stale = store.entry(session_id);
+        assert_eq!(
+            store.purge_expired(),
+            1,
+            "staged purge must remove the expired unlocked entry"
+        );
+        assert!(stale.try_lock(), "staged lock wins on the detached entry");
+        // A lease minted by map relookup at this point resolves to nothing
+        // (or a wrong replacement once recreated): the exact lease-None/wrong
+        // failure. The fixed path never relooks-up; it hands the atomically
+        // acquired `Arc` (see `acquire_locked_entry`).
+        assert!(
+            store.entries.get(session_id).is_none(),
+            "relookup after a purge win misses the locked entry"
+        );
+        stale.unlock();
+
+        // The atomic primitive on the same staged state hands a map-resident
+        // locked entry: purge already won, so this creates fresh.
+        let fresh = store
+            .acquire_locked_entry(session_id)
+            .expect("acquire creates fresh when unmapped");
+        let resident = store
+            .entries
+            .get(session_id)
+            .expect("acquired entry is mapped");
+        assert!(
+            Arc::ptr_eq(&fresh, &*resident),
+            "atomic acquire hands the map-resident entry"
+        );
+        drop(resident);
+        assert!(
+            store.acquire_locked_entry(session_id).is_none(),
+            "second acquire stays Busy"
+        );
+        fresh.unlock();
+        store.entries.remove(session_id);
     }
 }

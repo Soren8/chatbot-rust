@@ -1,10 +1,18 @@
 # Codebase review program
 
-Latest resume point: session 042 — streaming inference lifetime (below). Earlier checkpoints record their original scope and status.
+Latest resume point: session 043 — generation-entry ownership (below). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty batches through session 042. Session 041 is committed as `7a34c6f`; session 042 is recorded by commit title `Own bounded inference streaming lifetime`. Phase 1 remains in progress.
+Current remediation count: forty-one batches through session 043. Session 041 is committed as `7a34c6f`; session 042 as `ada3876`; session 043 is recorded by commit title `Bind generation leases to acquired entries`. Phase 1 remains in progress.
+
+## Session 043 — generation-entry ownership, 2026-09-19
+
+MOD-006 leases retain the exact acquired session entry through completion/drop. Acquisition holds the map shard guard across insertion/lookup and lock acquisition; expiry uses the same shard exclusion and retains locked entries. Internal prepare returns that entry directly rather than recovering it through a later ID lookup. Finalization updates and unlocks the acquired entry. Pre-prepare error turns acquire their own lock or skip persistence while busy; defensive provider-setup failures complete under the existing lease.
+
+Main review required atomic acquisition, direct entry handoff, and correction of a lock side effect inside `debug_assert!` that would have disappeared in release builds. Original regression tests remain, with additional deterministic expiry/recreation cases and real mock-upstream failure/recovery tests for both routes. The attempted concurrent race reproducer did not reliably fail and is not claimed as evidence. The acquisition invariant was additionally inspected against DashMap guard lifetime. The temporary setup-error test token was removed; actual upstream HTTP errors exercise the lazy stream-error path, not the defensive synchronous setup branch.
+
+Full reviewed Rust suite: `temp/test-logs/mod006-corrections-green2-20260919T103322Z.log`, job `20260919T103322-8d3e889c1878`, exit 0, untruncated, provider-config validation included. Original reds for wrong-entry settlement and busy error-turn persistence remain in `mod006-ownership-red-20260919T070256Z.log` and `mod006-error-ownership-red-20260919T071633Z.log`. Native lifecycle changes remain under review; phase 1 is not yet complete.
 
 ## Session 042 — streaming inference lifetime, 2026-09-19
 
