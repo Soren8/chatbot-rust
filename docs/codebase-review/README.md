@@ -1,10 +1,14 @@
 # Codebase review program
 
-Latest resume point: session 050 — all four follow-ups implemented; main-model phase-one completion review pending. Earlier checkpoints record their original scope and status.
+Latest resume point: session 051 — queued response/UI continuation corrected during completion review. Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-six batches through session 050. **All four session-046 ownership follow-ups are implemented and verified; phase-one completion review remains pending. Phases 2–7 have not started.**
+Current remediation count: forty-seven batches through session 051. **All four session-046 ownership follow-ups are implemented and verified; phase-one completion review remains pending. Phases 2–7 have not started.**
+
+## Session 051 — queued response and autoplay ownership, 2026-09-19
+
+The main-model completion review found a remaining MOD-009-A continuation before the stream guard: queued successful headers could clear the newly selected conversation's draft/attachment. Chat now checks ownership before those mutations; delayed chat/regeneration autoplay callbacks also recheck their initiating binding. New permanent adapter regressions reproduce these three behaviors while retaining valid same-set and replacement controls. Red: `mod009a-red3-20260919T202637Z.log`, job `20260919T202637-2101efd40577`; final full trusted green: `temp/test-logs/mod009a-green4-20260919T202846Z.log`, job `20260919T202846-0908e2daba66`, exit 0, untruncated. Main reviewed the final diff and confirmed prior fixture assertions remain. The session-050 APK remains the verified native artifact; this correction changes server-served JS only.
 
 ## Session 050 — native foreground stop outcomes, 2026-09-19
 

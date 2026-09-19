@@ -2143,11 +2143,6 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
   $target.removeAttr('data-original');
   replaceChildrenNative($target[0], buildAiStreamChildren());
 
-if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
-    const playBtn = $target.find('.play-button')[0];
-    if (playBtn) setTimeout(() => playMessageTts(playBtn), 50);
-  }
-
   const seq = beginChatRequest();
   // Initiating set plus generation; the tracker sequence alone stays live
   // across a set switch.
@@ -2156,6 +2151,13 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
   // active queue continues seamlessly into the new text, and autoplay finds
   // the fresh sequence.
   liveStreamPlaybackSource = retargetMessagePlaybackSource($target[0], seq);
+
+if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
+    const playBtn = $target.find('.play-button')[0];
+    // The timer fires a task later; recheck the initiating binding so a
+    // queued timer cannot start playback after a switch or replacement.
+    if (playBtn) setTimeout(() => { if (isLiveChatRequest(seq) && isLiveConversation(regenBinding)) playMessageTts(playBtn); }, 50);
+  }
 
   fetchWithGenerateRetry('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
@@ -3405,6 +3407,10 @@ $(document).ready(function() {
       body: JSON.stringify(requestData)
     })
       .then(response => {
+        // Guard before every success mutation: a resolved response queued
+        // behind a switch or replacement must not clear the live draft,
+        // attachment, or ghost flag. The next stage drops undefined.
+        if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
         if (response.status === 401) throw new Error(SESSION_EXPIRED_SEND_MSG);
         if (!response.ok) {
           return response.text().then(t => {
@@ -3438,6 +3444,7 @@ $(document).ready(function() {
         return response;
       })
       .then(response => {
+        if (!response) return;
         if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) {
           try { if (response.body && typeof response.body.cancel === 'function') swallowCancel(response.body.cancel()); } catch (e) {}
           return;
@@ -3453,7 +3460,9 @@ $(document).ready(function() {
 
         if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           const playBtn = $targetElement.find('.play-button')[0];
-          if (playBtn) setTimeout(() => playMessageTts(playBtn), 50);
+          // The timer fires a task later; recheck the initiating binding so a
+          // queued timer cannot start playback after a switch or replacement.
+          if (playBtn) setTimeout(() => { if (isLiveChatRequest(seq) && isLiveConversation(chatBinding)) playMessageTts(playBtn); }, 50);
         }
 
         // Initial scroll to bottom when AI starts responding

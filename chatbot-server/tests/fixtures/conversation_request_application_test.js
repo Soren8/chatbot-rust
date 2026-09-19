@@ -220,6 +220,8 @@ function makeWorld() {
   const appended = [];
   const loads = [];
   const paints = [];
+  const ttsPlays = [];
+  const timers = [];
   const playback = { binds: [], retargets: [], publishes: [], finishes: [] };
   const errors = [];
   let redirects = 0;
@@ -233,13 +235,17 @@ function makeWorld() {
   systemPromptInput._val = 'prompt A';
   const modelSelect = makeFake('#modelSelect');
   modelSelect._val = 'model-a';
+  const imageInput = makeFake('#image-input');
   const userFake = makeFake('user-message');
   const aiFake = makeFake('ai-message');
   const textFake = makeFake('ai-message-text');
   const thinkFake = makeFake('thinking-content');
+  const playButtonFake = makeFake('play-button');
+  playButtonFake[0] = playButtonFake;
   aiFake._find = (s) => {
     if (String(s).includes('ai-message-text')) return textFake;
     if (String(s).includes('thinking')) return thinkFake;
+    if (String(s).includes('play-button')) return playButtonFake;
     return makeFake('ai' + s);
   };
   userFake._last = userFake;
@@ -264,7 +270,7 @@ function makeWorld() {
     '#set-selector': setSelector,
     '#set-selector option:selected': optionFake,
     '#send-button': sendButton,
-    '#image-input': makeFake('#image-input'),
+    '#image-input': imageInput,
     '#chat-content .message.user-message': userFake,
     '.ai-message:last-child': aiFake,
     '#chat-content': makeFake('#chat-content'),
@@ -298,8 +304,8 @@ function makeWorld() {
     voiceLifecycle: { isTtsActive: () => false, getCurrentButton: () => null },
     TextDecoder,
     TextEncoder,
-    setTimeout,
-    clearTimeout,
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: () => {},
     Promise,
     SESSION_EXPIRED_SEND_MSG: S.SESSION_EXPIRED_SEND_MSG,
     pendingImageData: null,
@@ -328,7 +334,7 @@ function makeWorld() {
     reindexUserPairIndices: () => {},
     scrollToBottom: () => {},
     shouldStickChatToBottom: () => false,
-    playMessageTts: () => {},
+    playMessageTts: (b) => { ttsPlays.push(b); },
     primeDesktopTtsAudioFromGesture: () => {},
     activeSetName: () => sel.name,
   };
@@ -357,6 +363,9 @@ function makeWorld() {
     appended,
     loads,
     paints,
+    ttsPlays,
+    timers,
+    fireTimers() { timers.splice(0).forEach((fn) => fn()); },
     playback,
     errors,
     regenCalls,
@@ -368,6 +377,7 @@ function makeWorld() {
     userInput,
     systemPromptInput,
     sendButton,
+    imageInput,
     switchTo(id, name, version) {
       sel.id = id;
       sel.name = name;
@@ -439,6 +449,100 @@ async function scenarioChatSwitch() {
   assert.equal(w.historyWindow.snapshot().total, 1, 'chat-switch: replacement accounts B');
   assert.equal(w.chatRequests.isGenerating(), false, 'chat-switch: replacement settles');
   assert(w.loads.length > 0, 'chat-switch: replacement refreshes the set list');
+}
+
+async function scenarioChatQueuedHeaders() {
+  const w = makeWorld();
+  w.userInput._val = 'B DRAFT';
+  w.imageInput._val = 'picked.png';
+  w.userFake._attrs['data-local-only'] = '1';
+  w.ctx.pendingImageData = 'IMGDATA';
+  w.ctx.pendingImagePreview = { remove() {} };
+  vm.runInContext('sendMessage({ message: "hello A" })', w.ctx);
+  await flush();
+  assert.equal(w.fetchCalls.length, 1, 'queued-headers: request sent');
+  const first = lastFetch(w);
+  // Headers resolve, but the switch lands before the microtask runs; an
+  // abort cannot unresolve the already-resolved fetch.
+  first.resolve({ status: 200, ok: true, body: w.makeStream(first).body });
+  w.switchTo('set-B', 'B', 3);
+  await flush();
+  assert.equal(w.userInput._val, 'B DRAFT', 'queued-headers: B draft untouched');
+  assert.equal(w.imageInput._val, 'picked.png', 'queued-headers: B attachment untouched');
+  assert.equal(w.ctx.pendingImageData, 'IMGDATA', 'queued-headers: image payload retained');
+  assert.notEqual(w.ctx.pendingImagePreview, null, 'queued-headers: preview retained');
+  assert.equal(w.userFake._attrs['data-local-only'], '1', 'queued-headers: ghost flag retained');
+  assert(!w.appended.some((a) => a.className === 'ai-message'), 'queued-headers: no bubble into B');
+
+  // Same-set control still clears after live headers.
+  const v = makeWorld();
+  v.userInput._val = 'draft';
+  v.imageInput._val = 'picked.png';
+  vm.runInContext('sendMessage({ message: "hi" })', v.ctx);
+  await flush();
+  const vf = lastFetch(v);
+  const vstream = v.makeStream(vf);
+  vf.resolve({ status: 200, ok: true, body: vstream.body });
+  await flush();
+  assert.equal(v.userInput._val, '', 'queued-headers: live headers clear the draft');
+  assert.equal(v.imageInput._val, '', 'queued-headers: live headers clear the attachment');
+  assert.equal(v.ctx.pendingImageData, null, 'queued-headers: live headers clear the payload');
+  assert(v.appended.some((a) => a.className === 'ai-message'), 'queued-headers: live headers append');
+}
+
+async function scenarioChatAutoplayTimer() {
+  const w = makeWorld();
+  w.APP_DATA.autoplayTTS = true;
+  w.userInput._val = 'hello A';
+  vm.runInContext('sendMessage({ message: "hello A" })', w.ctx);
+  await flush();
+  const first = lastFetch(w);
+  first.resolve({ status: 200, ok: true, body: w.makeStream(first).body });
+  await flush();
+  assert.equal(w.timers.length, 1, 'chat-timer: autoplay schedules one timer');
+  w.switchTo('set-B', 'B', 3);
+  w.fireTimers();
+  await flush();
+  assert.equal(w.ttsPlays.length, 0, 'chat-timer: queued A timer never plays into B');
+
+  const v = makeWorld();
+  v.APP_DATA.autoplayTTS = true;
+  v.userInput._val = 'hi';
+  vm.runInContext('sendMessage({ message: "hi" })', v.ctx);
+  await flush();
+  const vf = lastFetch(v);
+  vf.resolve({ status: 200, ok: true, body: v.makeStream(vf).body });
+  await flush();
+  v.fireTimers();
+  await flush();
+  assert.equal(v.ttsPlays.length, 1, 'chat-timer: live timer plays');
+}
+
+async function scenarioRegenAutoplayTimer() {
+  const w = makeWorld();
+  w.APP_DATA.autoplayTTS = true;
+  w.ctx.__ai = w.aiFake;
+  w.ctx.__utext = 'q';
+  w.ctx.__pair = 0;
+  vm.runInContext('performRegeneration(__ai, __utext, __pair)', w.ctx);
+  assert.equal(w.timers.length, 1, 'regen-timer: autoplay schedules one timer');
+  await flush();
+  vm.runInContext('performRegeneration(__ai, __utext, __pair)', w.ctx);
+  await flush();
+  assert.equal(w.timers.length, 2, 'regen-timer: replacement schedules again');
+  w.fireTimers();
+  await flush();
+  assert.equal(w.ttsPlays.length, 1, 'regen-timer: only the replacement plays');
+
+  const v = makeWorld();
+  v.APP_DATA.autoplayTTS = true;
+  v.ctx.__ai = v.aiFake;
+  v.ctx.__utext = 'q';
+  v.ctx.__pair = 0;
+  vm.runInContext('performRegeneration(__ai, __utext, __pair)', v.ctx);
+  v.fireTimers();
+  await flush();
+  assert.equal(v.ttsPlays.length, 1, 'regen-timer: live timer plays');
 }
 
 async function scenarioAbortedStreamStaysSilent() {
@@ -757,7 +861,10 @@ async function scenarioPagination() {
   const cases = [
     ['chat-switch', scenarioChatSwitch],
     ['aborted-stream', scenarioAbortedStreamStaysSilent],
+    ['chat-queued-headers', scenarioChatQueuedHeaders],
     ['chat-queued-stale', scenarioChatQueuedStale],
+    ['chat-autoplay-timer', scenarioChatAutoplayTimer],
+    ['regen-autoplay-timer', scenarioRegenAutoplayTimer],
     ['regen-replacement', scenarioRegenReplacement],
     ['memory-retry', scenarioMemoryRetry],
     ['prompt-retry', scenarioSystemPromptRetry],
