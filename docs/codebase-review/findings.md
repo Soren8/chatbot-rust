@@ -1,5 +1,19 @@
 # Findings
 
+Current resume point: README session 046. The fresh main-model review at `d5fef48` reopens phase 1 with MOD-009-A/B, MOD-015-A and MOD-012-A in `modularity.md`. Historical dispositions below do not supersede that review.
+
+## COR-003 — History reads combine independently acquired database snapshots
+
+**Priority:** P2. **Disposition:** confirmed by source; deterministic reproduction and implementation scope decision pending. **Confidence:** high for the mixed-version read path. **Evidence revision:** `d5fef483b8b0c75d6857880c461febb079e8b21c`.
+
+`chatbot-core/src/history/store/chunks.rs:54–98` reads metadata via `load_meta` and opens a separate read transaction for the encrypted header/manifest, authenticated using the earlier metadata's generation/version. `store/mod.rs:220–266` similarly separates metadata and whole-blob reads. A concurrent commit between those transactions can yield old metadata plus new ciphertext, reporting a decryption failure for a valid key. `chunks.rs:137–165` also materializes a logical snapshot using newly read metadata/manifest/images rather than one consistent snapshot. The warm/cold representation regressions in `chatbot-core/tests/history_snapshot_boundary.rs` do not exercise this interleaving.
+
+**Consequence:** concurrent reads/writes can report spurious key/history failures; materialization can combine state from different versions. This is a read-consistency issue, not a reason to replace the public compatibility DTO or a measured paging-performance problem.
+
+**Proposed boundary:** the store owns a coherent read transaction across metadata and payloads, or an explicit consistency/retry contract covering materialization and cache interaction. Preserve write CAS, ownership checks, image fidelity, warm/cold logical equivalence and permanent migration support.
+
+**Verification needed:** deterministic synchronization between metadata and payload reads while another operation commits; valid-key reads must return a coherent supported version/outcome, never an accidental decryption error or mixed-version materialization. No new failing test or runtime reproduction exists yet. Keep this separate from the four authorized-scope modularity follow-ups; obtain an explicit scope decision before implementation.
+
 Session 017 further narrows MOD-001: prepare-time history errors are typed, including minimal conflict metadata and the prepare-specific missing-set classification. Eight new route/mapper tests pass; primary corrected raw-400 logging-field parity before the final green suite. Encryption/store/init response carriers and finalizer rendering remain open.
 
 Session 016 further narrows MOD-001: generation contention and premium access rejection are typed core outcomes with server-owned 429/403 rendering. Nine new before/after route tests and the full suite pass; history/storage and other `ServiceResponse` carriers remain open.

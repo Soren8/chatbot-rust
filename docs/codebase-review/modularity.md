@@ -1,6 +1,62 @@
 # Modularity pass
 
-**Current disposition (session 045):** the primary completion review at `6d03545` closes phase 1 with explicit compatibility boundaries and deferrals. See [README session 045](README.md#session-045--phase-1-completion-review-2026-09-19) for all MOD-001–017 dispositions and final executor evidence. The findings and interim updates below retain their historical review scope; they are not the current completion status. Android Auto protocol and native key-export repairs remain deferred; later review passes are unstarted.
+**Current disposition (session 046):** phase 1 is reopened by the fresh main-model review at `d5fef48`. The four follow-ups below supersede the session-045 completion verdict for MOD-009, MOD-012 and MOD-015. Android Auto protocol and native key-export repairs remain deferred; later review passes are unstarted.
+
+## Session 046 — fresh-review follow-ups
+
+Evidence revision: `d5fef483b8b0c75d6857880c461febb079e8b21c`. All four findings are source-confirmed, unimplemented and not newly dynamically reproduced. They complete existing ownership boundaries rather than authorize a broad rewrite. README session 046 is the compaction resume point.
+
+### MOD-009-A — requests lack initiating-conversation ownership
+
+**Priority:** P1. **Disposition:** confirmed. **Confidence:** high for the source-level failure paths.
+
+**Evidence:** `static/chat.js:2927–2980` changes `APP_DATA` and advances the history-window generation on set switch, without invalidating/binding the outstanding chat request. At `3284–3292`, chat response handling appends its bubble into the current container without checking the initiating set. At `3372–3390`, stream completion updates the current history window and bumps the current set version. Regenerate's successful read/completion path (`2134–2160`) likewise lacks the stale guard used in its catch path. `saveMemoryNow` (`3142–3172`) rebuilds `activeSetPayload` on retry rather than retaining the initial target. `conversation-state.js` separately owns history generation and request sequence; its fixture tests them independently, not these composed flows.
+
+**Consequence:** a response for A arriving after a switch to B can render in B's view or update B's client-side accounting. A memory save for A that receives 401 and retries after a switch to B can send A's memory text against B. Checking only whether a controller is current does not establish conversation ownership.
+
+**Bounded correction:** retain initiating set identity/generation across requests and retries, and fence response application against that identity. Keep selected DOM state a view of the active conversation rather than the retry target. Preserve guest behavior, legitimate set switching, stop/partial persistence and existing CAS/401 policy.
+
+**Verification required:** delayed chat headers/chunks/completion after A→B; replacement regeneration with stale callbacks; memory/prompt retry during A→B; same-set valid completion and retry. Exercise the real state owner together with production request/application adapters, not separate counter-only tests. Check pagination settlement against set generation while tracing callers, without bundling unrelated pagination changes.
+
+### MOD-009-B — desktop playback cancellation lacks complete disposal ownership
+
+**Priority:** P2. **Disposition:** confirmed. **Confidence:** high for the missing settlement/disposal path.
+
+**Evidence:** `static/voice-lifecycle.js:103–130` clears audio callbacks and pauses/resets the element on stop. `static/tts-playback.js:170–260` resolves the clip promise via callbacks installed on that same element. Its queue (`335–489`) separately owns the source subscription, DOM observer and timers but exposes no cancellation/disposal handle. `static/chat.js:1882–1913,1940–1964` wires the modules without one. The playback characterization fixture substitutes immediately successful `playOne` (`fixtures/playback_source_characterization_test.js:90`), so it does not establish active-audio cancellation behavior.
+
+**Consequence:** stopping after audio has started can clear the only completion callbacks without settling the clip promise. The queue remains waiting; a settled historical message with no subsequent source/DOM event need not release its subscription/observer. Stale guards suppress work but do not dispose it.
+
+**Bounded correction:** give the playback session an explicit cancellation path that settles the active clip and disposes queue-owned subscriptions, observers and timers. Preserve sentence order, retry policy, shared desktop/native source semantics and barge-in timing; do not introduce a second playback pipeline.
+
+**Verification required:** compose the actual lifecycle, desktop clip pipeline and message queue over fake audio; start playback successfully, stop mid-clip with no later text/media events, and assert settlement plus disposal. Also cover replacement playback and cancellation during retry/backoff so stale completion cannot disturb the replacement.
+
+### MOD-015-A — normal TTS/STT jobs bypass the inference shutdown owner
+
+**Priority:** P2. **Disposition:** confirmed. **Confidence:** high for untracked work and cancellation/file-lifetime mismatch; no GPU reproduction.
+
+**Evidence:** Rust `chatbot-server/src/tts/backend.rs:207–224` calls `/v1/tts/kokoro`, not the streaming endpoint. Python `chatbot-cuda/src/main.py:91–105` launches that synthesis with `asyncio.to_thread`; STT does the same at `161–171` and unlinks its staging file in the awaiting coroutine's `finally`. `service.py:309–345` tracks/joins only streaming producers. Full synthesis (`228–240`) and transcription (`421–435`) do not register or check the shutdown flag. Existing stream lifecycle tests establish only the streaming contract; STT route tests cover ordinary completion/error, not cancellation with a still-running worker.
+
+**Consequence:** ordinary production TTS/STT work is outside the explicit service shutdown accounting/admission contract. Cancelling the awaiting coroutine does not stop a running thread. STT cancellation can unlink the path while its worker still needs it. This does not assert that every client disconnect automatically cancels a non-streaming ASGI handler.
+
+**Bounded correction:** extend inference-job ownership to the production non-streaming operations, retaining resource/file ownership until workers actually finish. Define admission and shutdown behavior coherently with streaming. Cooperative cancellation is sufficient; do not promise forced interruption of in-flight GPU inference or change the public audio protocol.
+
+**Verification required:** event-gated fake full synthesis/transcription through real service/route paths; cancel the awaiting task while work is blocked; staging file remains usable until worker completion then is removed; shutdown accounts for live jobs and prevents new admission. Preserve streaming buffer/order/error/cancel regressions and the bounded off-loop shutdown policy.
+
+### MOD-012-A — production foreground stop adapter fabricates success
+
+**Priority:** P2. **Disposition:** confirmed. **Confidence:** high for the exception path; no device execution.
+
+**Evidence:** `android/app/src/main/java/com/chatbot/app/audio/VoiceModeForegroundService.java:87–97` catches platform stop exceptions and returns void. `NativeMic/NativeMicPlugin.java:670–682` then returns true. `audio/VoiceModeForegroundSession.java:128–149` treats that as success and clears requested/confirmed state. The Java fixture's fake backend (`VoiceModeSessionCoordinatorTest.java:194–203`) can return false correctly, unlike this real adapter; `native_voice_coordinator.rs` compiles the pure collaborators, not the Android service/plugin adapter.
+
+**Consequence:** a failed platform stop can leave the service/resources alive while application state reports stopped. The startup confirmation correction does not close this stop-result boundary.
+
+**Bounded correction:** propagate an honest stop outcome through the real adapter, distinguish already-stopped from failure, and reconcile state with the owning generation. Preserve late-start/destroy protection, native cleanup without JS acknowledgement, event deduplication and confirmed-only biometric bypass.
+
+**Verification required:** platform stop throws/fails, already-stopped behavior, successful stop/destroy, and stale stop versus a newer generation. Exercise the adapter failure propagation as well as the pure session. Run the full trusted suite and rebuild the physical-debug APK after implementation; compilation remains distinct from device validation.
+
+### Separate correctness lead
+
+COR-003 (history metadata/payload read-snapshot consistency) is recorded in `findings.md`. It needs its own scope decision and deterministic regression; it is not an extra modularity batch by default.
 
 Review revision: `7dc8a23` (application source unchanged from `4cda303`). Primary reviewer performed the analysis directly. This report records responsibility, dependency, representation, and lifecycle boundaries; it does not claim completion of the security, performance, testing, or documentation passes. Proposed changes below remain recommendations pending remediation-batch selection.
 

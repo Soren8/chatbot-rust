@@ -1,12 +1,33 @@
 # Codebase review program
 
-Latest resume point: session 045 — phase-1 completion review (below). Earlier checkpoints record their original scope and status.
+Latest resume point: session 046 — fresh main-model review reopens phase 1 (below). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-two batches through session 044. Session 043 is committed as `b288bd2`; session 044 as `6d03545`. **Phase 1 is complete with the explicit deferrals below. Phases 2–7 have not started.**
+Current remediation count: forty-two batches through session 044. Session 043 is committed as `b288bd2`; session 044 as `6d03545`. **Phase 1 is reopened following the fresh review at `d5fef48`. Four ownership follow-ups remain; phases 2–7 have not started.**
+
+## Session 046 — fresh main-model review and handoff, 2026-09-19
+
+At the user's request, the main model performed a fresh read-only cross-component source review at `d5fef483b8b0c75d6857880c461febb079e8b21c`, without subagents, rather than relying on accumulated remediation dispositions. The review found four unresolved ownership boundaries within MOD-009, MOD-012 and MOD-015. **This supersedes session 045's completion verdict.** Useful extractions remain valid; phase closure does not.
+
+The user subsequently requested this notes-only handoff before compaction. No implementation has started for these findings. Their evidence is static source tracing, not newly reproduced test failures. No tests or device/GPU execution were performed for the fresh review or this documentation update; earlier green suites do not prove the newly identified scenarios.
+
+| Resume item | Priority / disposition | Required boundary |
+| --- | --- | --- |
+| MOD-009-A — conversation-bound requests | P1, confirmed by source | Bind each request, retry and response application to its initiating conversation and generation; switching sets must not redirect old work into the current selection. |
+| MOD-009-B — desktop playback disposal | P2, confirmed by source | Cancellation must settle the active clip and dispose queue subscriptions, observers and timers, not merely make callbacks stale. |
+| MOD-015-A — production inference jobs | P2, confirmed by source | Extend service lifecycle ownership to non-streaming TTS and STT, including job admission, shutdown accounting and staging-file lifetime. |
+| MOD-012-A — native stop outcomes | P2, confirmed by source | Propagate real platform stop failures through the adapter and reconcile foreground state against the owning generation. |
+
+Detailed evidence, bounded corrections and regression requirements are in [modularity.md, session 046](modularity.md#session-046--fresh-review-follow-ups). Start with MOD-009-A. The two browser items overlap `static/chat.js`; keep their implementation batches sequential or give one worker exclusive ownership. Review actual composed callers, not just extracted helper behavior. For reported failures, first add a regression that fails, implement the bounded fix, then run the unchanged regression in the full trusted suite. Preserve existing scenarios and ask before modifying existing tests. Verification uses `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust`; Android implementation additionally requires the trusted `android-physical-debug` artifact build. Retain red/green evidence, personally review the final diff, and commit bounded completed batches locally. Do not rerun unchanged green suites.
+
+The fresh review also found **COR-003, history read-snapshot consistency**, recorded in `findings.md`. It is a separate correctness follow-up requiring a deterministic regression and explicit scope decision, not silently bundled into these modularity batches. Android Auto protocol repair, legacy native key export, later-pass security/performance/test-quality leads and the broad documentation audit retain their existing deferrals. Public compatibility DTOs and file size alone remain insufficient reasons for further refactoring.
+
+After the four ownership items are verified or explicitly dispositioned, repeat the main-model phase-one completion gate before claiming closure. Phase two is not the next active task.
 
 ## Session 045 — phase-1 completion review, 2026-09-19
+
+Historical verdict, superseded by session 046 above.
 
 The primary reviewer repeated the read-only completion review at `6d03545`, comparing the original MOD-001–017 correction boundaries with the reviewed implementations, callers, test evidence and compatibility decisions. The five follow-ups from the unsuccessful review at `d9463bc` are resolved in sessions 040–044. The verdict is **complete for the authorized modularity pass**, not that every cross-pass defect or compatibility surface is eliminated.
 
