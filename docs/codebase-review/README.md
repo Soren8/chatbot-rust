@@ -1,10 +1,18 @@
 # Codebase review program
 
-Latest resume point: [session 039 — request configuration, browser owners and flavor origins](#session-039--request-configuration-browser-owners-and-flavor-origins-2026-09-19). Earlier checkpoints record their original scope and status.
+Latest resume point: session 040 — core prepare input isolation (below). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: thirty-seven batches through session 039. Session 038 is committed as `7a17270`; session 039 is recorded by commit title `Own request configuration, browser pipelines and native origins`. Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: thirty-eight batches through session 040. Session 038 is committed as `7a17270`; session 039 as `d9463bc`; session 040 is recorded by commit title `Isolate owned chat preparation from ambient fake chunks`. Phase 1 remains in progress.
+
+## Session 040 — core prepare input isolation, 2026-09-19
+
+The completion review found that owned core preparation still populated `ChatContext.test_chunks` from the process environment, even though owned server providers already isolated their output. Owned `ChatService` now uses only explicit `ProviderConfig.test_chunks`; the global handle retains the lazy environment-first lookup at the original chat/regenerate prepare sites. The public context field is retained for compatibility. Main review confirmed the narrow diff and inspected all six new tests; server generation does not consume this field.
+
+Four new owned-path regressions failed before the fix while two global compatibility cases passed: full-suite job `20260919T020633-d53a2102a3a3`, log `temp/test-logs/mod003-chunks-red-20260919T020627Z.log`. The unchanged six tests and full suite then passed: job `20260919T020927-9f4e5e61cc03`, log `temp/test-logs/mod003-chunks-green-20260919T020924Z.log`, exit 0, untruncated, provider-config validation included. No existing tests changed.
+
+Next follow-up is browser playback's explicit text/progress source. Voice-service work lifetime, generation-entry settlement and native lifecycle result/event dispositions remain open. The documentation-wide review remains a later phase, as clarified by the user.
 
 ## Session 039 — request configuration, browser owners and flavor origins, 2026-09-19
 
@@ -107,6 +115,12 @@ Phase 1 of seven is modularity: the initial whole-codebase assessment is complet
 Verified boundaries include live naming/Fernet helpers, browser stream decoding, TTS text/backend/token-store ownership, shared generation dispatch/message ownership, encryption-key cookie transport, narrowed history APIs and typed key/prepare validation. Remaining structural work includes broader typed core outcomes, session/chat separation, generation lease ownership, application-service composition, history representations, broader request context, browser/native voice coordination, credential-cache interfaces, voice-service lifetimes and distribution settings. Auto support requires a contract decision. Partial findings and compatibility decisions must receive explicit dispositions before the phase-completion review; cross-pass security/correctness leads remain separately tracked.
 
 ## Purpose and authority
+
+### Completion-review follow-up scope, 2026-09-19
+
+Main-model read-only review at `d9463bc` did not close phase 1. The user authorized necessary bounded follow-ups and clarified that the repository-wide documentation review remains a later phase; stale historical descriptions are not an additional modularity implementation gate. Keep implementation evidence and finding dispositions current here without starting that later audit.
+
+Remaining follow-ups are MOD-003's ambient core prepare-time fake chunks; MOD-009's DOM-derived playback text/progress; MOD-015's inference-thread cancellation, buffering and shutdown ownership; MOD-006's current-ID generation settlement; and MOD-012's foreground-operation result and dual-event ownership. Each requires a bounded implementation or an explicit reasoned disposition, preserving unrelated behavior. Start with the core prepare input boundary. Android Auto protocol repair and legacy native key-export security work remain separately deferred. Public history DTO compatibility and session file size alone do not justify additional refactoring.
 
 Review the entire repository across seven separate passes: modularity; simplicity; abstractions, reuse, and duplication; security and privacy; performance and resource use; test coverage and quality; documentation accuracy. The goal is evidence-backed improvements that preserve intended behavior, not a rewrite or a target number of findings.
 

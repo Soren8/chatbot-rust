@@ -482,10 +482,10 @@ impl ChatSessionStore {
 /// (per-call account stores plus live verifier secret,
 /// `HistoryService::global`, `ChatSessionStore::global`). Owned handles
 /// ([`ChatService::new`]) use only their explicit stores/accounts and the
-/// session store's default prompt, and never read ambient config, except
-/// [`resolve_test_chunks`], which intentionally keeps the explicit
-/// `CHATBOT_TEST_OPENAI_CHUNKS` env plus `provider.test_chunks`
-/// compatibility hook on both paths.
+/// session store's default prompt, and never read ambient config or env:
+/// test chunks come from `provider.test_chunks` only. The global handle keeps
+/// the explicit `CHATBOT_TEST_OPENAI_CHUNKS` env plus `provider.test_chunks`
+/// compatibility hook in [`resolve_test_chunks`] with its lazy per-prepare timing untouched.
 ///
 /// Only the HMAC verifier secret is stored via the account service; no live
 /// data-key is retained.
@@ -653,6 +653,17 @@ impl ChatService {
 
     fn default_prompt_resolved(&self) -> String {
         self.sessions().default_prompt().to_owned()
+    }
+
+    /// Test chunks for the prepare context. Owned handles use only the
+    /// explicit `provider.test_chunks` with no env read; the global handle
+    /// keeps the lazy `CHATBOT_TEST_OPENAI_CHUNKS` plus provider hook.
+    fn test_chunks_for(&self, provider: &ProviderConfig) -> Option<Vec<String>> {
+        if self.owned.is_some() {
+            provider.test_chunks.clone()
+        } else {
+            resolve_test_chunks(provider)
+        }
     }
 
     fn history_for_prepare(&self) -> Result<&HistoryService, PrepareHistoryError> {
@@ -875,7 +886,7 @@ impl ChatService {
             .unwrap_or_else(|| provider.provider_name.as_str())
             .to_string();
 
-        let test_chunks = resolve_test_chunks(provider);
+        let test_chunks = self.test_chunks_for(provider);
 
         let (memory_text, system_prompt, history) = if let Some(ref cap) = prepare_capture {
             (
@@ -1278,7 +1289,7 @@ impl ChatService {
             .unwrap_or_else(|| provider.provider_name.as_str())
             .to_string();
 
-        let test_chunks = resolve_test_chunks(provider);
+        let test_chunks = self.test_chunks_for(provider);
 
         let history = full_history.into_iter().take(insertion_index).collect();
 
