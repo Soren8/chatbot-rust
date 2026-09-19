@@ -1,10 +1,25 @@
 # Codebase review program
 
-Latest resume point: session 051 — queued response/UI continuation corrected during completion review. Earlier checkpoints record their original scope and status.
+Latest resume point: session 052 — phase-one follow-up completion review passed. Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-seven batches through session 051. **All four session-046 ownership follow-ups are implemented and verified; phase-one completion review remains pending. Phases 2–7 have not started.**
+Current remediation count: forty-seven batches through session 051. **Phase one is complete for the authorized modularity scope following session 052. Phases 2–7 have not started.**
+
+## Session 052 — follow-up completion review, 2026-09-19
+
+The main model repeated the completion gate at `d55ee5d`, personally reviewing changed owners, composed callers, retained regressions and trusted results. This closes the four ownership boundaries reopened in session 046. It builds on the earlier cross-component review and the remaining dispositions in session 045; it is not a fresh exhaustive line audit of unchanged code. Implementation was delegated in exclusive sequential batches, with main-model review and local commits.
+
+| Follow-up | Final disposition |
+| --- | --- |
+| MOD-009-A | Verified in `819c8ee` and `d55ee5d`: initiating set/generation through requests, retries, pre-reads, stream and queued UI/autoplay application; switch settlement and generation-bound pagination cleanup. |
+| MOD-009-B | Verified in `917577f`: active clip settlement and queue disposal on UI and direct lifecycle stops, including polling/backoff and immediate replacement. |
+| MOD-015-A | Verified in `b98a41d`: production non-streaming jobs admitted/tracked by the service, staging-file ownership until work/cleanup finish, and shared bounded shutdown accounting. Running full inference continues after waiter cancellation; no forced GPU cancellation is claimed. |
+| MOD-012-A | Verified in `9ad5a52`: real stop outcomes, generation reconciliation and serialized platform start/stop ordering; confirmed-only gates and native cleanup retained. |
+
+Final full suite is session 051's `20260919T202846-0908e2daba66` (exit 0, untruncated), including provider configuration checks. The native tree passed the session-050 physical-debug build; subsequent changes are server-served JS and its regression fixture. No unchanged green suite or APK build was rerun for this notes-only completion record. Tests use real owners/adapters with fake external I/O; source-sliced fixtures and retained source pins still have maintainability limitations for the later test-quality pass. No browser, GPU, phone or vehicle runtime validation or deployment is claimed.
+
+COR-003 remains a separate history-read consistency lead requiring an explicit scope decision and deterministic regression. Android Auto protocol repair, legacy native key export, other recorded cross-pass findings and the broad documentation audit remain deferred. These decisions do not claim those defects are fixed. The next review phase is simplicity, subject to the user's instruction.
 
 ## Session 051 — queued response and autoplay ownership, 2026-09-19
 

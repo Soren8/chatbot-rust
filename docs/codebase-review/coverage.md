@@ -1,5 +1,11 @@
 # Review coverage
 
+## Sessions 047–052 — implementation review and completion gate
+
+The main model personally reviewed delegated production diffs and composed callers for conversation requests/retries/stream application, queued UI/autoplay, desktop clip/queue/lifecycle cancellation, Python non-streaming routes and worker lifetime, and Android foreground service/session/NativeMic stop propagation. Review corrections required actual adapter tests rather than helper-only assertions, direct-lifecycle queue cleanup, result-after-file-cleanup ordering, serialized platform stop ordering, and queued-header draft protection. The final gate at `d55ee5d` closes the four session-046 follow-ups using those source traces and trusted red/green evidence (README sessions 047–052).
+
+New coverage includes browser deferred-fetch/media/timer VM fixtures (W01/T02), Python event-gated job/file/shutdown tests (G01/T02), and real Android service compilation against minimal fake platform classes plus foreground-stop behaviors (N02/T02). The final full suite passed at `20260919T202846-0908e2daba66`; native artifact build `20260919T201434-4ea80932e2ab` covers the unchanged final native code. This gate builds on the previous cross-component review rather than newly line-auditing all unchanged files. Source-slice and spelling-pin maintenance weaknesses remain for the later test-quality pass. No browser/device/GPU/vehicle execution, live deployment, or phases 2–7 completion is claimed.
+
 ## Session 046 — fresh review at d5fef48
 
 The main model personally performed a fresh read-only cross-component source review without subagents. Coverage included Rust composition, identity/account/session operations, generation leases, history/cache/store/migration and image representations, request/error/cookie adapters, handlers, providers/search and TTS/STT; first-party browser chat, session/conversation/rendering/decoder/credential/audio/voice modules; Android activity, credential, voice/audio, Auto and origin consumers; Python settings/inference/routes/audio conversion; and relevant Docker/Compose/Gradle/Capacitor/Helm/CI integration boundaries. Concrete callers were traced across each reported boundary rather than accepting previous completion dispositions.

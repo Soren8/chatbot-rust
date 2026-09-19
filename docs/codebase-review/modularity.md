@@ -1,10 +1,16 @@
 # Modularity pass
 
-**Current disposition (session 046):** phase 1 is reopened by the fresh main-model review at `d5fef48`. The four follow-ups below supersede the session-045 completion verdict for MOD-009, MOD-012 and MOD-015. Android Auto protocol and native key-export repairs remain deferred; later review passes are unstarted.
+**Current disposition (session 052):** phase 1 is complete for the authorized modularity scope after implementing and verifying the four session-046 follow-ups. Main-model completion review at `d55ee5d` is recorded in README session 052. Android Auto protocol and native key-export repairs remain deferred; later review passes are unstarted.
+
+## Sessions 047–052 — verified follow-up dispositions
+
+MOD-009-A is implemented in `819c8ee` and `d55ee5d`; MOD-009-B in `917577f`; MOD-015-A in `b98a41d`; MOD-012-A in `9ad5a52`. README sessions 047–051 retain each batch's behavioral red, final full-suite green, main-review corrections and native artifact evidence. The main-model gate additionally caught queued successful headers clearing a new conversation's draft and stale autoplay callbacks; session 051 closes those continuations before the completion verdict.
+
+Conversation binding spans request/retry identity, pre-read re-entry, rendered/version/accounting updates and delayed UI work. Desktop cancellation settles clips and disposes queue subscriptions/observers/timers through both composed and direct lifecycle stops. Production full TTS/STT jobs retain their resources until worker cleanup, with one bounded off-loop shutdown deadline. Android stop failure is propagated rather than fabricated; platform start/stop serialization and token reconciliation protect newer ownership. CPU fake-I/O regressions and Android compilation establish these boundaries, not device/GPU runtime behavior. COR-003 retains its separate scope decision.
 
 ## Session 046 — fresh-review follow-ups
 
-Evidence revision: `d5fef483b8b0c75d6857880c461febb079e8b21c`. All four findings are source-confirmed, unimplemented and not newly dynamically reproduced. They complete existing ownership boundaries rather than authorize a broad rewrite. README session 046 is the compaction resume point.
+Historical evidence revision: `d5fef483b8b0c75d6857880c461febb079e8b21c`. At session 046 all four findings were source-confirmed, unimplemented and not newly dynamically reproduced. The original traces and correction requirements below are retained; current dispositions are above and in README session 052.
 
 ### MOD-009-A — requests lack initiating-conversation ownership
 
