@@ -343,6 +343,27 @@ function activeSetPayload(extra) {
   }, extra);
 }
 
+function currentSetId() {
+  try {
+    if (window.APP_DATA && window.APP_DATA.lastSetId != null && window.APP_DATA.lastSetId !== '') {
+      return window.APP_DATA.lastSetId;
+    }
+    var v = $('#set-selector').val();
+    return v || null;
+  } catch (e) {
+    return (window.APP_DATA && window.APP_DATA.lastSetId) || null;
+  }
+}
+
+function currentSetIdentity() {
+  var $o = $('#set-selector option:selected');
+  return {
+    setName: $o.attr('data-name') || $o.text() || 'default',
+    setId: (window.APP_DATA && window.APP_DATA.lastSetId) || $o.val(),
+    setVersion: window.APP_DATA ? window.APP_DATA.setVersion : undefined
+  };
+}
+
 function noteSetVersionFromResponse(data) {
   if (!data) return;
   if (!window.APP_DATA) window.APP_DATA = {};
@@ -1156,11 +1177,13 @@ function composeUserMessageContent(text, imageSrc, hasImage) {
 }
 
 function fetchHistoryPair(pairIndex, extra) {
+  var pairTarget = ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+  var pairGen = historyWindow.snapshot().setGen;
   return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
     return fetch('/history_pair', {
       method: 'POST',
       headers: headers,
-      body: JSON.stringify(activeSetPayload(Object.assign({ pair_index: pairIndex }, extra || {})))
+      body: JSON.stringify(ChatConversationState.buildActiveSetPayload(pairTarget, Object.assign({ pair_index: pairIndex }, extra || {})))
     });
   }).then(function(r) {
     if (r.status === 401) {
@@ -1170,6 +1193,11 @@ function fetchHistoryPair(pairIndex, extra) {
     if (!r.ok) throw new Error('Failed to load message');
     return r.json();
   }).then(function(data) {
+    if (!historyWindow.isLiveGen(pairGen)) throw new Error('Conversation switched while loading the message.');
+    var currentId = currentSetId();
+    if (data && data.set_id != null && data.set_id !== '' && String(data.set_id) !== String(currentId)) {
+      throw new Error('Conversation switched while loading the message.');
+    }
     noteSetVersionFromRead(data);
     return data;
   });
@@ -1324,7 +1352,7 @@ function loadOlderMessages() {
   }).catch(function(err) {
     console.error('Failed to load older messages:', err);
   }).then(function() {
-    historyWindow.noteOlderSettled();
+    historyWindow.noteOlderSettled(gen);
     updateLoadOlderBar();
   });
 }
@@ -1505,6 +1533,43 @@ function isLiveChatRequest(seq) {
   return chatRequests.isLive(seq);
 }
 
+function captureChatBinding(seq) {
+  return ChatConversationState.captureConversationBinding(
+    seq, currentSetId(), historyWindow.snapshot().setGen);
+}
+
+function isLiveConversation(binding) {
+  if (!binding) return false;
+  return ChatConversationState.isLiveConversationBinding(
+    binding, chatRequests.isLive(binding.seq),
+    historyWindow.isLiveGen(binding.setGen), currentSetId());
+}
+
+function shouldApplyChatResponse(binding, data) {
+  if (!binding) return false;
+  return ChatConversationState.shouldApplySetResponseForBinding(
+    binding, data, chatRequests.isLive(binding.seq),
+    historyWindow.isLiveGen(binding.setGen), currentSetId());
+}
+
+function captureMemoryBinding(target, gen) {
+  var setId = target && target.setId != null ? target.setId : currentSetId();
+  var setGen = (gen != null) ? gen : historyWindow.snapshot().setGen;
+  return ChatConversationState.captureSetBinding(setId, setGen);
+}
+
+function isLiveMemoryBinding(binding) {
+  if (!binding) return false;
+  return ChatConversationState.isLiveSetBinding(
+    binding, historyWindow.isLiveGen(binding.setGen), currentSetId());
+}
+
+function shouldApplyMemoryResponse(binding, data) {
+  if (!binding) return false;
+  return ChatConversationState.shouldApplySetResponseForSetBinding(
+    binding, data, historyWindow.isLiveGen(binding.setGen), currentSetId());
+}
+
 function finishChatRequest(seq) {
   if (!chatRequests.finish(seq)) return false;
   syncSendButtonState();
@@ -1523,6 +1588,26 @@ function syncSendButtonState() {
 
 function abortChatRequestQuietly() {
   chatRequests.abortQuietly();
+}
+
+// A set switch abandons the outgoing generation: abort its fetch so the
+// reader settles, finish its detached playback source, drop its callbacks
+// via the bumped sequence, and leave the send controls usable. A replacement
+// request starts afterwards unaffected.
+function settleChatRequestForSetSwitch() {
+  if (chatRequests.isGenerating()) {
+    abortChatRequestQuietly();
+    if (typeof liveStreamPlaybackSource !== 'undefined' && liveStreamPlaybackSource) {
+      try { liveStreamPlaybackSource.finish(); } catch (e) {}
+      liveStreamPlaybackSource = null;
+    }
+    syncSendButtonState();
+  }
+}
+
+// Cancellation promises must never reject unobserved.
+function swallowCancel(promise) {
+  if (promise && typeof promise.catch === 'function') promise.catch(function () {});
 }
 
 function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
@@ -2007,10 +2092,13 @@ window.regenerateMessage = function regenerateMessage(button) {
   if (pairIndex < 0) return;
   const needsFull = $previousUserMessage.attr('data-thumb') === '1' || /\[IMAGE:/.test(userText);
   if (needsFull && window.APP_DATA && window.APP_DATA.loggedIn) {
+    var pairGen = historyWindow.snapshot().setGen;
     fetchHistoryPair(pairIndex).then(function(full) {
+      if (!historyWindow.isLiveGen(pairGen)) return;
       if (full && full.user) userText = full.user;
       window.performRegeneration($aiMessageElement[0], userText, pairIndex);
     }).catch(function() {
+      if (!historyWindow.isLiveGen(pairGen)) return;
       window.performRegeneration($aiMessageElement[0], userText, pairIndex);
     });
     return;
@@ -2030,6 +2118,9 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
   }
 
   const seq = beginChatRequest();
+  // Initiating set plus generation; the tracker sequence alone stays live
+  // across a set switch.
+  const regenBinding = captureChatBinding(seq);
   // Same bubble, replacement generation: migrate its playback source so an
   // active queue continues seamlessly into the new text, and autoplay finds
   // the fresh sequence.
@@ -2054,9 +2145,9 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       return response.text().then(t => {
         let errData = null;
         try { errData = t ? JSON.parse(t) : null; } catch (e) { errData = null; }
-        if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq)) {
+        if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq) && isLiveConversation(regenBinding)) {
           // Adopt the authoritative version and replay the regeneration once.
-          noteSetVersionFromResponse(errData);
+          if (shouldApplyChatResponse(regenBinding, errData)) noteSetVersionFromResponse(errData);
           if (ChatConversationState.shouldRetryVersionOnce(opts.versionRetried)) {
             return window.performRegeneration(aiMessageElement, userText, pairIndex, { versionRetried: true });
           }
@@ -2065,6 +2156,10 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         throw new Error(apiErrorText(t, 'Network response was not ok'));
       });
     }
+    if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) {
+      try { if (response.body && typeof response.body.cancel === 'function') swallowCancel(response.body.cancel()); } catch (e) {}
+          return;
+        }
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     const $msgText = $target.find('.ai-message-text');
@@ -2081,6 +2176,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
 
     function appendVisible(content) {
       if (!content) return;
+      if (!isLiveConversation(regenBinding)) return;
       fullVisibleText += content;
       $msgText.html(renderMarkdown(fullVisibleText));
       hasWrittenToDOM = true;
@@ -2100,6 +2196,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     }
     function appendThinking(content) {
       if (!content) return;
+      if (!isLiveConversation(regenBinding)) return;
       fullThinkingText += content;
       $thinkingWrap.show();
       const $toggle = $thinkingWrap.find('.toggle-thinking');
@@ -2133,6 +2230,10 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     }
             function read() {
           reader.read().then(({done, value}) => {
+            if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) {
+              try { if (typeof reader.cancel === 'function') swallowCancel(reader.cancel()); } catch (e) {}
+              return;
+            }
             if (done) {
               // Regenerate does not flush: the residual stays dropped.
               const finalAiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
@@ -2159,7 +2260,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
             }
             read();
           }).catch(err => {
-            if (!isLiveChatRequest(seq)) return;
+            if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
             try {
               $target.find('.regenerate-button').prop('disabled', false);
               const playBtn = $target.find('.play-button').prop('disabled', false);
@@ -2172,7 +2273,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         read();
       })
       .catch(err => {
-        if (!isLiveChatRequest(seq)) return;
+        if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
         if (err.name === 'AbortError') {
           $target.find('.ai-message-text').append(' [Stopped]');
         } else {
@@ -2939,6 +3040,7 @@ $(document).ready(function() {
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
       var loadGen = historyWindow.beginSetLoad();
+      settleChatRequestForSetSwitch();
       savePreferences();
       function fetchSet() {
         return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
@@ -2980,7 +3082,7 @@ $(document).ready(function() {
           applyHistoryPage(data, 'replace');
           appendMessage('Loaded set: ' + setName, 'system-message');
         })
-        .catch(error => { appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
+        .catch(error => { if (!historyWindow.isLiveGen(loadGen)) return; appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
       });
 
     beginEncKeyUnlockFlow();
@@ -3099,12 +3201,15 @@ $(document).ready(function() {
     return $opt.attr('data-name') || $opt.text() || 'default';
   }
 
-  // Save buttons
-  function saveSystemPromptNow(sysPromptText, isRetry) {
+  // Save buttons retain the initiating set target across 401 and
+  // version-conflict retries instead of rereading the live selection.
+  function saveSystemPromptNow(sysPromptText, isRetry, capturedTarget, capturedGen) {
+    var target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+    var binding = captureMemoryBinding(target, capturedGen);
     return fetch('/update_system_prompt', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(activeSetPayload({
+      body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {
         system_prompt: sysPromptText,
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
@@ -3116,7 +3221,7 @@ $(document).ready(function() {
               redirectHomeOnAuthFailure();
               return null;
             }
-            return saveSystemPromptNow(sysPromptText, true).then(function () { return null; });
+            return saveSystemPromptNow(sysPromptText, true, target, binding.setGen).then(function () { return null; });
           });
         }
         return r.json();
@@ -3124,26 +3229,36 @@ $(document).ready(function() {
       .then(data => {
         if (!data) return;
         if (data.status === 'success') {
+          if (!shouldApplyMemoryResponse(binding, data)) return;
           noteSetVersionFromResponse(data);
           appendMessage('System prompt saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
           // Sync the authoritative version and retry once — e.g. a chat turn
           // finalized (or a prompt updated from another tab) since page load.
-          noteSetVersionFromResponse(data);
-          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return saveSystemPromptNow(sysPromptText, true);
-          appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
+          // The retry keeps the initiating set; only the version refreshes.
+          if (shouldApplyMemoryResponse(binding, data)) noteSetVersionFromResponse(data);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) {
+            var auth = data.current_version != null ? data.current_version : data.version;
+            var retryTarget = { setName: target.setName, setId: target.setId };
+            if (auth != null && auth !== '') retryTarget.setVersion = auth;
+            else if (target.setVersion != null) retryTarget.setVersion = target.setVersion;
+            return saveSystemPromptNow(sysPromptText, true, retryTarget, binding.setGen);
+          }
+          if (isLiveMemoryBinding(binding)) appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
-        else appendMessage(data.error || 'Failed to save system prompt.', 'error-message');
+        else if (isLiveMemoryBinding(binding)) appendMessage(data.error || 'Failed to save system prompt.', 'error-message');
       })
-      .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+      .catch(error => { if (isLiveMemoryBinding(binding)) appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
   }
 
-  function saveMemoryNow(memText, isRetry) {
+  function saveMemoryNow(memText, isRetry, capturedTarget, capturedGen) {
+    var target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+    var binding = captureMemoryBinding(target, capturedGen);
     return fetch('/update_memory', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(activeSetPayload({
+      body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {
         memory: memText,
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
@@ -3155,7 +3270,7 @@ $(document).ready(function() {
               redirectHomeOnAuthFailure();
               return null;
             }
-            return saveMemoryNow(memText, true).then(function () { return null; });
+            return saveMemoryNow(memText, true, target, binding.setGen).then(function () { return null; });
           });
         }
         return r.json();
@@ -3163,17 +3278,24 @@ $(document).ready(function() {
       .then(data => {
         if (!data) return;
         if (data.status === 'success') {
+          if (!shouldApplyMemoryResponse(binding, data)) return;
           noteSetVersionFromResponse(data);
           appendMessage('Memory saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
-          noteSetVersionFromResponse(data);
-          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return saveMemoryNow(memText, true);
-          appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
+          if (shouldApplyMemoryResponse(binding, data)) noteSetVersionFromResponse(data);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) {
+            var auth = data.current_version != null ? data.current_version : data.version;
+            var retryTarget = { setName: target.setName, setId: target.setId };
+            if (auth != null && auth !== '') retryTarget.setVersion = auth;
+            else if (target.setVersion != null) retryTarget.setVersion = target.setVersion;
+            return saveMemoryNow(memText, true, retryTarget, binding.setGen);
+          }
+          if (isLiveMemoryBinding(binding)) appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
-        else appendMessage(data.error || 'Failed to save memory.', 'error-message');
+        else if (isLiveMemoryBinding(binding)) appendMessage(data.error || 'Failed to save memory.', 'error-message');
       })
-      .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+      .catch(error => { if (isLiveMemoryBinding(binding)) appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
   }
 
   $('#save-system-prompt').on('click', function() {
@@ -3241,6 +3363,9 @@ $(document).ready(function() {
     });
 
     const seq = beginChatRequest();
+    // Initiating set plus generation; the tracker sequence alone stays live
+    // across a set switch.
+    const chatBinding = captureChatBinding(seq);
 
     fetchWithGenerateRetry('/chat', {
       method: 'POST',
@@ -3254,11 +3379,11 @@ $(document).ready(function() {
           return response.text().then(t => {
             let errData = null;
             try { errData = t ? JSON.parse(t) : null; } catch (e) { errData = null; }
-            if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq)) {
+            if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq) && isLiveConversation(chatBinding)) {
               // Server rejected our stale version (e.g. the system prompt was
               // updated, or a turn finalized, elsewhere mid-flight). Adopt the
               // authoritative version and replay this turn once.
-              noteSetVersionFromResponse(errData);
+              if (shouldApplyChatResponse(chatBinding, errData)) noteSetVersionFromResponse(errData);
               if (ChatConversationState.shouldRetryVersionOnce(opts.versionRetried)) {
                 return sendMessage({
                   reuseLastUser: true,
@@ -3282,6 +3407,10 @@ $(document).ready(function() {
         return response;
       })
       .then(response => {
+        if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) {
+          try { if (response.body && typeof response.body.cancel === 'function') swallowCancel(response.body.cancel()); } catch (e) {}
+          return;
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
         appendMessage(null, 'ai-message');
@@ -3312,6 +3441,7 @@ $(document).ready(function() {
 
         function appendVisible(content) {
           if (!content) return;
+          if (!isLiveConversation(chatBinding)) return;
           fullVisibleText += content;
           $messageTextElement.html(renderMarkdown(fullVisibleText));
           hasWrittenToDOM = true;
@@ -3331,6 +3461,7 @@ $(document).ready(function() {
         }
         function appendThinking(content) {
           if (!content) return;
+          if (!isLiveConversation(chatBinding)) return;
           fullThinkingText += content;
           $thinkingContainerWrapper.show();
           const $toggle = $thinkingContainerWrapper.find('.toggle-thinking');
@@ -3371,6 +3502,10 @@ $(document).ready(function() {
         }
         function readStream() {
           return reader.read().then(({ done, value }) => {
+            if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) {
+              try { if (typeof reader.cancel === 'function') swallowCancel(reader.cancel()); } catch (e) {}
+              return;
+            }
             if (done) {
               flushStreamRemainder();
               
@@ -3398,7 +3533,7 @@ $(document).ready(function() {
             }
             return readStream();
           }).catch(err => {
-            if (!isLiveChatRequest(seq)) return;
+            if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
             try {
               $targetElement.find('.regenerate-button').prop('disabled', false);
               const playBtn = $targetElement.find('.play-button').prop('disabled', false);
@@ -3415,7 +3550,7 @@ $(document).ready(function() {
         readStream();
       })
       .catch(error => {
-        if (!isLiveChatRequest(seq)) return;
+        if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
         try { console.error('Chat request failed:', error); } catch (e) {}
         if (error.name === 'AbortError') {
           const $lastAI = $('.ai-message:last-child');

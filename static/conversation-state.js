@@ -151,10 +151,11 @@
       return { start: start, pairs: pairs, total: total, hasMore: hasMore, offset: offset, mode: mode || 'replace' };
     }
 
-    // A set switch invalidates in-flight pages; callers capture the live
-    // generation and drop stale responses via isLiveGen.
+    // A set switch abandons the in-flight page and its loading flag; the
+    // stale settlement below must not clear a newer load.
     function beginSetLoad() {
       setGen += 1;
+      loadingOlder = false;
       return setGen;
     }
 
@@ -171,7 +172,8 @@
       return { before: offset, gen: setGen, setId: id.setId, setName: id.setName, limit: size };
     }
 
-    function noteOlderSettled() {
+    function noteOlderSettled(gen) {
+      if (gen !== undefined && gen !== setGen) return;
       loadingOlder = false;
     }
 
@@ -204,6 +206,64 @@
   //   interrupt let it throw with nothing yet cleared, exactly like the
   //   original direct controller.abort() calls. Voice interrupt bumps the
   //   sequence only when generation was active.
+  // Conversation-bound requests capture initiating set plus generation; a set
+  // switch leaves the tracker sequence live, so application checks the
+  // capture against the live selection, not the controller alone.
+  function normalizeSetId(setId) {
+    if (setId == null || setId === '') return null;
+    return String(setId);
+  }
+
+  function captureConversationBinding(seq, setId, setGen) {
+    return { seq: seq, setId: normalizeSetId(setId), setGen: setGen };
+  }
+
+  function isLiveConversationBinding(binding, isSeqLive, isGenLive, currentSetId) {
+    if (!binding) return false;
+    if (!isSeqLive) return false;
+    if (!isGenLive) return false;
+    return normalizeSetId(currentSetId) === normalizeSetId(binding.setId);
+  }
+
+  function captureSetBinding(setId, setGen) {
+    return { setId: normalizeSetId(setId), setGen: setGen };
+  }
+
+  function isLiveSetBinding(binding, isGenLive, currentSetId) {
+    if (!binding) return false;
+    if (!isGenLive) return false;
+    return normalizeSetId(currentSetId) === normalizeSetId(binding.setId);
+  }
+
+  // Retries reuse the initiating target, never the live selection.
+  function snapshotSetIdentity(identity) {
+    var id = identity || {};
+    var snap = { setName: id.setName || 'default' };
+    if (id.setId != null && id.setId !== '') snap.setId = id.setId;
+    if (id.setVersion != null && id.setVersion !== '') snap.setVersion = id.setVersion;
+    return snap;
+  }
+
+  function shouldApplySetResponseForBinding(binding, data, isSeqLive, isGenLive, currentSetId) {
+    if (!isLiveConversationBinding(binding, isSeqLive, isGenLive, currentSetId)) return false;
+    if (!data) return false;
+    if (data.set_id != null && data.set_id !== '') {
+      if (normalizeSetId(data.set_id) !== normalizeSetId(currentSetId)) return false;
+      if (binding && normalizeSetId(data.set_id) !== normalizeSetId(binding.setId)) return false;
+    }
+    return true;
+  }
+
+  function shouldApplySetResponseForSetBinding(binding, data, isGenLive, currentSetId) {
+    if (!isLiveSetBinding(binding, isGenLive, currentSetId)) return false;
+    if (!data) return false;
+    if (data.set_id != null && data.set_id !== '') {
+      if (normalizeSetId(data.set_id) !== normalizeSetId(currentSetId)) return false;
+      if (binding && normalizeSetId(data.set_id) !== normalizeSetId(binding.setId)) return false;
+    }
+    return true;
+  }
+
   function createChatRequestTracker(createController) {
     var seq = 0;
     var controller = null;
@@ -263,6 +323,13 @@
     noteSetVersionFromReadTo: noteSetVersionFromReadTo,
     noteLocalVersionBumpAfterPersistTo: noteLocalVersionBumpAfterPersistTo,
     buildActiveSetPayload: buildActiveSetPayload,
+    captureConversationBinding: captureConversationBinding,
+    isLiveConversationBinding: isLiveConversationBinding,
+    captureSetBinding: captureSetBinding,
+    isLiveSetBinding: isLiveSetBinding,
+    snapshotSetIdentity: snapshotSetIdentity,
+    shouldApplySetResponseForBinding: shouldApplySetResponseForBinding,
+    shouldApplySetResponseForSetBinding: shouldApplySetResponseForSetBinding,
     shouldRetryVersionOnce: shouldRetryVersionOnce,
     isGhostTurn: isGhostTurn,
     resolveRegenerateAction: resolveRegenerateAction,

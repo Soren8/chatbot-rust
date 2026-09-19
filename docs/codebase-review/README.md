@@ -1,10 +1,18 @@
 # Codebase review program
 
-Latest resume point: session 046 — fresh main-model review reopens phase 1 (below). Earlier checkpoints record their original scope and status.
+Latest resume point: session 047 — conversation-bound requests verified; three phase-one ownership follow-ups remain. Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-two batches through session 044. Session 043 is committed as `b288bd2`; session 044 as `6d03545`. **Phase 1 is reopened following the fresh review at `d5fef48`. Four ownership follow-ups remain; phases 2–7 have not started.**
+Current remediation count: forty-three batches through session 047. **Phase 1 remains open following the fresh review at `d5fef48`. Playback disposal, production inference jobs and native stop outcomes remain; phases 2–7 have not started.**
+
+## Session 047 — conversation-bound requests, 2026-09-19
+
+MOD-009-A binds chat/regeneration response application to request sequence, set identity and history generation. Switching sets aborts the outgoing generation, settles its playback source and frees send controls; server cancellation retains the existing partial-turn persistence contract. Stale headers/readers are cancelled with rejection handling. Memory and prompt retries retain their initiating target, while stale success/error UI and version updates are fenced. Regeneration's full-pair pre-read cannot restart against a newly selected set. Older-page settlement cannot clear a newer generation's loading state.
+
+Main review rejected helper-only verification and required actual adapter execution, stale-request settlement, pre-read fencing and cancellation-rejection handling. Permanent regressions execute bounded source slices of the real chat adapters with real state/session/decoder owners and deferred transports. Behavioral red: `mod009a-red2-20260919T165259Z.log`, job `20260919T165259-83daa67da389`, six failures before the fix. Final full trusted suite: `temp/test-logs/mod009a-green3-20260919T171731Z.log`, job `20260919T171731-6c38f3014ef0`, exit 0, untruncated, including provider validation and nine composed request scenarios. Existing retry-once source pins were adjusted with approval to allow retained-target arguments. Main reviewed the production diff and regression infrastructure. No browser/device execution is claimed; deploying assets requires a host webserver rebuild/restart.
+
+Next is MOD-009-B, followed by MOD-015-A and MOD-012-A. COR-003 remains a separately scoped correctness lead.
 
 ## Session 046 — fresh main-model review and handoff, 2026-09-19
 

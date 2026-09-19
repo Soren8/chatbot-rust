@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Browser requests capture the initiating conversation identity and history generation as well as the request sequence. Switching sets cancels the outgoing generation and settles its playback source; stale stream callbacks cannot render or update the newly selected set. Memory and system-prompt retries retain the original target and fence their response UI. History-pair pre-reads and older-page settlement also respect the captured generation.
+
 Request policy is injectable through `ConfigSource` in `AppServices` and `RequestIdentity`: CSRF, cookie timeout, default prompt and voice-service base URL. Owned handles use explicit values; global handles retain call-time lookup. Home rendering captures one coherent live configuration when needed. Generation dependencies additionally own fake chunks, tool queries, Brave results, chunk delay and XAI fallback keys; explicit provider constructors do not consult ambient fake inputs.
 
 Browser rendering, playback queues and capture coordination live in `chat-renderer.js`, `tts-playback.js` and `voice-capture.js`. They receive DOM/markdown, transport, lifecycle, clock and platform dependencies from `chat.js`; desktop and native retain their shared session/protocol owners and established retry/barge-in behavior.

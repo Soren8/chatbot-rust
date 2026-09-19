@@ -368,8 +368,8 @@ fn version_conflict_retries_once_with_authoritative_version() {
         ("handleDeleteMessage", "handleDeleteMessage(buttonElement, true)"),
         ("handleForkMessage", "handleForkMessage(buttonElement, true)"),
         ("submitResetChat", "submitResetChat(true)"),
-        ("saveSystemPromptNow", "saveSystemPromptNow(sysPromptText, true)"),
-        ("saveMemoryNow", "saveMemoryNow(memText, true)"),
+        ("saveSystemPromptNow", "saveSystemPromptNow(sysPromptText, true"),
+        ("saveMemoryNow", "saveMemoryNow(memText, true"),
         ("submitRenameSet", "submitRenameSet(setId, oldName, newName, true)"),
         ("submitDeleteSet", "submitDeleteSet(setId, setName, true)"),
     ] {
