@@ -6,6 +6,11 @@ import android.media.AudioManager;
 /**
  * Holds speakerphone (VoIP communication) routing for one handheld voice-mode session.
  *
+ * <p>Routing holds {@link AudioManager#MODE_IN_COMMUNICATION} and speakerphone only.
+ * It never reads or writes any stream volume: the user owns every level, so
+ * entering must not raise a stream and exiting must not restore over a change
+ * the user made mid-session.
+ *
  * {@link #enter} is a no-op if already active so TTS start/stop cannot flip
  * {@link AudioManager#MODE_IN_COMMUNICATION} or the communication device mid-utterance.
  * Bluetooth output is left untouched: forcing the built-in speaker would yank
@@ -20,12 +25,6 @@ public final class VoiceAudioRoute {
         boolean isSpeakerphoneOn();
 
         void setSpeakerphoneOn(boolean on);
-
-        int getVoiceCallVolume();
-
-        int getVoiceCallMaxVolume();
-
-        void setVoiceCallVolume(int index);
 
         boolean requestCommunicationFocus();
 
@@ -60,7 +59,6 @@ public final class VoiceAudioRoute {
     private boolean active;
     private int previousMode = AudioManager.MODE_NORMAL;
     private boolean previousSpeakerphone;
-    private int previousVoiceCallVolume = -1;
     private Object previousCommunicationDevice;
     private boolean communicationDeviceTouched;
 
@@ -79,7 +77,6 @@ public final class VoiceAudioRoute {
 
         previousMode = backend.getMode();
         previousSpeakerphone = backend.isSpeakerphoneOn();
-        previousVoiceCallVolume = backend.getVoiceCallVolume();
         communicationDeviceTouched = false;
         previousCommunicationDevice = null;
 
@@ -91,7 +88,6 @@ public final class VoiceAudioRoute {
             communicationDeviceTouched = true;
             backend.setCommunicationDeviceToSpeaker();
         }
-        backend.setVoiceCallVolume(backend.getVoiceCallMaxVolume());
         active = true;
         return true;
     }
@@ -111,15 +107,11 @@ public final class VoiceAudioRoute {
                 backend.clearCommunicationDevice();
             }
         }
-        if (previousVoiceCallVolume >= 0) {
-            backend.setVoiceCallVolume(previousVoiceCallVolume);
-        }
         backend.setSpeakerphoneOn(previousSpeakerphone);
         backend.setMode(previousMode);
         backend.abandonCommunicationFocus();
 
         active = false;
-        previousVoiceCallVolume = -1;
         previousCommunicationDevice = null;
         communicationDeviceTouched = false;
         return true;

@@ -552,20 +552,6 @@ public final class VoiceModeForegroundStopTest {
         }
 
         @Override
-        public int getVoiceCallVolume() {
-            return 3;
-        }
-
-        @Override
-        public int getVoiceCallMaxVolume() {
-            return 7;
-        }
-
-        @Override
-        public void setVoiceCallVolume(int index) {
-        }
-
-        @Override
         public boolean requestCommunicationFocus() {
             return true;
         }

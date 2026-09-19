@@ -566,10 +566,8 @@ public class NativeVoiceTtsPlugin extends Plugin {
         if (am == null) {
             return;
         }
-        int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
-        if (max > 0) {
-            am.setStreamVolume(AudioManager.STREAM_MUSIC, max, 0);
-        }
+        // Acquire media focus only. Never write STREAM_MUSIC: the user's TTS
+        // level must survive track creation.
         AudioFocusRequest req = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)

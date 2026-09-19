@@ -52,8 +52,6 @@ public final class VoiceModeSessionCoordinatorTest {
         boolean bluetooth;
         int mode = AudioManager.MODE_NORMAL;
         boolean speakerphone;
-        int voiceVolume = 3;
-        final int voiceMax = 7;
         Object commDevice;
         int hasBluetoothCalls;
 
@@ -81,22 +79,6 @@ public final class VoiceModeSessionCoordinatorTest {
         public void setSpeakerphoneOn(boolean on) {
             log.add("route.speaker:" + on);
             speakerphone = on;
-        }
-
-        @Override
-        public int getVoiceCallVolume() {
-            return voiceVolume;
-        }
-
-        @Override
-        public int getVoiceCallMaxVolume() {
-            return voiceMax;
-        }
-
-        @Override
-        public void setVoiceCallVolume(int index) {
-            log.add("route.volume:" + index);
-            voiceVolume = index;
         }
 
         @Override
