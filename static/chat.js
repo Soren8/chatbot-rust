@@ -988,8 +988,25 @@ var desktopTtsClip = ChatTtsPlayback.createDesktopClipPipeline({
     if (typeof window.notifyVoiceModeTtsEnded === 'function') window.notifyVoiceModeTtsEnded();
   },
   logError: function () { console.error.apply(console, arguments); },
-  setTimeout: function (fn, ms) { return setTimeout(fn, ms); }
+  setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+  clearTimeout: function (id) { clearTimeout(id); },
+  registerClipCanceller: function (entry) { voiceLifecycle.registerDesktopClipCanceller(entry); },
+  unregisterClipCanceller: function (entry) { voiceLifecycle.unregisterDesktopClipCanceller(entry); }
 });
+
+// Active desktop queue handle from the owned playback unit. Set on start,
+// cleared on completion; stops dispose it before the session bumps.
+var activeDesktopTtsQueue = null;
+
+function disposeActiveDesktopTtsQueue() {
+  var handle = activeDesktopTtsQueue;
+  activeDesktopTtsQueue = null;
+  if (handle) handle.cancel();
+}
+
+function cancelDesktopTtsClipSession(sessionId) {
+  desktopTtsClip.cancelSession(sessionId);
+}
 
 function clearDesktopTtsPreloads() {
   voiceLifecycle.clearPreloads();
@@ -1061,13 +1078,18 @@ function primeDesktopTtsAudioFromGesture() {
 
 /**
  * Stop desktop TTS completely. Safe to call when idle.
- * Always bumps the owned desktop session so any prior async chain becomes a no-op.
+ * Disposes the queue and settles the active clip, then bumps the session.
  */
 function stopCurrentDesktopTts() {
+  var sessionId = null;
+  try { sessionId = voiceLifecycle.currentDesktopSession(); } catch (e) { /* ignore */ }
+  disposeActiveDesktopTtsQueue();
+  cancelDesktopTtsClipSession(sessionId);
   voiceLifecycle.stopDesktopPlayback();
 }
 
 function completeDesktopTtsPlayback(button) {
+  activeDesktopTtsQueue = null;
   voiceLifecycle.completeDesktopPlayback(button);
 }
 
@@ -1947,17 +1969,22 @@ function playOneTtsUtterance(sessionId, text) {
  * retries/backoff/termination exactly).
  */
 function playFixedSentenceList(sessionId, button, sentences) {
-  return ChatTtsPlayback.playFixedSentenceList({
+  var handle = ChatTtsPlayback.playFixedSentenceList({
     isLive: function (id) { return desktopTtsIsLive(id); },
-    onComplete: function (btn) { completeDesktopTtsPlayback(btn); },
+    onComplete: function (btn) { activeDesktopTtsQueue = null; completeDesktopTtsPlayback(btn); },
     preload: function (id, text) { preloadDesktopTtsSentence(id, text); },
     playOne: function (id, text) { return playOneTtsUtterance(id, text); },
     reportVoice: function (kind, msg) { reportVoice(kind, msg); },
     appendMessage: function (text, cls) { appendMessage(text, cls); },
     logError: function () { console.error.apply(console, arguments); },
     setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+    clearTimeout: function (id) { clearTimeout(id); },
+    registerClipCanceller: function (entry) { voiceLifecycle.registerDesktopClipCanceller(entry); },
+    unregisterClipCanceller: function (entry) { voiceLifecycle.unregisterDesktopClipCanceller(entry); },
     isVoiceModeActive: function () { return !!window.voiceModeActive; }
   }, sessionId, button, sentences);
+  activeDesktopTtsQueue = handle || null;
+  return handle;
 }
 
 
@@ -1973,9 +2000,9 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
   // the queue (existing latency behavior) and never supplies progress.
   var textEl = $messageElement.find('.ai-message-text')[0];
   var source = lookupMessagePlaybackSource($messageElement[0]);
-  return ChatTtsPlayback.playMessageBodyTts({
+  var handle = ChatTtsPlayback.playMessageBodyTts({
     isLive: function (id) { return desktopTtsIsLive(id); },
-    onComplete: function (btn) { completeDesktopTtsPlayback(btn); },
+    onComplete: function (btn) { activeDesktopTtsQueue = null; completeDesktopTtsPlayback(btn); },
     source: source,
     split: function (text) { return splitSentences(text); },
     terminator: function (text) { return sentenceEndsWithTerminator(text); },
@@ -1986,6 +2013,8 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
     logError: function () { console.error.apply(console, arguments); },
     setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
     clearTimeout: function (id) { clearTimeout(id); },
+    registerClipCanceller: function (entry) { voiceLifecycle.registerDesktopClipCanceller(entry); },
+    unregisterClipCanceller: function (entry) { voiceLifecycle.unregisterDesktopClipCanceller(entry); },
     isVoiceModeActive: function () { return !!window.voiceModeActive; },
     observeChanges: function (onChange) {
       if (textEl && typeof MutationObserver === 'function') {
@@ -1996,6 +2025,8 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
       return null;
     }
   }, sessionId, button);
+  activeDesktopTtsQueue = handle || null;
+  return handle;
 }
 
 /**
@@ -4238,6 +4269,10 @@ $(document).ready(function() {
   }
 
   function stopAllTtsPlayback(opts) {
+    var sessionId = null;
+    try { sessionId = voiceLifecycle.currentDesktopSession(); } catch (e) { /* ignore */ }
+    disposeActiveDesktopTtsQueue();
+    cancelDesktopTtsClipSession(sessionId);
     voiceLifecycle.stopAllPlayback(opts);
   }
   window.stopAllTtsPlayback = stopAllTtsPlayback;

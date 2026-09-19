@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: session 047 — conversation-bound requests verified; three phase-one ownership follow-ups remain. Earlier checkpoints record their original scope and status.
+Latest resume point: session 048 — playback cancellation verified; production inference jobs and native stop outcomes remain. Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-three batches through session 047. **Phase 1 remains open following the fresh review at `d5fef48`. Playback disposal, production inference jobs and native stop outcomes remain; phases 2–7 have not started.**
+Current remediation count: forty-four batches through session 048. **Phase 1 remains open following the fresh review at `d5fef48`. Production inference jobs and native stop outcomes remain; phases 2–7 have not started.**
+
+## Session 048 — desktop playback cancellation, 2026-09-19
+
+MOD-009-B gives desktop clips explicit silent cancellation and queues disposal handles. The lifecycle registers clip and queue disposers, so direct lifecycle stops as well as chat stop/replacement release source subscriptions, observers, polling and retry timers before clearing media handlers. Cancelled clips settle false; stale completions cannot disturb replacement handlers. Native queue behavior and barge-in thresholds remain unchanged.
+
+Main review required executing the real chat stop adapters and reproduced direct-lifecycle stops retaining retry/poll timers. Initial red: `mod009b-red-20260919T173434Z.log`, job `20260919T173434-8ea7085e3c57`; direct-stop red: `mod009b-r2-red-20260919T180824Z.log`, job `20260919T180824-2dbaf67e915e`. Final full trusted suite: `temp/test-logs/mod009b-r2-green-20260919T181317Z.log`, job `20260919T181317-f57206cdc854`, exit 0, untruncated, snapshot `dc93aaa21baa423525cdf131654fde3cd85b6db50948375427860db251d99def`. Permanent tests include resolved-play midclip stop, immediate replacement without a microtask gap, fixed-list retry and direct stop during idle polling/backoff. Main inspected the lifecycle, pipeline and composed adapters. This is CPU fixture evidence, not browser/device validation. Host webserver rebuild/restart is needed to deploy assets.
 
 ## Session 047 — conversation-bound requests, 2026-09-19
 

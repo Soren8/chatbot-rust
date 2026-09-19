@@ -28,7 +28,8 @@
   // getAudio(), createObjectUrl(blob), adoptBlobUrl(url),
   // releaseBlobUrl(url), isVoiceModeActive(), noteClipStarted(),
   // noteClipFinished(), notifyStarted(), notifyEnded(), logError(msg...),
-  // setTimeout(fn, ms).
+  // setTimeout(fn, ms), clearTimeout(id),
+  // registerClipCanceller(entry), unregisterClipCanceller(entry).
   //
   // Desktop queue deps (playFixedSentenceList / playMessageBodyTts):
   // isLive(sessionId), onComplete(button), source (explicit per-message
@@ -36,7 +37,8 @@
   // split(text), terminator(text), preload(sessionId, text),
   // playOne(sessionId, text), reportVoice(kind, msg), appendMessage(text, cls),
   // logError(msg...), setTimeout(fn, ms), clearTimeout(id),
-  // isVoiceModeActive(), observeChanges(onChange) -> disconnect|null.
+  // isVoiceModeActive(), observeChanges(onChange) -> disconnect|null,
+  // registerClipCanceller(entry), unregisterClipCanceller(entry).
   //
   // Native queue deps (playNativeVoiceModeTts):
   // voiceLifecycle (single owner for generation guards/notes), split,
@@ -85,6 +87,22 @@
     var logError = deps.logError;
     var setTimeoutFn = deps.setTimeout;
     var revokeObjectUrl = deps.revokeObjectUrl;
+    var clearTimeoutFn = deps.clearTimeout;
+    var registerClipCanceller = deps.registerClipCanceller;
+    var unregisterClipCanceller = deps.unregisterClipCanceller;
+    var activeClips = new Set();
+
+    // Session cancellation: silently settle every active clip for the session
+    // (all when sessionId is null). Silent skips note/notify; stop owns those.
+    function cancelSession(sessionId) {
+      var targets = [];
+      activeClips.forEach(function (entry) {
+        if (sessionId == null || !entry || entry.sessionId === sessionId) targets.push(entry);
+      });
+      targets.forEach(function (entry) {
+        entry.cancel();
+      });
+    }
 
     function fetchClip(sessionId, text) {
       if (!isLive(sessionId)) return Promise.resolve(null);
@@ -178,23 +196,54 @@
           }
           var settled = false;
           var clipAttempt = 0;
+          var retryTimer = null;
+          var onEndedHandler = null;
+          var onErrorHandler = null;
+          var clipEntry = null;
 
-          var finish = function (ok) {
+          var finish = function (ok, opts) {
+            opts = opts || {};
             if (settled) return;
             settled = true;
-            audio.onended = null;
-            audio.onerror = null;
+            if (retryTimer != null) {
+              try { clearTimeoutFn(retryTimer); } catch (e) { /* ignore */ }
+              retryTimer = null;
+            }
+            if (clipEntry) {
+              activeClips.delete(clipEntry);
+              unregisterClipCanceller(clipEntry);
+              clipEntry = null;
+            }
+            // Guarded clear: a replacement clip may already own the shared
+            // element when an old session settles late; never clear foreign
+            // handlers.
+            if (audio) {
+              try {
+                if (!onEndedHandler || audio.onended === onEndedHandler) audio.onended = null;
+              } catch (e) { /* ignore */ }
+              try {
+                if (!onErrorHandler || audio.onerror === onErrorHandler) audio.onerror = null;
+              } catch (e) { /* ignore */ }
+            }
             var playedUrl = clip.blobUrl;
             // Original finish owns the URL from here on via cleanUp +
             // releaseBlobUrlIfCurrent; preserve order exactly.
             if (clip.cleanUp) clip.cleanUp();
             if (typeof releaseBlobUrl === 'function') releaseBlobUrl(playedUrl);
-            if (isVoiceModeActive()) {
+            if (!opts.silent && isVoiceModeActive()) {
               noteClipFinished();
               if (typeof notifyEnded === 'function') notifyEnded();
             }
-            resolve(!!ok && isLive(sessionId));
+            if (opts.silent || opts.forceFalse) resolve(false);
+            else resolve(!!ok && isLive(sessionId));
           };
+
+          clipEntry = {
+            sessionId: sessionId,
+            cancel: function () { finish(false, { silent: true, forceFalse: true }); }
+          };
+          activeClips.add(clipEntry);
+          registerClipCanceller(clipEntry);
 
           var startClip = function () {
             if (settled) return;
@@ -213,7 +262,8 @@
                 finish(false);
                 return;
               }
-              setTimeoutFn(function () {
+              retryTimer = setTimeoutFn(function () {
+                retryTimer = null;
                 if (settled || !isLive(sessionId)) return;
                 startClip();
               }, TTS_CLIP_RETRY_BACKOFF_MS * clipAttempt);
@@ -231,8 +281,8 @@
             }
             clip.blobUrl = freshUrl;
             adoptBlobUrl(clip.blobUrl);
-            audio.onended = function () { finish(true); };
-            audio.onerror = function () {
+            onEndedHandler = function () { finish(true); };
+            onErrorHandler = function () {
               try {
                 var mediaErr = audio.error;
                 logError('TTS clip media error:',
@@ -240,6 +290,8 @@
               } catch (e) { /* ignore */ }
               failAttempt(null);
             };
+            audio.onended = onEndedHandler;
+            audio.onerror = onErrorHandler;
             audio.src = clip.blobUrl;
             if (isVoiceModeActive()) {
               noteClipStarted();
@@ -270,7 +322,8 @@
     return {
       fetchClip: fetchClip,
       preloadSentence: preloadSentence,
-      playOne: playOne
+      playOne: playOne,
+      cancelSession: cancelSession
     };
   }
 
@@ -283,14 +336,35 @@
     var appendMessage = deps.appendMessage;
     var logError = deps.logError;
     var setTimeoutFn = deps.setTimeout;
+    var clearTimeoutFn = (typeof deps.clearTimeout === 'function') ? deps.clearTimeout
+      : ((typeof clearTimeout === 'function') ? function (id) { try { clearTimeout(id); } catch (e) { /* ignore */ } } : function () {});
     var isVoiceModeActive = deps.isVoiceModeActive;
 
     var queue = (sentences || []).slice();
     var sentenceRetries = 0;
+    var cancelled = false;
+    var retryTimer = null;
+    var queueEntry = { sessionId: sessionId, cancel: function () { dispose(); } };
+
+    function dispose() {
+      cancelled = true;
+      if (retryTimer != null) {
+        try { clearTimeoutFn(retryTimer); } catch (e) { /* ignore */ }
+        retryTimer = null;
+      }
+      unregisterQueue();
+    }
+
+    function unregisterQueue() {
+      if (deps.unregisterClipCanceller) {
+        try { deps.unregisterClipCanceller(queueEntry); } catch (e) { /* ignore */ }
+      }
+    }
 
     function pump() {
-      if (!isLive(sessionId)) return;
+      if (cancelled || !isLive(sessionId)) return;
       if (!queue.length) {
+        unregisterQueue();
         onComplete(button);
         return;
       }
@@ -299,7 +373,7 @@
         preload(sessionId, queue[0]);
       }
       playOne(sessionId, next).then(function (ok) {
-        if (!isLive(sessionId)) return;
+        if (cancelled || !isLive(sessionId)) return;
         if (!ok) {
           if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (isVoiceModeActive() && isLive(sessionId))) {
             sentenceRetries += 1;
@@ -307,8 +381,9 @@
             var delay = isVoiceModeActive()
               ? Math.min(400 * sentenceRetries, 3000)
               : 400 * sentenceRetries;
-            setTimeoutFn(function () {
-              if (!isLive(sessionId)) return;
+            retryTimer = setTimeoutFn(function () {
+              retryTimer = null;
+              if (cancelled || !isLive(sessionId)) return;
               pump();
             }, delay);
             return;
@@ -318,6 +393,7 @@
           logError('Desktop TTS sentence failed after retries');
           reportVoice('VOICE-ERROR', 'TTS sentence failed (fixed list)');
           appendMessage('Voice output failed. Try again.', 'error-message');
+          unregisterQueue();
           onComplete(button);
           return;
         }
@@ -329,7 +405,11 @@
     if (queue.length > 0) {
       preload(sessionId, queue[0]);
     }
+    if (deps.registerClipCanceller) {
+      try { deps.registerClipCanceller(queueEntry); } catch (e) { /* ignore */ }
+    }
     pump();
+    return { cancel: dispose, dispose: dispose };
   }
 
   function playMessageBodyTts(deps, sessionId, button) {
@@ -358,9 +438,12 @@
     var pollTimer = null;
     var sentenceRetries = 0;
     var retryScheduled = false;
+    var retryTimer = null;
+    var cancelled = false;
+    var queueEntry = { sessionId: sessionId, cancel: function () { dispose(); } };
 
     function discoverAbsolute() {
-      if (!isLive(sessionId)) return;
+      if (cancelled || !isLive(sessionId)) return;
       var full = getText();
       if (!full || full.length <= consumedLen) return;
       var sentences = split(full);
@@ -383,7 +466,7 @@
     }
 
     function onTextChanged() {
-      if (!isLive(sessionId)) {
+      if (cancelled || !isLive(sessionId)) {
         teardownObserver();
         return;
       }
@@ -406,8 +489,27 @@
       }
     }
 
+    // Queue disposal clears poll/retry timers and disconnects the source
+    // subscription plus observer backstop; the active clip settles separately.
+    function dispose() {
+      cancelled = true;
+      retryScheduled = false;
+      if (retryTimer != null) {
+        try { clearTimeoutFn(retryTimer); } catch (e) { /* ignore */ }
+        retryTimer = null;
+      }
+      unregisterQueue();
+      teardownObserver();
+    }
+
+    function unregisterQueue() {
+      if (deps.unregisterClipCanceller) {
+        try { deps.unregisterClipCanceller(queueEntry); } catch (e) { /* ignore */ }
+      }
+    }
+
     function finishIfIdle() {
-      if (!isLive(sessionId)) {
+      if (cancelled || !isLive(sessionId)) {
         teardownObserver();
         return;
       }
@@ -415,7 +517,7 @@
       if (isGenerating()) {
         pollTimer = setTimeoutFn(function () {
           pollTimer = null;
-          if (!isLive(sessionId)) return;
+          if (cancelled || !isLive(sessionId)) return;
           discoverAbsolute();
           pump();
         }, 60);
@@ -426,12 +528,13 @@
         pump();
         return;
       }
+      unregisterQueue();
       teardownObserver();
       onComplete(button);
     }
 
     function pump() {
-      if (!isLive(sessionId) || running || retryScheduled) return;
+      if (cancelled || !isLive(sessionId) || running || retryScheduled) return;
       discoverAbsolute();
       if (!queue.length) {
         finishIfIdle();
@@ -444,7 +547,7 @@
       }
       playOne(sessionId, next).then(function (ok) {
         running = false;
-        if (!isLive(sessionId)) {
+        if (cancelled || !isLive(sessionId)) {
           teardownObserver();
           return;
         }
@@ -456,8 +559,10 @@
             var delay = isVoiceModeActive()
               ? Math.min(400 * sentenceRetries, 3000)
               : 400 * sentenceRetries;
-            setTimeoutFn(function () {
+            retryTimer = setTimeoutFn(function () {
+              retryTimer = null;
               retryScheduled = false;
+              if (cancelled) return;
               pump();
             }, delay);
             return;
@@ -467,6 +572,7 @@
           logError('Desktop TTS sentence failed after retries');
           reportVoice('VOICE-ERROR', 'TTS sentence failed (desktop)');
           appendMessage('Voice output failed. Try again.', 'error-message');
+          unregisterQueue();
           teardownObserver();
           onComplete(button);
           return;
@@ -485,7 +591,11 @@
       disconnectSource = source.subscribe(onTextChanged) || null;
     }
 
+    if (deps.registerClipCanceller) {
+      try { deps.registerClipCanceller(queueEntry); } catch (e) { /* ignore */ }
+    }
     pump();
+    return { cancel: dispose, dispose: dispose };
   }
 
   function playNativeVoiceModeTts(deps, button, options) {

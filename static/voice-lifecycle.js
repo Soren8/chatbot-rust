@@ -55,6 +55,7 @@
     var cooldownUntil = 0;
     var nativeGeneration = 0;
     var stopAllBusy = false;
+    var activeClips = new Set();
 
     function voiceModeActive() {
       return !!isVoiceModeActiveFn();
@@ -100,6 +101,25 @@
       return desktopAudio;
     }
 
+    function registerDesktopClipCanceller(entry) {
+      if (entry) activeClips.add(entry);
+    }
+
+    function unregisterDesktopClipCanceller(entry) {
+      if (entry) activeClips.delete(entry);
+    }
+
+    // Session disposal: run registered clip/queue disposers before handlers clear.
+    function cancelDesktopClips(sessionId) {
+      var targets = [];
+      activeClips.forEach(function (entry) {
+        if (sessionId == null || !entry || entry.sessionId === sessionId) targets.push(entry);
+      });
+      targets.forEach(function (entry) {
+        try { if (entry && typeof entry.cancel === 'function') entry.cancel(); } catch (e) { /* ignore */ }
+      });
+    }
+
     function resetDesktopAudioElement() {
       var audio = desktopAudio;
       if (!audio) return;
@@ -114,6 +134,7 @@
     }
 
     function stopDesktopPlayback() {
+      try { cancelDesktopClips(); } catch (e) { /* ignore */ }
       desktopSession += 1;
       if (desktopAbort) {
         try { desktopAbort.abort(); } catch (e) { /* ignore */ }
@@ -401,6 +422,9 @@
       clearListenCooldown: clearListenCooldown,
       isInCooldown: isInCooldown,
       getDesktopAudio: getDesktopAudio,
+      registerDesktopClipCanceller: registerDesktopClipCanceller,
+      unregisterDesktopClipCanceller: unregisterDesktopClipCanceller,
+      cancelDesktopClips: cancelDesktopClips,
       resetDesktopAudioElement: resetDesktopAudioElement,
       stopDesktopPlayback: stopDesktopPlayback,
       completeDesktopPlayback: completeDesktopPlayback,
