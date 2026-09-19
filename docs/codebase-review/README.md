@@ -1,10 +1,16 @@
 # Codebase review program
 
-Latest resume point: session 048 — playback cancellation verified; production inference jobs and native stop outcomes remain. Earlier checkpoints record their original scope and status.
+Latest resume point: session 049 — production inference jobs verified; native stop outcomes remain. Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-four batches through session 048. **Phase 1 remains open following the fresh review at `d5fef48`. Production inference jobs and native stop outcomes remain; phases 2–7 have not started.**
+Current remediation count: forty-five batches through session 049. **Phase 1 remains open following the fresh review at `d5fef48`. Native stop outcomes remain; phases 2–7 have not started.**
+
+## Session 049 — production inference jobs, 2026-09-19
+
+MOD-015-A extends service ownership to the production non-streaming Kokoro and STT routes. Each admitted job is tracked until inference and staging-file cleanup finish. Cancelling the waiter abandons its result, not the running GPU call or its resources. STT staging files are removed by the worker, including error paths; rejected admission and failed thread construction/start clean up before raising. Result delivery follows cleanup and unregistration. Shutdown rejects new work and joins streams and jobs off-loop under one shared five-second deadline, retaining unfinished workers. Lifecycle admission is serialized on the application's event loop; cross-loop concurrent use is not supported.
+
+Initial behavioral red: `mod015a-red-20260919T183344Z.log`, job `20260919T183347-633fff9be200`. Main review caught result delivery racing cleanup and required deterministic success/error ordering regressions plus cancelled-TTS, STT failed-start/rejection and combined stream/job deadline coverage. Ordering red: `mod015a-review-red-20260919T191044Z.log`, job `20260919T191046-73a3b9166db1`. Final full trusted suite: `temp/test-logs/mod015a-review-green-20260919T191857Z.log`, job `20260919T191901-5ab93d436eef`, exit 0, untruncated, 63 voice CPU tests; snapshot `c2a4f64b0b41d177fe9adbadeb8ff2e904edc7ade82220d922a75494a9dbf9b4`. Main reviewed routes, workers and event-gated tests. No GPU execution is claimed; deployment requires a host voice-service rebuild/restart.
 
 ## Session 048 — desktop playback cancellation, 2026-09-19
 

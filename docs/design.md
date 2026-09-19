@@ -4,6 +4,8 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+The voice service tracks non-streaming Kokoro/STT jobs alongside streaming producers. A cancelled waiter does not interrupt inference or release its STT staging file; the worker cleans up before delivering its result. Lifespan shutdown rejects new jobs and joins all worker types off-loop under one shared bounded deadline, retaining work that has not exited.
+
 Desktop playback cancellation settles active clip promises and disposes queue-owned subscriptions, observers and timers. The voice lifecycle registers both clip and queue disposers so direct lifecycle stops and UI stop/replacement paths share cleanup; cancellation does not emit normal completion notifications.
 
 Browser requests capture the initiating conversation identity and history generation as well as the request sequence. Switching sets cancels the outgoing generation and settles its playback source; stale stream callbacks cannot render or update the newly selected set. Memory and system-prompt retries retain the original target and fence their response UI. History-pair pre-reads and older-page settlement also respect the captured generation.

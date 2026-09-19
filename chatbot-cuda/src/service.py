@@ -10,14 +10,18 @@ service-owned producer work (daemon thread + bounded asyncio queue,
 ``run_coroutine_threadsafe`` put future per item (bytes, error, or sentinel;
 never resubmitted, never evicted) and polls it with cancellation. The consumer
 only signals ``cancel`` and never unregisters; the producer unregisters after
-exit. Lifespan teardown ``aclose`` cancels all work and joins threads off the
-event loop under one total ``_SHUTDOWN_JOIN_TIMEOUT`` deadline, warning about
-and retaining still-alive workers.
+exit. Production non-streaming work (``synthesize_kokoro_async``,
+``transcribe_async``) admits one daemon worker per call in ``_jobs``. Waiter
+cancellation only abandons the future; the running call always continues to
+exit, and the STT file is removed by that worker before the result settles.
+Lifespan teardown ``aclose`` joins streams and jobs off the event loop under
+one total ``_SHUTDOWN_JOIN_TIMEOUT`` deadline, warning about and retaining
+still-alive workers.
 
-Cooperative boundary (honest): an in-flight pipeline ``next()`` (GPU
-inference) cannot be forcibly stopped; cancellation applies at the next
-boundary. ``_lock`` is held only for set/flag updates, never across queue
-waits or thread joins. Loop posts tolerate a closed loop.
+Cooperative boundary (honest): in-flight GPU inference cannot be forcibly
+stopped. Admission and shutdown are serialized on the service event loop
+(same scope as streaming); ``_lock`` guards flags/sets only, never I/O,
+waits, or joins. Loop posts tolerate a closed loop.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import os
 import threading
 import time
 from typing import Any, AsyncGenerator, Callable, Optional
@@ -71,6 +76,20 @@ class _ActiveStream:
         self.done = threading.Event()
 
 
+class _ActiveJob:
+    """Owner for one non-streaming worker thread (no cancel flag).
+
+    Waiter cancellation abandons the future; the running call always
+    continues to exit, so there is nothing to signal.
+    """
+
+    __slots__ = ("loop", "thread")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.thread: threading.Thread | None = None
+
+
 class InferenceService:
     """Concrete owner of loaded pipelines and readiness state."""
 
@@ -92,6 +111,7 @@ class InferenceService:
         self._pcm_converter: PcmConverter = pcm_converter or default_pcm_converter
         self._lock = threading.Lock()
         self._active: set[_ActiveStream] = set()
+        self._jobs: set[_ActiveJob] = set()
         self._shutting_down = False
 
     # ── Explicit readiness ────────────────────────────────────────────────
@@ -239,6 +259,19 @@ class InferenceService:
             chunks.append(self._pcm_converter(audio))
         return b"".join(chunks), self.settings.kokoro_sample_rate
 
+    async def synthesize_kokoro_async(
+        self,
+        text: str,
+        voice: str = "af_heart",
+    ) -> tuple[bytes, int]:
+        """Tracked full synthesis; rejects new work after shutdown."""
+        return await self._run_blocking_job(
+            self.synthesize_kokoro,
+            text,
+            voice=voice,
+            job_kind="Kokoro synthesis",
+        )
+
     async def synthesize_kokoro_stream(
         self,
         text: str,
@@ -306,25 +339,31 @@ class InferenceService:
         with self._lock:
             return len(self._active)
 
-    async def aclose(self) -> None:
-        """Cancel all active streams and join their threads off the loop.
+    def active_job_count(self) -> int:
+        """Number of registered in-flight non-streaming workers."""
+        with self._lock:
+            return len(self._jobs)
 
-        Idempotent: marks shutdown (new streams are rejected), signals every
-        registered producer, then joins under one total
-        ``_SHUTDOWN_JOIN_TIMEOUT`` deadline in a worker thread. Still-alive
-        workers are logged and stay tracked until they actually exit. The lock
-        is never held across waits or joins.
+    async def aclose(self) -> None:
+        """Mark shutdown, then join streams and jobs off the loop.
+
+        New streams and jobs are rejected. Still-alive workers are logged
+        and stay tracked until they exit. The lock is never held across
+        waits or joins.
         """
         with self._lock:
             self._shutting_down = True
             streams = list(self._active)
+            jobs = list(self._jobs)
         for stream in streams:
             stream.cancel.set()
-        if streams:
-            await asyncio.to_thread(self._join_all, streams)
+        if streams or jobs:
+            await asyncio.to_thread(self._join_all, streams, jobs)
 
     @staticmethod
-    def _join_all(streams: list[_ActiveStream]) -> None:
+    def _join_all(
+        streams: list[_ActiveStream], jobs: list[_ActiveJob]
+    ) -> None:
         deadline = time.monotonic() + _SHUTDOWN_JOIN_TIMEOUT
         for stream in streams:
             if time.monotonic() >= deadline:
@@ -332,17 +371,141 @@ class InferenceService:
             thread = stream.thread
             if thread is not None:
                 thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        for job in jobs:
+            if time.monotonic() >= deadline:
+                break
+            thread = job.thread
+            if thread is not None:
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
         alive = [
-            stream
-            for stream in streams
-            if stream.thread is not None and stream.thread.is_alive()
+            work
+            for work in (*streams, *jobs)
+            if work.thread is not None and work.thread.is_alive()
         ]
         if alive:
             logger.warning(
-                "TTS shutdown timed out with %d streaming worker(s) still "
+                "Shutdown timed out with %d worker(s) still "
                 "running; they stay tracked until exit",
                 len(alive),
             )
+
+    async def _run_blocking_job(
+        self,
+        func: Callable[..., Any],
+        *args: Any,
+        job_kind: str = "inference",
+        cleanup_path: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Admit one worker and await its future.
+
+        Waiter cancellation abandons the future; the worker always runs to
+        exit and settles the result only after file cleanup and
+        unregistration. ``cleanup_path`` is removed on every path after
+        this call, so callers never unlink. No lock is held during I/O.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if cleanup_path is not None:
+                self._unlink_quietly(cleanup_path)
+            raise
+        job = _ActiveJob(loop)
+        future = loop.create_future()
+        try:
+            job.thread = threading.Thread(
+                target=self._run_job,
+                args=(job, future, func, args, kwargs, cleanup_path),
+                daemon=True,
+                name="inference-job",
+            )
+        except Exception:
+            if not future.done():
+                future.cancel()
+            if cleanup_path is not None:
+                self._unlink_quietly(cleanup_path)
+            raise
+        with self._lock:
+            if self._shutting_down:
+                rejected = True
+            else:
+                self._jobs.add(job)
+                rejected = False
+        if rejected:
+            if not future.done():
+                future.cancel()
+            if cleanup_path is not None:
+                self._unlink_quietly(cleanup_path)
+            raise RuntimeError(f"{job_kind} is shut down")
+        try:
+            job.thread.start()
+        except Exception:
+            with self._lock:
+                self._jobs.discard(job)
+            if not future.done():
+                future.cancel()
+            if cleanup_path is not None:
+                self._unlink_quietly(cleanup_path)
+            raise
+        return await future
+
+    def _run_job(
+        self,
+        job: _ActiveJob,
+        future: asyncio.Future,
+        func: Callable[..., Any],
+        args: tuple,
+        kwargs: dict,
+        cleanup_path: Optional[str],
+    ) -> None:
+        """Run, clean up, unregister, then settle; never raises."""
+        try:
+            outcome = func(*args, **kwargs)
+        except Exception as exc:
+            outcome = exc
+            is_error = True
+        else:
+            is_error = False
+        if cleanup_path is not None:
+            self._unlink_quietly(cleanup_path)
+        with self._lock:
+            self._jobs.discard(job)
+        if is_error:
+            self._deliver_job_result(job, future, None, outcome)
+        else:
+            self._deliver_job_result(job, future, outcome, None)
+
+    def _deliver_job_result(
+        self,
+        job: _ActiveJob,
+        future: asyncio.Future,
+        result: Any,
+        exc: Optional[BaseException],
+    ) -> None:
+        """Post one result to the loop; never raises or double-settles."""
+        loop = job.loop
+        if loop.is_closed():
+            return
+
+        def _set() -> None:
+            if future.done():
+                return
+            if exc is not None:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        try:
+            loop.call_soon_threadsafe(_set)
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _unlink_quietly(path: str) -> None:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
 
     def _run_stream(self, stream: _ActiveStream, text: str, voice: str) -> None:
         """Producer body: sentences become PCM on the bounded queue.
@@ -433,3 +596,12 @@ class InferenceService:
         if hasattr(hyp, "text"):
             return hyp.text.strip()
         return str(hyp).strip()
+
+    async def transcribe_async(self, audio_path: str) -> str:
+        """Tracked transcription; owns the staging file until settle."""
+        return await self._run_blocking_job(
+            self.transcribe,
+            audio_path,
+            job_kind="STT transcription",
+            cleanup_path=audio_path,
+        )

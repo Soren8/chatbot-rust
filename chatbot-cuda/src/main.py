@@ -6,18 +6,17 @@ services, so tests exercise the same startup path and failure. Every route
 uses ``request.app.state.inference_service``. Startup load failures propagate
 and the app never starts degraded. HTTP shapes: TTS 400/500 with
 ``application/octet-stream`` + ``X-Sample-Rate``; STT 400/422/500 with WAV
-staging cleaned via ``os.unlink`` in ``finally``; health reports the owned
-service's flags. Streaming uses a service-owned daemon thread per request with
-a bounded queue (``STREAM_BUFFER_SIZE`` backpressure): consumer close/cancel
-signals the producer at the next sentence boundary, and lifespan teardown
-cancels all active streams and joins their threads off the event loop, then
-rejects new streams. In-flight GPU inference for the current sentence cannot
-be interrupted (cooperative boundary).
+staging owned by the service worker through its actual exit; health reports
+the owned service's flags. Streaming uses a service-owned daemon thread per
+request with a bounded queue (``STREAM_BUFFER_SIZE`` backpressure): consumer
+close/cancel signals the producer at the next sentence boundary, and
+lifespan teardown cancels active streams and joins streams and jobs
+off the event loop under one deadline, then rejects new work.
+In-flight GPU inference for the current sentence or call cannot be
+interrupted (cooperative boundary).
 """
 
-import asyncio
 import logging
-import os
 import tempfile
 from contextlib import aclosing, asynccontextmanager
 
@@ -95,8 +94,7 @@ async def kokoro_tts(req: KokoroTtsRequest, request: Request):
 
     service: InferenceService = request.app.state.inference_service
     try:
-        pcm, sr = await asyncio.to_thread(
-            service.synthesize_kokoro,
+        pcm, sr = await service.synthesize_kokoro_async(
             text=req.text,
             voice=req.voice,
         )
@@ -163,12 +161,10 @@ async def stt(request: Request, audio: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        text = await asyncio.to_thread(service.transcribe, tmp_path)
+        text = await service.transcribe_async(tmp_path)
     except Exception as exc:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=str(exc))
-    finally:
-        os.unlink(tmp_path)
 
     return {"text": text}
 
