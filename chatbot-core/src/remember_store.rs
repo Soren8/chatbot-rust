@@ -399,7 +399,14 @@ fn extract_named_cookie(cookie_header: Option<&str>, name: &str) -> Option<Strin
 
 /// `Set-Cookie` value issuing a new remember token (30 days, sliding on use).
 pub fn build_set_cookie(token: &str) -> String {
-    let secure = secure_flag();
+    build_set_cookie_with_csrf(token, crate::config::app_config().csrf)
+}
+
+/// Explicit-CSRF variant for owned routers: same shape as
+/// [`build_set_cookie`] with no ambient config read. Global routers keep
+/// using [`build_set_cookie`] so the live lookup timing is untouched.
+pub fn build_set_cookie_with_csrf(token: &str, csrf: bool) -> String {
+    let secure = secure_flag_with(csrf);
     format!(
         "{REMEMBER_COOKIE_NAME}={token}; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age={REMEMBER_MAX_AGE_SECS}"
     )
@@ -407,26 +414,41 @@ pub fn build_set_cookie(token: &str) -> String {
 
 /// `Set-Cookie` value clearing the last-used remember cookie.
 pub fn build_clear_cookie() -> String {
-    let secure = secure_flag();
+    build_clear_cookie_with_csrf(crate::config::app_config().csrf)
+}
+
+/// Explicit-CSRF variant with no ambient read; see [`build_set_cookie_with_csrf`].
+pub fn build_clear_cookie_with_csrf(csrf: bool) -> String {
+    let secure = secure_flag_with(csrf);
     format!("{REMEMBER_COOKIE_NAME}=; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age=0")
 }
 
 pub fn build_account_set_cookie(username: &str, token: &str) -> String {
+    build_account_set_cookie_with_csrf(username, token, crate::config::app_config().csrf)
+}
+
+/// Explicit-CSRF variant with no ambient read; see [`build_set_cookie_with_csrf`].
+pub fn build_account_set_cookie_with_csrf(username: &str, token: &str, csrf: bool) -> String {
     let name = account_cookie_name(username);
-    let secure = secure_flag();
+    let secure = secure_flag_with(csrf);
     format!(
         "{name}={token}; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age={REMEMBER_MAX_AGE_SECS}"
     )
 }
 
 pub fn build_account_clear_cookie(username: &str) -> String {
+    build_account_clear_cookie_with_csrf(username, crate::config::app_config().csrf)
+}
+
+/// Explicit-CSRF variant with no ambient read; see [`build_set_cookie_with_csrf`].
+pub fn build_account_clear_cookie_with_csrf(username: &str, csrf: bool) -> String {
     let name = account_cookie_name(username);
-    let secure = secure_flag();
+    let secure = secure_flag_with(csrf);
     format!("{name}=; Path=/;{secure} HttpOnly; SameSite=Lax; Max-Age=0")
 }
 
-fn secure_flag() -> &'static str {
-    if crate::config::app_config().csrf {
+fn secure_flag_with(csrf: bool) -> &'static str {
+    if csrf {
         " Secure;"
     } else {
         ""

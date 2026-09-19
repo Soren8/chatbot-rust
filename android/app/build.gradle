@@ -1,4 +1,24 @@
+import groovy.json.JsonSlurper
+
 apply plugin: 'com.android.application'
+
+// The tracked root capacitor.config.json is the single source of truth for
+// native origins. It defines BOTH serverUrls (emulator + physical) with no
+// server.url override; each flavor projects its own entry into the
+// server_url resource, which is the single canonical native origin at
+// runtime (see ServerUrlResolver). Never hardcode endpoint literals here.
+// (Unknown top-level keys are ignored by Capacitor/CapConfig, so the
+// serverUrls block never becomes a WebView override.)
+def capacitorConfigFile = rootProject.file('../capacitor.config.json')
+def capacitorConfig = new JsonSlurper().parse(capacitorConfigFile)
+def emulatorServerUrl = capacitorConfig?.serverUrls?.emulator
+def physicalServerUrl = capacitorConfig?.serverUrls?.physical
+if (!(emulatorServerUrl instanceof String) || emulatorServerUrl.isEmpty()
+        || !(physicalServerUrl instanceof String) || physicalServerUrl.isEmpty()) {
+    throw new GradleException(
+            "capacitor.config.json must define serverUrls.emulator and serverUrls.physical "
+            + "(looked in " + capacitorConfigFile + ")")
+}
 
 android {
     namespace = "com.chatbot.app"
@@ -31,11 +51,11 @@ android {
     productFlavors {
         emulator {
             dimension "environment"
-            resValue "string", "server_url", "http://10.0.2.2:80"
+            resValue "string", "server_url", emulatorServerUrl
         }
         physical {
             dimension "environment"
-            resValue "string", "server_url", "https://desktop-1.tailfc0df0.ts.net"
+            resValue "string", "server_url", physicalServerUrl
         }
     }
 }

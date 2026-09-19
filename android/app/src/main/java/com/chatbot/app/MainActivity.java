@@ -27,6 +27,7 @@ import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
+import com.chatbot.app.util.ServerUrlResolver;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.CapConfig;
 
@@ -84,9 +85,17 @@ public class MainActivity extends BridgeActivity {
         // Vanadium/Chromium throttles Capacitor's WebMessage bridge in the
         // background. Keep the legacy bridge for the voice-mode event stream.
         CapConfig base = CapConfig.loadDefault(this);
+        // Flavor authority: the WebView origin is ALWAYS the build-flavor
+        // server_url resource. capacitor.config.json carries no server.url
+        // override, so the Bridge/Config URL is never consulted.
+        String flavorUrl = null;
+        try {
+            flavorUrl = getString(R.string.server_url);
+        } catch (Exception ignored) {}
+        String serverUrl = ServerUrlResolver.resolveCanonical(flavorUrl);
         config = new CapConfig.Builder(this)
                 .setHTML5mode(base.isHTML5Mode())
-                .setServerUrl(base.getServerUrl())
+                .setServerUrl(serverUrl)
                 .setErrorPath(base.getErrorPath())
                 .setHostname(base.getHostname())
                 .setStartPath(base.getStartPath())
@@ -161,22 +170,14 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    // Canonical native origin (flavor resource, always); authority owned by
+    // ServerUrlResolver.
     private String resolveServerUrl() {
-        String url = null;
+        String resourceUrl = null;
         try {
-            if (getBridge() != null && getBridge().getServerUrl() != null && !getBridge().getServerUrl().isEmpty()) {
-                url = getBridge().getServerUrl();
-            }
+            resourceUrl = getString(R.string.server_url);
         } catch (Exception ignored) {}
-        if (url == null || url.isEmpty()) {
-            try {
-                url = getString(R.string.server_url);
-            } catch (Exception ignored) {}
-        }
-        if (url == null || url.isEmpty()) {
-            url = "http://localhost";
-        }
-        return url;
+        return ServerUrlResolver.resolveCanonical(resourceUrl);
     }
 
     private boolean isUserLoggedIn() {

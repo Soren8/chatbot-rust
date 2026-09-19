@@ -34,6 +34,10 @@ webserver:
     enabled: true
     mountPath: /app/.config.yml
 
+# SAMPLE ONLY / UNSUPPORTED: no template under templates/ reads
+# .Values.voiceService, so `enabled` is accepted but has no effect (there is
+# no voice-service Deployment). Run voice-service on the GPU host / bare
+# metal and point voice_service_host in the ConfigMap at it.
 voiceService:
   enabled: false
   image:

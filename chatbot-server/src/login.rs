@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use chatbot_core::{
-    account_service::AccountService, config, remember_store,
+    account_service::AccountService, config_source::ConfigSource, remember_store,
     user_store::normalise_username,
 };
 use minijinja::{context, AutoEscape, Environment};
@@ -181,6 +181,7 @@ pub async fn handle_login_post(
             &accounts,
             &username,
             presented.as_deref(),
+            &services.config_source(),
         ) {
             Ok(set_cookies) => {
                 for set_cookie in set_cookies {
@@ -210,14 +211,22 @@ pub async fn handle_login_post(
                 store.revoke(last.as_deref());
             }
         }
+        // Each emitted clear cookie resolves CSRF at its own site, like the
+        // original per-build reads.
+        let request_config = services.config_source();
         if last_belongs {
-            if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+            if let Ok(value) = HeaderValue::from_str(
+                &remember_store::build_clear_cookie_with_csrf(request_config.csrf()),
+            ) {
                 response = response.header(header::SET_COOKIE, value);
             }
         }
-        if let Ok(value) =
-            HeaderValue::from_str(&remember_store::build_account_clear_cookie(&username))
-        {
+        if let Ok(value) = HeaderValue::from_str(
+            &remember_store::build_account_clear_cookie_with_csrf(
+                &username,
+                request_config.csrf(),
+            ),
+        ) {
             response = response.header(header::SET_COOKIE, value);
         }
     }
@@ -226,9 +235,16 @@ pub async fn handle_login_post(
         let max_age = if remember_me {
             remember_store::REMEMBER_MAX_AGE_SECS
         } else {
-            config::app_config().session_timeout.max(60)
+            services.config_source().session_timeout().max(60)
         };
-        response = attach_enc_key_cookies(response, &username, key_str, max_age, remember_me);
+        response = attach_enc_key_cookies(
+            response,
+            &username,
+            key_str,
+            max_age,
+            remember_me,
+            &services.config_source(),
+        );
     }
 
     response
@@ -236,27 +252,42 @@ pub async fn handle_login_post(
         .map_err(|err| map_response_build_err(err, "login::post::redirect"))
 }
 
+/// Attach enc-key cookies, resolving CSRF separately at each emit site like
+/// the original per-build reads (two reads when both cookies emit).
 fn attach_enc_key_cookies(
     mut builder: axum::http::response::Builder,
     username: &str,
     key_str: &str,
     max_age: u64,
     persist_account: bool,
+    config: &ConfigSource,
 ) -> axum::http::response::Builder {
-    if let Ok(value) =
-        HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(key_str, max_age))
-    {
+    if let Ok(value) = HeaderValue::from_str(
+        &crate::chat_utils::build_enc_key_set_cookie_with_csrf(
+            key_str,
+            max_age,
+            config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
     if persist_account {
-        if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_set_cookie(
-            username, key_str, max_age,
-        )) {
+        if let Ok(value) = HeaderValue::from_str(
+            &crate::chat_utils::build_enc_key_account_set_cookie_with_csrf(
+                username,
+                key_str,
+                max_age,
+                config.csrf(),
+            ),
+        ) {
             builder = builder.header(header::SET_COOKIE, value);
         }
-    } else if let Ok(value) =
-        HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_clear_cookie(username))
-    {
+    } else if let Ok(value) = HeaderValue::from_str(
+        &crate::chat_utils::build_enc_key_account_clear_cookie_with_csrf(
+            username,
+            config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
     builder
@@ -279,16 +310,23 @@ fn presented_enc_key_string(
     crate::chat_utils::enc_key_cookie_value(&key).map(str::to_string)
 }
 
+/// Issue remember cookies, resolving CSRF separately at each emit site like
+/// the original per-build reads.
 fn issue_remember_cookies(
     accounts: &AccountService,
     username: &str,
     presented: Option<&str>,
+    config: &ConfigSource,
 ) -> Result<Vec<String>, remember_store::RememberError> {
     let store = accounts.remember()?;
     let token = store.issue_or_refresh(username, presented)?;
     Ok(vec![
-        remember_store::build_set_cookie(&token),
-        remember_store::build_account_set_cookie(username, &token),
+        remember_store::build_set_cookie_with_csrf(&token, config.csrf()),
+        remember_store::build_account_set_cookie_with_csrf(
+            username,
+            &token,
+            config.csrf(),
+        ),
     ])
 }
 
@@ -412,8 +450,15 @@ pub async fn handle_login_remember_post(
 
             for set_cookie in [
                 finalize.set_cookie,
-                remember_store::build_set_cookie(&replacement_token),
-                remember_store::build_account_set_cookie(&username, &replacement_token),
+                remember_store::build_set_cookie_with_csrf(
+                    &replacement_token,
+                    services.config_source().csrf(),
+                ),
+                remember_store::build_account_set_cookie_with_csrf(
+                    &username,
+                    &replacement_token,
+                    services.config_source().csrf(),
+                ),
             ] {
                 match HeaderValue::from_str(&set_cookie) {
                     Ok(value) => {
@@ -441,6 +486,7 @@ pub async fn handle_login_remember_post(
                             &enc_key,
                             remember_store::REMEMBER_MAX_AGE_SECS,
                             true,
+                            &services.config_source(),
                         );
                     }
                 }
@@ -540,23 +586,33 @@ pub async fn handle_login_forget_post(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-    if let Ok(value) =
-        HeaderValue::from_str(&remember_store::build_account_clear_cookie(&username))
-    {
+    // Each emitted clear cookie resolves CSRF at its own site.
+    let request_config = services.config_source();
+    if let Ok(value) = HeaderValue::from_str(
+        &remember_store::build_account_clear_cookie_with_csrf(
+            &username,
+            request_config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
-    if let Ok(value) =
-        HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_clear_cookie(&username))
-    {
+    if let Ok(value) = HeaderValue::from_str(
+        &crate::chat_utils::build_enc_key_account_clear_cookie_with_csrf(
+            &username,
+            request_config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
     if last_belongs {
-        if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+        if let Ok(value) = HeaderValue::from_str(
+            &remember_store::build_clear_cookie_with_csrf(request_config.csrf()),
+        ) {
             builder = builder.header(header::SET_COOKIE, value);
         }
-        if let Ok(value) =
-            HeaderValue::from_str(&crate::chat_utils::build_enc_key_clear_cookie())
-        {
+        if let Ok(value) = HeaderValue::from_str(
+            &crate::chat_utils::build_enc_key_clear_cookie_with_csrf(request_config.csrf()),
+        ) {
             builder = builder.header(header::SET_COOKIE, value);
         }
     }

@@ -104,6 +104,9 @@ COPY chatbot-cuda /app/chatbot-cuda
 COPY static /app/static
 # Integration tests inspect Android sources with compile-time include_str! calls.
 COPY android/app/src /app/android/app/src
+COPY android/app/build.gradle /app/android/app/build.gradle
+COPY capacitor.config.json package.json package-lock.json .gitignore /app/
+COPY deploy/helm/chatbot /app/deploy/helm/chatbot
 COPY .config.yml.example /app/.config.yml.example
 # docker_build.rs guards the image build recipe itself.
 COPY Dockerfile /app/Dockerfile

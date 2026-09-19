@@ -57,7 +57,6 @@ fn chat_page_wires_shared_decoder_before_app_script() {
 
     let chat_js = include_str!("../../static/chat.js");
     for marker in [
-        "ChatStreamDecoder.decodeComplete",
         "ChatStreamDecoder.pushChunk",
         "ChatStreamDecoder.flushRemainder",
     ] {
@@ -66,6 +65,14 @@ fn chat_page_wires_shared_decoder_before_app_script() {
             "chat.js must delegate streaming protocol to the shared decoder; missing: {marker}"
         );
     }
+    // Whole-text projection moved to the owned renderer unit; chat keeps the
+    // thin formatAiMessage/renderMarkdown adapters above (still resolving
+    // through it).
+    let renderer_js = include_str!("../../static/chat-renderer.js");
+    assert!(
+        renderer_js.contains("getStreamDecoder().decodeComplete("),
+        "renderer must project whole text via the injected stream decoder; missing: getStreamDecoder().decodeComplete("
+    );
     assert_eq!(
         chat_js.matches("function formatAiMessage(text)").count(),
         1,

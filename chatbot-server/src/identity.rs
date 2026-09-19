@@ -15,15 +15,18 @@
 //! with an independent [`HttpSessionStore`]; two such routers share no
 //! cookies, CSRF tokens, or login bindings.
 //!
-//! Only identity is scoped here. Full per-router resource composition (this
-//! identity plus TTS pending tokens plus rate-limit counters) lives in
-//! [`crate::services::AppServices`]; that context installs this same identity
-//! value as the legacy extension, so the two never diverge. Chat history,
-//! the remember store, user store, and configuration stay process-global.
+//! Only identity plus its CSRF request config is scoped here. Full
+//! per-router resource composition (this identity plus TTS pending tokens
+//! plus rate-limit counters plus chat/accounts/generation/policies/config)
+//! lives in [`crate::services::AppServices`]; that context installs this same
+//! identity value as the legacy extension, so the two never diverge. Chat
+//! history, the remember store and user store stay process-global unless an
+//! explicit [`crate::services::AppServices`] backs them.
 
 use std::sync::Arc;
 
 use axum::http::Extensions;
+use chatbot_core::config_source::ConfigSource;
 use chatbot_core::session_identity::{
     self, HomeBootstrap, HttpSessionStore, LoginFinalize, LogoutFinalize, SessionContext,
     SessionError,
@@ -35,6 +38,7 @@ use chatbot_core::session_identity::{
 pub struct RequestIdentity {
     store: Option<Arc<HttpSessionStore>>,
     csrf_override: Option<bool>,
+    config: ConfigSource,
 }
 
 impl RequestIdentity {
@@ -46,30 +50,66 @@ impl RequestIdentity {
         Self {
             store: None,
             csrf_override: None,
+            config: ConfigSource::global(),
         }
     }
 
     /// Independent identity backed by `store`. The CSRF policy stays live
     /// from the global config, exactly like the compatibility path.
+    /// Use [`RequestIdentity::with_store_and_config`] for an owned policy.
     pub fn with_store(store: Arc<HttpSessionStore>) -> Self {
         Self {
             store: Some(store),
             csrf_override: None,
+            config: ConfigSource::global(),
         }
     }
 
     /// Independent identity with an explicit CSRF policy, immune to ambient
-    /// config. Prefer this in tests that assert CSRF behavior.
+    /// config. Prefer [`RequestIdentity::with_store_and_config`] for full
+    /// request-config ownership; this bool form stays for focused CSRF tests.
+    /// The override wins over any [`ConfigSource`] set later via
+    /// [`RequestIdentity::with_config_source`].
     pub fn with_store_and_csrf(store: Arc<HttpSessionStore>, csrf_enabled: bool) -> Self {
         Self {
             store: Some(store),
             csrf_override: Some(csrf_enabled),
+            config: ConfigSource::global(),
         }
     }
 
+    /// Independent identity with an explicit request config, immune to ambient
+    /// config. The CSRF flag resolves from `config` unless an explicit
+    /// override was set via [`RequestIdentity::with_store_and_csrf`].
+    /// Requires an owned store; the global store stays on the live path
+    /// unless [`RequestIdentity::with_config_source`] is used to scope it.
+    pub fn with_store_and_config(store: Arc<HttpSessionStore>, config: ConfigSource) -> Self {
+        Self {
+            store: Some(store),
+            csrf_override: None,
+            config,
+        }
+    }
+
+    /// Scope this identity (owned or global store) to an explicit request
+    /// config, preserving any explicit CSRF override. Both stores resolve
+    /// CSRF from `config` (one read per call when live, none when owned);
+    /// the global store keeps its records and store-first first-use order.
+    /// Used by [`crate::services::AppServices::with_config_source`] so the
+    /// router identity and the services config stay a single source. For full
+    /// session isolation use [`RequestIdentity::with_store_and_config`].
+    pub fn with_config_source(mut self, config: ConfigSource) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// The request config backing CSRF resolution for this identity.
+    pub fn config_source(&self) -> ConfigSource {
+        self.config.clone()
+    }
+
     fn csrf_enabled(&self) -> bool {
-        self.csrf_override
-            .unwrap_or_else(|| chatbot_core::config::app_config().csrf)
+        self.csrf_override.unwrap_or_else(|| self.config.csrf())
     }
 
     /// Resolve the identity installed by the router layer. Panics when the
@@ -88,8 +128,16 @@ impl RequestIdentity {
         &self,
         cookie_header: Option<&str>,
     ) -> Result<HomeBootstrap, SessionError> {
+        // Store-first with scoped CSRF: init the backing store before
+        // resolving the flag, matching the free-function first-use order.
+        // Owned stores never touch globals; the global store keeps its
+        // records with per-identity CSRF.
         match &self.store {
-            None => session_identity::prepare_home_context(cookie_header),
+            None => {
+                let store = HttpSessionStore::global();
+                let csrf = self.csrf_enabled();
+                store.prepare_home_context(cookie_header, csrf)
+            }
             Some(store) => store.prepare_home_context(cookie_header, self.csrf_enabled()),
         }
     }
@@ -99,8 +147,14 @@ impl RequestIdentity {
         cookie_header: Option<&str>,
         token: Option<&str>,
     ) -> Result<bool, SessionError> {
+        // Same disabled/missing/empty early returns before global init as the
+        // free function; the flag is scoped per identity.
         match &self.store {
-            None => session_identity::validate_csrf_token(cookie_header, token),
+            None => session_identity::validate_csrf_token_with_csrf(
+                cookie_header,
+                token,
+                self.csrf_enabled(),
+            ),
             Some(store) => {
                 store.validate_csrf_token(cookie_header, token, self.csrf_enabled())
             }
@@ -132,8 +186,13 @@ impl RequestIdentity {
         cookie_header: Option<&str>,
         username: &str,
     ) -> Result<LoginFinalize, SessionError> {
+        // Store-first with scoped CSRF; see `prepare_home_context`.
         match &self.store {
-            None => session_identity::finalize_login(cookie_header, username),
+            None => {
+                let store = HttpSessionStore::global();
+                let csrf = self.csrf_enabled();
+                store.finalize_login(cookie_header, username, csrf)
+            }
             Some(store) => store.finalize_login(cookie_header, username, self.csrf_enabled()),
         }
     }
@@ -142,8 +201,13 @@ impl RequestIdentity {
         &self,
         cookie_header: Option<&str>,
     ) -> Result<LogoutFinalize, SessionError> {
+        // Store-first with scoped CSRF; see `prepare_home_context`.
         match &self.store {
-            None => session_identity::logout_user(cookie_header),
+            None => {
+                let store = HttpSessionStore::global();
+                let csrf = self.csrf_enabled();
+                store.logout_user(cookie_header, csrf)
+            }
             Some(store) => store.logout_user(cookie_header, self.csrf_enabled()),
         }
     }

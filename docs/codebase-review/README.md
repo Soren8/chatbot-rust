@@ -1,10 +1,24 @@
 # Codebase review program
 
-Latest resume point: [session 038 — owned voice lifecycle and credential boundaries](#session-038--owned-voice-lifecycle-and-credential-boundaries-2026-09-18). Earlier checkpoints record their original scope and status.
+Latest resume point: [session 039 — request configuration, browser owners and flavor origins](#session-039--request-configuration-browser-owners-and-flavor-origins-2026-09-19). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: thirty-six batches through session 038 (sessions 033–037 committed as `c3d4cdd`/`ca4fd8f`/`04e079e`/`462fa8c`/`33a26a1`; session 038 implementation complete, commit `Own voice lifecycle and credential boundaries` pending). Phase 1 remains in progress; the completion-review gate below still applies.
+Current remediation count: thirty-seven batches through session 039. Session 038 is committed as `7a17270`; session 039 is recorded by commit title `Own request configuration, browser pipelines and native origins`. Phase 1 remains in progress; the completion-review gate below still applies.
+
+## Session 039 — request configuration, browser owners and flavor origins, 2026-09-19
+
+`ConfigSource` supplies explicit CSRF, cookie timeout, default prompt and voice-service endpoint policy through `AppServices` and `RequestIdentity`. Global compatibility preserves lazy reads, store-first identity initialization, per-emitted-cookie CSRF resolution and one coherent home settings capture. `GenerationDeps` also supplies explicit chunks, tool query, Brave results, delay and XAI fallback key; owned provider constructors avoid ambient fake inputs. Router tests poison ambient values and check actual response or captured upstream request behavior. Production retains live configuration, without a schema change.
+
+`chat-renderer.js`, `tts-playback.js` and `voice-capture.js` own DOM projection, desktop/native queue algorithms and VAD/utterance coordination behind injected dependencies. `chat.js` supplies platform/UI adapters. Rendering dependencies remain call-time lookups; native availability/toggle paths precede DOM reads. Real-unit fixtures retain queue exhaustion, sentence boundaries and the cough/short-speech versus sustained-speech barge-in distinction. Verification caught and corrected synchronous native enqueue exceptions bypassing bounded retries.
+
+User-selected native authority is the build flavor. Tracked `capacitor.config.json` defines both `serverUrls.emulator` (`http://10.0.2.2:80`, dev-machine host without Tailscale) and `serverUrls.physical` (Tailscale HTTPS). Gradle projects the selected resource, and WebView/cookies/logging/Auto consume it; no single `server.url` competes with it. Capacitor dependency manifests are tracked. Helm's unused voice-service enablement is documented. Android Auto protocol repair is explicitly deferred by the user; origin unification does not repair its session/CSRF/transport integration.
+
+Full suite: `temp/test-logs/coordinated-fullsuite-20260919T004020Z.log`, job `20260919T004021-61e3b5c17139`, passed, exit 0, untruncated; provider configuration validation and real Java resolver execution included. Earlier failures remain in `modularity-owned-boundaries-*` and `coordinated-fullsuite-*`: test-image missing inputs, Java source encoding, moved-code source assertions and native enqueue retry behavior. New tests in this batch are post-extraction coverage; the baseline is the preceding committed green, not a new pre-extraction characterization run.
+
+Physical Android build: `temp/test-logs/modularity-flavor-build-20260919T004834Z.log`, job `20260919T004834-bdb6347ca4d9`, exit 0, untruncated, 72 tasks. APK `temp/chatbot-physical-debug-20260919T004834Z.apk`, SHA256 `7bf72425a1e14c71335592dafdbc8dd8812e66590c8c56e60b1f6b7757e58e35`. Suite and artifact used the same source snapshot. This verifies compilation, not device operation or the emulator APK. The executor supplies its pinned Capacitor build scaffolding.
+
+This is a verified batch boundary for compaction, not phase-1 completion. Next is the main-model read-only completion review against all phase criteria, including remaining session/DTO cohesion and explicit dispositions. Legacy key export, current-ID settlement, durable/mirror failure policy, and voice-service cancellation/backpressure/shutdown behavior are unchanged. Phases 2–7 have not started.
 
 ## Session 038 — owned voice lifecycle and credential boundaries, 2026-09-18
 

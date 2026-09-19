@@ -3,8 +3,11 @@
   "appName": "Chatbot",
   "webDir": "./static",
   "server": {
-    "url": "https://desktop-1.tailfc0df0.ts.net",
     "cleartext": true
+  },
+  "serverUrls": {
+    "emulator": "http://10.0.2.2:80",
+    "physical": "https://desktop-1.tailfc0df0.ts.net"
   },
   "plugins": {
     "NativeMic": {}

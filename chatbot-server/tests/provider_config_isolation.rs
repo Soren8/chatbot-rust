@@ -1563,7 +1563,9 @@ async fn two_routers_isolate_brave_eligibility() {
         true,
         false,
         Some("router-a-brave-key"),
-    );
+    )
+    .with_fake_tool_query("weather today".to_string())
+    .with_fake_brave_results("Atlanta: 72F, sunny".to_string());
     let deps_b = deps_from_list(
         vec![test_provider_with_chunks(
             "default",
@@ -1577,9 +1579,14 @@ async fn two_routers_isolate_brave_eligibility() {
     let app_a = isolated_router(deps_a);
     let app_b = isolated_router(deps_b);
 
+    // Ambient decoys must not leak into owned routers: the explicit fakes
+    // above win for A, and B stays keyless despite the ambient key.
     env::set_var("BRAVE_API_KEY", "ambient-decoy-key");
-    env::set_var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY", "weather today");
-    env::set_var("CHATBOT_TEST_BRAVE_RESULTS", "Atlanta: 72F, sunny");
+    env::set_var(
+        "CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY",
+        "ambient-decoy-query",
+    );
+    env::set_var("CHATBOT_TEST_BRAVE_RESULTS", "ambient-decoy-results");
 
     let (cookie_a, csrf_a) = guest_session(&app_a).await;
     let (cookie_b, csrf_b) = guest_session(&app_b).await;

@@ -1,5 +1,6 @@
 use axum::http::{header, HeaderMap};
 use chatbot_core::account_service::AccountService;
+use chatbot_core::config_source::ConfigSource;
 use chatbot_core::enc_key::EncryptionKey;
 
 use crate::identity::RequestIdentity;
@@ -69,8 +70,8 @@ fn decode_named_enc_cookie(cookie_header: Option<&str>, name: &str) -> Option<En
     None
 }
 
-fn enc_cookie_secure_flag() -> &'static str {
-    if chatbot_core::config::app_config().csrf {
+fn enc_cookie_secure_flag_with(csrf: bool) -> &'static str {
+    if csrf {
         " Secure;"
     } else {
         ""
@@ -81,30 +82,77 @@ pub fn build_enc_key_set_cookie(key: &str, max_age_secs: u64) -> String {
     build_named_enc_key_set_cookie(ENC_KEY_COOKIE_NAME, key, max_age_secs)
 }
 
+/// Explicit-CSRF variant with no ambient read for owned routers.
+pub fn build_enc_key_set_cookie_with_csrf(key: &str, max_age_secs: u64, csrf: bool) -> String {
+    build_named_enc_key_set_cookie_with_csrf(ENC_KEY_COOKIE_NAME, key, max_age_secs, csrf)
+}
+
 pub fn build_enc_key_account_set_cookie(username: &str, key: &str, max_age_secs: u64) -> String {
     build_named_enc_key_set_cookie(&account_enc_key_cookie_name(username), key, max_age_secs)
 }
 
+/// Explicit-CSRF variant with no ambient read for owned routers.
+pub fn build_enc_key_account_set_cookie_with_csrf(
+    username: &str,
+    key: &str,
+    max_age_secs: u64,
+    csrf: bool,
+) -> String {
+    build_named_enc_key_set_cookie_with_csrf(
+        &account_enc_key_cookie_name(username),
+        key,
+        max_age_secs,
+        csrf,
+    )
+}
+
 fn build_named_enc_key_set_cookie(name: &str, key: &str, max_age_secs: u64) -> String {
+    build_named_enc_key_set_cookie_with_csrf(
+        name,
+        key,
+        max_age_secs,
+        chatbot_core::config::app_config().csrf,
+    )
+}
+
+fn build_named_enc_key_set_cookie_with_csrf(
+    name: &str,
+    key: &str,
+    max_age_secs: u64,
+    csrf: bool,
+) -> String {
     let encoded = urlencoding::encode(key);
     format!(
         "{name}={encoded}; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age={max_age_secs}",
-        secure = enc_cookie_secure_flag()
+        secure = enc_cookie_secure_flag_with(csrf)
     )
 }
 
 pub fn build_enc_key_clear_cookie() -> String {
+    build_enc_key_clear_cookie_with_csrf(chatbot_core::config::app_config().csrf)
+}
+
+/// Explicit-CSRF variant with no ambient read for owned routers.
+pub fn build_enc_key_clear_cookie_with_csrf(csrf: bool) -> String {
     format!(
         "{ENC_KEY_COOKIE_NAME}=; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age=0",
-        secure = enc_cookie_secure_flag()
+        secure = enc_cookie_secure_flag_with(csrf)
     )
 }
 
 pub fn build_enc_key_account_clear_cookie(username: &str) -> String {
+    build_enc_key_account_clear_cookie_with_csrf(
+        username,
+        chatbot_core::config::app_config().csrf,
+    )
+}
+
+/// Explicit-CSRF variant with no ambient read for owned routers.
+pub fn build_enc_key_account_clear_cookie_with_csrf(username: &str, csrf: bool) -> String {
     let name = account_enc_key_cookie_name(username);
     format!(
         "{name}=; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age=0",
-        secure = enc_cookie_secure_flag()
+        secure = enc_cookie_secure_flag_with(csrf)
     )
 }
 
@@ -130,6 +178,24 @@ pub fn promote_enc_key_cookies_with_accounts(
     cookie_header: Option<&str>,
     username: &str,
     accounts: &AccountService,
+) -> Vec<String> {
+    promote_enc_key_cookies_with_accounts_and_config(
+        cookie_header,
+        username,
+        accounts,
+        &ConfigSource::global(),
+    )
+}
+
+/// Fully scoped variant: verification and remember checks use `accounts`
+/// while cookie secure/max-age resolve from `config` with no other ambient
+/// reads. Global-config routers behave exactly like
+/// [`promote_enc_key_cookies_with_accounts`]; owned routers stay immune.
+pub fn promote_enc_key_cookies_with_accounts_and_config(
+    cookie_header: Option<&str>,
+    username: &str,
+    accounts: &AccountService,
+    config: &ConfigSource,
 ) -> Vec<String> {
     let Ok(store) = accounts.users() else {
         return Vec::new();
@@ -171,19 +237,31 @@ pub fn promote_enc_key_cookies_with_accounts(
             .and_then(|rs| rs.peek_username(chatbot_core::remember_store::extract_token(cookie_header).as_deref()))
             .as_deref() == Some(username);
 
+    // Original read/error ordering: timeout resolves once when not remembered
+    // (even with zero emits); each emitted cookie resolves CSRF separately at
+    // its own site, and zero emits read no CSRF.
     let max_age = if remembered {
         chatbot_core::remember_store::REMEMBER_MAX_AGE_SECS
     } else {
-        chatbot_core::config::app_config().session_timeout.max(60)
+        config.session_timeout().max(60)
     };
 
     let mut cookies = Vec::new();
     let last_matches = last.as_ref().map(|k| k.as_bytes()) == Some(key.as_bytes());
     if !last_matches {
-        cookies.push(build_enc_key_set_cookie(key_str, max_age));
+        cookies.push(build_enc_key_set_cookie_with_csrf(
+            key_str,
+            max_age,
+            config.csrf(),
+        ));
     }
     if !from_account && remembered {
-        cookies.push(build_enc_key_account_set_cookie(username, key_str, max_age));
+        cookies.push(build_enc_key_account_set_cookie_with_csrf(
+            username,
+            key_str,
+            max_age,
+            config.csrf(),
+        ));
     }
     cookies
 }

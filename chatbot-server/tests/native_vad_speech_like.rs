@@ -2,6 +2,14 @@
 //! Dual invariant (keep in ONE test): a cough/"hey" must not stop TTS; sustained
 //! noisy speech must, at confirmation (REAL_SPEECH_MS), not at end-of-speech.
 //! Splitting this into cough-only vs speech-only tests is how the gate oscillated.
+//!
+//! Capture state lives in `static/voice-capture.js` (importable, explicit
+//! hooks); the Rust simulation below stays as the threshold contract, while
+//! `shipped_native_vad_dual_invariant_on_real_capture` drives the shipped
+//! class frame by frame instead of simulating it.
+
+use std::path::Path;
+use std::process::Command;
 
 fn parse_js_number_const(src: &str, name: &str) -> Option<f64> {
     let needle = format!("const {name} = ");
@@ -488,12 +496,32 @@ impl NativeVadSim {
     }
 }
 
+/// The shipped class (not a simulation) must hold the dual invariant with
+/// the shipped thresholds: cough/"hey" record without barging in, sustained
+/// noisy speech barges in once at real-speech confirm.
+#[test]
+fn shipped_native_vad_dual_invariant_on_real_capture() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let run = Command::new("node")
+        .arg(root.join("chatbot-server/tests/fixtures/voice_capture_test.js"))
+        .arg(root.join("static/voice-capture.js"))
+        .arg(root.join("static/native-audio.js"))
+        .arg(root.join("static/voice-lifecycle.js"))
+        .output()
+        .expect("test image must provide the JS behavior-test runtime");
+    assert!(
+        run.status.success(),
+        "JS shipped-VAD dual behavior: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[test]
 fn high_energy_non_speech_after_utterance_still_reaches_end_of_speech() {
-    let chat_js = include_str!("../../static/chat.js");
+    let capture_js = include_str!("../../static/voice-capture.js");
     assert!(
-        !chat_js.contains(
-            "} else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {\n      this.silenceMs = 0;"
+        !capture_js.contains(
+            "} else if (rms > host.nativeAudio.SPEECH_RMS_THRESHOLD) {\n      this.silenceMs = 0;"
         ),
         "high-RMS non-speech must not reset end-of-speech or count as active speech"
     );

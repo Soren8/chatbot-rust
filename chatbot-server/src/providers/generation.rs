@@ -30,21 +30,41 @@ pub enum GenerationProvider {
 
 /// Construct the concrete provider for `provider_type` (`"openai"` | `"xai"`).
 ///
+/// Compatibility wrapper: constructs through the live globals with the
+/// original env timing. Injected routers must use
+/// [`build_provider_with_generation`] with their own handle instead.
+///
 /// Callers own lock release and saved-turn rendering. Call after session
 /// preparation, before message mapping.
 pub fn build_provider(
     provider_type: &str,
     provider_config: &ProviderConfig,
 ) -> Result<GenerationProvider> {
+    build_provider_with_generation(
+        provider_type,
+        provider_config,
+        &GenerationDeps::global(),
+    )
+}
+
+/// Scoped variant: constructs through the router's [`GenerationDeps`] so
+/// fake stream/search inputs resolve in that router only. The global handle
+/// keeps the original `new` timing; owned handles use only explicit fakes
+/// with no env reads.
+pub fn build_provider_with_generation(
+    provider_type: &str,
+    provider_config: &ProviderConfig,
+    generation: &GenerationDeps,
+) -> Result<GenerationProvider> {
     match provider_type {
-        "openai" => match OpenAiProvider::new(provider_config) {
+        "openai" => match generation.openai_provider(provider_config) {
             Ok(provider) => Ok(GenerationProvider::OpenAi(provider)),
             Err(err) => {
                 error!(?err, "failed to construct OpenAI provider");
                 Err(err)
             }
         },
-        "xai" => match XaiProvider::new(provider_config) {
+        "xai" => match generation.xai_provider(provider_config) {
             Ok(provider) => Ok(GenerationProvider::Xai(provider)),
             Err(err) => {
                 error!(?err, "failed to construct XAI provider");
@@ -124,7 +144,8 @@ pub async fn dispatch_stream(
 
             if let Some(ref brave) = brave {
                 // Use Brave search via XAI's OpenAI-compatible /chat/completions endpoint
-                match OpenAiProvider::new(provider_config) {
+                // through the same generation handle so owned fakes stay scoped.
+                match generation.openai_provider(provider_config) {
                     Ok(openai_provider) => {
                         let tools = vec![crate::tools::brave_web_search_tool()];
                         match crate::search::search_augmented_stream(

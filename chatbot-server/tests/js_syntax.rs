@@ -34,6 +34,18 @@ fn first_party_static_js_parses() {
         include_str!("../../static/voice-lifecycle.js"),
     );
     assert_script_parses(
+        "static/chat-renderer.js",
+        include_str!("../../static/chat-renderer.js"),
+    );
+    assert_script_parses(
+        "static/tts-playback.js",
+        include_str!("../../static/tts-playback.js"),
+    );
+    assert_script_parses(
+        "static/voice-capture.js",
+        include_str!("../../static/voice-capture.js"),
+    );
+    assert_script_parses(
         "static/credential-metadata.js",
         include_str!("../../static/credential-metadata.js"),
     );

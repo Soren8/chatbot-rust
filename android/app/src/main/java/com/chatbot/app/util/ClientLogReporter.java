@@ -37,14 +37,18 @@ public final class ClientLogReporter {
     private ClientLogReporter() {
     }
 
+    // Canonical native origin (flavor resource, always); normalization
+    // owned by ServerUrlResolver. The pre-existing store-only-when-non-empty
+    // guard is preserved (no fallback is stored).
     public static void init(Context context) {
         if (context == null) {
             return;
         }
         try {
-            String url = context.getString(R.string.server_url);
-            if (url != null && !url.trim().isEmpty()) {
-                serverUrl = url.trim().replaceAll("/+$", "");
+            String url = ServerUrlResolver.normalizeResource(
+                    context.getString(R.string.server_url));
+            if (url != null && !url.isEmpty()) {
+                serverUrl = url;
             }
         } catch (Throwable t) {
             Log.w(TAG, "init failed to resolve server_url", t);

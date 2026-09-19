@@ -1,5 +1,7 @@
 # Observed boundaries and flow map
 
+Session 039 adds these owned edges: `AppServices → ConfigSource → request/identity/cookie policy`; `GenerationDeps → explicit provider fake inputs`; `chat.js → ChatRenderer / ChatTtsPlayback / ChatVoiceCapture → injected platform callbacks`; and `capacitor.config.json serverUrls → Gradle flavor resource → ServerUrlResolver → WebView/cookies/logging/Auto`. Live Rust compatibility remains lazy. Android Auto's separate session/CSRF/transport protocol repair is user-deferred. See the session 039 checkpoint for passing suite/build evidence and remaining completion-review scope.
+
 Evidence baseline: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. This map is partial; arrows below describe inspected edges, not certification of the entire flow.
 
 ## Rust composition — inspected

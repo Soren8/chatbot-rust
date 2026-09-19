@@ -25,7 +25,9 @@ use crate::http_error::{
     map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
     map_session_operation_err, HttpError,
 };
-use crate::providers::generation::{build_provider, dispatch_stream, map_core_messages};
+use crate::providers::generation::{
+    build_provider_with_generation, dispatch_stream, map_core_messages,
+};
 use crate::services::AppServices;
 
 #[derive(Deserialize)]
@@ -232,7 +234,11 @@ pub async fn handle_regenerate(
         )
     })?;
 
-    let provider = match build_provider(provider_type.as_str(), &context.provider) {
+    let provider = match build_provider_with_generation(
+        provider_type.as_str(),
+        &context.provider,
+        &generation,
+    ) {
         Ok(provider) => provider,
         Err(err) => {
             lease.release_without_persist();

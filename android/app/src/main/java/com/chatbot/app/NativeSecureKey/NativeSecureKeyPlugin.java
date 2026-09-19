@@ -21,6 +21,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import com.chatbot.app.util.ServerUrlResolver;
+
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.Arrays;
@@ -69,22 +71,14 @@ public class NativeSecureKeyPlugin extends Plugin {
         return base + accountSlot(account);
     }
 
+    // Canonical native origin (flavor resource, always); authority owned by
+    // ServerUrlResolver.
     private String resolveServerUrl() {
-        String url = null;
+        String resourceUrl = null;
         try {
-            if (getBridge() != null && getBridge().getServerUrl() != null && !getBridge().getServerUrl().isEmpty()) {
-                url = getBridge().getServerUrl();
-            }
+            resourceUrl = getContext().getString(R.string.server_url);
         } catch (Exception ignored) {}
-        if (url == null || url.isEmpty()) {
-            try {
-                url = getContext().getString(R.string.server_url);
-            } catch (Exception ignored) {}
-        }
-        if (url == null || url.isEmpty()) {
-            url = "http://localhost";
-        }
-        return url;
+        return ServerUrlResolver.resolveCanonical(resourceUrl);
     }
 
     @PluginMethod

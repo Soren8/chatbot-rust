@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{account_service::AccountService, config, remember_store, session};
+use chatbot_core::{account_service::AccountService, remember_store, session};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -42,6 +42,7 @@ struct RestoredSession {
 fn try_auto_restore(
     identity: &RequestIdentity,
     accounts: &AccountService,
+    config: &chatbot_core::config_source::ConfigSource,
     cookie_header: Option<&str>,
     ip: &str,
 ) -> Option<RestoredSession> {
@@ -73,12 +74,17 @@ fn try_auto_restore(
                 return None;
             }
             tracing::info!(username = %username, ip = %ip, "Session restored via remember token on app entry");
+            // Each emitted cookie resolves CSRF at its own site.
             Some(RestoredSession {
                 session_cookie,
-                remember_set_cookie: remember_store::build_set_cookie(&replacement_token),
-                account_set_cookie: remember_store::build_account_set_cookie(
+                remember_set_cookie: remember_store::build_set_cookie_with_csrf(
+                    &replacement_token,
+                    config.csrf(),
+                ),
+                account_set_cookie: remember_store::build_account_set_cookie_with_csrf(
                     &username,
                     &replacement_token,
+                    config.csrf(),
                 ),
             })
         }
@@ -106,7 +112,13 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
     let request_cookies = cookie_header.clone();
     let mut restored_cookies: Vec<String> = Vec::new();
     let mut cookie_header = cookie_header;
-    if let Some(restored) = try_auto_restore(&identity, &accounts, cookie_header.as_deref(), &ip) {
+    if let Some(restored) = try_auto_restore(
+        &identity,
+        &accounts,
+        &services.config_source(),
+        cookie_header.as_deref(),
+        &ip,
+    ) {
         cookie_header = Some(restored.session_cookie);
         restored_cookies.push(restored.remember_set_cookie);
         restored_cookies.push(restored.account_set_cookie);
@@ -118,10 +130,11 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     if let Some(username) = bootstrap.username.as_deref() {
         restored_cookies.extend(
-            crate::chat_utils::promote_enc_key_cookies_with_accounts(
+            crate::chat_utils::promote_enc_key_cookies_with_accounts_and_config(
                 request_cookies.as_deref(),
                 username,
                 &accounts,
+                &services.config_source(),
             ),
         );
     }
@@ -129,18 +142,21 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
     let logged_in = bootstrap.username.is_some();
     let user_details = resolve_user_details(&accounts, bootstrap.username.as_deref());
 
-    let config = config::app_config();
-    let default_prompt = config.default_system_prompt.clone();
-    let save_thoughts = config.save_thoughts;
-    let send_thoughts = config.send_thoughts;
-    
+    // One coherent capture at most: fully owned routers read no global
+    // config, while any global dimension blends from a single live capture.
+    let settings = services.home_settings(&user_details.tier);
+    let default_prompt = settings.default_prompt;
+    let save_thoughts = settings.save_thoughts;
+    let send_thoughts = settings.send_thoughts;
+
     tracing::debug!(
         save_thoughts,
         send_thoughts,
         "rendering home template with config"
     );
 
-    let available_models = build_available_models(config.provider_names(), &user_details.tier, &config);
+    let available_models =
+        build_available_models_from_summaries(settings.models);
 
     let html = render_template(
         logged_in,
@@ -228,30 +244,17 @@ fn resolve_user_details(accounts: &AccountService, username: Option<&str>) -> Us
     }
 }
 
-fn build_available_models(
-    provider_names: &[String],
-    user_tier: &str,
-    config: &std::sync::Arc<config::AppConfig>,
+fn build_available_models_from_summaries(
+    summaries: Vec<crate::generation_deps::ProviderSummary>,
 ) -> Vec<FrontendModel> {
-    let mut models = Vec::new();
-    for name in provider_names {
-        let Some(provider) = config.provider(name) else {
-            continue;
-        };
-        let tier = provider
-            .tier
-            .clone()
-            .unwrap_or_else(|| FREE_TIER.to_string());
-        if tier.eq_ignore_ascii_case("premium") && !user_tier.eq_ignore_ascii_case("premium") {
-            continue;
-        }
-        models.push(FrontendModel {
-            provider_name: provider.provider_name.clone(),
-            tier,
-            search: provider.search,
-        });
-    }
-    models
+    summaries
+        .into_iter()
+        .map(|summary| FrontendModel {
+            provider_name: summary.provider_name,
+            tier: summary.tier,
+            search: summary.search,
+        })
+        .collect()
 }
 
 fn render_template(

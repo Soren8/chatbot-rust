@@ -1,17 +1,22 @@
 'use strict';
+// Native TTS lookahead queue on the REAL owned queue (static/tts-playback.js).
+//
+// Generating state comes from the real conversation request tracker and
+// liveness/completion from the real voice lifecycle owner. Token/bridge I/O
+// is mocked at the leaf. No source slicing, no copied queue functions.
+// Entry-point parity is covered too: bridge-missing fallback and the
+// current-button toggle return before any message-DOM read, while the
+// success path initializes the message context exactly once at the original
+// point (after teardown, before queue work).
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const vm = require('node:vm');
-const source = fs.readFileSync(process.argv[2], 'utf8');
+
+const ttsPlayback = require(process.argv[2]);
 const conversationState = require(process.argv[3]);
 const voiceLifecycleMod = require(process.argv[4]);
 assert(
-  process.argv[3] && process.argv[4],
-  'usage: node native_tts_queue_test.js <static/chat.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
+  process.argv[2] && process.argv[3] && process.argv[4],
+  'usage: node native_tts_queue_test.js <static/tts-playback.js> <static/conversation-state.js> <static/voice-lifecycle.js>'
 );
-const start = source.indexOf('  function playNativeVoiceModeTts(');
-const end = source.indexOf('  window.playNativeVoiceModeTts =', start);
-assert(start >= 0 && end > start, 'native TTS entry point must be available');
 
 async function flush() {
   for (let i = 0; i < 40; i++) await Promise.resolve();
@@ -22,15 +27,9 @@ function session(sentences, generating = false, modern = true) {
   const enqueued = [];
   const cancelled = [];
   const state = { generating, sentences, ended: 0, listener: null, observer: null };
-  const element = {
-    0: {}, find() { return this; }, closest() { return this; }, last() { return this; },
-    is() { return true; }, text() { return state.sentences.join(' '); },
-    prop(name, value) { return value === undefined ? state.generating : this; },
-    addClass() { return this; }, html() { return this; }
-  };
   let timer = 0;
   // Generating state comes from the real conversation request tracker, the
-  // single authority chat.js reads via chatRequests.isGenerating().
+  // single authority the owned queue reads via isGenerating().
   const chatRequests = conversationState.createChatRequestTracker();
   if (generating) chatRequests.begin();
   // Lifecycle comes from the real voice owner: desktop/native share one
@@ -47,32 +46,23 @@ function session(sentences, generating = false, modern = true) {
     isVoiceModeActive: () => true,
     stopNativePlayback: () => {},
   });
-  const context = vm.createContext({
-    console: { error() {} }, AbortController, Promise, Set, Map,
-    setTimeout() { return ++timer; }, clearTimeout() {},
-    $() { return element; }, chatRequests, voiceLifecycle,
-    nativeMicBridge: null,
-    voiceSttAbortController: null,
-    nativeVoiceTtsSessionPromise: null, nativeVoiceTtsSessionListener: null,
-    MAX_TTS_SENTENCE_RETRIES: 3, MAX_NATIVE_TTS_LOOKAHEAD: 4,
-    sanitizeForTTS: text => text,
-    getMessageTtsText: () => state.sentences.join(' '),
-    splitSentences: () => state.sentences.map(text => ({ text })),
-    sentenceEndsWithTerminator: text => /[.!?]$/.test(text),
-    withCsrf: headers => headers,
-    nativeVoiceTtsStreamUrl: token => 'https://chat/tts_stream/' + token,
-    cancelNativeTtsToken: token => cancelled.push(token),
-    sleepMs: () => Promise.resolve(),
-    isRetryableVoiceStatus: status => status === 429 || status >= 500,
-    stopCurrentDesktopTts() { voiceLifecycle.stopDesktopPlayback(); },
-    stopAllTtsPlayback(opts) { voiceLifecycle.stopAllPlayback(opts); },
-    resetPlayButtonUi() {}, clearMessageTtsPlayingUi() {},
-    syncSendButtonState() {},
-    onVoiceModeTtsStarted() { voiceLifecycle.notePlaybackStarted(); },
-    onVoiceModeTtsEnded() { voiceLifecycle.notePlaybackEnded(); },
-    finishNativeVoiceTts(generation, button) {
-      if (voiceLifecycle.finishNativePlayback(generation, button)) state.ended++;
-    },
+  let sessionPromise = null;
+  let sessionListener = null;
+  const bridge = {
+    stop: async () => {},
+    beginSession: async () => modern ? { generation: 1, maxQueuedClips: 4 } : { generation: 1 },
+    addListener: async (name, listener) => { state.listener = listener; return { remove() {} }; },
+    enqueue: async url => { enqueued.push(url.split('/').pop()); },
+    markEndOfQueue: async () => { state.ended++; }
+  };
+  const deps = {
+    voiceLifecycle,
+    split: () => state.sentences.map(text => ({ text })),
+    terminator: text => /[.!?]$/.test(text),
+    sanitize: text => text,
+    getText: () => state.sentences.join(' '),
+    isGenerating: () => chatRequests.isGenerating(),
+    observeChanges: (callback) => { state.observer = callback; return () => { state.observer = null; }; },
     fetchVoiceRetry(url, options) {
       return new Promise((resolve, reject) => {
         posts.push({ text: JSON.parse(options.body).text, reject,
@@ -80,28 +70,163 @@ function session(sentences, generating = false, modern = true) {
         });
       });
     },
-    MutationObserver: class {
-      constructor(callback) { state.observer = callback; }
-      observe() {} disconnect() { state.observer = null; }
+    withCsrf: headers => headers,
+    sleepMs: () => Promise.resolve(),
+    isRetryableVoiceStatus: status => status === 429 || status >= 500,
+    getNativeBridge: () => bridge,
+    streamUrl: token => 'https://chat/tts_stream/' + token,
+    cancelToken: token => cancelled.push(token),
+    stopDesktop() { voiceLifecycle.stopDesktopPlayback(); },
+    stopAll(opts) { voiceLifecycle.stopAllPlayback(opts); },
+    abortStt() {},
+    vadReset() {},
+    resetPlayButton() {},
+    clearMessageUi() {},
+    syncSendButton() {},
+    setButtonPlaying() {},
+    notifyStarted() { voiceLifecycle.notePlaybackStarted(); },
+    notifyEnded() { voiceLifecycle.notePlaybackEnded(); },
+    reportVoice() {},
+    appendMessage() {},
+    logError() {},
+    setTimeout() { return ++timer; },
+    clearTimeout() {},
+    isVoiceModeActive: () => true,
+    getSessionPromise: () => sessionPromise,
+    setSessionPromise: (promise) => { sessionPromise = promise; },
+    setSessionListener: (listener) => { sessionListener = listener; },
+    nativeStop: () => bridge.stop().catch(() => {}),
+    invalidateNative() {
+      voiceLifecycle.invalidateNativeSession();
+      sessionPromise = null;
+      sessionListener = null;
     },
-    window: { nativeVoiceTtsAvailable: true, voiceModeActive: true, NativeVoiceTts: {
-      stop: async () => {},
-      beginSession: async () => modern ? { generation: 1, maxQueuedClips: 4 } : { generation: 1 },
-      addListener: async (name, listener) => { state.listener = listener; return { remove() {} }; },
-      enqueue: async url => { enqueued.push(url.split('/').pop()); },
-      markEndOfQueue: async () => { state.ended++; }
-    } }
-  });
-  context.invalidateNativeVoiceTts = () => {
-    voiceLifecycle.invalidateNativeSession();
-    context.nativeVoiceTtsSessionPromise = null;
-    context.nativeVoiceTtsSessionListener = null;
+    finishNative(generation, button) {
+      if (voiceLifecycle.finishNativePlayback(generation, button)) state.ended++;
+    },
+    fallbackPlay() {},
+    createAbortController: () => new AbortController(),
   };
-  vm.runInContext(source.slice(start, end), context);
-  context.playNativeVoiceModeTts({}, generating ? {} : { sentences });
-  return { posts, enqueued, cancelled, state, context, voiceLifecycle,
+  ttsPlayback.playNativeVoiceModeTts(deps, {}, generating ? {} : { sentences });
+  return { posts, enqueued, cancelled, state, voiceLifecycle,
     consume(token) { state.listener({ type: 'clipConsumed', generation: 1, url: 'https://chat/tts_stream/' + token }); }
   };
+}
+
+// Message-DOM reads live behind initMessageContext, invoked by the owned
+// queue at the exact original point (after bridge/toggle early returns and
+// teardown, before queue work). This harness tracks that boundary: early
+// paths must never initialize the context, and the success path must order
+// it after teardown and before the first token request.
+function earlyPathHarness(overrides) {
+  overrides = overrides || {};
+  const order = [];
+  const calls = { fallback: [], stopAll: [], contextInits: 0, posts: 0 };
+  const voiceLifecycle = voiceLifecycleMod.createVoiceLifecycle({
+    now: () => Date.now(),
+    createAudio: () => null,
+    createAbortController: () => new AbortController(),
+    revokeUrl: () => {},
+    resetPlayButton: () => {},
+    clearMessageUi: () => {},
+    syncSendButton: () => {},
+    isVoiceModeActive: () => true,
+    stopNativePlayback: () => {},
+  });
+  const bridge = {
+    stop: async () => { order.push('nativeStop'); },
+    beginSession: async () => ({ generation: 1, maxQueuedClips: 4 }),
+    addListener: async () => ({ remove() {} }),
+    enqueue: async () => {},
+    markEndOfQueue: async () => {},
+  };
+  const deps = {
+    voiceLifecycle,
+    split: () => [{ text: 'Hello there.' }],
+    terminator: () => true,
+    sanitize: text => text,
+    getText: () => 'Hello there.',
+    isGenerating: () => false,
+    observeChanges: () => null,
+    fetchVoiceRetry: () => {
+      order.push('token');
+      calls.posts++;
+      return Promise.resolve({ headers: { get: () => null }, json: async () => ({}) });
+    },
+    withCsrf: headers => headers,
+    sleepMs: () => Promise.resolve(),
+    isRetryableVoiceStatus: () => false,
+    getNativeBridge: () => (overrides.bridge === undefined ? bridge : overrides.bridge),
+    streamUrl: token => 'https://chat/tts_stream/' + token,
+    cancelToken: () => {},
+    stopDesktop() { order.push('stopDesktop'); voiceLifecycle.stopDesktopPlayback(); },
+    stopAll(opts) { calls.stopAll.push(opts || {}); voiceLifecycle.stopAllPlayback(opts); },
+    abortStt() { order.push('abortStt'); },
+    vadReset() { order.push('vadReset'); },
+    resetPlayButton() {},
+    clearMessageUi() {},
+    syncSendButton() {},
+    setButtonPlaying() {},
+    notifyStarted() {},
+    notifyEnded() {},
+    reportVoice() {},
+    appendMessage() {},
+    logError() {},
+    setTimeout() { return 1; },
+    clearTimeout() {},
+    isVoiceModeActive: () => true,
+    getSessionPromise: () => null,
+    setSessionPromise: () => {},
+    setSessionListener: () => {},
+    nativeStop: () => bridge.stop().catch(() => {}),
+    invalidateNative() { order.push('invalidate'); voiceLifecycle.invalidateNativeSession(); },
+    finishNative() {},
+    fallbackPlay: (btn, opts) => { calls.fallback.push([btn, opts]); },
+    createAbortController: () => { order.push('abortCtl'); return new AbortController(); },
+    initMessageContext: () => { order.push('context'); calls.contextInits++; },
+  };
+  return { deps, voiceLifecycle, order, calls };
+}
+
+async function fallbackWithoutBridgeSkipsDomAndDelegates() {
+  const h = earlyPathHarness({ bridge: null });
+  const button = { id: 'play' };
+  const options = { sentences: ['Hi.'] };
+  ttsPlayback.playNativeVoiceModeTts(h.deps, button, options);
+  await flush();
+  assert.equal(h.calls.fallback.length, 1, 'missing bridge must fall back to desktop playback');
+  assert.equal(h.calls.fallback[0][0], button, 'fallback keeps the exact button');
+  assert.equal(h.calls.fallback[0][1], options, 'fallback keeps the exact options');
+  assert.equal(h.calls.contextInits, 0, 'fallback must not read message DOM');
+  assert.deepEqual(h.order, [], 'fallback returns before any teardown or queue work');
+  assert.equal(h.calls.posts, 0, 'fallback posts no voice tokens');
+  assert.equal(h.calls.stopAll.length, 0, 'fallback stops nothing');
+}
+
+async function toggleCurrentButtonStopsWithoutDomReads() {
+  const h = earlyPathHarness({});
+  const button = { id: 'play' };
+  h.voiceLifecycle.beginNativePlayback(button, () => {});
+  ttsPlayback.playNativeVoiceModeTts(h.deps, button, {});
+  await flush();
+  assert.equal(h.calls.stopAll.length, 1, 're-pressing the speaking button must toggle stop');
+  assert.equal(h.calls.fallback.length, 0, 'toggle must not fall back to desktop');
+  assert.equal(h.calls.contextInits, 0, 'toggle must not read message DOM');
+  assert.deepEqual(h.order, [], 'toggle returns before teardown or queue work');
+  assert.equal(h.calls.posts, 0, 'toggle posts no voice tokens');
+}
+
+async function messageContextInitializesAtTheOriginalPoint() {
+  const h = earlyPathHarness({});
+  ttsPlayback.playNativeVoiceModeTts(h.deps, {}, {});
+  await flush();
+  assert.equal(h.calls.contextInits, 1, 'message context initializes exactly once per play');
+  assert.deepEqual(
+    h.order.slice(0, 8),
+    ['invalidate', 'nativeStop', 'stopDesktop', 'vadReset', 'abortStt', 'abortCtl', 'context', 'token'],
+    'context must initialize after teardown/stop/reset and before queue work: ' + JSON.stringify(h.order)
+  );
+  assert.equal(h.calls.fallback.length, 0, 'native bridge present: no fallback');
 }
 
 async function readyHeadDoesNotWaitForSlowTailAndWindowRefills() {
@@ -181,6 +306,9 @@ async function olderApkDoesNotWaitForUnsupportedConsumptionEvents() {
 }
 
 (async () => {
+  await fallbackWithoutBridgeSkipsDomAndDelegates();
+  await toggleCurrentButtonStopsWithoutDomReads();
+  await messageContextInitializesAtTheOriginalPoint();
   await readyHeadDoesNotWaitForSlowTailAndWindowRefills();
   await streamingTextFillsWindowWithoutWaitingForGenerationToEnd();
   await failedHeadRetriesInOrderWithoutRepostingReadyTail();

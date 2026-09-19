@@ -45,6 +45,10 @@ pub struct XaiProvider {
     model: String,
     /// When true, send `store: false` and expect team ZDR (`x-zero-data-retention`).
     xai_zdr: bool,
+    /// Owned key fallback. `None` means live: read `XAI_API_KEY` at stream
+    /// time. `Some` means owned: use the explicit key (or `"no-key-required"`
+    /// when `None`) with no env read.
+    fake_key: Option<Option<String>>,
 }
 
 impl XaiProvider {
@@ -61,7 +65,41 @@ impl XaiProvider {
             api_key: config.api_key.clone(),
             model: config.model_name.clone(),
             xai_zdr: config.xai_zdr,
+            fake_key: None,
         })
+    }
+
+    /// Owned construction with an explicit key fallback and no env reads.
+    /// Live routers keep using [`XaiProvider::new`].
+    pub fn new_owned(config: &ProviderConfig, fake_key: Option<String>) -> Result<Self> {
+        let timeout = Duration::from_secs_f64(config.request_timeout.unwrap_or(300.0));
+        let client = Client::builder()
+            .timeout(timeout)
+            .build()
+            .context("failed to build reqwest client")?;
+
+        Ok(Self {
+            client,
+            base_url: config.base_url.clone(),
+            api_key: config.api_key.clone(),
+            model: config.model_name.clone(),
+            xai_zdr: config.xai_zdr,
+            fake_key: Some(fake_key),
+        })
+    }
+
+    fn resolve_api_key(&self) -> String {
+        if let Some(key) = &self.api_key {
+            return key.clone();
+        }
+        match &self.fake_key {
+            Some(fake) => fake
+                .clone()
+                .unwrap_or_else(|| "no-key-required".to_string()),
+            None => {
+                std::env::var("XAI_API_KEY").unwrap_or_else(|_| "no-key-required".to_string())
+            }
+        }
     }
 
     pub fn stream_chat(
@@ -69,11 +107,7 @@ impl XaiProvider {
         messages: Vec<ChatMessagePayload>,
         web_search_enabled: bool,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
-        let api_key = if let Some(key) = &self.api_key {
-            key.clone()
-        } else {
-            std::env::var("XAI_API_KEY").unwrap_or_else(|_| "no-key-required".to_string())
-        };
+        let api_key = self.resolve_api_key();
 
         let mapped_messages: Vec<Value> = messages
             .into_iter()

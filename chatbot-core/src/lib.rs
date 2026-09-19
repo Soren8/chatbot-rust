@@ -2,6 +2,7 @@ pub mod account_service;
 pub mod chat;
 pub mod chat_images;
 pub mod config;
+pub mod config_source;
 pub mod logging;
 pub mod enc_key;
 mod fernet_crypto;

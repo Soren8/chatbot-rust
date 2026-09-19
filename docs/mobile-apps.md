@@ -415,3 +415,6 @@ Product flavors configure `server_url` string resource:
 | 4 | iOS build (same codebase) | Pending |
 
 **Total**: ~2-3 weeks for full Android delivery. iOS nearly free after.
+# Native server selection
+
+Android build flavor always determines the server address. Root `capacitor.config.json` must define both `serverUrls.emulator` and `serverUrls.physical`; Gradle selects one as `R.string.server_url`. The emulator uses `http://10.0.2.2:80` to reach the development machine directly, without Tailscale. Physical builds use the configured HTTPS endpoint. WebView loading, credential cookies, native logging and Android Auto resolve that same flavor resource. Change the corresponding entry and rebuild the APK to change servers; do not add a competing Capacitor `server.url` override.

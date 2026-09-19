@@ -76,6 +76,20 @@ function ttHtml(html) {
 // rendering it. jQuery/vendor .html(string) calls rely on the identity
 // `default` Trusted-Types policy registered in static/tt.js.
 
+// Message rendering lives in static/chat-renderer.js; chat keeps DOM/event
+// composition and thin adapters here. Explicit deps only (no generic bag):
+// document, marked/highlight.js, Trusted-Types wrapper, markdown flag,
+// location and the shared stream decoder.
+var chatRenderer = ChatRenderer.createChatRenderer({
+  document: document,
+  getMarked: function () { return (typeof marked !== 'undefined') ? marked : undefined; },
+  getHljs: function () { return (typeof hljs !== 'undefined') ? hljs : undefined; },
+  createTrustedHtml: ttHtml,
+  isMarkdownEnabled: function () { return !(window.APP_DATA && window.APP_DATA.renderMarkdown === false); },
+  getLocation: function () { return window.location; },
+  getStreamDecoder: function () { return ChatStreamDecoder; }
+});
+
 // Ensure config exists before any DOM-ready handlers use it
 try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
@@ -671,24 +685,15 @@ $(function() {
 // Pure string replace — do NOT use createTextNode + div.innerHTML here.
 // That pattern is a CodeQL js/xss-through-dom source (DOM text) that later
 // flows into .html() sinks across appendMessage / system errors.
+// Owned by static/chat-renderer.js; thin adapters preserve call sites.
 function escapeHTML(str) {
-  return String(str == null ? '' : str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return ChatRenderer.escapeHTML(str);
 }
 
 // Inverse of the common entities produced by escapeHTML.
 // Used only to undo pre-escaping before highlight.js (which escapes again).
 function decodeHTMLEntities(str) {
-  return String(str == null ? '' : str)
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#0*39;/g, "'")
-    .replace(/&amp;/g, '&');
+  return ChatRenderer.decodeHTMLEntities(str);
 }
 
 // Copy text to the clipboard in any context. The async Clipboard API is only
@@ -741,182 +746,60 @@ function copyToClipboard(text) {
 }
 
 // Accept only data:image/*;base64,... URLs for <img src>.
-// Reconstructs from character-class-filtered parts so DOM-sourced strings never
-// flow into HTML attribute sinks (CodeQL js/xss-through-dom).
-// Returns null when the value is missing or not a safe data-image URL.
+// Owned by static/chat-renderer.js; thin adapter preserves call sites.
 function sanitizeDataImageSrc(src) {
-  if (src == null) return null;
-  const raw = String(src);
-  const m = /^data:image\/([A-Za-z0-9+.-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(raw);
-  if (!m) return null;
-  // .replace with inverted classes strips any HTML/JS meta-characters CodeQL
-  // would otherwise track from DOM text into the src attribute.
-  const subtype = m[1].replace(/[^A-Za-z0-9+.-]/g, '');
-  const b64 = m[2].replace(/[^A-Za-z0-9+/=]/g, '');
-  if (!subtype || !b64 || subtype !== m[1] || b64 !== m[2].replace(/[\s]/g, '')) {
-    return null;
-  }
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
-  return 'data:image/' + subtype + ';base64,' + b64;
+  return ChatRenderer.sanitizeDataImageSrc(src);
 }
 
 // Build the user-message display node without interpreting message text as HTML
 // (CodeQL js/xss-through-dom). Text goes through createTextNode only; images use
 // a reconstructed data:image URL from sanitizeDataImageSrc.
+// Rendering builders live in static/chat-renderer.js; thin adapters keep
+// call sites and CodeQL separation (exception text never shares a param
+// with an innerHTML sink). Chat keeps DOM/event composition.
 function buildUserMessageSpan(text, imageSrc, opts) {
-  const span = document.createElement('span');
-  span.className = 'user-message-text';
-
-  const label = document.createElement('strong');
-  label.textContent = 'You:';
-  span.appendChild(label);
-  span.appendChild(document.createTextNode(' '));
-
-  const body = document.createElement('span');
-  body.className = 'user-message-body';
-  const lines = String(text == null ? '' : text).split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (i > 0) body.appendChild(document.createElement('br'));
-    body.appendChild(document.createTextNode(lines[i]));
-  }
-  span.appendChild(body);
-
-  const safeSrc = sanitizeDataImageSrc(imageSrc) || sanitizeLightboxSrc(imageSrc);
-  if (safeSrc) {
-    span.appendChild(document.createElement('br'));
-    const img = document.createElement('img');
-    img.className = 'chat-image';
-    img.setAttribute('alt', 'Attached image');
-    img.setAttribute('title', 'Click to expand');
-    img.setAttribute('decoding', 'async');
-    if (opts && opts.pairIndex != null) {
-      img.setAttribute('data-pair-index', String(opts.pairIndex));
-    }
-    if (opts && opts.thumbnail) {
-      img.setAttribute('data-thumb', '1');
-    }
-    if (opts && opts.deferSrc) {
-      img.setAttribute('data-pending-src', safeSrc);
-    } else {
-      img.setAttribute('src', safeSrc);
-    }
-    span.appendChild(img);
-  }
-
-  return span;
+  return chatRenderer.buildUserMessageSpan(text, imageSrc, opts);
 }
 
 // Append plain text (with optional newlines → <br>) without HTML interpretation.
 function appendPlainTextWithBreaks(parent, text) {
-  const lines = String(text == null ? '' : text).split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (i > 0) parent.appendChild(document.createElement('br'));
-    parent.appendChild(document.createTextNode(lines[i]));
-  }
+  return chatRenderer.appendPlainTextWithBreaks(parent, text);
 }
 
 // System/error chrome: fixed label + plain text only (createTextNode).
 // Accepts only a scalar string — never options objects (CodeQL js/xss-through-exception
 // is field-insensitive and would join error text with sibling fields like href).
 function buildStatusMessageContent(className, text) {
-  const frag = document.createDocumentFragment();
-  const isError = className && className.indexOf('error-message') !== -1;
-  const label = document.createElement('strong');
-  label.textContent = isError ? 'Error:' : 'System:';
-  frag.appendChild(label);
-  frag.appendChild(document.createTextNode(' '));
-  appendPlainTextWithBreaks(frag, text == null ? '' : String(text));
-  return frag;
+  return chatRenderer.buildStatusMessageContent(className, text);
 }
 
 // Dedicated sets-load failure UI. Exception text is textContent only; the logout
 // href is a string literal so it cannot be joined with error.message by analysis.
 function buildSetsLoadErrorContent(errorText) {
-  const frag = document.createDocumentFragment();
-  const label = document.createElement('strong');
-  label.textContent = 'Error:';
-  frag.appendChild(label);
-  frag.appendChild(document.createTextNode(' '));
-  appendPlainTextWithBreaks(
-    frag,
-    'Could not load saved sets: ' + String(errorText == null ? '' : errorText) + ' '
-  );
-  const a = document.createElement('a');
-  a.setAttribute('href', '/logout');
-  a.textContent = 'Sign out';
-  frag.appendChild(a);
-  frag.appendChild(document.createTextNode(' and log in again if this persists.'));
-  return frag;
+  return chatRenderer.buildSetsLoadErrorContent(errorText);
 }
 
 // AI chrome builders — kept as separate functions so exception strings never
 // share a parameter/object with an innerHTML sink (CodeQL js/xss-through-exception).
 
 function buildAiLabelFragment() {
-  const frag = document.createDocumentFragment();
-  const strong = document.createElement('strong');
-  strong.textContent = 'AI:';
-  frag.appendChild(strong);
-  return frag;
+  return chatRenderer.buildAiLabelFragment();
 }
 
 // History load only. `safeHtml` must already be produced by formatAiMessage /
 // renderMarkdown (escapeHTML). Do not pass err.message here.
 function buildAiHistoryChildren(safeHtml) {
-  const frag = buildAiLabelFragment();
-  frag.appendChild(document.createTextNode('\u00A0'));
-  const textSpan = document.createElement('span');
-  textSpan.className = 'ai-message-text';
-  if (typeof safeHtml === 'string' && safeHtml) {
-    textSpan.innerHTML = ttHtml(safeHtml);
-  }
-  frag.appendChild(textSpan);
-  frag.appendChild(buildAiRegenerateContainer(true));
-  return frag;
+  return chatRenderer.buildAiHistoryChildren(safeHtml);
 }
 
 // Failed regenerate/chat: exception text via textContent only (never innerHTML).
 function buildAiErrorChildren(errorText) {
-  const frag = buildAiLabelFragment();
-  frag.appendChild(document.createTextNode(' '));
-  const errSpan = document.createElement('span');
-  errSpan.className = 'error-message';
-  errSpan.textContent = 'Error: ' + String(errorText == null ? '' : errorText);
-  frag.appendChild(errSpan);
-  frag.appendChild(buildAiRegenerateContainer(true));
-  return frag;
+  return chatRenderer.buildAiErrorChildren(errorText);
 }
 
 // Streaming / regenerate placeholder shell (static chrome only).
 function buildAiStreamChildren() {
-  const frag = buildAiLabelFragment();
-
-  const thinking = document.createElement('div');
-  thinking.className = 'thinking-container';
-  thinking.style.display = 'none';
-
-  const toggle = document.createElement('button');
-  toggle.className = 'toggle-thinking';
-  toggle.style.display = 'none';
-  toggle.type = 'button';
-  const caret = document.createElement('i');
-  caret.className = 'bi bi-caret-right-fill';
-  toggle.appendChild(caret);
-  toggle.appendChild(document.createTextNode(' Show Thinking'));
-  thinking.appendChild(toggle);
-
-  const thinkingContent = document.createElement('div');
-  thinkingContent.className = 'thinking-content';
-  thinkingContent.style.display = 'none';
-  thinking.appendChild(thinkingContent);
-  frag.appendChild(thinking);
-
-  const textSpan = document.createElement('span');
-  textSpan.className = 'ai-message-text';
-  textSpan.textContent = 'Thinking...';
-  frag.appendChild(textSpan);
-  frag.appendChild(buildAiRegenerateContainer(false));
-  return frag;
+  return chatRenderer.buildAiStreamChildren();
 }
 
 // Mount a pre-built message node into #chat-content (shared chrome, no content).
@@ -959,126 +842,22 @@ function appendSetsLoadError(errorText) {
 }
 
 function buildAiRegenerateContainer(enabled) {
-  const container = document.createElement('div');
-  container.className = 'regenerate-container';
-
-  const regen = document.createElement('button');
-  regen.className = 'regenerate-button';
-  regen.type = 'button';
-  if (!enabled) regen.disabled = true;
-  const regenIcon = document.createElement('i');
-  regenIcon.className = 'bi bi-arrow-repeat';
-  regen.appendChild(regenIcon);
-  container.appendChild(regen);
-
-  const play = document.createElement('button');
-  play.className = 'play-button';
-  play.type = 'button';
-  const playIcon = document.createElement('i');
-  playIcon.className = 'bi bi-play-fill';
-  play.appendChild(playIcon);
-  container.appendChild(play);
-
-  return container;
+  return chatRenderer.buildAiRegenerateContainer(enabled);
 }
 
-// Configure marked with highlight.js
-if (typeof marked !== 'undefined') {
-  console.debug('Initializing marked with highlight.js');
-  const renderer = new marked.Renderer();
-  
-  // Custom code block rendering with header and copy button
-  renderer.code = function(args) {
-    // Handle both object (new marked) and positional (old marked) arguments
-    let text, lang;
-    if (typeof args === 'object' && !Array.isArray(args)) {
-      text = args.text;
-      lang = args.lang;
-    } else {
-      text = arguments[0];
-      lang = arguments[1];
-    }
-
-    // Fence language may appear in HTML attributes/text; keep it conservative.
-    const language = String(lang || 'plaintext').replace(/[^a-zA-Z0-9_+#.-]/g, '') || 'plaintext';
-    // renderMarkdown pre-escapes the whole document; undo that for the fence body
-    // so hljs receives raw source and applies its own single escape pass.
-    const rawCode = decodeHTMLEntities(text);
-    let highlighted;
-    
-    console.debug('Rendering code block:', { language, textLength: rawCode.length });
-
-    if (typeof hljs !== 'undefined') {
-      try {
-        const langObj = hljs.getLanguage(language);
-        if (langObj) {
-          highlighted = hljs.highlight(rawCode, { language }).value;
-          console.debug('Highlight.js success for:', language);
-        } else {
-          highlighted = hljs.highlightAuto(rawCode).value;
-          console.debug('Highlight.js auto-highlighting used');
-        }
-      } catch (e) {
-        console.error('Highlight.js error:', e);
-        highlighted = escapeHTML(rawCode);
-      }
-    } else {
-      console.warn('Highlight.js (hljs) is not defined');
-      highlighted = escapeHTML(rawCode);
-    }
-
-    return `<div class="code-block-container"><div class="code-block-header"><span>${escapeHTML(language)}</span><button class="copy-code-button" type="button" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button></div><pre><code class="hljs language-${escapeHTML(language)}">${highlighted}</code></pre></div>`;
-  };
-
-  marked.use({ 
-    renderer,
-    gfm: true,
-    breaks: true
-  });
-  console.debug('Marked configured with custom renderer');
-} else {
-  console.warn('Marked library not found');
-}
+// Marked/highlight.js wiring lives in the owned renderer; chat keeps the
+// single configuration call so code fences highlight exactly as before.
+chatRenderer.configureMarked();
 
 function renderMarkdown(text) {
-  if (text == null) text = '';
-  else text = String(text);
-  // Escape HTML meta-characters before markdown so values read from the DOM
-  // (e.g. #user-input) cannot be reinterpreted as markup when assigned via .html()
-  // (CodeQL js/xss-through-dom). Markdown syntax is unaffected; raw tags show as text.
-  const safe = escapeHTML(text);
-  if (window.APP_DATA && window.APP_DATA.renderMarkdown === false) {
-    return safe.replace(/\n/g, '<br>');
-  }
-  if (typeof marked !== 'undefined') {
-    try {
-      return marked.parse(safe);
-    } catch (e) {
-      console.error('Markdown parsing error:', e);
-      return safe.replace(/\n/g, '<br>');
-    }
-  }
-  return safe.replace(/\n/g, '<br>');
+  return chatRenderer.renderMarkdown(text);
 }
 
 // Top-level on purpose: appendHistoryPair / applyHistoryPage run outside the
 // logged-in document.ready closure (a nested helper is ReferenceError there).
 // History adapter: whole-text projection, no console stripping.
 function formatAiMessage(text) {
-  if (!text) return '';
-
-  const parts = ChatStreamDecoder.decodeComplete(text);
-  const thinkingParts = [parts.thinking];
-  const visibleParts = [parts.visible];
-
-  let html = '';
-  const fullThinking = thinkingParts.join('').trim();
-  if (fullThinking) {
-    html += `<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">${escapeHTML(fullThinking).replace(/\n/g, '<br>')}</div></div>`;
-  }
-
-  html += renderMarkdown(visibleParts.join(''));
-  return html;
+  return chatRenderer.formatAiMessage(text);
 }
 
 // Scroll helpers for the chat content container
@@ -1119,8 +898,9 @@ function scrollToBottom() {
   }
 }
 
-// Voice lifecycle lives in static/voice-lifecycle.js; chat keeps DOM
-// rendering, VAD/stream capture, STT upload and the sentence-queue pumps.
+// Voice lifecycle lives in static/voice-lifecycle.js; rendering lives in
+// static/chat-renderer.js; sentence queues live in static/tts-playback.js.
+// Chat keeps DOM/event composition with explicit adapters here.
 var voiceLifecycle = ChatVoiceLifecycle.createVoiceLifecycle({
   now: function () { return Date.now(); },
   createAudio: function () { return new Audio(); },
@@ -1144,14 +924,44 @@ const BARGE_IN_FRAMES_DESKTOP = ChatVoiceLifecycle.BARGE_IN_FRAMES_DESKTOP;
 const BARGE_IN_SPEECH_PROB = ChatVoiceLifecycle.BARGE_IN_SPEECH_PROB;
 /** In-flight desktop voice-mode STT upload; top-level so playTTS can abort it. */
 let voiceSttAbortController = null;
-/** Bounded requeue attempts for a native TTS sentence on a spotty link. */
-const MAX_TTS_SENTENCE_RETRIES = 3;
+/** Sentence/clip bounds live in the owned TTS playback unit; chat keeps read-only aliases. */
+const MAX_TTS_SENTENCE_RETRIES = ChatTtsPlayback.MAX_TTS_SENTENCE_RETRIES;
 /** Includes token requests, downloads, ready clips, and the clip being written to AudioTrack. */
-const MAX_NATIVE_TTS_LOOKAHEAD = 4;
+const MAX_NATIVE_TTS_LOOKAHEAD = ChatTtsPlayback.MAX_NATIVE_TTS_LOOKAHEAD;
 /** Total attempts to fetch one clip from /tts_stream (within the server's replay budget). */
-const MAX_TTS_CLIP_ATTEMPTS = 2;
+const MAX_TTS_CLIP_ATTEMPTS = ChatTtsPlayback.MAX_TTS_CLIP_ATTEMPTS;
 /** Backoff between clip GET retries; grows with the attempt number. */
-const TTS_CLIP_RETRY_BACKOFF_MS = 400;
+const TTS_CLIP_RETRY_BACKOFF_MS = ChatTtsPlayback.TTS_CLIP_RETRY_BACKOFF_MS;
+
+// Desktop clip pipeline (owned sentence/clip loops in static/tts-playback.js
+// using the single voice lifecycle + voice-text; explicit HTTP/audio adapters).
+var desktopTtsClip = ChatTtsPlayback.createDesktopClipPipeline({
+  isLive: function (sessionId) { return desktopTtsIsLive(sessionId); },
+  sanitize: function (text) { return sanitizeForTTS(text); },
+  hasPreload: function (key) { return voiceLifecycle.hasPreload(key); },
+  getPreload: function (key) { return voiceLifecycle.getPreload(key); },
+  setPreload: function (key, promise) { voiceLifecycle.setPreload(key, promise); },
+  deletePreload: function (key) { voiceLifecycle.deletePreload(key); },
+  getAbortSignal: function () { return voiceLifecycle.getDesktopAbortSignal(); },
+  fetchVoiceRetry: function (url, buildOptions, attempts) { return fetchVoiceRetry(url, buildOptions, attempts); },
+  withCsrf: function (headers) { return withCsrf(headers); },
+  getAudio: function () { return getDesktopTtsAudio(); },
+  createObjectUrl: function (blob) { return URL.createObjectURL(blob); },
+  revokeObjectUrl: function (url) { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } },
+  adoptBlobUrl: function (url) { voiceLifecycle.adoptBlobUrl(url); },
+  releaseBlobUrl: function (url) { voiceLifecycle.releaseBlobUrlIfCurrent(url); },
+  isVoiceModeActive: function () { return !!window.voiceModeActive; },
+  noteClipStarted: function () { voiceLifecycle.noteDesktopClipStarted(); },
+  noteClipFinished: function () { voiceLifecycle.noteDesktopClipFinished(); },
+  notifyStarted: function () {
+    if (typeof window.notifyVoiceModeTtsStarted === 'function') window.notifyVoiceModeTtsStarted();
+  },
+  notifyEnded: function () {
+    if (typeof window.notifyVoiceModeTtsEnded === 'function') window.notifyVoiceModeTtsEnded();
+  },
+  logError: function () { console.error.apply(console, arguments); },
+  setTimeout: function (fn, ms) { return setTimeout(fn, ms); }
+});
 
 function clearDesktopTtsPreloads() {
   voiceLifecycle.clearPreloads();
@@ -1535,30 +1345,7 @@ function ensureImageLightbox() {
 }
 
 function sanitizeLightboxSrc(src) {
-  const dataSrc = sanitizeDataImageSrc(src);
-  if (dataSrc) return dataSrc;
-  if (src == null) return null;
-  try {
-    const u = new URL(String(src), window.location.href);
-    if (u.origin !== window.location.origin) return null;
-    const m = /^\/history_image\/([A-Za-z0-9._~-]+)\/([0-9]+)\/([0-9]+)\/([0-9]+)$/.exec(u.pathname);
-    if (!m) return null;
-    // Reconstruct from character-class-filtered captures so DOM-sourced
-    // pathname/search never flow into HTML attribute sinks (CodeQL js/xss-through-dom).
-    const setId = m[1].replace(/[^A-Za-z0-9._~-]/g, '');
-    const version = m[2].replace(/[^0-9]/g, '');
-    const pairIndex = m[3].replace(/[^0-9]/g, '');
-    const imgIdx = m[4].replace(/[^0-9]/g, '');
-    if (!setId || setId !== m[1] || version !== m[2] || pairIndex !== m[3] || imgIdx !== m[4]) {
-      return null;
-    }
-    const path = '/history_image/' + setId + '/' + version + '/' + pairIndex + '/' + imgIdx;
-    if (!u.search) return path;
-    if (u.search === '?size=thumb') return path + '?size=thumb';
-    return null;
-  } catch (e) {
-    return null;
-  }
+  return chatRenderer.sanitizeLightboxSrc(src);
 }
 
 function openImageLightbox(src) {
@@ -1980,266 +1767,47 @@ function highlightSentenceInElement(element, text, caretOffset, isPlaying) {
   return sentence;
 }
 
+// Desktop clip fetch/preload live in the owned TTS playback unit using the
+// single voice lifecycle + voice-text; explicit HTTP/audio adapters above.
 function fetchDesktopTtsClip(sessionId, text) {
-  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(null);
-  const cleaned = sanitizeForTTS(text);
-  if (!cleaned) return Promise.resolve(null);
-
-  const cacheKey = sessionId + ':' + cleaned;
-  if (voiceLifecycle.hasPreload(cacheKey)) {
-    return voiceLifecycle.getPreload(cacheKey);
-  }
-
-  const signal = voiceLifecycle.getDesktopAbortSignal();
-  const promise = fetchVoiceRetry('/tts', {
-    method: 'POST',
-    headers: withCsrf({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ text: cleaned }),
-    signal: signal
-  })
-  .then(function (r) {
-    if (!desktopTtsIsLive(sessionId)) return null;
-    return r.json();
-  })
-  .then(function (data) {
-    if (!desktopTtsIsLive(sessionId) || !data || !data.token) return null;
-    const clipUrl = '/tts_stream/' + encodeURIComponent(data.token);
-    return fetchVoiceRetry(clipUrl, {
-      method: 'GET',
-      headers: withCsrf({}),
-      signal: signal
-    }, MAX_TTS_CLIP_ATTEMPTS);
-  })
-  .then(function (res) {
-    if (!res || !desktopTtsIsLive(sessionId)) return null;
-    return res.blob();
-  })
-  .then(function (blob) {
-    if (!blob || !desktopTtsIsLive(sessionId)) return null;
-    // Retain the blob and mint object URLs lazily at play time: a cached
-    // (preloaded but not yet played) clip holds no URL, so an abandoned
-    // preload cleanup cannot revoke anything, and every play attempt gets
-    // a fresh URL no earlier stop could have revoked (blob 404s).
-    const clip = {
-      blobUrl: null,
-      blob: blob,
-      cleanUp: function () {
-        if (clip.blobUrl) {
-          try { URL.revokeObjectURL(clip.blobUrl); } catch (e) { /* ignore */ }
-          clip.blobUrl = null;
-        }
-      }
-    };
-    return clip;
-  })
-  .catch(function (err) {
-    voiceLifecycle.deletePreload(cacheKey);
-    throw err;
-  });
-
-  voiceLifecycle.setPreload(cacheKey, promise);
-  return promise;
+  return desktopTtsClip.fetchClip(sessionId, text);
 }
 
 function preloadDesktopTtsSentence(sessionId, text) {
-  if (!desktopTtsIsLive(sessionId) || !text) return;
-  const cleaned = sanitizeForTTS(text);
-  if (!cleaned) return;
-  const cacheKey = sessionId + ':' + cleaned;
-  if (voiceLifecycle.hasPreload(cacheKey)) return;
-  fetchDesktopTtsClip(sessionId, text).catch(function () {});
+  return desktopTtsClip.preloadSentence(sessionId, text);
 }
 
 /**
  * Fetch one TTS token and play it on the shared HTMLAudioElement.
- * Resolves true when that clip finished while the session is still live.
+ * Owned by static/tts-playback.js via the shared desktop clip pipeline;
+ * thin adapter preserves the call site.
  */
 function playOneTtsUtterance(sessionId, text) {
-  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(false);
-  const cleaned = sanitizeForTTS(text);
-  if (!cleaned) return Promise.resolve(true);
-
-  const cacheKey = sessionId + ':' + cleaned;
-  const cached = voiceLifecycle.getPreload(cacheKey);
-
-  // Retries token fetch and clip GET via fetchVoiceRetry
-  const signal = voiceLifecycle.getDesktopAbortSignal();
-  const getClipPromise = cached
-    ? Promise.resolve(cached)
-    : fetchDesktopTtsClip(sessionId, text);
-  // Take ownership AFTER the fetch above: on a cache miss it re-caches the
-  // new promise, and a playing clip must never stay cached — otherwise
-  // clearDesktopTtsPreloads can revoke its URL mid-play, and finish()'s
-  // revoke lets a later pump retry replay the same dead URL (blob 404s).
-  // finish()/cleanUp owns the URL from here on.
-  voiceLifecycle.deletePreload(cacheKey);
-
-  return getClipPromise.then(function (clip) {
-    if (!desktopTtsIsLive(sessionId) || !clip || !clip.blob) return false;
-    const audio = getDesktopTtsAudio();
-    return new Promise(function (resolve) {
-      if (!desktopTtsIsLive(sessionId)) {
-        clip.cleanUp();
-        resolve(false);
-        return;
-      }
-      let settled = false;
-      let clipAttempt = 0;
-
-      const finish = function (ok) {
-        if (settled) return;
-        settled = true;
-        audio.onended = null;
-        audio.onerror = null;
-        const playedUrl = clip.blobUrl;
-        clip.cleanUp();
-        voiceLifecycle.releaseBlobUrlIfCurrent(playedUrl);
-        if (window.voiceModeActive) {
-          voiceLifecycle.noteDesktopClipFinished();
-          if (typeof window.notifyVoiceModeTtsEnded === 'function') {
-            window.notifyVoiceModeTtsEnded();
-          }
-        }
-        resolve(!!ok && desktopTtsIsLive(sessionId));
-      };
-
-      const startClip = function () {
-        if (settled) return;
-        clipAttempt += 1;
-        const myAttempt = clipAttempt;
-        let attemptFailed = false;
-        const failAttempt = function (err) {
-          if (settled || attemptFailed || myAttempt !== clipAttempt) return;
-          attemptFailed = true;
-          if (err && err.name === 'NotAllowedError') {
-            console.error('TTS audio.play() failed:', err);
-            finish(false);
-            return;
-          }
-          if (clipAttempt >= MAX_TTS_CLIP_ATTEMPTS || !desktopTtsIsLive(sessionId)) {
-            finish(false);
-            return;
-          }
-          setTimeout(function () {
-            if (settled || !desktopTtsIsLive(sessionId)) return;
-            startClip();
-          }, TTS_CLIP_RETRY_BACKOFF_MS * clipAttempt);
-        };
-        // Mint a fresh object URL for EVERY attempt from the retained blob.
-        // The previous attempt's URL may have been revoked after its load
-        // failed (stop-while-loading, an abandoned-preload cleanup, or the
-        // finished clip's own cleanUp); replaying it 404s the element, so
-        // retries must never reuse a URL. Revoking first is safe — the old
-        // load already failed — and createObjectURL failure falls through
-        // to failAttempt so the pump can never hang on an unsettled play.
-        clip.cleanUp();
-        let freshUrl = null;
-        try {
-          if (desktopTtsIsLive(sessionId) && clip.blob) {
-            freshUrl = URL.createObjectURL(clip.blob);
-          }
-        } catch (e) { /* fall through to failAttempt */ }
-        if (!freshUrl) {
-          failAttempt(null);
-          return;
-        }
-        clip.blobUrl = freshUrl;
-        voiceLifecycle.adoptBlobUrl(clip.blobUrl);
-        audio.onended = function () { finish(true); };
-        audio.onerror = function () {
-          // Never swallow the cause: the sentence pump only reports the
-          // skip, so the MediaError code is the only record of WHY a clip
-          // was unplayable (1 aborted, 2 network, 3 decode, 4 unsupported).
-          try {
-            const mediaErr = audio.error;
-            console.error('TTS clip media error:',
-              mediaErr && mediaErr.code, mediaErr && mediaErr.message);
-          } catch (e) { /* ignore */ }
-          failAttempt(null);
-        };
-        audio.src = clip.blobUrl;
-        if (window.voiceModeActive) {
-          voiceLifecycle.noteDesktopClipStarted();
-          if (typeof window.notifyVoiceModeTtsStarted === 'function') {
-            window.notifyVoiceModeTtsStarted();
-          }
-        }
-        const playPromise = audio.play();
-        if (playPromise && typeof playPromise.then === 'function') {
-          playPromise.catch(function (err) {
-            // NotAllowedError already logs inside failAttempt; any OTHER
-            // rejection (e.g. NotSupportedError on unplayable bytes) must
-            // be recorded or every attempt fails with no visible cause.
-            if (!err || err.name !== 'NotAllowedError') {
-              console.error('TTS audio.play() rejected:',
-                err && err.name, err && err.message);
-            }
-            failAttempt(err);
-          });
-        }
-      };
-      startClip();
-    });
-  }).catch(function (err) {
-    if (err && (err.name === 'AbortError' || (err.message && err.message.indexOf('aborted') !== -1))) {
-      return false;
-    }
-    console.error('TTS error:', err);
-    return false;
-  });
+  return desktopTtsClip.playOne(sessionId, text);
 }
 
 /**
  * Play a fixed list of sentences (click-a-sentence path).
  * Sentences are already split from DOM text; we only sanitize per item for the API.
  */
+/**
+ * Play a fixed list of sentences (click-a-sentence path).
+ * Owned by static/tts-playback.js; DOM/event composition stays here via
+ * explicit progress callbacks (visible text is already split; queue owns
+ * retries/backoff/termination exactly).
+ */
 function playFixedSentenceList(sessionId, button, sentences) {
-  const queue = (sentences || []).slice();
-  let sentenceRetries = 0;
-
-  function pump() {
-    if (!desktopTtsIsLive(sessionId)) return;
-    if (!queue.length) {
-      completeDesktopTtsPlayback(button);
-      return;
-    }
-    const next = queue.shift();
-    if (queue.length > 0) {
-      preloadDesktopTtsSentence(sessionId, queue[0]);
-    }
-    playOneTtsUtterance(sessionId, next).then(function (ok) {
-      if (!desktopTtsIsLive(sessionId)) return;
-      if (!ok) {
-        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (window.voiceModeActive && desktopTtsIsLive(sessionId))) {
-          sentenceRetries += 1;
-          queue.unshift(next);
-          const delay = window.voiceModeActive
-            ? Math.min(400 * sentenceRetries, 3000)
-            : 400 * sentenceRetries;
-          setTimeout(function () {
-            if (!desktopTtsIsLive(sessionId)) return;
-            pump();
-          }, delay);
-          return;
-        }
-        sentenceRetries = 0;
-        queue.length = 0;
-        console.error('Desktop TTS sentence failed after retries');
-        reportVoice('VOICE-ERROR', 'TTS sentence failed (fixed list)');
-        appendMessage('Voice output failed. Try again.', 'error-message');
-        // Exhausted retries end the session with a visible error; never advance.
-        completeDesktopTtsPlayback(button);
-        return;
-      }
-      sentenceRetries = 0;
-      pump();
-    });
-  }
-
-  if (queue.length > 0) {
-    preloadDesktopTtsSentence(sessionId, queue[0]);
-  }
-  pump();
+  return ChatTtsPlayback.playFixedSentenceList({
+    isLive: function (id) { return desktopTtsIsLive(id); },
+    onComplete: function (btn) { completeDesktopTtsPlayback(btn); },
+    preload: function (id, text) { preloadDesktopTtsSentence(id, text); },
+    playOne: function (id, text) { return playOneTtsUtterance(id, text); },
+    reportVoice: function (kind, msg) { reportVoice(kind, msg); },
+    appendMessage: function (text, cls) { appendMessage(text, cls); },
+    logError: function () { console.error.apply(console, arguments); },
+    setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+    isVoiceModeActive: function () { return !!window.voiceModeActive; }
+  }, sessionId, button, sentences);
 }
 
 
@@ -2247,164 +1815,40 @@ function playFixedSentenceList(sessionId, button, sentences) {
  * Play from message body (play button). Supports streaming generation.
  */
 function playMessageBodyTts(sessionId, button, $messageElement) {
-  // Absolute character offset into getMessageTtsText(); only sentences with end > consumed
-  // are enqueued. sanitizeForTTS can shrink already-consumed text later (a markdown
-  // emphasis/inline-code pair closing after the boundary sentence), so starts may
-  // drift below the boundary; ends only ever move left when sanitize shrinks
-  // completed text, so the end guard alone prevents replaying a sentence.
-  let consumedLen = 0;
-  let queue = [];
-  let running = false;
-  let observer = null;
-  let pollTimer = null;
-  let sentenceRetries = 0;
-  let retryScheduled = false;
-
-  function isStillGenerating() {
-    const currentRawText = $messageElement.find('.ai-message-text').text().trim();
-    if (currentRawText === 'Thinking...') return true;
-    const isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
-    const regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
-    return isLastAi && regenDisabled && chatRequests.isGenerating();
-  }
-
-  function discoverAbsolute() {
-    if (!desktopTtsIsLive(sessionId)) return;
-    const full = getMessageTtsText($messageElement);
-    if (!full || full.length <= consumedLen) return;
-    const sentences = splitSentences(full);
-    for (let i = 0; i < sentences.length; i++) {
-      const s = sentences[i];
-      if (s.end <= consumedLen) continue;
-      // A later chunk can append only punctuation/closers to a queued sentence
-      // ("Hello." -> "Hello..."); the words are spoken, so ignore the extension
-      // instead of requeueing the whole sentence.
-      if (consumedLen > s.start) {
-        const spoken = full.slice(s.start, consumedLen);
-        const tail = s.text.slice(spoken.length);
-        if (tail && /^[\.\!\?…\"'”’\)\]]+$/.test(tail) && spoken + tail === s.text) continue;
+  // Streaming desktop queue lives in static/tts-playback.js using the single
+  // voice lifecycle + voice-text. Visible text/progress arrive via explicit
+  // source callbacks; MutationObserver scheduling stays in this adapter.
+  var textEl = $messageElement.find('.ai-message-text')[0];
+  return ChatTtsPlayback.playMessageBodyTts({
+    isLive: function (id) { return desktopTtsIsLive(id); },
+    onComplete: function (btn) { completeDesktopTtsPlayback(btn); },
+    getText: function () { return getMessageTtsText($messageElement); },
+    isGenerating: function () {
+      var currentRawText = $messageElement.find('.ai-message-text').text().trim();
+      if (currentRawText === 'Thinking...') return true;
+      var isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
+      var regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
+      return isLastAi && regenDisabled && chatRequests.isGenerating();
+    },
+    split: function (text) { return splitSentences(text); },
+    terminator: function (text) { return sentenceEndsWithTerminator(text); },
+    preload: function (id, text) { preloadDesktopTtsSentence(id, text); },
+    playOne: function (id, text) { return playOneTtsUtterance(id, text); },
+    reportVoice: function (kind, msg) { reportVoice(kind, msg); },
+    appendMessage: function (text, cls) { appendMessage(text, cls); },
+    logError: function () { console.error.apply(console, arguments); },
+    setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+    clearTimeout: function (id) { clearTimeout(id); },
+    isVoiceModeActive: function () { return !!window.voiceModeActive; },
+    observeChanges: function (onChange) {
+      if (textEl && typeof MutationObserver === 'function') {
+        var obs = new MutationObserver(onChange);
+        obs.observe(textEl, { childList: true, subtree: true, characterData: true });
+        return function () { try { obs.disconnect(); } catch (e) { /* ignore */ } };
       }
-      const isTrailingFragment = (i === sentences.length - 1);
-      if (isTrailingFragment && !sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
-      queue.push(s.text);
-      consumedLen = s.end;
+      return null;
     }
-    if (queue.length > 0) {
-      preloadDesktopTtsSentence(sessionId, queue[0]);
-    }
-  }
-
-  // React to streaming text updates immediately. Polling still runs as a
-  // safety net in case MutationObserver is unavailable or misses an update
-  // (e.g. the LLM was idle and emitted a long buffer in one chunk).
-  function onTextChanged() {
-    if (!desktopTtsIsLive(sessionId)) {
-      teardownObserver();
-      return;
-    }
-    discoverAbsolute();
-    if (!running && queue.length) pump();
-  }
-
-  function teardownObserver() {
-    if (observer) {
-      try { observer.disconnect(); } catch (e) { /* ignore */ }
-      observer = null;
-    }
-    if (pollTimer) {
-      clearTimeout(pollTimer);
-      pollTimer = null;
-    }
-  }
-
-  function finishIfIdle() {
-    if (!desktopTtsIsLive(sessionId)) {
-      teardownObserver();
-      return;
-    }
-    if (running || queue.length) return;
-    if (isStillGenerating()) {
-      pollTimer = setTimeout(function () {
-        pollTimer = null;
-        if (!desktopTtsIsLive(sessionId)) return;
-        discoverAbsolute();
-        pump();
-      }, 60);
-      return;
-    }
-    discoverAbsolute();
-    if (queue.length) {
-      pump();
-      return;
-    }
-    teardownObserver();
-    completeDesktopTtsPlayback(button);
-  }
-
-  function pump() {
-    if (!desktopTtsIsLive(sessionId) || running || retryScheduled) return;
-    discoverAbsolute();
-    if (!queue.length) {
-      finishIfIdle();
-      return;
-    }
-    running = true;
-    const next = queue.shift();
-    if (queue.length > 0) {
-      preloadDesktopTtsSentence(sessionId, queue[0]);
-    }
-    playOneTtsUtterance(sessionId, next).then(function (ok) {
-      running = false;
-      if (!desktopTtsIsLive(sessionId)) {
-        teardownObserver();
-        return;
-      }
-      if (!ok) {
-        // Transient failure (token fetch, clip GET, playback): requeue with
-        // backoff like the native sentence pump so a spotty link delays the
-        // sentence instead of ending speech after the last good one. Bounded
-        // so a dead sentence cannot churn forever; during active voice mode,
-        // persist retries so remote link drops pause rather than skip sentences.
-        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (window.voiceModeActive && desktopTtsIsLive(sessionId))) {
-          sentenceRetries += 1;
-          queue.unshift(next);
-          retryScheduled = true;
-          const delay = window.voiceModeActive
-            ? Math.min(400 * sentenceRetries, 3000)
-            : 400 * sentenceRetries;
-          setTimeout(function () {
-            retryScheduled = false;
-            pump();
-          }, delay);
-          return;
-        }
-        sentenceRetries = 0;
-        queue.length = 0;
-        console.error('Desktop TTS sentence failed after retries');
-        reportVoice('VOICE-ERROR', 'TTS sentence failed (desktop)');
-        appendMessage('Voice output failed. Try again.', 'error-message');
-        // Exhausted retries end the session with a visible error; never advance.
-        teardownObserver();
-        completeDesktopTtsPlayback(button);
-        return;
-      }
-      sentenceRetries = 0;
-      pump();
-    });
-  }
-
-
-  // Hook into the visible text node so we can start TTS on the first sentence
-  // the moment it lands, without waiting for the 60 ms poll cycle. This is
-  // the main latency win since the web-search/tool-calling flow added the
-  // extra search + second LLM hop.
-  const textEl = $messageElement.find('.ai-message-text')[0];
-  if (textEl && typeof MutationObserver === 'function') {
-    observer = new MutationObserver(onTextChanged);
-    observer.observe(textEl, { childList: true, subtree: true, characterData: true });
-  }
-
-  pump();
+  }, sessionId, button);
 }
 
 /**
@@ -4136,335 +3580,50 @@ $(document).ready(function() {
     });
   }
 
-  function NativeMicUtteranceVAD(onError) {
-    this.onError = onError;
-    this.preRollBuffer = new NativeAudio.Pcm16RingBuffer(NativeAudio.SPEECH_PREROLL_SAMPLES);
-    this.utteranceChunks = [];
-    this.startGateChunks = [];
-    this.inSpeech = false;
-    this.speechAboveCount = 0;
-    this.nonSpeechLikeCount = 0;
-    this.bargeInFired = false;
-    this.silenceMs = 0;
-    this.speechActiveMs = 0;
-    this.speechLikeMs = 0;
-    this.voicedMs = 0;
-    this.voicedWindow = [];
-    this.nativeListener = null;
-    this.isRecording = false;
-    this.chunkCount = 0;
-    this._firstFrameReported = false;
+  // Native capture lives in static/voice-capture.js (single owner of the
+  // utterance state machine and the desktop Silero factory). Chat keeps
+  // platform composition — the bridge pointer, the stop rendezvous, the
+  // permission helper — and wires explicit adapters here. Every capture need
+  // (audio thresholds, lifecycle gates, clock, log/report, recorder, bridge
+  // registry) arrives as a named hook; thresholds and phase gates are
+  // unchanged from shipped behavior.
+  function createNativeVadHost() {
+    return {
+      nativeAudio: NativeAudio,
+      voiceLifecycle: voiceLifecycle,
+      now: function () { return Date.now(); },
+      log: function (tag, msg) { nativeLog(tag, msg); },
+      report: function (kind, msg) { reportVoice(kind, msg); },
+      reportThrottled: function (key, windowMs, kind, msg) { reportVoiceThrottled(key, windowMs, kind, msg); },
+      isVoiceModeActive: function () { return !!window.voiceModeActive; },
+      onBargeIn: function () { handleBargeIn(); },
+      onUtteranceEnd: function () { handleSpeechEnd(); },
+      onUtteranceStartedAt: function (ts) { lastVoiceUtteranceStartedAt = ts; },
+      recorder: {
+        ensurePermission: function () { return ensureNativeMicPermission(); },
+        start: function () { return window.NativeMic.start(); },
+        stop: function () { return window.NativeMic.stop(); },
+        addListener: function (eventName, callback) { return window.NativeMic.addListener(eventName, callback); }
+      },
+      registry: {
+        isCurrent: function (inst) { return nativeMicBridge === inst; },
+        getStopPromise: function () { return nativeMicStopPromise; },
+        setStopPromise: function (promise) { nativeMicStopPromise = promise; }
+      }
+    };
   }
 
-  NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
-    this.speechAboveCount = 0;
-    this.nonSpeechLikeCount = 0;
-    this.startGateChunks = [];
-    this.bargeInFired = false;
-    this.silenceMs = 0;
-    this.speechActiveMs = 0;
-    this.speechLikeMs = 0;
-    this.voicedMs = 0;
-    this.voicedWindow = [];
-  };
-
-  /** Phase 1: start capture on speech-like energy. Does not stop TTS. */
-  NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
-    if (this.inSpeech) return false;
-    if (NativeAudio.pcm16IsSpeechLike(pcm16, rms)) {
-      this.startGateChunks.push(pcm16.slice());
-      this.speechAboveCount++;
-      this.nonSpeechLikeCount = 0;
-      if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
-        nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
-        this._beginUtterance(skipPreRoll);
-        return true;
-      }
-    } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
-      this.nonSpeechLikeCount++;
-      if (this.nonSpeechLikeCount >= NativeAudio.SPEECH_START_MISS_FRAMES) {
-        this.speechAboveCount = 0;
-        this.startGateChunks = [];
-      }
-    } else {
-      this.speechAboveCount = 0;
-      this.nonSpeechLikeCount = 0;
-      this.startGateChunks = [];
-    }
-    return false;
-  };
-
-  /** Phase 2: stop TTS now if real speech is confirmed. Not called from _endUtterance. */
-  NativeMicUtteranceVAD.prototype._maybeBargeIn = function _maybeBargeIn() {
-    if (this.bargeInFired) return;
-    if (!voiceLifecycle.hasActiveVoiceSession()) return;
-    if (!NativeAudio.pcm16RealSpeechDetected(this.speechLikeMs, this.voicedMs)) return;
-    this.bargeInFired = true;
-    nativeLog('VAD', 'barge-in on real speech likeMs=' + this.speechLikeMs
-      + ' voicedMs=' + this.voicedMs);
-    handleBargeIn();
-  };
-
-  NativeMicUtteranceVAD.prototype._noteVoicedFrame = function _noteVoicedFrame(copy, frameMs) {
-    this.voicedWindow.push(copy);
-    const w = NativeAudio.SPEECH_VOICED_WINDOW_FRAMES;
-    if (this.voicedWindow.length > w) this.voicedWindow.shift();
-    if (this.voicedWindow.length >= w) {
-      const win = NativeAudio.mergePcm16Chunks(this.voicedWindow);
-      if (NativeAudio.pcm16IsVoicedSpeech(win)) this.voicedMs += frameMs;
-    }
-  };
-
-  NativeMicUtteranceVAD.prototype._accumulateUtterance = function _accumulateUtterance(copy, rms, frameMs) {
-    this.utteranceChunks.push(copy);
-    if (NativeAudio.pcm16IsSpeechLike(copy, rms)) {
-      this.silenceMs = 0;
-      this.speechActiveMs += frameMs;
-      this.speechLikeMs += frameMs;
-      this._noteVoicedFrame(copy, frameMs);
-    } else {
-      this.silenceMs += frameMs;
-      this.voicedWindow = [];
-      if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
-        this._endUtterance();
-        return;
-      }
-    }
-    this._maybeBargeIn();
-  };
-
-  NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16) {
-    if (!this.isRecording || !window.voiceModeActive) {
-      // Button-green-but-deaf detector: frames arrive yet the session drops
-      // them (stale listener after restart, flag mismatch). Throttled.
-      reportVoiceThrottled('pcm-dropped', 10000, 'VOICE-ERROR',
-        'dropping PCM frames isRecording=' + this.isRecording
-        + ' voiceModeActive=' + !!window.voiceModeActive
-        + ' chunks=' + this.chunkCount);
-      return;
-    }
-    if (!this._firstFrameReported) {
-      this._firstFrameReported = true;
-      reportVoice('VOICE', 'first PCM frame received, capture live');
-    }
-    const copy = pcm16.slice();
-    const rms = NativeAudio.pcm16Rms(copy);
-    const frameMs = 20;
-    const now = Date.now();
-
-    this.preRollBuffer.push(copy);
-    this.chunkCount++;
-
-    // During TTS: record from speech-like start (Silero onSpeechStart). Barge-in
-    // only after real speech (REAL_SPEECH_MS + voicing), not on cough/"hey".
-    if (voiceLifecycle.hasActiveVoiceSession()) {
-      const started = this._maybeStartUtterance(copy, rms, true);
-      if (this.inSpeech && !started) {
-        this._accumulateUtterance(copy, rms, frameMs);
-      }
-      if (this.chunkCount % 50 === 0) {
-        nativeLog('VAD', 'pcm#' + this.chunkCount + ' ttsSess=1 ttsPlay=' + voiceLifecycle.snapshot().playing
-          + ' inSpeech=' + this.inSpeech + ' speechMs=' + this.speechActiveMs
-          + ' rms=' + Math.round(rms));
-      }
-      return;
-    }
-
-    if (voiceLifecycle.isInCooldown()) {
-      return;
-    }
-
-    const started = this._maybeStartUtterance(copy, rms, false);
-    if (this.inSpeech && !started) {
-      this._accumulateUtterance(copy, rms, frameMs);
-    }
-
-    if (this.chunkCount % 50 === 0) {
-      nativeLog('VAD', 'pcm#' + this.chunkCount + ' inSpeech=' + this.inSpeech
-        + ' ttsPlay=' + voiceLifecycle.snapshot().playing + ' rms=' + Math.round(rms));
-    }
-  };
-
-  /** Start recording. Barge-in is _maybeBargeIn, not here. */
-  NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance(skipPreRoll) {
-    if (this.inSpeech) return;
-    this.inSpeech = true;
-    const startChunks = this.startGateChunks;
-    this.startGateChunks = [];
-    this._resetSpeechCounters();
-    this.utteranceStartedAt = Date.now();
-    lastVoiceUtteranceStartedAt = this.utteranceStartedAt;
-    this.speechActiveMs = startChunks.length * 20;
-    this.speechLikeMs = startChunks.length * 20;
-    this.voicedMs = NativeAudio.pcm16VoicedMsFromChunks(startChunks, 20);
-    this.voicedWindow = startChunks.slice(-NativeAudio.SPEECH_VOICED_WINDOW_FRAMES);
-    const preRoll = this.preRollBuffer.snapshotChunks();
-    this.utteranceChunks = preRoll.length ? preRoll : startChunks;
-    nativeLog('VAD', 'utterance begin (startChunks=' + startChunks.length + ' preRoll=' + this.utteranceChunks.length + ')');
-    this._maybeBargeIn();
-  };
-
-  NativeMicUtteranceVAD.prototype._endUtterance = function _endUtterance() {
-    if (!this.inSpeech) return;
-    this.inSpeech = false;
-    this.speechAboveCount = 0;
-    this.nonSpeechLikeCount = 0;
-    this.silenceMs = 0;
-    this.bargeInFired = false;
-    this.speechLikeMs = 0;
-    this.voicedMs = 0;
-    this.voicedWindow = [];
-    if (this.speechActiveMs < NativeAudio.SPEECH_MIN_ACTIVE_MS) {
-      nativeLog('VAD', 'utterance rejected: speechActiveMs=' + this.speechActiveMs
-        + ' min=' + NativeAudio.SPEECH_MIN_ACTIVE_MS);
-      reportVoice('VOICE', 'utterance rejected too short speechMs=' + this.speechActiveMs);
-      this.utteranceChunks = [];
-      this.speechActiveMs = 0;
-      return;
-    }
-    nativeLog('VAD', 'utterance end chunks=' + this.utteranceChunks.length
-      + ' speechMs=' + this.speechActiveMs);
-    reportVoice('VOICE', 'utterance end chunks=' + this.utteranceChunks.length
-      + ' speechMs=' + this.speechActiveMs);
-    handleSpeechEnd();
-  };
-
-  NativeMicUtteranceVAD.prototype.takeSpeechPcm16 = function () {
-    const pcm16 = NativeAudio.mergePcm16Chunks(this.utteranceChunks);
-    this.utteranceChunks = [];
-    return pcm16;
-  };
-
-  NativeMicUtteranceVAD.prototype.takeSpeechWavBlob = function () {
-    const pcm16 = this.takeSpeechPcm16();
-    return NativeAudio.pcm16ToWavBlob(pcm16);
-  };
-
-  NativeMicUtteranceVAD.prototype.hasSpeechCapture = function () {
-    return this.utteranceChunks.length > 0;
-  };
-
-  NativeMicUtteranceVAD.prototype.hasCompletedSpeechCapture = function () {
-    return !this.inSpeech && this.utteranceChunks.length > 0;
-  };
-
-  NativeMicUtteranceVAD.prototype.start = async function () {
-    const self = this;
-    if (typeof NativeAudio === 'undefined') {
-      throw new Error('native-audio.js not loaded');
-    }
-    try {
-      nativeLog('VAD', 'NativeMicUtteranceVAD start (RMS v' + NativeAudio.VOICE_MODE_NATIVE_VAD_VERSION + ')');
-      this.preRollBuffer.clear();
-      this.utteranceChunks = [];
-      this.startGateChunks = [];
-      this.inSpeech = false;
-      this._resetSpeechCounters();
-      this.chunkCount = 0;
-      this._firstFrameReported = false;
-
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      if (nativeMicStopPromise) {
-        await nativeMicStopPromise;
-      }
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      await ensureNativeMicPermission();
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      try {
-        await window.NativeMic.start();
-      } catch (first) {
-        const firstMsg = first && first.message ? first.message : String(first);
-        if (/permission/i.test(firstMsg)) throw first;
-        nativeLog('VAD', 'NativeMic.start retry after: ' + firstMsg);
-        if (nativeMicBridge !== this) {
-          throw new Error('native VAD start superseded');
-        }
-        const retryStopPromise = Promise.resolve().then(function () {
-          return window.NativeMic.stop();
-        });
-        nativeMicStopPromise = retryStopPromise;
-        try {
-          await retryStopPromise;
-        } finally {
-          if (nativeMicStopPromise === retryStopPromise) {
-            nativeMicStopPromise = null;
-          }
-        }
-        if (nativeMicBridge !== this) {
-          throw new Error('native VAD start superseded');
-        }
-        await window.NativeMic.start();
-      }
-
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      this.nativeListener = window.NativeMic.addListener('nativeMicData', function (data) {
-        if (!self.isRecording || !window.voiceModeActive) return;
-        if (!data || !data.data) return;
-        try {
-          self._onNativePcm(NativeAudio.decodeNativePcmBase64(data.data));
-        } catch (err) {
-          nativeLog('VAD', 'PCM decode error: ' + err.message);
-        }
-      });
-      this.isRecording = true;
-      reportVoice('VOICE', 'native VAD capture started');
-    } catch (err) {
-      nativeLog('VAD', 'NativeMicUtteranceVAD start failed: ' + (err && err.message ? err.message : err));
-      reportVoice('VOICE-ERROR', 'native VAD start failed: ' + (err && err.message ? err.message : err));
-      throw err;
-    }
-  };
-
-  NativeMicUtteranceVAD.prototype.stop = async function () {
-    try {
-      this.isRecording = false;
-      this.inSpeech = false;
-
-      if (this.nativeListener) {
-        this.nativeListener.remove();
-        this.nativeListener = null;
-      }
-
-      this.preRollBuffer.clear();
-      this.utteranceChunks = [];
-      this.startGateChunks = [];
-      if (nativeMicBridge === this) {
-        const stopPromise = Promise.resolve().then(function () {
-          return window.NativeMic.stop();
-        });
-        nativeMicStopPromise = stopPromise;
-        try {
-          await stopPromise;
-        } finally {
-          if (nativeMicStopPromise === stopPromise) {
-            nativeMicStopPromise = null;
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Error stopping Voice Mode native VAD:', err);
-    }
-  };
-
-  NativeMicUtteranceVAD.prototype.reinitialize = async function () {
-    nativeLog('VAD', 'reinitialize: native RMS VAD always running');
-  };
-
-  NativeMicUtteranceVAD.prototype.onTtsPlaybackStarted = function () {
-    this.preRollBuffer.clear();
-    this.inSpeech = false;
-    this.utteranceChunks = [];
-    this.startGateChunks = [];
-    this._resetSpeechCounters();
-  };
+  function createDesktopVadHost() {
+    return {
+      vadLib: vad,
+      log: function (tag, msg) { nativeLog(tag, msg); },
+      voiceLifecycle: voiceLifecycle,
+      onBargeIn: function () { handleBargeIn(); },
+      onSpeechEnd: function (audio) { handleSpeechEnd(audio); },
+      onSpeechStart: function () { lastVoiceUtteranceStartedAt = Date.now(); },
+      isTtsActive: function () { return isVoiceTtsActive(); }
+    };
+  }
 
   function onVoiceModeTtsStarted() {
     voiceLifecycle.notePlaybackStarted();
@@ -4530,332 +3689,93 @@ $(document).ready(function() {
     });
   }
 
+  // Native sentence queue lives in static/tts-playback.js using the single
+  // voice lifecycle + voice-text. DOM/event composition (message element,
+  // MutationObserver scheduling, button UI, STT abort, VAD reset) stays here
+  // via explicit source callbacks; protocols/retries are not rewritten.
   function playNativeVoiceModeTts(button, options) {
     options = options || {};
-    if (!window.NativeVoiceTts || !window.nativeVoiceTtsAvailable) {
-      window.playTTS(button, options);
-      return;
-    }
-    if (voiceLifecycle.isCurrentButton(button)) {
-      stopAllTtsPlayback();
-      return;
-    }
-    if (voiceLifecycle.hasCurrentAudio()) stopAllTtsPlayback();
-
-    invalidateNativeVoiceTts();
-    const nativeVoiceTtsStopPromise = window.NativeVoiceTts.stop().catch(function () {});
-    stopCurrentDesktopTts();
-
-    // Reset VAD state immediately so pre-click speech/room noise cannot trigger false barge-in
-    if (nativeMicBridge && typeof nativeMicBridge.onTtsPlaybackStarted === 'function') {
-      nativeMicBridge.onTtsPlaybackStarted();
-    }
-    // Abort any in-flight voice STT so stale utterances cannot disrupt playback
-    if (voiceSttAbortController) {
-      try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
-      voiceSttAbortController = null;
-    }
-
-    const voiceTtsAbortController = new AbortController();
-    const ttsSignal = voiceTtsAbortController.signal;
-    const $messageElement = $(button).closest('.message');
-    const pendingNativeTtsTokens = new Set();
-    let stopped = false;
-    let consumedSentences = 0;
-    let sentenceQueue = [];
-    let endRequested = false;
-    let inFlightSentences = 0;
-    let pendingEnqueues = 0;
-    let enqueueTail = Promise.resolve();
-    let sessionReady = false;
-    let sessionStarting = false;
-    let nativeBackpressure = false;
-    let lookahead = MAX_NATIVE_TTS_LOOKAHEAD;
-    const queuedNativeClips = new Map();
-    const isFixedList = !!(options.sentences && options.sentences.length);
-
-    const generation = voiceLifecycle.beginNativePlayback(button, function () {
-        stopped = true;
-        teardownObserver();
-        pendingNativeTtsTokens.forEach(function (token) {
-          cancelNativeTtsToken(token);
-        });
-        pendingNativeTtsTokens.clear();
-        try { voiceTtsAbortController.abort(); } catch (e) { /* ignore */ }
-        invalidateNativeVoiceTts();
-        voiceLifecycle.noteNativeManualStop();
-        resetPlayButtonUi(button);
-        clearMessageTtsPlayingUi();
-        window.NativeVoiceTts.stop().catch(function () {});
-      });
-    $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
-    $messageElement.addClass('tts-is-playing');
-    $messageElement.find('.ai-message-text').addClass('tts-is-playing');
-    syncSendButtonState();
-
-    function live() {
-      return !stopped && voiceLifecycle.isLiveNativeGeneration(generation);
-    }
-
-    function isStillGenerating() {
-      const raw = $messageElement.find('.ai-message-text').text().trim();
-      if (raw === 'Thinking...') return true;
-      const isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
-      const regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
-      return isLastAi && regenDisabled && chatRequests.isGenerating();
-    }
-
-    function discoverSentences() {
-      if (!live() || isFixedList) return;
-      const fullText = getMessageTtsText($messageElement);
-      if (!fullText) return;
-      const parts = splitSentences(fullText);
-      for (let i = consumedSentences; i < parts.length; i++) {
-        const part = parts[i];
-        const isTrailingFragment = (i === parts.length - 1);
-        if (isTrailingFragment && !sentenceEndsWithTerminator(part.text) && isStillGenerating()) break;
-        sentenceQueue.push(part.text);
-        consumedSentences++;
-      }
-    }
-
-    function ensureSession() {
-      if (nativeVoiceTtsSessionPromise) return nativeVoiceTtsSessionPromise;
-      nativeVoiceTtsSessionPromise = nativeVoiceTtsStopPromise.then(function () {
-        if (!live()) return null;
-        return window.NativeVoiceTts.beginSession();
-      }).then(function (res) {
-        if (!live()) return;
-        const nativeSessionGen = (res && res.generation) || 0;
-        nativeBackpressure = !!(res && res.maxQueuedClips > 0);
-        if (nativeBackpressure) lookahead = Math.min(MAX_NATIVE_TTS_LOOKAHEAD, res.maxQueuedClips);
-        let nativeStarted = false;
-        nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
-          if (!data || !voiceLifecycle.isLiveNativeGeneration(generation)) return;
-          if (nativeSessionGen && data.generation && data.generation !== nativeSessionGen) return;
-          if (data.type === 'started') {
-            nativeStarted = true;
-            onVoiceModeTtsStarted();
-          } else if (data.type === 'clipConsumed') {
-            const job = queuedNativeClips.get(data.url);
-            if (job) {
-              queuedNativeClips.delete(data.url);
-              pendingNativeTtsTokens.delete(job.token);
-              releaseSlot(job);
-            }
-          } else if (data.type === 'ended') {
-            if (!nativeStarted && !endRequested) {
-              // Stale ended event from prior stopped session before this session began playing
-              return;
-            }
-            finishNativeVoiceTts(generation, button);
-          } else if (data.type === 'error') {
-            console.error('Native voice TTS error:', data.message);
-          }
-        });
-        return Promise.resolve(nativeVoiceTtsSessionListener);
-      });
-      return nativeVoiceTtsSessionPromise;
-    }
-
-    function markEndOfQueue() {
-      if (!live() || endRequested) return;
-      endRequested = true;
-      ensureSession().then(function () {
-        if (live()) return window.NativeVoiceTts.markEndOfQueue();
-      }).catch(function (err) {
-        if (live()) {
-          console.error('Native voice TTS session failed:', err);
-          finishNativeVoiceTts(generation, button);
+    // The message element initializes inside the owned queue at the exact
+    // original point (after teardown/stop/reset, before queue fields), so
+    // the bridge-availability/toggle early paths touch no DOM. Every getter
+    // below reads the initialized context.
+    var messageContext = null;
+    return ChatTtsPlayback.playNativeVoiceModeTts({
+      voiceLifecycle: voiceLifecycle,
+      split: function (text) { return splitSentences(text); },
+      terminator: function (text) { return sentenceEndsWithTerminator(text); },
+      sanitize: function (text) { return sanitizeForTTS(text); },
+      initMessageContext: function () {
+        var $messageElement = $(button).closest('.message');
+        messageContext = {
+          element: $messageElement,
+          textEl: $messageElement.find('.ai-message-text')[0]
+        };
+      },
+      getText: function () { return getMessageTtsText(messageContext.element); },
+      isGenerating: function () {
+        var raw = messageContext.element.find('.ai-message-text').text().trim();
+        if (raw === 'Thinking...') return true;
+        var isLastAi = messageContext.element.is($('#chat-content .message.ai-message').last());
+        var regenDisabled = messageContext.element.find('.regenerate-button').prop('disabled');
+        return isLastAi && regenDisabled && chatRequests.isGenerating();
+      },
+      observeChanges: function (onChange) {
+        var textEl = messageContext.textEl;
+        if (textEl && typeof MutationObserver === 'function') {
+          var obs = new MutationObserver(onChange);
+          obs.observe(textEl, { childList: true, subtree: true, characterData: true });
+          return function () { try { obs.disconnect(); } catch (e) { /* ignore */ } };
         }
-      });
-    }
-
-    // Wake the pump on streaming text updates so we don't wait out the 80 ms
-    // poll cycle between an LLM finishing a sentence and TTS starting.
-    function onTextChanged() {
-      if (!live()) {
-        teardownObserver();
-        return;
-      }
-      discoverSentences();
-      pump();
-    }
-
-    function teardownObserver() {
-      if (observer) {
-        try { observer.disconnect(); } catch (e) { /* ignore */ }
-        observer = null;
-      }
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-        pollTimer = null;
-      }
-    }
-
-    let observer = null;
-    let pollTimer = null;
-
-    // Token requests overlap, but enqueueing below remains in sentence order.
-    function postOneToken(rawText) {
-      const cleaned = sanitizeForTTS(rawText || '').trim();
-      if (!cleaned) return Promise.resolve(null);
-      return ensureSession().then(function () {
-        if (!live()) return null;
-        return fetchVoiceRetry('/tts', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: cleaned }),
-          signal: ttsSignal
-        });
-      }).then(function (response) {
-        if (!response) return null;
-        const responseToken = response.headers && response.headers.get('X-TTS-Token');
-        if (responseToken) {
-          const token = String(responseToken);
-          pendingNativeTtsTokens.add(token);
-          if (!live()) {
-            pendingNativeTtsTokens.delete(token);
-            cancelNativeTtsToken(token);
-            return null;
-          }
-          if (response.body) response.body.cancel().catch(function () {});
-          return { token: token };
+        return null;
+      },
+      fetchVoiceRetry: function (url, buildOptions, attempts) { return fetchVoiceRetry(url, buildOptions, attempts); },
+      withCsrf: function (headers) { return withCsrf(headers); },
+      sleepMs: function (ms) { return sleepMs(ms); },
+      isRetryableVoiceStatus: function (status) { return isRetryableVoiceStatus(status); },
+      getNativeBridge: function () {
+        return (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) ? window.NativeVoiceTts : null;
+      },
+      streamUrl: function (token) { return nativeVoiceTtsStreamUrl(token); },
+      cancelToken: function (token) { return cancelNativeTtsToken(token); },
+      stopDesktop: function () { stopCurrentDesktopTts(); },
+      stopAll: function (opts) { stopAllTtsPlayback(opts); },
+      abortStt: function () {
+        if (voiceSttAbortController) {
+          try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
+          voiceSttAbortController = null;
         }
-        return response.json();
-      }).then(function (data) {
-        if (!data || !data.token) return null;
-        const token = String(data.token);
-        pendingNativeTtsTokens.add(token);
-        if (!live()) {
-          pendingNativeTtsTokens.delete(token);
-          cancelNativeTtsToken(token);
-          return null;
+      },
+      vadReset: function () {
+        if (nativeMicBridge && typeof nativeMicBridge.onTtsPlaybackStarted === 'function') {
+          nativeMicBridge.onTtsPlaybackStarted();
         }
-        return token;
-      });
-    }
-
-    async function requestToken(text) {
-      for (let attempt = 0; live(); attempt++) {
-        try {
-          return await postOneToken(text);
-        } catch (err) {
-          if (!live() || (err && err.message === 'Session expired')) throw err;
-          const match = /request failed \((\d+)\)/.exec((err && err.message) || '');
-          const status = match ? Number(match[1]) : 0;
-          if (attempt >= MAX_TTS_SENTENCE_RETRIES || (status && !isRetryableVoiceStatus(status))) throw err;
-          await sleepMs(400 * (attempt + 1));
-        }
-      }
-      return null;
-    }
-
-    function releaseSlot(job) {
-      if (job.released) return;
-      job.released = true;
-      inFlightSentences--;
-      if (live()) pump();
-    }
-
-    function queueSentence(text) {
-      const job = { token: null, released: false };
-      inFlightSentences++;
-      pendingEnqueues++;
-      // Settle failures immediately even when an earlier sentence is still pending.
-      const prepared = requestToken(text).then(function (token) {
-        return { token: token };
-      }, function (error) { return { error: error }; });
-      enqueueTail = enqueueTail.then(function () { return prepared; }).then(async function (result) {
-        if (!live()) return;
-        if (result.error) throw result.error;
-        if (!result.token) { releaseSlot(job); return; }
-        job.token = result.token;
-        const url = nativeVoiceTtsStreamUrl(job.token);
-        if (nativeBackpressure) queuedNativeClips.set(url, job);
-        for (let attempt = 0; live(); attempt++) {
-          try {
-            await window.NativeVoiceTts.enqueue(url);
-            // Older APKs do not emit clipConsumed; keep their enqueue-ack flow working.
-            if (!nativeBackpressure) releaseSlot(job);
-            return;
-          } catch (err) {
-            if (attempt >= MAX_TTS_SENTENCE_RETRIES) throw err;
-            await sleepMs(400 * (attempt + 1));
-          }
-        }
-      }).catch(function (err) {
-        if (job.token) {
-          queuedNativeClips.delete(nativeVoiceTtsStreamUrl(job.token));
-          pendingNativeTtsTokens.delete(job.token);
-          cancelNativeTtsToken(job.token);
-        }
-        if (!live()) return;
-        console.error('Native voice TTS sentence failed after retries:', err);
-        reportVoice('VOICE-ERROR', 'TTS sentence failed (native)');
-        appendMessage('Voice output failed. Try again.', 'error-message');
-        // Exhausted retries end the session with a visible error; never advance.
-        stopped = true;
-        teardownObserver();
-        window.NativeVoiceTts.stop().catch(function () {});
-        finishNativeVoiceTts(generation, button);
-      }).then(function () {
-        pendingEnqueues--;
-        if (live()) pump();
-      });
-    }
-
-    function pump() {
-      if (!live() || endRequested) return;
-      if (!sessionReady) {
-        if (sessionStarting) return;
-        sessionStarting = true;
-        ensureSession().then(function () {
-          sessionReady = true;
-          if (live()) pump();
-        }).catch(function (err) {
-          if (!live()) return;
-          stopped = true;
-          teardownObserver();
-          console.error('Native voice TTS session failed:', err);
-          window.NativeVoiceTts.stop().catch(function () {});
-          finishNativeVoiceTts(generation, button);
-        });
-        return;
-      }
-      discoverSentences();
-      while (sentenceQueue.length > 0 && inFlightSentences < lookahead) {
-        const text = sanitizeForTTS(sentenceQueue.shift() || '').trim();
-        if (text) queueSentence(text);
-      }
-      if (!isFixedList && isStillGenerating()) {
-        if (!pollTimer) pollTimer = setTimeout(function () {
-          pollTimer = null;
-          pump();
-        }, 80);
-      } else if (sentenceQueue.length === 0 && pendingEnqueues === 0) {
-        teardownObserver();
-        markEndOfQueue();
-      }
-    }
-
-    if (isFixedList) {
-      options.sentences.forEach(function (sentence) {
-        if (sentence && String(sentence).trim()) sentenceQueue.push(String(sentence));
-      });
-    }
-
-    // React immediately to streaming text updates so TTS starts on the first
-    // complete sentence without waiting out the 80 ms poll cycle. Important
-    // for the web-search/tool-calling path: the final answer only begins
-    // streaming after the search + second LLM hop completes.
-    const textEl = $messageElement.find('.ai-message-text')[0];
-    if (textEl && typeof MutationObserver === 'function') {
-      observer = new MutationObserver(onTextChanged);
-      observer.observe(textEl, { childList: true, subtree: true, characterData: true });
-    }
-
-    pump();
+      },
+      resetPlayButton: function (btn) { resetPlayButtonUi(btn); },
+      clearMessageUi: function () { clearMessageTtsPlayingUi(); },
+      syncSendButton: function () { syncSendButtonState(); },
+      setButtonPlaying: function (btn) {
+        $(btn).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
+        messageContext.element.addClass('tts-is-playing');
+        messageContext.element.find('.ai-message-text').addClass('tts-is-playing');
+      },
+      notifyStarted: function () { onVoiceModeTtsStarted(); },
+      notifyEnded: function () { onVoiceModeTtsEnded(); },
+      reportVoice: function (kind, msg) { reportVoice(kind, msg); },
+      appendMessage: function (text, cls) { appendMessage(text, cls); },
+      logError: function () { console.error.apply(console, arguments); },
+      setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+      clearTimeout: function (id) { clearTimeout(id); },
+      isVoiceModeActive: function () { return !!window.voiceModeActive; },
+      getSessionPromise: function () { return nativeVoiceTtsSessionPromise; },
+      setSessionPromise: function (pr) { nativeVoiceTtsSessionPromise = pr; },
+      setSessionListener: function (l) { nativeVoiceTtsSessionListener = l; },
+      nativeStop: function () { return window.NativeVoiceTts.stop().catch(function () {}); },
+      invalidateNative: function () { invalidateNativeVoiceTts(); },
+      finishNative: function (gen, btn) { finishNativeVoiceTts(gen, btn); },
+      fallbackPlay: function (btn, opts) { window.playTTS(btn, opts); },
+      createAbortController: function () { return new AbortController(); }
+    }, button, options);
   }
   window.playNativeVoiceModeTts = playNativeVoiceModeTts;
 
@@ -4945,7 +3865,7 @@ $(document).ready(function() {
             + ' bluetooth=' + (routeRes && routeRes.bluetooth)
             + ' foreground=' + (routeRes && routeRes.foreground));
         }
-        startingNativeBridge = new NativeMicUtteranceVAD(function (err) {
+        startingNativeBridge = new ChatVoiceCapture.NativeMicUtteranceVAD(createNativeVadHost(), function (err) {
           nativeLog('VAD', err == null ? 'Native mic error' : String(err));
         });
         nativeMicBridge = startingNativeBridge;
@@ -5067,40 +3987,11 @@ $(document).ready(function() {
   }
   recoverAndMaybeResumeVoiceMode();
 
+  // Desktop Silero factory lives in static/voice-capture.js; this adapter
+  // supplies the message-specific callbacks (utterance timestamps, TTS-active
+  // gate, STT handoff) and the frame gate. Thresholds/paths/model unchanged.
   function createVAD(stream, hooks) {
-    hooks = hooks || {};
-    nativeLog('VAD', 'createVAD called with stream id: ' + stream.id);
-    return vad.MicVAD.new({
-      stream: stream,
-      model: 'v5',
-      baseAssetPath: '/static/deps/vad/',
-      onnxWASMBasePath: '/static/deps/vad/ort/',
-      positiveSpeechThreshold: 0.7,
-      negativeSpeechThreshold: 0.4,
-      redemptionMs: 1500,
-      minSpeechMs: 400,
-      preSpeechPadFrames: 16,
-      getStream: async () => stream,
-      onSpeechStart: hooks.onSpeechStart || function () {
-        nativeLog('VAD', 'onSpeechStart');
-        lastVoiceUtteranceStartedAt = Date.now();
-      },
-      onSpeechRealStart: hooks.onSpeechRealStart || function () {
-        nativeLog('VAD', 'onSpeechRealStart');
-        if (isVoiceTtsActive()) {
-          handleBargeIn();
-        }
-      },
-      onFrameProcessed: hooks.onFrameProcessed || function (probs) {
-        if (voiceLifecycle.noteFrameProcessed(probs.isSpeech)) {
-          handleBargeIn();
-        }
-      },
-      onSpeechEnd: hooks.onSpeechEnd || function (audio) {
-        nativeLog('VAD', 'onSpeechEnd');
-        handleSpeechEnd(audio);
-      },
-    });
+    return ChatVoiceCapture.createVAD(createDesktopVadHost(), stream, hooks);
   }
 
   async function reinitializeVAD() {

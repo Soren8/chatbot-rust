@@ -3,7 +3,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chatbot_core::config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -45,7 +44,7 @@ pub(crate) async fn handle_health(
     // no extra `redb` open), while owned routers check only their explicit
     // history without initializing the unrelated global database.
     let history_ok = services.chat().history().is_ok();
-    let voice_ok = probe_voice_service().await;
+    let voice_ok = probe_voice_service_with_base(&services.config_source().voice_service_base_url()).await;
 
     let checks = json!({
         "history": if history_ok { "ok" } else { "unavailable" },
@@ -73,12 +72,8 @@ pub(crate) async fn handle_health(
     )
 }
 
-async fn probe_voice_service() -> bool {
-    let config = config::app_config();
-    let url = format!(
-        "{}/health",
-        config.voice_service_base_url.trim_end_matches('/')
-    );
+async fn probe_voice_service_with_base(base_url: &str) -> bool {
+    let url = format!("{}/health", base_url.trim_end_matches('/'));
 
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))

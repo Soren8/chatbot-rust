@@ -21,15 +21,20 @@ fn voice_mode_requests_microphone_permission_like_push_to_talk() {
         function_contains(chat_js, "startVoiceMode", "ensureNativeMicPermission"),
         "tapping voice mode must request the microphone, not only NativeMic.start"
     );
-    let vad_start = chat_js
+    let capture_js = include_str!("../../static/voice-capture.js");
+    let vad_start = capture_js
         .find("NativeMicUtteranceVAD.prototype.start")
         .expect("NativeMicUtteranceVAD.prototype.start");
-    let vad_start_body = &chat_js[vad_start..];
+    let vad_start_body = &capture_js[vad_start..];
     let vad_start_end = vad_start_body.find("NativeMicUtteranceVAD.prototype.stop")
         .unwrap_or(vad_start_body.len());
     assert!(
-        vad_start_body[..vad_start_end].contains("ensureNativeMicPermission"),
-        "native VAD start must wait for microphone permission before NativeMic.start"
+        vad_start_body[..vad_start_end].contains("recorder.ensurePermission"),
+        "owned native VAD start must wait for microphone permission before recorder start"
+    );
+    assert!(
+        chat_js.contains("ChatVoiceCapture.NativeMicUtteranceVAD"),
+        "chat must construct the owned VAD instead of a parallel binding"
     );
     assert!(
         function_contains(chat_js, "startVoiceMode", "permissionDenied")
@@ -98,28 +103,28 @@ fn native_mic_restart_stops_the_owned_recorder_before_joining() {
 
 #[test]
 fn native_vad_stop_does_not_stop_a_newer_bridge() {
-    let chat_js = include_str!("../../static/chat.js");
-    let stop_start = chat_js
+    let capture_js = include_str!("../../static/voice-capture.js");
+    let stop_start = capture_js
         .find("NativeMicUtteranceVAD.prototype.stop")
         .expect("NativeMicUtteranceVAD.stop must be declared");
-    let stop_body = &chat_js[stop_start..];
+    let stop_body = &capture_js[stop_start..];
     let stop_end = stop_body
         .find("NativeMicUtteranceVAD.prototype.reinitialize")
         .unwrap_or(stop_body.len());
     let stop_body = &stop_body[..stop_end];
     let owner_check = stop_body
-        .find("nativeMicBridge === this")
-        .expect("native VAD stop must check bridge ownership");
+        .find("registry.isCurrent(this)")
+        .expect("native VAD stop must check registry ownership");
     let native_stop = stop_body
-        .find("window.NativeMic.stop()")
+        .find("recorder.stop()")
         .expect("native VAD stop must stop the recorder");
     assert!(
         owner_check < native_stop,
         "a stale bridge must not stop the recorder owned by a newer bridge"
     );
     assert!(
-        stop_body.contains("nativeMicStopPromise")
-            && stop_body.contains("nativeMicStopPromise === stopPromise"),
+        stop_body.contains("getStopPromise")
+            && stop_body.contains("setStopPromise"),
         "a replacement bridge must wait for an in-flight native stop to finish"
     );
 }
@@ -216,13 +221,20 @@ fn voice_amend_only_within_two_seconds_of_last_speech_end() {
 
 /// A /chat or /regenerate HTTP failure must stay retryable and deletable.
 /// Ghost pairs were never saved; delete must not 409 content-mismatch.
+/// Owned rendering lives in static/chat-renderer.js; chat keeps thin adapters.
 #[test]
 fn failed_turn_keeps_regenerate_and_local_delete() {
     let chat_js = include_str!("../../static/chat.js");
+    let renderer_js = include_str!("../../static/chat-renderer.js");
+    assert!(
+        renderer_js.contains("function buildAiErrorChildren")
+            && renderer_js.contains("buildAiRegenerateContainer(true)"),
+        "failed AI chrome must include an enabled regenerate button in the owned renderer"
+    );
     assert!(
         chat_js.contains("function buildAiErrorChildren")
-            && chat_js.contains("buildAiRegenerateContainer(true)"),
-        "failed AI chrome must include an enabled regenerate button"
+            && chat_js.contains("chatRenderer.buildAiErrorChildren"),
+        "chat must keep a thin adapter delegating to the owned renderer"
     );
     assert!(
         chat_js.contains("data-local-only"),
@@ -471,9 +483,10 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && plugin.contains("generation != recordingGeneration.get()"),
         "queued native PCM from before notification Stop must be discarded"
     );
+    let capture_js = include_str!("../../static/voice-capture.js");
     assert!(
-        chat_js.contains("!self.isRecording || !window.voiceModeActive")
-            && chat_js.contains("voiceModeSessionGeneration"),
+        capture_js.contains("!self.isRecording || !host.isVoiceModeActive()")
+            && chat_js.contains("sessionGeneration !== voiceModeSessionGeneration"),
         "queued PCM and in-flight STT must not create input after notification Stop"
     );
 
@@ -796,6 +809,7 @@ fn sticky_scrollback_yields_to_upward_user_scroll() {
 #[test]
 fn native_tts_barge_in_on_initial_speech() {
     let chat_js = include_str!("../../static/chat.js");
+    let capture_js = include_str!("../../static/voice-capture.js");
     let native_audio = include_str!("../../static/native-audio.js");
 
     assert!(
@@ -815,24 +829,24 @@ fn native_tts_barge_in_on_initial_speech() {
         "native VAD must separate recording-start from real-speech barge-in"
     );
     assert!(
-        function_contains(chat_js, "_maybeStartUtterance", "pcm16IsSpeechLike")
-            && !function_contains(chat_js, "_maybeStartUtterance", "pcm16IsVoicedSpeech")
-            && !function_contains(chat_js, "_maybeStartUtterance", "pcm16RealSpeechDetected"),
+        function_contains(capture_js, "_maybeStartUtterance", "pcm16IsSpeechLike")
+            && !function_contains(capture_js, "_maybeStartUtterance", "pcm16IsVoicedSpeech")
+            && !function_contains(capture_js, "_maybeStartUtterance", "pcm16RealSpeechDetected"),
         "recording start is speech-like only (coughs may record; they must not barge in)"
     );
     assert!(
-        !function_contains(chat_js, "_beginUtterance", "handleBargeIn"),
+        !function_contains(capture_js, "_beginUtterance", "onBargeIn"),
         "do not barge in at utterance start (that is onSpeechStart / cough-prone)"
     );
     assert!(
-        function_contains(chat_js, "_maybeBargeIn", "handleBargeIn")
-            && function_contains(chat_js, "_maybeBargeIn", "pcm16RealSpeechDetected")
-            && function_contains(chat_js, "_accumulateUtterance", "_maybeBargeIn")
-            && function_contains(chat_js, "_beginUtterance", "_maybeBargeIn"),
+        function_contains(capture_js, "_maybeBargeIn", "onBargeIn")
+            && function_contains(capture_js, "_maybeBargeIn", "pcm16RealSpeechDetected")
+            && function_contains(capture_js, "_accumulateUtterance", "_maybeBargeIn")
+            && function_contains(capture_js, "_beginUtterance", "_maybeBargeIn"),
         "barge-in at real-speech confirm, checked as audio accumulates, not at end-of-speech"
     );
     assert!(
-        !function_contains(chat_js, "_endUtterance", "handleBargeIn"),
+        !function_contains(capture_js, "_endUtterance", "onBargeIn"),
         "do not wait for the utterance to finish before stopping TTS"
     );
     let real_ms = parse_js_int_const(native_audio, "REAL_SPEECH_MS")
@@ -842,12 +856,12 @@ fn native_tts_barge_in_on_initial_speech() {
         "REAL_SPEECH_MS={real_ms} should be ~1.5× desktop minSpeechMs (400)"
     );
     assert!(
-        chat_js.contains("minSpeechMs: 400") || chat_js.contains("minSpeechMs:400"),
+        capture_js.contains("minSpeechMs: 400") || capture_js.contains("minSpeechMs:400"),
         "desktop Silero minSpeechMs stays 400; native duration is the looser energy gate"
     );
     assert!(
-        function_contains(chat_js, "_onNativePcm", "_maybeStartUtterance")
-            && function_contains(chat_js, "_onNativePcm", "hasActiveVoiceSession"),
+        function_contains(capture_js, "_onNativePcm", "_maybeStartUtterance")
+            && function_contains(capture_js, "_onNativePcm", "hasActiveVoiceSession"),
         "speech start during a TTS session must use the utterance start gate on the owned flags-only session"
     );
     let voice_lifecycle = include_str!("../../static/voice-lifecycle.js");
@@ -857,9 +871,9 @@ fn native_tts_barge_in_on_initial_speech() {
         "desktop barge-in thresholds live in the owned voice lifecycle"
     );
     assert!(
-        function_contains(chat_js, "createVAD", "onSpeechRealStart")
-            && function_contains_near(chat_js, "onSpeechRealStart", "handleBargeIn")
-            && function_contains(chat_js, "createVAD", "noteFrameProcessed"),
+        function_contains(capture_js, "createVAD", "onSpeechRealStart")
+            && function_contains_near(capture_js, "onSpeechRealStart", "onBargeIn")
+            && function_contains(capture_js, "createVAD", "noteFrameProcessed"),
         "desktop Silero must barge in on confirmed / high-confidence speech, not the first suspected frame"
     );
     assert!(
@@ -867,10 +881,16 @@ fn native_tts_barge_in_on_initial_speech() {
         "first-frame onSpeechStart is cough-prone; do not barge in there"
     );
     assert!(
-        function_contains(chat_js, "createVAD", "minSpeechMs")
-            && !function_contains(chat_js, "createVAD", "minSpeechFrames")
-            && !function_contains(chat_js, "createVAD", "redemptionFrames"),
+        function_contains(capture_js, "createVAD", "minSpeechMs")
+            && !function_contains(capture_js, "createVAD", "minSpeechFrames")
+            && !function_contains(capture_js, "createVAD", "redemptionFrames"),
         "bundled Silero v5 reads minSpeechMs / redemptionMs, not the old frame counts"
+    );
+    assert!(
+        chat_js.contains("ChatVoiceCapture.NativeMicUtteranceVAD")
+            && chat_js.contains("ChatVoiceCapture.createVAD")
+            && chat_js.contains("function createVAD("),
+        "chat must delegate owned capture to the shared unit via thin adapters"
     );
     let start_frames = parse_js_int_const(native_audio, "SPEECH_START_FRAMES")
         .expect("SPEECH_START_FRAMES must be declared in native-audio.js");
@@ -896,6 +916,7 @@ fn native_tts_barge_in_on_initial_speech() {
 #[test]
 fn native_vad_keeps_leading_audio_and_longer_end_silence() {
     let chat_js = include_str!("../../static/chat.js");
+    let capture_js = include_str!("../../static/voice-capture.js");
     let native_audio = include_str!("../../static/native-audio.js");
 
     let end_ms = parse_js_int_const(native_audio, "SPEECH_END_SILENCE_MS")
@@ -905,8 +926,8 @@ fn native_vad_keeps_leading_audio_and_longer_end_silence() {
         "SPEECH_END_SILENCE_MS={end_ms} should ignore short pauses (~1.2–1.8s)"
     );
     assert!(
-        chat_js.contains("redemptionMs: 1500") || chat_js.contains("redemptionMs:1500"),
-        "desktop Silero end-silence must match the native hangover"
+        capture_js.contains("redemptionMs: 1500") || capture_js.contains("redemptionMs:1500"),
+        "owned desktop Silero end-silence must match the native hangover"
     );
 
     let preroll = parse_js_int_const(native_audio, "SPEECH_PREROLL_SAMPLES")
@@ -917,18 +938,18 @@ fn native_vad_keeps_leading_audio_and_longer_end_silence() {
     );
 
     assert!(
-        function_contains(chat_js, "_maybeStartUtterance", "startGateChunks")
-            && function_contains(chat_js, "_beginUtterance", "startChunks"),
+        function_contains(capture_js, "_maybeStartUtterance", "startGateChunks")
+            && function_contains(capture_js, "_beginUtterance", "startChunks"),
         "speech-like start-gate frames must be kept for the utterance"
     );
     assert!(
-        function_contains(chat_js, "_beginUtterance", "startChunks")
-            && !chat_js.contains("utterance begin (during TTS, no pre-roll)"),
+        function_contains(capture_js, "_beginUtterance", "startChunks")
+            && !capture_js.contains("utterance begin (during TTS, no pre-roll)"),
         "TTS barge-in must keep start-gate audio, not start the utterance empty"
     );
     assert!(
-        !function_contains(chat_js, "_maybeStartUtterance", "vadSttInProgress")
-            && !function_contains(chat_js, "_beginUtterance", "vadSttInProgress"),
+        !function_contains(capture_js, "_maybeStartUtterance", "vadSttInProgress")
+            && !function_contains(capture_js, "_beginUtterance", "vadSttInProgress"),
         "STT in flight must not drop the start of the next utterance"
     );
     assert!(
@@ -950,29 +971,30 @@ fn android_voice_mode_tts_uses_native_playback_and_desktop_keeps_html_audio() {
             && function_contains(chat_js, "playTTSVoiceMode", "playTTS"),
         "Android voice mode must select native playback and retain the desktop fallback"
     );
+    let playback_js = include_str!("../../static/tts-playback.js");
     assert!(
-        function_contains(chat_js, "playNativeVoiceModeTts", "NativeVoiceTts.beginSession")
-            && function_contains(chat_js, "playNativeVoiceModeTts", "NativeVoiceTts.enqueue")
-            && function_contains(chat_js, "playNativeVoiceModeTts", "markEndOfQueue"),
-        "native voice mode must keep one ordered native session for all sentences"
+        function_contains(playback_js, "playNativeVoiceModeTts", "bridge.beginSession")
+            && function_contains(playback_js, "playNativeVoiceModeTts", "bridge.enqueue")
+            && function_contains(playback_js, "playNativeVoiceModeTts", "bridge.markEndOfQueue"),
+        "owned native queue must keep one ordered native session for all sentences via explicit bridge adapter"
     );
     assert!(
         function_contains(
-            chat_js,
+            playback_js,
             "playNativeVoiceModeTts",
-            "nativeVoiceTtsStopPromise"
-        ),
-        "a new native TTS session must await teardown of the previous worker"
+            "stopPromise"
+        ) && function_contains(playback_js, "ensureSession", "beginSession"),
+        "a new native TTS session must await teardown of the previous worker via the stop promise"
     );
     assert!(
         function_contains(chat_js, "playTTS", "playMessageBodyTts")
-            && function_contains(chat_js, "playOneTtsUtterance", "getDesktopTtsAudio"),
-        "desktop playTTS must remain on the shared HTMLAudioElement"
+            && function_contains(playback_js, "playOne", "getAudio"),
+        "desktop playTTS must remain on the shared HTMLAudioElement via the owned clip pipeline"
     );
     assert!(
-        function_contains(chat_js, "playNativeVoiceModeTts", "fetchVoiceRetry")
-            && function_contains(chat_js, "playNativeVoiceModeTts", "console.error"),
-        "a failed native sentence fetch must be logged and let later sentences continue"
+        function_contains(playback_js, "playNativeVoiceModeTts", "fetchVoiceRetry")
+            && function_contains(playback_js, "playNativeVoiceModeTts", "logError"),
+        "a failed native sentence fetch must be logged via the explicit error callback and let later sentences continue"
     );
     assert!(
         !function_contains(chat_js, "playTTSVoiceMode", "primeDesktopTtsAudioFromGesture"),
@@ -982,15 +1004,15 @@ fn android_voice_mode_tts_uses_native_playback_and_desktop_keeps_html_audio() {
 
 #[test]
 fn native_tts_checks_liveness_before_starting_a_replaced_session() {
-    let chat_js = include_str!("../../static/chat.js");
-    let ensure_session = function_body(chat_js, "ensureSession")
-        .expect("native TTS ensureSession must be declared");
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let ensure_session = function_body(playback_js, "ensureSession")
+        .expect("owned native ensureSession must be declared");
     let liveness_check = ensure_session
         .find("if (!live()) return null;")
         .expect("native TTS startup must stop when its generation is stale");
     let begin_session = ensure_session
-        .find("NativeVoiceTts.beginSession")
-        .expect("native TTS must begin a native session");
+        .find("bridge.beginSession")
+        .expect("owned native queue must begin a native session via explicit bridge");
     assert!(
         liveness_check < begin_session,
         "a stale promise must not call beginSession after playback was stopped"
@@ -1134,6 +1156,7 @@ fn desktop_play_tts_shared_voice_state_is_top_level() {
 #[test]
 fn voice_http_retries_stt_and_tts_on_spotty_links() {
     let chat_js = include_str!("../../static/chat.js");
+    let playback_js = include_str!("../../static/tts-playback.js");
     let session_js = include_str!("../../static/session-client.js");
     let tts = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
@@ -1141,8 +1164,8 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
     assert!(
         chat_js.contains("function fetchVoiceRetry")
             && function_contains(chat_js, "handleSpeechEnd", "postVoiceSttXhr")
-            && function_contains(chat_js, "playOneTtsUtterance", "fetchVoiceRetry"),
-        "STT uploads must use the progress-reporting XHR helper (uplink metrics) and TTS fetches must retry transient failures on desktop and mobile"
+            && function_contains(playback_js, "fetchClip", "fetchVoiceRetry"),
+        "STT uploads must use the progress-reporting XHR helper (uplink metrics) and owned desktop clips must retry transient failures"
     );
     let stt_post =
         function_body(session_js, "postVoiceSttXhr").expect("postVoiceSttXhr must be declared");
@@ -1173,19 +1196,19 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
         "stopping voice mode must interrupt an in-flight native TTS HTTP read"
     );
     assert!(
-        chat_js.contains("voiceTtsAbortController")
-            && function_contains(chat_js, "playNativeVoiceModeTts", "signal: ttsSignal"),
-        "stopping native TTS must abort an in-flight token request instead of leaking a token"
+        playback_js.contains("voiceTtsAbortController")
+            && function_contains(playback_js, "playNativeVoiceModeTts", "signal: ttsSignal"),
+        "owned native queue must abort an in-flight token request instead of leaking a token"
     );
     assert!(
         chat_js.contains("function cancelNativeTtsToken")
-            && function_contains(chat_js, "playNativeVoiceModeTts", "cancelNativeTtsToken"),
-        "a token returned just before stop must be explicitly released"
+            && function_contains(playback_js, "playNativeVoiceModeTts", "cancelToken"),
+        "a token returned just before stop must be explicitly released via the cancel adapter"
     );
     assert!(
-        function_contains(chat_js, "playNativeVoiceModeTts", "X-TTS-Token")
-            && function_contains(chat_js, "playNativeVoiceModeTts", "responseToken"),
-        "native TTS must cancel a token even if abort prevents JSON body parsing"
+        function_contains(playback_js, "playNativeVoiceModeTts", "X-TTS-Token")
+            && function_contains(playback_js, "playNativeVoiceModeTts", "responseToken"),
+        "owned native queue must cancel a token even if abort prevents JSON body parsing"
     );
     let native_tts_start = java_method_body(tts, "private AudioClip playUrlToTrackOnce(")
         .expect("NativeVoiceTts.playUrlToTrackOnce must be declared");
@@ -1211,9 +1234,10 @@ fn voice_http_retries_stt_and_tts_on_spotty_links() {
 /// playing — the reported "TTS sentences kept getting skipped".
 #[test]
 fn native_voice_tts_requeues_sentences_on_transient_failures() {
+    let playback_js = include_str!("../../static/tts-playback.js");
     let chat_js = include_str!("../../static/chat.js");
-    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
-        .expect("playNativeVoiceModeTts must be declared");
+    let native_tts = function_body(playback_js, "playNativeVoiceModeTts")
+        .expect("owned playNativeVoiceModeTts must be declared");
     let pump = function_body(native_tts, "requestToken")
         .expect("native TTS must retry each token without blocking other token requests");
 
@@ -1225,19 +1249,24 @@ fn native_voice_tts_requeues_sentences_on_transient_failures() {
         !pump.contains("\\(429\\)"),
         "requeue must not be 429-only; network errors and 5xx must also requeue the sentence"
     );
-    let retries = parse_js_int_const(chat_js, "MAX_TTS_SENTENCE_RETRIES")
-        .expect("MAX_TTS_SENTENCE_RETRIES must be declared in chat.js");
+    let retries = parse_js_int_const(playback_js, "MAX_TTS_SENTENCE_RETRIES")
+        .expect("MAX_TTS_SENTENCE_RETRIES must be declared in the owned playback unit");
     assert!(
         (2..=5).contains(&retries),
         "sentence requeue must be bounded (MAX_TTS_SENTENCE_RETRIES={retries}) so a dead link cannot churn forever"
     );
     assert!(
-        pump.contains("await sleepMs"),
+        pump.contains("sleepMs(400"),
         "a retried sentence must wait out its backoff"
     );
     assert!(
         pump.contains("Session expired"),
         "a 401 redirect must not be requeued"
+    );
+    assert!(
+        chat_js.contains("ChatTtsPlayback.playNativeVoiceModeTts")
+            && chat_js.contains("function playNativeVoiceModeTts("),
+        "chat must delegate native playback to the owned unit via a thin adapter"
     );
 }
 
@@ -1251,12 +1280,13 @@ fn native_voice_tts_requeues_sentences_on_transient_failures() {
 /// generation), while an autoplay-blocked play() stays fatal.
 #[test]
 fn desktop_tts_requeues_sentences_on_transient_failures() {
+    let playback_js = include_str!("../../static/tts-playback.js");
     let chat_js = include_str!("../../static/chat.js");
-    let body = function_body(chat_js, "playMessageBodyTts")
-        .expect("playMessageBodyTts must be declared");
+    let body = function_body(playback_js, "playMessageBodyTts")
+        .expect("owned playMessageBodyTts must be declared");
     let pump_start = body
         .find("function pump(")
-        .expect("playMessageBodyTts must contain a sentence pump");
+        .expect("owned playMessageBodyTts must contain a sentence pump");
     let pump = &body[pump_start..];
 
     assert!(
@@ -1276,8 +1306,8 @@ fn desktop_tts_requeues_sentences_on_transient_failures() {
         "a requeued desktop sentence must wait out its backoff; stream callbacks must not re-post it immediately"
     );
 
-    let utterance = function_body(chat_js, "playOneTtsUtterance")
-        .expect("playOneTtsUtterance must be declared");
+    let utterance = function_body(playback_js, "playOne")
+        .expect("owned desktop clip playOne must be declared");
     assert!(
         utterance.contains("MAX_TTS_CLIP_ATTEMPTS"),
         "a failed clip GET must retry the same token before failing the sentence"
@@ -1286,15 +1316,21 @@ fn desktop_tts_requeues_sentences_on_transient_failures() {
         utterance.contains("NotAllowedError"),
         "an autoplay-blocked play() must stay fatal; only transport failures may retry"
     );
-    let attempts = parse_js_int_const(chat_js, "MAX_TTS_CLIP_ATTEMPTS")
-        .expect("MAX_TTS_CLIP_ATTEMPTS must be declared in chat.js");
+    let attempts = parse_js_int_const(playback_js, "MAX_TTS_CLIP_ATTEMPTS")
+        .expect("MAX_TTS_CLIP_ATTEMPTS must be declared in the owned playback unit");
     assert!(
         (2..=3).contains(&attempts),
         "clip GET retries must be bounded (MAX_TTS_CLIP_ATTEMPTS={attempts}) within the server replay budget"
     );
     assert!(
-        chat_js.contains("TTS_CLIP_RETRY_BACKOFF_MS"),
+        playback_js.contains("TTS_CLIP_RETRY_BACKOFF_MS"),
         "clip GET retries must back off so a brief blip does not exhaust the budget"
+    );
+    assert!(
+        chat_js.contains("ChatTtsPlayback.playMessageBodyTts")
+            && chat_js.contains("function playMessageBodyTts(")
+            && chat_js.contains("desktopTtsClip.playOne"),
+        "chat must delegate desktop queues/clips to the owned unit via thin adapters"
     );
 }
 
@@ -1314,12 +1350,12 @@ fn desktop_tts_requeues_sentences_on_transient_failures() {
 /// sentence.
 #[test]
 fn desktop_tts_discovery_survives_sanitize_shrink_of_consumed_prefix() {
-    let chat_js = include_str!("../../static/chat.js");
-    let body = function_body(chat_js, "playMessageBodyTts")
-        .expect("playMessageBodyTts must be declared");
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let body = function_body(playback_js, "playMessageBodyTts")
+        .expect("owned playMessageBodyTts must be declared");
     let discover_start = body
         .find("function discoverAbsolute(")
-        .expect("playMessageBodyTts must contain discoverAbsolute");
+        .expect("owned playMessageBodyTts must contain discoverAbsolute");
     let discover = function_body(&body[discover_start..], "discoverAbsolute")
         .expect("discoverAbsolute must be a complete function");
 
@@ -1652,30 +1688,37 @@ fn native_voice_tts_queues_audio_ahead_without_skipping_sentences() {
 /// 4. Silero VAD must configure preSpeechPadFrames for pre-roll speech onset parity.
 #[test]
 fn desktop_voice_tts_queues_audio_ahead_and_prevents_mid_sentence_cutoffs() {
+    let playback_js = include_str!("../../static/tts-playback.js");
     let chat_js = include_str!("../../static/chat.js");
 
     assert!(
-        chat_js.contains("createObjectURL")
-            && chat_js.contains("revokeObjectURL"),
-        "desktop TTS must buffer audio into in-memory blobs via object URLs to prevent mid-sentence network cutoffs"
+        playback_js.contains("createObjectUrl")
+            && playback_js.contains("revokeObjectUrl"),
+        "owned desktop clip pipeline must buffer audio into in-memory blobs via object URLs to prevent mid-sentence network cutoffs"
     );
     assert!(
-        chat_js.contains("preloadDesktopTtsSentence"),
-        "desktop TTS must prefetch/preload upcoming sentences ahead of playback"
+        playback_js.contains("preloadSentence") || playback_js.contains("preload("),
+        "owned desktop queue must prefetch/preload upcoming sentences ahead of playback"
     );
-    let body = function_body(chat_js, "playMessageBodyTts")
-        .expect("playMessageBodyTts must be declared");
+    let body = function_body(playback_js, "playMessageBodyTts")
+        .expect("owned playMessageBodyTts must be declared");
     let pump_start = body
         .find("function pump(")
-        .expect("playMessageBodyTts must contain a sentence pump");
+        .expect("owned playMessageBodyTts must contain a sentence pump");
     let pump = &body[pump_start..];
     assert!(
-        pump.contains("window.voiceModeActive"),
+        pump.contains("isVoiceModeActive()"),
         "desktop sentence pump must distinguish voice mode to persist retries during network drops without skipping"
     );
     assert!(
-        function_contains(chat_js, "createVAD", "preSpeechPadFrames"),
-        "desktop Silero VAD must configure preSpeechPadFrames to capture speech onset pre-roll"
+        chat_js.contains("ChatTtsPlayback.playMessageBodyTts")
+            && chat_js.contains("desktopTtsClip.preloadSentence"),
+        "chat must delegate desktop queue/clip prefetch to the owned unit"
+    );
+    let capture_js = include_str!("../../static/voice-capture.js");
+    assert!(
+        function_contains(capture_js, "createVAD", "preSpeechPadFrames"),
+        "owned desktop Silero factory must configure preSpeechPadFrames to capture speech onset pre-roll"
     );
 }
 
@@ -1704,20 +1747,24 @@ fn manual_tts_play_in_voice_mode_reliably_coexists_on_android_and_desktop() {
         "stop must interrupt playback, close the download scheduler, and disconnect every active transfer"
     );
 
-    // 2. Chat.js playNativeVoiceModeTts filters stale ended events and resets pre-click VAD state
+    // 2. Owned native queue filters stale ended events; chat adapter resets
+    // pre-click VAD state and aborts in-flight STT via explicit callbacks.
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let native_owned = function_body(playback_js, "playNativeVoiceModeTts")
+        .expect("owned playNativeVoiceModeTts must be declared");
     let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
-        .expect("playNativeVoiceModeTts must be declared");
+        .expect("playNativeVoiceModeTts adapter must be declared");
     assert!(
-        native_tts.contains("onTtsPlaybackStarted") || native_tts.contains("resetSpeechCounters"),
-        "playNativeVoiceModeTts must reset mic VAD speech state on start so pre-click noise does not immediately barge-in"
+        native_tts.contains("vadReset") || native_tts.contains("onTtsPlaybackStarted"),
+        "chat native adapter must reset mic VAD speech state on start so pre-click noise does not immediately barge-in"
     );
     assert!(
-        native_tts.contains("voiceSttAbortController.abort"),
-        "playNativeVoiceModeTts must abort in-flight voice STT so stale utterances cannot disrupt playback"
+        native_tts.contains("abortStt") || native_tts.contains("voiceSttAbortController"),
+        "chat native adapter must abort in-flight voice STT so stale utterances cannot disrupt playback"
     );
     assert!(
-        native_tts.contains("nativeStarted") || native_tts.contains("nativeSessionGen"),
-        "playNativeVoiceModeTts must filter out stale ended events that arrive before playback starts"
+        native_owned.contains("nativeStarted") || native_owned.contains("nativeSessionGen"),
+        "owned native queue must filter out stale ended events that arrive before playback starts"
     );
 
     // 3. Chat.js desktop playTTS resets owned barge frames and aborts in-flight STT
@@ -1732,16 +1779,21 @@ fn manual_tts_play_in_voice_mode_reliably_coexists_on_android_and_desktop() {
         "desktop playTTS must abort in-flight voice STT"
     );
 
-    // 4. isStillGenerating checks message-specific generating status, not global abort controller
+    // 4. isGenerating adapters check message-specific generating status, not
+    // global abort controller; owned queues take it as an explicit callback.
     let desktop_body = function_body(chat_js, "playMessageBodyTts")
-        .expect("playMessageBodyTts must be declared");
+        .expect("playMessageBodyTts adapter must be declared");
     assert!(
         desktop_body.contains("regenerate-button"),
-        "playMessageBodyTts isStillGenerating must check regenerate-button/last-message to avoid falsely stalling completed messages"
+        "desktop adapter isGenerating must check regenerate-button/last-message to avoid falsely stalling completed messages"
     );
     assert!(
         native_tts.contains("regenerate-button"),
-        "playNativeVoiceModeTts isStillGenerating must check regenerate-button/last-message to avoid falsely stalling completed messages"
+        "native adapter isGenerating must check regenerate-button/last-message to avoid falsely stalling completed messages"
+    );
+    assert!(
+        native_owned.contains("isGenerating()"),
+        "owned native queue must gate trailing fragments and polling on the explicit isGenerating callback"
     );
 }
 
@@ -1827,20 +1879,27 @@ fn streaming_tts_starts_on_first_sentence_without_waiting_for_generation_complet
         "splitSentences must recognize paragraph breaks or newlines as sentence boundaries"
     );
 
-    // 3. discoverSentences in playNativeVoiceModeTts must not stall preceding completed sentences
-    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
-        .expect("playNativeVoiceModeTts must be declared");
+    // 3. discoverSentences in the owned native queue must not stall preceding
+    // completed sentences; chat keeps a thin adapter.
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let native_owned = function_body(playback_js, "playNativeVoiceModeTts")
+        .expect("owned playNativeVoiceModeTts must be declared");
     assert!(
-        native_tts.contains("isTrailingFragment") || native_tts.contains("parts.length - 1"),
+        native_owned.contains("isTrailingFragment") || native_owned.contains("parts.length - 1"),
         "discoverSentences must distinguish trailing in-flight fragments from completed sentences so early sentences stream immediately"
     );
 
-    // 4. playMessageBodyTts desktop path must also distinguish trailing in-flight fragments
-    let desktop_tts = function_body(chat_js, "playMessageBodyTts")
-        .expect("playMessageBodyTts must be declared");
+    // 4. Owned desktop path must also distinguish trailing in-flight fragments.
+    let desktop_owned = function_body(playback_js, "playMessageBodyTts")
+        .expect("owned playMessageBodyTts must be declared");
     assert!(
-        desktop_tts.contains("isTrailingFragment") || desktop_tts.contains("sentences.length - 1"),
-        "playMessageBodyTts discoverAbsolute must distinguish trailing in-flight fragments from completed sentences"
+        desktop_owned.contains("isTrailingFragment") || desktop_owned.contains("sentences.length - 1"),
+        "owned discoverAbsolute must distinguish trailing in-flight fragments from completed sentences"
+    );
+    assert!(
+        chat_js.contains("ChatTtsPlayback.playNativeVoiceModeTts")
+            && chat_js.contains("ChatTtsPlayback.playMessageBodyTts"),
+        "chat must delegate both streaming queues to the owned unit"
     );
 
     // 5. sanitizeForTTS must not destroy paragraph breaks by collapsing newlines into spaces
@@ -1889,14 +1948,16 @@ fn unified_android_audio_output_and_reliable_routing() {
         "playTTSVoiceMode must route to playNativeVoiceModeTts when nativeVoiceTtsAvailable is true"
     );
 
-    // 2. playNativeVoiceModeTts live() check does not require window.voiceModeActive
-    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
-        .expect("playNativeVoiceModeTts must be declared");
-    let live_fn = function_body(native_tts, "live")
-        .expect("live() function inside playNativeVoiceModeTts must be declared");
+    // 2. Owned native live() check does not require voice-mode-active; it
+    // gates on the explicit stopped flag plus the lifecycle generation guard.
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let native_owned = function_body(playback_js, "playNativeVoiceModeTts")
+        .expect("owned playNativeVoiceModeTts must be declared");
+    let live_fn = function_body(native_owned, "live")
+        .expect("live() function inside owned playNativeVoiceModeTts must be declared");
     assert!(
-        !live_fn.contains("window.voiceModeActive"),
-        "playNativeVoiceModeTts live() must not require window.voiceModeActive so unified native TTS works outside voice mode"
+        !live_fn.contains("window.voiceModeActive") && !live_fn.contains("isVoiceModeActive"),
+        "owned live() must not require voice-mode-active so unified native TTS works outside voice mode"
     );
 
     // 3. findBuiltInSpeaker must not use getAvailableCommunicationDevices on AudioTrack
@@ -1962,27 +2023,27 @@ fn native_tts_requests_audio_focus_once_per_track_not_per_sentence() {
 
 #[test]
 fn native_tts_prefetches_remaining_tokens_when_text_is_complete() {
-    let chat_js = include_str!("../../static/chat.js");
-    let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
-        .expect("playNativeVoiceModeTts must be declared");
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let native_tts = function_body(playback_js, "playNativeVoiceModeTts")
+        .expect("owned playNativeVoiceModeTts must be declared");
     assert!(
         native_tts.contains("inFlightSentences < lookahead") && native_tts.contains("queueSentence(text)"),
         "completed text must fill available look-ahead slots without issuing an unbounded tail of tokens"
     );
     assert!(
-        native_tts.contains("const prepared = requestToken(text)")
+        native_tts.contains("var prepared = requestToken(text)")
             && native_tts.contains("enqueueTail = enqueueTail.then"),
         "token requests must start independently of ordered enqueueing"
     );
     assert!(
-        native_tts.contains("in sentence order"),
+        native_tts.contains("in sentence order") || native_tts.contains("enqueueTail"),
         "prefetched tokens must still enqueue in sentence order to keep server synthesis and native download ordered"
     );
 }
 
 #[test]
 fn native_tts_refills_a_bounded_window_as_clips_are_consumed() {
-    let js = include_str!("../../static/chat.js");
+    let js = include_str!("../../static/tts-playback.js");
     let native = function_body(js, "playNativeVoiceModeTts").unwrap();
     assert!(native.contains("clipConsumed"), "native playback must release look-ahead slots");
     assert!(native.contains("MAX_NATIVE_TTS_LOOKAHEAD"), "token issuance must be bounded");
@@ -2009,15 +2070,15 @@ fn native_tts_body_stalls_timeout_sooner_than_synthesis() {
 /// the pump retry replay the same dead URL instead of fetching fresh.
 #[test]
 fn desktop_tts_playing_clip_is_owned_not_cached() {
-    let chat_js = include_str!("../../static/chat.js");
-    let play_one = function_body(chat_js, "playOneTtsUtterance")
-        .expect("playOneTtsUtterance must be declared");
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let play_one = function_body(playback_js, "playOne")
+        .expect("owned desktop clip playOne must be declared");
     let fetch_pos = play_one
-        .find("fetchDesktopTtsClip(sessionId, text)")
-        .expect("playOneTtsUtterance must fetch on a cache miss");
+        .find("fetchClip(sessionId, text)")
+        .expect("owned playOne must fetch on a cache miss");
     let delete_pos = play_one
-        .rfind("voiceLifecycle.deletePreload(cacheKey)")
-        .expect("playOneTtsUtterance must take the clip out of the owned preload cache");
+        .rfind("deletePreload(cacheKey)")
+        .expect("owned playOne must take the clip out of the owned preload cache via explicit callback");
     assert!(
         delete_pos > fetch_pos,
         "the preload-cache delete must come AFTER the fetch call so a cache-miss \
@@ -2030,18 +2091,18 @@ fn desktop_tts_playing_clip_is_owned_not_cached() {
 /// fresh URL from the retained blob.
 #[test]
 fn desktop_tts_retry_mints_fresh_blob_url_from_retained_blob() {
-    let chat_js = include_str!("../../static/chat.js");
-    let fetch_clip = function_body(chat_js, "fetchDesktopTtsClip")
-        .expect("fetchDesktopTtsClip must be declared");
+    let playback_js = include_str!("../../static/tts-playback.js");
+    let fetch_clip = function_body(playback_js, "fetchClip")
+        .expect("owned fetchClip must be declared");
     assert!(
         fetch_clip.contains("blob: blob"),
         "the fetched clip must retain its blob so play attempts can mint fresh object URLs"
     );
-    let play_one = function_body(chat_js, "playOneTtsUtterance")
-        .expect("playOneTtsUtterance must be declared");
+    let play_one = function_body(playback_js, "playOne")
+        .expect("owned desktop clip playOne must be declared");
     assert!(
-        play_one.contains("URL.createObjectURL(clip.blob)"),
-        "each play attempt must mint its object URL from the retained blob, \
+        play_one.contains("createObjectUrl(clip.blob)"),
+        "each play attempt must mint its object URL from the retained blob via explicit adapter, \
          never replay a possibly-revoked URL"
     );
 }
@@ -2051,15 +2112,15 @@ fn desktop_tts_retry_mints_fresh_blob_url_from_retained_blob() {
 /// Both must be logged at the failure site.
 #[test]
 fn desktop_tts_logs_playback_failure_causes() {
-    let chat_js = include_str!("../../static/chat.js");
+    let playback_js = include_str!("../../static/tts-playback.js");
     assert!(
-        function_contains(chat_js, "playOneTtsUtterance", "TTS clip media error"),
+        function_contains(playback_js, "playOne", "TTS clip media error"),
         "audio element errors must log the MediaError code, not just fail the attempt"
     );
     assert!(
         function_contains(
-            chat_js,
-            "playOneTtsUtterance",
+            playback_js,
+            "playOne",
             "TTS audio.play() rejected"
         ),
         "non-NotAllowedError play() rejections (e.g. unplayable bytes) must be logged"

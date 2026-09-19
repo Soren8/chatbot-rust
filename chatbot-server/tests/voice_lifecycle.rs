@@ -103,21 +103,39 @@ fn chat_page_wires_voice_lifecycle_before_app_script() {
         "voiceLifecycle.completeDesktopPlayback(",
         "voiceLifecycle.stopDesktopPlayback(",
         "voiceLifecycle.beginDesktopPlayback(",
-        "voiceLifecycle.beginNativePlayback(",
-        "voiceLifecycle.isLiveNativeGeneration(",
         "voiceLifecycle.finishNativePlayback(",
         "voiceLifecycle.invalidateNativeSession(",
         "voiceLifecycle.stopAllPlayback(",
-        "voiceLifecycle.noteFrameProcessed(",
         "voiceLifecycle.hasActiveVoiceSession(",
         "voiceLifecycle.resetBargeFrames(",
-        "voiceLifecycle.isInCooldown(",
         "voiceLifecycle.getCurrentButton()",
         "voiceLifecycle.isCurrentButton(",
     ] {
         assert!(
             src.contains(marker),
             "chat.js must delegate owned voice lifecycle to the shared unit; missing: {marker}"
+        );
+    }
+    // Native playback orchestration and the capture-side gates moved to their
+    // owned units; chat keeps the lifecycle owner plus thin entry adapters.
+    let playback = include_str!("../../static/tts-playback.js");
+    for marker in [
+        "voiceLifecycle.beginNativePlayback(",
+        "voiceLifecycle.isLiveNativeGeneration(",
+    ] {
+        assert!(
+            playback.contains(marker),
+            "owned playback unit must drive native sessions via the shared owner; missing: {marker}"
+        );
+    }
+    let capture = include_str!("../../static/voice-capture.js");
+    for marker in [
+        "voiceLifecycle.isInCooldown(",
+        "voiceLifecycle.noteFrameProcessed(",
+    ] {
+        assert!(
+            capture.contains(marker),
+            "owned capture unit must gate frames via the shared owner; missing: {marker}"
         );
     }
     // Browser entry adapters keep their names; pumps stay in chat.js.
@@ -227,9 +245,14 @@ fn voice_lifecycle_thresholds_stay_owned_with_chat_aliases() {
             "chat keeps a read-only threshold alias; missing: {alias}"
         );
     }
+    let capture = include_str!("../../static/voice-capture.js");
     assert!(
-        function_contains(src, "createVAD", "noteFrameProcessed"),
-        "desktop Silero frames delegate to the owned gate"
+        function_contains(capture, "createVAD", "noteFrameProcessed"),
+        "desktop Silero frames in the owned capture unit delegate to the owned gate"
+    );
+    assert!(
+        function_contains(src, "createVAD", "ChatVoiceCapture.createVAD"),
+        "chat keeps a thin desktop-VAD adapter delegating to the owned capture unit"
     );
 }
 
@@ -274,9 +297,10 @@ fn voice_lifecycle_completion_stopping_and_stale_guards_are_owned() {
         "native finish runs onEnded then cleanup in owned order; got: {finish}"
     );
     let src = chat_js();
+    let capture = include_str!("../../static/voice-capture.js");
     assert!(
-        function_contains(src, "_maybeBargeIn", "hasActiveVoiceSession")
-            && function_contains(src, "_onNativePcm", "hasActiveVoiceSession")
+        function_contains(capture, "_maybeBargeIn", "hasActiveVoiceSession")
+            && function_contains(capture, "_onNativePcm", "hasActiveVoiceSession")
             && function_contains(src, "submitVoiceUtterance", "hasActiveVoiceSession"),
         "barge-in and utterance routing use the flags-only session, not currentAudio"
     );

@@ -78,7 +78,10 @@ impl HttpSessionStore {
         }
     }
 
-    fn global() -> &'static HttpSessionStore {
+    /// Process-global store behind the free functions. Public so scoped
+    /// identities can init it first (preserving store-first first-use order)
+    /// then resolve CSRF from their own config.
+    pub fn global() -> &'static HttpSessionStore {
         static STORE: Lazy<HttpSessionStore> = Lazy::new(|| {
             let config = config::app_config();
             HttpSessionStore::new(config.session_timeout)
@@ -356,8 +359,8 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 /// Production entry point: delegates to the single process-global store.
-/// The CSRF flag is read live per call; the store timeout was resolved once
-/// at first use.
+/// Store initializes first, then the CSRF flag reads live; the store timeout
+/// was resolved once at first use.
 pub fn prepare_home_context(cookie_header: Option<&str>) -> Result<HomeBootstrap, SessionError> {
     let store = HttpSessionStore::global();
     let csrf_enabled = config::app_config().csrf;
@@ -369,7 +372,16 @@ pub fn prepare_home_context(cookie_header: Option<&str>) -> Result<HomeBootstrap
 /// before the global store initializes, preserving the original first-use
 /// freeze sequence.
 pub fn validate_csrf_token(cookie_header: Option<&str>, token: Option<&str>) -> Result<bool, SessionError> {
-    let csrf_enabled = config::app_config().csrf;
+    validate_csrf_token_with_csrf(cookie_header, token, config::app_config().csrf)
+}
+
+/// Explicit-CSRF variant for scoped identities: same global store and same
+/// disabled/missing/empty early returns before init, no ambient read.
+pub fn validate_csrf_token_with_csrf(
+    cookie_header: Option<&str>,
+    token: Option<&str>,
+    csrf_enabled: bool,
+) -> Result<bool, SessionError> {
     if !csrf_enabled {
         return Ok(true);
     }
@@ -401,8 +413,8 @@ pub fn rate_limit_identity(cookie_header: Option<&str>) -> Option<String> {
 }
 
 /// Production entry point: delegates to the single process-global store.
-/// The CSRF flag is read live per call; the store timeout was resolved once
-/// at first use.
+/// Store initializes first, then the CSRF flag reads live; the store timeout
+/// was resolved once at first use.
 pub fn finalize_login(
     cookie_header: Option<&str>,
     username: &str,
@@ -413,8 +425,8 @@ pub fn finalize_login(
 }
 
 /// Production entry point: delegates to the single process-global store.
-/// The CSRF flag is read live per call; the store timeout was resolved once
-/// at first use.
+/// Store initializes first, then the CSRF flag reads live; the store timeout
+/// was resolved once at first use.
 pub fn logout_user(cookie_header: Option<&str>) -> Result<LogoutFinalize, SessionError> {
     let store = HttpSessionStore::global();
     let csrf_enabled = config::app_config().csrf;

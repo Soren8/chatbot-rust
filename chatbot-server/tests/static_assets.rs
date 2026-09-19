@@ -197,14 +197,11 @@ fn deferred_thumbs_resanitize_dom_src() {
         "must not assign unsanitized getAttribute('data-pending-src') to img src"
     );
 
-    let sanitize = chat_js
-        .find("function sanitizeLightboxSrc(")
-        .expect("sanitizeLightboxSrc helper");
-    let sanitize_next = chat_js[sanitize + 1..]
-        .find("\nfunction ")
-        .map(|i| sanitize + 1 + i)
-        .expect("function after sanitizeLightboxSrc");
-    let sanitize_body = &chat_js[sanitize..sanitize_next];
+    // The allowlist itself moved to the owned renderer unit; chat keeps the
+    // thin adapter above (startDeferredThumbs still resolves through it).
+    let renderer_js = include_str!("../../static/chat-renderer.js");
+    let sanitize_body = function_body(renderer_js, "sanitizeLightboxSrc")
+        .expect("sanitizeLightboxSrc helper in the owned renderer");
     assert!(
         !sanitize_body.contains("u.pathname + u.search"),
         "sanitizeLightboxSrc must reconstruct history_image URLs, not pass through URL components"

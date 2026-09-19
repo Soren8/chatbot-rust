@@ -56,10 +56,13 @@ pub const PROVIDER_ERROR_DETAIL_CLOSE: &str = "[/ConsoleError]";
 
 pub use crate::enc_key_cookies::{
     ENC_KEY_COOKIE_NAME, account_enc_key_cookie_name, build_enc_key_account_clear_cookie,
-    build_enc_key_account_set_cookie, build_enc_key_clear_cookie, build_enc_key_set_cookie,
-    enc_key_cookie_value, extract_account_enc_key_cookie, extract_enc_key, extract_enc_key_cookie,
-    extract_enc_key_with_identity, promote_enc_key_cookies,
-    promote_enc_key_cookies_with_accounts,
+    build_enc_key_account_clear_cookie_with_csrf, build_enc_key_account_set_cookie,
+    build_enc_key_account_set_cookie_with_csrf, build_enc_key_clear_cookie,
+    build_enc_key_clear_cookie_with_csrf, build_enc_key_set_cookie,
+    build_enc_key_set_cookie_with_csrf, enc_key_cookie_value, extract_account_enc_key_cookie,
+    extract_enc_key, extract_enc_key_cookie, extract_enc_key_with_identity,
+    promote_enc_key_cookies, promote_enc_key_cookies_with_accounts,
+    promote_enc_key_cookies_with_accounts_and_config,
 };
 pub use crate::request_context::get_ip;
 

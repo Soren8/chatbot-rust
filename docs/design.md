@@ -4,6 +4,12 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+Request policy is injectable through `ConfigSource` in `AppServices` and `RequestIdentity`: CSRF, cookie timeout, default prompt and voice-service base URL. Owned handles use explicit values; global handles retain call-time lookup. Home rendering captures one coherent live configuration when needed. Generation dependencies additionally own fake chunks, tool queries, Brave results, chunk delay and XAI fallback keys; explicit provider constructors do not consult ambient fake inputs.
+
+Browser rendering, playback queues and capture coordination live in `chat-renderer.js`, `tts-playback.js` and `voice-capture.js`. They receive DOM/markdown, transport, lifecycle, clock and platform dependencies from `chat.js`; desktop and native retain their shared session/protocol owners and established retry/barge-in behavior.
+
+Android build flavor is authoritative for the server origin. Root `capacitor.config.json` defines both emulator and physical endpoints under `serverUrls`; Gradle projects the selected endpoint into `R.string.server_url`. The WebView, credential cookies, client logging and Android Auto use that resource through `ServerUrlResolver`.
+
 `RatePolicy` and `TtsPolicy` own per-router rate budgets and TTS access/codec/synthesis policy behind separate optional-`Arc` handles. `AppServices` carries both with `with_rate_policy`/`with_tts_policy`; TTS endpoints resolve access, wire codec, coherent provider/voice/endpoint inputs and legacy/fish bases through the router policy, while the rate middleware takes budgets from the router policy and keeps counters in the limiter dimension. Global handles construct config-free and delegate per operation at the original config sites; production keeps the live path with no snapshot or schema change. Other route/config policies remain ambient.
 
 `DataRequestContext` owns data-route session/key resolution without eager key validation. Direct data routes obtain a privately constructed, borrowed `VerifiedDataContext` after validation through their chat service. Chat/regenerate consume explicitly unverified parts so model/provider error ordering stays intact. CSRF remains at existing route boundaries; history images retain their named cookie fallback. Preferences retain their distinct session-first, key-only-for-authenticated flow.
