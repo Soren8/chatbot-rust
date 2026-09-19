@@ -1,10 +1,38 @@
 # Codebase review program
 
-Latest resume point: session 044 — native lifecycle confirmation (below). Earlier checkpoints record their original scope and status.
+Latest resume point: session 045 — phase-1 completion review (below). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-two batches through session 044. Session 043 is committed as `b288bd2`; session 044 is recorded by commit title `Confirm native foreground ownership and sequence voice events`. Phase 1 completion review follows this boundary.
+Current remediation count: forty-two batches through session 044. Session 043 is committed as `b288bd2`; session 044 as `6d03545`. **Phase 1 is complete with the explicit deferrals below. Phases 2–7 have not started.**
+
+## Session 045 — phase-1 completion review, 2026-09-19
+
+The primary reviewer repeated the read-only completion review at `6d03545`, comparing the original MOD-001–017 correction boundaries with the reviewed implementations, callers, test evidence and compatibility decisions. The five follow-ups from the unsuccessful review at `d9463bc` are resolved in sessions 040–044. The verdict is **complete for the authorized modularity pass**, not that every cross-pass defect or compatibility surface is eliminated.
+
+| Finding | Completion disposition |
+| --- | --- |
+| MOD-001 | Verified: typed core errors/finalization; HTTP and streamed error rendering belong to server adapters. Legacy finalizer string wrappers remain explicit compatibility APIs. |
+| MOD-002 | Verified: HTTP identity and prompt packing are separate from chat application orchestration. `ChatService` owns preparation, persistence/mirror policy and leases; splitting the remaining session file by size is rejected. |
+| MOD-003 | Verified: explicit application/store, identity, account, token, rate, generation and request-policy owners; owned fake inputs no longer read ambient environment. Lazy live-global compatibility is deliberate. Production purge holds the composed services for the process runtime; no per-router shutdown API is claimed. |
+| MOD-004 | Verified: live naming and Fernet helpers no longer belong to legacy migration storage. Permanent legacy decoding remains supported. |
+| MOD-005 | Verified: unused write/schema bypasses removed; private logical snapshots enforce cache representation. Public snapshot DTOs/materialized prepare captures remain compatibility/projection boundaries; further clone/paging optimization belongs to performance review. |
+| MOD-006 | Verified: acquired-entry leases, atomic acquisition versus expiry, typed completion and owned durable-then-mirror operations. Pre-prepare saved errors cannot release another generation. Existing post-durable mirror-failure policy is explicit, not redesigned. |
+| MOD-007 | Verified: shared generation dispatch and provider-message owner. The wire-compatible DTO is intentional; a new universal provider trait/domain hierarchy is not required. |
+| MOD-008 | Verified: transport extraction, account-cookie adapter and privately constructed verified data context. Route-specific access order remains explicit; SEC-002 authorization work stays separately tracked. |
+| MOD-009 | Verified: conversation/request, HTTP session, rendering, voice capture/lifecycle, queues and event-fed playback sources have actual owners. DOM observers wake queues but no longer determine generation progress. |
+| MOD-010 | Verified within the preserved protocol: shared browser decoder/projection. Typed wire events and cross-language normalization redesign are deferred protocol changes; retained chat/regenerate differences are characterized rather than silently unified. |
+| MOD-011 | Verified: separate text transformation, PCM backend, token leases/store, codec and HTTP rendering. Browser incremental speech normalization remains a distinct stage, not a second native product pipeline. |
+| MOD-012 | Verified at CPU/compile boundary: coordinator-owned resources, generation-scoped platform confirmation and one effective sequenced transition across compatibility deliveries. Actual Android lifecycle/device behavior remains unmeasured. |
+| MOD-013 | Deferred by user decision: Android Auto session/CSRF/transport repair. Unified origin does not fix the separate Auto workflow. |
+| MOD-014 | Verified for metadata/derivation/sealed-payload ownership; legacy native key export remains explicitly deferred with SEC-003, not declared secure. |
+| MOD-015 | Verified: explicit settings/readiness, lifespan-owned inference, bounded streaming, cancellation and shutdown contract. Python raw-YAML resolution remains distinct from Rust substitution; in-flight GPU work is cooperatively, not forcibly, cancelled. |
+| MOD-016 | Verified for the extracted behavior seams: executable imports/native collaborators exercise actual owners. Remaining source-spelling tests, fixture duplication and oracle weaknesses are deferred to pass six, with existing scenarios retained. |
+| MOD-017 | Verified for authoritative flavor origin/accessor and tracked Capacitor inputs. Unsupported sample settings are documented; no Helm voice deployment, STT product-policy change or host rollout is implied. |
+
+The final implementation tree passed the full executor suite in `20260919T122234-7106689b41e8` and physical-debug build in `20260919T122843-45d33cd739bc`, on the identical snapshot recorded in session 044. Earlier batches have their own red/green evidence above. This completion record changes documentation only; the unchanged green suite was not rerun. No browser, GPU, emulator, phone or vehicle runtime validation is claimed.
+
+Security/privacy, correctness, performance and test-quality leads remain in `findings.md` and the cross-pass table in `modularity.md`, including SEC-001–003, COR-001–002, PERF-001 and TEST-001–005. The documentation-wide audit remains pass seven. These explicit dispositions close the modularity gate without claiming the later passes have occurred. Next phase is simplicity, subject to the user's next instruction.
 
 ## Session 044 — native lifecycle confirmation, 2026-09-19
 
