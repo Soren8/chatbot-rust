@@ -385,7 +385,7 @@ dependencies = [
  "minijinja",
  "ogg",
  "once_cell",
- "oxc_allocator 0.147.0",
+ "oxc_allocator 0.150.0",
  "oxc_parser",
  "oxc_span 0.147.0",
  "pbkdf2",
