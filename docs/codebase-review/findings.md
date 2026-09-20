@@ -1,10 +1,32 @@
 # Findings
 
+Current resume point: README session 046. The fresh main-model review at `d5fef48` reopens phase 1 with MOD-009-A/B, MOD-015-A and MOD-012-A in `modularity.md`. Historical dispositions below do not supersede that review.
+
+## COR-003 — History reads combine independently acquired database snapshots
+
+**Priority:** P2. **Disposition:** confirmed by source; deterministic reproduction and implementation scope decision pending. **Confidence:** high for the mixed-version read path. **Evidence revision:** `d5fef483b8b0c75d6857880c461febb079e8b21c`.
+
+`chatbot-core/src/history/store/chunks.rs:54–98` reads metadata via `load_meta` and opens a separate read transaction for the encrypted header/manifest, authenticated using the earlier metadata's generation/version. `store/mod.rs:220–266` similarly separates metadata and whole-blob reads. A concurrent commit between those transactions can yield old metadata plus new ciphertext, reporting a decryption failure for a valid key. `chunks.rs:137–165` also materializes a logical snapshot using newly read metadata/manifest/images rather than one consistent snapshot. The warm/cold representation regressions in `chatbot-core/tests/history_snapshot_boundary.rs` do not exercise this interleaving.
+
+**Consequence:** concurrent reads/writes can report spurious key/history failures; materialization can combine state from different versions. This is a read-consistency issue, not a reason to replace the public compatibility DTO or a measured paging-performance problem.
+
+**Proposed boundary:** the store owns a coherent read transaction across metadata and payloads, or an explicit consistency/retry contract covering materialization and cache interaction. Preserve write CAS, ownership checks, image fidelity, warm/cold logical equivalence and permanent migration support.
+
+**Verification needed:** deterministic synchronization between metadata and payload reads while another operation commits; valid-key reads must return a coherent supported version/outcome, never an accidental decryption error or mixed-version materialization. No new failing test or runtime reproduction exists yet. Keep this separate from the four authorized-scope modularity follow-ups; obtain an explicit scope decision before implementation.
+
+Session 017 further narrows MOD-001: prepare-time history errors are typed, including minimal conflict metadata and the prepare-specific missing-set classification. Eight new route/mapper tests pass; primary corrected raw-400 logging-field parity before the final green suite. Encryption/store/init response carriers and finalizer rendering remain open.
+
+Session 016 further narrows MOD-001: generation contention and premium access rejection are typed core outcomes with server-owned 429/403 rendering. Nine new before/after route tests and the full suite pass; history/storage and other `ServiceResponse` carriers remain open.
+
 Evidence revision for session 001: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. No finding below is approved for implementation, fixed, or dynamically reproduced. Structural findings are based on inspected source; cross-pass leads explicitly retain uncertainty.
 
 The continued modularity review is in [modularity.md](modularity.md): MOD-003 through MOD-017, extensions to MOD-001/MOD-002, and separately labeled correctness/security/testing/documentation follow-ups. Review coverage and execution limits are in [coverage.md](coverage.md). IDs are global across these records.
 
 ## MOD-001 — Core session APIs own HTTP serialization
+
+**Further partial remediation (session 012):** five prepare-input validation categories are typed, with a server mapper and preserved saved-turn handling. `PrepareError::Service` carries remaining responses. Ten new characterization tests and the reviewed full suite pass; this does not close the broader core/HTTP coupling finding.
+
+**Partial remediation (session 011):** encryption-key validation now returns `EncryptionKeyValidationError`, with direct server callers using one HTTP mapper. Core orchestration retains `require_encryption_key`'s `ServiceResponse` compatibility adapter. Exact rejection messages, verifier behavior, logs and error counting are preserved, verified by pre-extraction HTTP characterization and the corrected full suite. Other HTTP-shaped core outcomes remain open; see the session-011 checkpoint for regression evidence.
 
 **Disposition:** confirmed. **Priority:** P2. **Confidence:** high for boundary coupling. **Units:** C02, R01, S01/S03 consumers.
 
@@ -21,6 +43,10 @@ The continued modularity review is in [modularity.md](modularity.md): MOD-003 th
 **Session 002 update:** C02 and those production consumers have now been read. `chat_utils::service_error_message` deserializes the core response body back into a message, confirming the unnecessary serialization boundary. Existing wire differences are real contracts to characterize before consolidation: session history `NotFound` maps to 400, while the general history HTTP mapper uses 404.
 
 ## MOD-002 — Session module mixes identity lifecycle with chat application orchestration
+
+**Further partial remediation (session 015):** HTTP identity store, lifecycle and DTOs moved to `session_identity.rs`; compatibility re-exports and the combined purge entry point remain in `session.rs`. Six new lifecycle tests passed before and after the verbatim move, along with the full suite. Chat orchestration and global service composition remain open; expiry and generation-lock semantics are unchanged.
+
+**Partial remediation (session 013):** prompt packing accepts a small borrowed `PromptInput` rather than reading `ChatContext`. The public session-context wrapper remains for compatibility and resolves provider defaults. Seven new boundary tests and the full suite pass; existing prompt tests supplied the pre-extraction baseline. Session identity, lifecycle and orchestration separation remain open.
 
 **Disposition:** confirmed. **Priority:** P2. **Confidence:** high for mixed responsibilities; final extraction boundaries pending. **Units:** C02, R01, S01.
 

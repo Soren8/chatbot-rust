@@ -23,6 +23,7 @@ import androidx.car.app.model.Template;
 import com.chatbot.app.R;
 import com.chatbot.app.audio.OggOpusStreamDecoder;
 import com.chatbot.app.util.FileLogger;
+import com.chatbot.app.util.ServerUrlResolver;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -71,7 +72,9 @@ public class VoiceScreen extends Screen {
 
     public VoiceScreen(@NonNull CarContext carContext) {
         super(carContext);
-        serverUrl = carContext.getString(R.string.server_url);
+        // Canonical native origin (flavor resource, always): a car context
+        // has no Capacitor Bridge and none is read.
+        serverUrl = ServerUrlResolver.resolveCanonical(carContext.getString(R.string.server_url));
         audioManager = (AudioManager) carContext.getSystemService(Context.AUDIO_SERVICE);
         Log.i(TAG, "VoiceScreen created with server: " + serverUrl);
         FileLogger.log(TAG, "VoiceScreen created, serverUrl=" + serverUrl);

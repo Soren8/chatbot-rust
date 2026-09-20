@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{config, remember_store, session, user_store::UserStore};
+use chatbot_core::{account_service::AccountService, remember_store, session};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -11,6 +11,8 @@ use tracing::warn;
 use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
+use crate::identity::RequestIdentity;
+use crate::services::AppServices;
 
 pub const SECURITY_CSP: &str = "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; require-trusted-types-for 'script'; trusted-types chatbot default; media-src 'self' blob: data:";
 const FREE_TIER: &str = "free";
@@ -37,9 +39,16 @@ struct RestoredSession {
 /// Only runs for guest sessions — an authenticated visit never rotates the
 /// token. `/login` deliberately does NOT auto-restore: that page is the
 /// account-selection surface.
-fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSession> {
+fn try_auto_restore(
+    identity: &RequestIdentity,
+    accounts: &AccountService,
+    config: &chatbot_core::config_source::ConfigSource,
+    cookie_header: Option<&str>,
+    ip: &str,
+) -> Option<RestoredSession> {
     let token = remember_store::extract_token(cookie_header)?;
-    if session::session_context(cookie_header)
+    if identity
+        .session_context(cookie_header)
         .ok()
         .and_then(|ctx| ctx.username)
         .is_some()
@@ -47,13 +56,13 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
         return None;
     }
 
-    let store = remember_store::RememberStore::new().ok()?;
+    let store = accounts.remember().ok()?;
     match store.resume(Some(&token)) {
         Ok(remember_store::ResumeOutcome::Authenticated {
             username,
             replacement_token,
         }) => {
-            let finalize = session::finalize_login(cookie_header, &username).ok()?;
+            let finalize = identity.finalize_login(cookie_header, &username).ok()?;
             let session_cookie = finalize
                 .set_cookie
                 .split(';')
@@ -65,12 +74,17 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
                 return None;
             }
             tracing::info!(username = %username, ip = %ip, "Session restored via remember token on app entry");
+            // Each emitted cookie resolves CSRF at its own site.
             Some(RestoredSession {
                 session_cookie,
-                remember_set_cookie: remember_store::build_set_cookie(&replacement_token),
-                account_set_cookie: remember_store::build_account_set_cookie(
+                remember_set_cookie: remember_store::build_set_cookie_with_csrf(
+                    &replacement_token,
+                    config.csrf(),
+                ),
+                account_set_cookie: remember_store::build_account_set_cookie_with_csrf(
                     &username,
                     &replacement_token,
+                    config.csrf(),
                 ),
             })
         }
@@ -88,47 +102,61 @@ fn try_auto_restore(cookie_header: Option<&str>, ip: &str) -> Option<RestoredSes
 }
 
 pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpError> {
+    let services = AppServices::from_extensions(request.extensions());
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = request.headers();
-    let ip = crate::chat_utils::get_ip(headers, request.extensions());
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let ip = crate::request_context::get_ip(headers, request.extensions());
+    let cookie_header = crate::request_context::extract_cookie(headers);
 
     let request_cookies = cookie_header.clone();
     let mut restored_cookies: Vec<String> = Vec::new();
     let mut cookie_header = cookie_header;
-    if let Some(restored) = try_auto_restore(cookie_header.as_deref(), &ip) {
+    if let Some(restored) = try_auto_restore(
+        &identity,
+        &accounts,
+        &services.config_source(),
+        cookie_header.as_deref(),
+        &ip,
+    ) {
         cookie_header = Some(restored.session_cookie);
         restored_cookies.push(restored.remember_set_cookie);
         restored_cookies.push(restored.account_set_cookie);
     }
 
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref())
+    let bootstrap = identity
+        .prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "home::get"))?;
 
     if let Some(username) = bootstrap.username.as_deref() {
-        restored_cookies.extend(crate::chat_utils::promote_enc_key_cookies(
-            request_cookies.as_deref(),
-            username,
-        ));
+        restored_cookies.extend(
+            crate::chat_utils::promote_enc_key_cookies_with_accounts_and_config(
+                request_cookies.as_deref(),
+                username,
+                &accounts,
+                &services.config_source(),
+            ),
+        );
     }
 
     let logged_in = bootstrap.username.is_some();
-    let user_details = resolve_user_details(bootstrap.username.as_deref());
+    let user_details = resolve_user_details(&accounts, bootstrap.username.as_deref());
 
-    let config = config::app_config();
-    let default_prompt = config.default_system_prompt.clone();
-    let save_thoughts = config.save_thoughts;
-    let send_thoughts = config.send_thoughts;
-    
+    // One coherent capture at most: fully owned routers read no global
+    // config, while any global dimension blends from a single live capture.
+    let settings = services.home_settings(&user_details.tier);
+    let default_prompt = settings.default_prompt;
+    let save_thoughts = settings.save_thoughts;
+    let send_thoughts = settings.send_thoughts;
+
     tracing::debug!(
         save_thoughts,
         send_thoughts,
         "rendering home template with config"
     );
 
-    let available_models = build_available_models(config.provider_names(), &user_details.tier, &config);
+    let available_models =
+        build_available_models_from_summaries(settings.models);
 
     let html = render_template(
         logged_in,
@@ -162,10 +190,10 @@ struct UserDetails {
     voice_mode: bool,
 }
 
-fn resolve_user_details(username: Option<&str>) -> UserDetails {
+fn resolve_user_details(accounts: &AccountService, username: Option<&str>) -> UserDetails {
     match username {
         Some(name) => {
-            let store = match UserStore::new() {
+            let store = match accounts.users() {
                 Ok(store) => store,
                 Err(err) => {
                     warn!(?err, "failed to open user store when resolving details");
@@ -216,30 +244,17 @@ fn resolve_user_details(username: Option<&str>) -> UserDetails {
     }
 }
 
-fn build_available_models(
-    provider_names: &[String],
-    user_tier: &str,
-    config: &std::sync::Arc<config::AppConfig>,
+fn build_available_models_from_summaries(
+    summaries: Vec<crate::generation_deps::ProviderSummary>,
 ) -> Vec<FrontendModel> {
-    let mut models = Vec::new();
-    for name in provider_names {
-        let Some(provider) = config.provider(name) else {
-            continue;
-        };
-        let tier = provider
-            .tier
-            .clone()
-            .unwrap_or_else(|| FREE_TIER.to_string());
-        if tier.eq_ignore_ascii_case("premium") && !user_tier.eq_ignore_ascii_case("premium") {
-            continue;
-        }
-        models.push(FrontendModel {
-            provider_name: provider.provider_name.clone(),
-            tier,
-            search: provider.search,
-        });
-    }
-    models
+    summaries
+        .into_iter()
+        .map(|summary| FrontendModel {
+            provider_name: summary.provider_name,
+            tier: summary.tier,
+            search: summary.search,
+        })
+        .collect()
 }
 
 fn render_template(

@@ -5,7 +5,6 @@ use axum::{
     extract::{FromRequest, Multipart},
     http::{header, Method, Request, Response, StatusCode},
 };
-use chatbot_core::{config, session};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde_json::Value;
@@ -15,6 +14,7 @@ use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
     map_serialization_err, map_session_err, HttpError,
 };
+use crate::services::AppServices;
 
 pub const MAX_AUDIO_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 
@@ -31,18 +31,16 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     }
 
     let (parts, body) = request.into_parts();
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
     let headers = &parts.headers;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(headers);
 
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|v| v.to_str().ok());
+    let csrf_token = crate::request_context::extract_csrf(headers);
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "stt::post::csrf"))?;
 
     if !csrf_valid {
@@ -107,8 +105,9 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         "STT audio received"
     );
 
-    let config = config::app_config();
-    let base = config.voice_service_base_url.trim_end_matches('/');
+    let config = services.config_source();
+    let base = config.voice_service_base_url();
+    let base = base.trim_end_matches('/');
     let url = format!("{base}/v1/stt");
 
     let audio_part = reqwest::multipart::Part::bytes(audio_bytes)

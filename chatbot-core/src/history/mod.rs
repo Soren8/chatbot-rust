@@ -14,7 +14,6 @@ mod store;
 mod types;
 
 pub use api::{HistoryError, HistoryService};
-pub use cache::SetCache;
 pub use ops::{
     append_pair, apply_chat_append, apply_regenerate, branch_name_for, dedup_name,
     delete_pair, derive_chat_name_from_message, is_auto_placeholder_name, page_history, rename,
@@ -22,18 +21,11 @@ pub use ops::{
     AUTO_NEW_CHAT_PREFIX, DEFAULT_HISTORY_PAGE_SIZE, MAX_AUTO_NAME_CHARS, MAX_HISTORY_PAGE_SIZE,
 };
 pub use types::{
-    BlobFormat, HeaderV1, HistoryPair, ImageId, ImagePayloadV1, ManifestPair, ManifestV1, PairId,
-    PairPayloadV1, PrepareCapture, SetId, SetPage, SetPayloadV1, SetSnapshot, SetSummary,
-    SetVersion, ThumbPayloadV1,
+    HistoryPair, ImageId, PairId, PrepareCapture, SetId, SetPage, SetPayloadV1, SetSnapshot,
+    SetSummary, SetVersion,
 };
 
-/// Display-name validation shared by HTTP handlers (not storage keys).
-pub fn normalise_set_name(set_name: Option<&str>) -> Result<String, crate::persistence::PersistenceError> {
-    crate::persistence::DataPersistence::normalise_set_name(set_name)
-}
+pub use crate::names::SetNameError;
 
-pub fn normalise_custom_set_name(
-    set_name: &str,
-) -> Result<String, crate::persistence::PersistenceError> {
-    crate::persistence::DataPersistence::normalise_custom_set_name(set_name)
-}
+/// Display-name validation shared by HTTP handlers (not storage keys).
+pub use crate::names::{normalise_custom_set_name, normalise_set_name};

@@ -7,10 +7,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chatbot_core::{config::app_config, rate_limit, session};
+use chatbot_core::config::app_config;
 use serde_json::json;
 
-use crate::chat_utils::get_ip;
+use crate::{
+    request_context::{extract_cookie_ref, get_ip},
+    services::AppServices,
+};
 
 const LIMITED_PATHS: &[&str] = &[
     "/chat",
@@ -29,13 +32,10 @@ fn path_is_limited(path: &str) -> bool {
     })
 }
 
-fn client_key(request: &Request<Body>) -> String {
-    let cookie = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok());
+fn client_key(request: &Request<Body>, services: &AppServices) -> String {
+    let cookie = extract_cookie_ref(request.headers());
 
-    if let Some(identity) = session::rate_limit_identity(cookie) {
+    if let Some(identity) = services.identity().rate_limit_identity(cookie) {
         return identity;
     }
 
@@ -48,22 +48,35 @@ pub async fn middleware(request: Request<Body>, next: Next) -> Response {
         return next.run(request).await;
     }
 
-    let config = app_config();
-    let per_user = config.rate_limit_per_user_per_minute;
-    let global = config.rate_limit_global_per_minute;
+    // Budgets come from this router's rate policy. When the services
+    // extension is missing (a construction bug), fall back to the live
+    // global for this read so the disabled fast path keeps its original
+    // return-before-panic ordering; the explicit lookup below still panics.
+    let (per_user, global) = request
+        .extensions()
+        .get::<AppServices>()
+        .map(|services| services.rate_policy().budgets())
+        .unwrap_or_else(|| {
+            let config = app_config();
+            (
+                config.rate_limit_per_user_per_minute,
+                config.rate_limit_global_per_minute,
+            )
+        });
     if per_user == 0 && global == 0 {
         return next.run(request).await;
     }
 
-    let key = client_key(&request);
-    match rate_limit::check(&key, per_user, global) {
+    let services = AppServices::from_extensions(request.extensions());
+    let key = client_key(&request, &services);
+    match services.check_rate_limit(&key, per_user, global) {
         Ok(()) => next.run(request).await,
         Err(exceeded) => {
             let message = match exceeded.scope {
-                rate_limit::RateLimitScope::PerUser => {
+                chatbot_core::rate_limit::RateLimitScope::PerUser => {
                     "Rate limit exceeded for this user. Please try again later."
                 }
-                rate_limit::RateLimitScope::Global => {
+                chatbot_core::rate_limit::RateLimitScope::Global => {
                     "Server is busy (global rate limit). Please try again later."
                 }
             };

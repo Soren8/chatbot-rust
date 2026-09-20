@@ -30,15 +30,38 @@ fn http_client() -> &'static Client {
 #[derive(Clone)]
 pub struct BraveClient {
     api_key: String,
+    /// Explicit fake results for owned routers. `Some` returns without any
+    /// env read or HTTP; `None` on an owned client means real HTTP with no
+    /// env stub. Live clients (`None` + `is_owned=false`) keep the original
+    /// env-stub-first ordering.
+    fake_results: Option<String>,
+    is_owned: bool,
 }
 
 impl BraveClient {
     fn new(api_key: String) -> Self {
-        Self { api_key }
+        Self {
+            api_key,
+            fake_results: None,
+            is_owned: false,
+        }
+    }
+
+    fn new_owned(api_key: String, fake_results: Option<String>) -> Self {
+        Self {
+            api_key,
+            fake_results,
+            is_owned: true,
+        }
     }
 
     pub async fn search(&self, query: &str) -> Result<String> {
-        if let Ok(stub) = std::env::var("CHATBOT_TEST_BRAVE_RESULTS") {
+        if self.is_owned {
+            if let Some(ref fake) = self.fake_results {
+                return Ok(fake.clone());
+            }
+            // Owned without fake: real HTTP, never the ambient stub.
+        } else if let Ok(stub) = std::env::var("CHATBOT_TEST_BRAVE_RESULTS") {
             return Ok(stub);
         }
 
@@ -76,18 +99,40 @@ impl BraveClient {
     }
 }
 
-/// Returns a `BraveClient` if `BRAVE_API_KEY` is set, otherwise `None`.
-/// Reads the env var on each call — cheap, and avoids singleton issues in tests.
-/// The underlying HTTP connection pool (`http_client()`) is still a singleton.
-pub fn brave_client() -> Option<BraveClient> {
-    match std::env::var("BRAVE_API_KEY") {
-        Ok(key) if !key.is_empty() => {
+/// Returns a `BraveClient` for an explicit key, otherwise `None`.
+/// Same messages as [`brave_client`]; dispatch calls this only in the gated
+/// search branches so explicit router keys stay isolated.
+pub fn brave_client_with_key(key: Option<&str>) -> Option<BraveClient> {
+    brave_client_with_key_and_fake(key, None, false)
+}
+
+/// Owned variant: explicit key plus optional fake results, never reading
+/// ambient env. `fake_results` `Some` short-circuits `search` without HTTP;
+/// `None` means real HTTP with no env stub.
+pub fn brave_client_with_key_and_fake(
+    key: Option<&str>,
+    fake_results: Option<String>,
+    owned: bool,
+) -> Option<BraveClient> {
+    match key {
+        Some(key) if !key.is_empty() => {
             info!("Brave Search client initialized");
-            Some(BraveClient::new(key))
+            Some(if owned {
+                BraveClient::new_owned(key.to_owned(), fake_results)
+            } else {
+                BraveClient::new(key.to_owned())
+            })
         }
         _ => {
             warn!("BRAVE_API_KEY not set; Brave Search disabled");
             None
         }
     }
+}
+
+/// Returns a `BraveClient` if `BRAVE_API_KEY` is set, otherwise `None`.
+/// Reads the env var on each call — cheap, and avoids singleton issues in tests.
+/// The underlying HTTP connection pool (`http_client()`) is still a singleton.
+pub fn brave_client() -> Option<BraveClient> {
+    brave_client_with_key(std::env::var("BRAVE_API_KEY").ok().as_deref())
 }

@@ -21,7 +21,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import org.json.JSONObject;
+import com.chatbot.app.util.ServerUrlResolver;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -71,22 +71,14 @@ public class NativeSecureKeyPlugin extends Plugin {
         return base + accountSlot(account);
     }
 
+    // Canonical native origin (flavor resource, always); authority owned by
+    // ServerUrlResolver.
     private String resolveServerUrl() {
-        String url = null;
+        String resourceUrl = null;
         try {
-            if (getBridge() != null && getBridge().getServerUrl() != null && !getBridge().getServerUrl().isEmpty()) {
-                url = getBridge().getServerUrl();
-            }
+            resourceUrl = getContext().getString(R.string.server_url);
         } catch (Exception ignored) {}
-        if (url == null || url.isEmpty()) {
-            try {
-                url = getContext().getString(R.string.server_url);
-            } catch (Exception ignored) {}
-        }
-        if (url == null || url.isEmpty()) {
-            url = "http://localhost";
-        }
-        return url;
+        return ServerUrlResolver.resolveCanonical(resourceUrl);
     }
 
     @PluginMethod
@@ -237,25 +229,12 @@ public class NativeSecureKeyPlugin extends Plugin {
             String serverUrl = resolveServerUrl();
             CookieManager cm = CookieManager.getInstance();
             String cookieHeader = cm.getCookie(serverUrl);
-            String rememberVal = null;
-            String encKeyVal = null;
-            if (cookieHeader != null) {
-                String rememberKey = "remember-" + account;
-                String encKeyName = "enc_key-" + account;
-                for (String part : cookieHeader.split(";")) {
-                    String[] kv = part.trim().split("=", 2);
-                    if (kv.length == 2) {
-                        String k = kv[0].trim();
-                        String v = kv[1].trim();
-                        if (k.equals(rememberKey)) {
-                            rememberVal = v;
-                        }
-                        if (k.equals(encKeyName)) {
-                            encKeyVal = v;
-                        }
-                    }
-                }
-            }
+            // Sealed-cookie storage owns per-account cookie parsing; the
+            // legacy key API (storeKey/getKey/unlockedKeys) is untouched.
+            CredentialCookies.ParsedCredentials parsed =
+                    CredentialCookies.parseSealedCookieHeader(cookieHeader, account);
+            String rememberVal = parsed.remember;
+            String encKeyVal = parsed.encKey;
             if (encKeyVal == null) {
                 encKeyVal = unlockedKeys.get(account);
             }
@@ -266,16 +245,13 @@ public class NativeSecureKeyPlugin extends Plugin {
                 call.resolve(result);
                 return;
             }
-            JSONObject payload = new JSONObject();
-            payload.put("account", account);
-            payload.put("remember", rememberVal != null ? rememberVal : "");
-            payload.put("enc_key", encKeyVal != null ? encKeyVal : "");
+            String payload = SealedCredentialPayload.encode(account, rememberVal, encKeyVal);
 
             SecretKey secretKey = getOrCreateKey();
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, secretKey);
             byte[] iv = cipher.getIV();
-            byte[] encrypted = cipher.doFinal(payload.toString().getBytes(StandardCharsets.UTF_8));
+            byte[] encrypted = cipher.doFinal(payload.getBytes(StandardCharsets.UTF_8));
 
             prefs().edit()
                     .putString(prefKey(PREF_CREDS_IV, account), Base64.encodeToString(iv, Base64.NO_WRAP))
@@ -328,19 +304,22 @@ public class NativeSecureKeyPlugin extends Plugin {
                     byte[] iv = Base64.decode(ivB64, Base64.NO_WRAP);
                     cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(128, iv));
                     byte[] decrypted = cipher.doFinal(Base64.decode(dataB64, Base64.NO_WRAP));
-                    JSONObject payload = new JSONObject(new String(decrypted, StandardCharsets.UTF_8));
-                    String rememberVal = payload.optString("remember", "");
-                    String encKeyVal = payload.optString("enc_key", "");
+                    SealedCredentialPayload.Decoded payload = SealedCredentialPayload.decode(
+                            new String(decrypted, StandardCharsets.UTF_8));
+                    String rememberVal = payload.remember;
+                    String encKeyVal = payload.encKey;
 
                     String serverUrl = resolveServerUrl();
                     CookieManager cm = CookieManager.getInstance();
                     if (!rememberVal.isEmpty()) {
-                        cm.setCookie(serverUrl, "remember-" + account + "=" + rememberVal + "; Path=/; SameSite=Strict; HttpOnly");
-                        cm.setCookie(serverUrl, "remember=" + rememberVal + "; Path=/; SameSite=Strict; HttpOnly");
+                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue(
+                                CredentialCookies.rememberCookieName(account), rememberVal));
+                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue("remember", rememberVal));
                     }
                     if (!encKeyVal.isEmpty()) {
-                        cm.setCookie(serverUrl, "enc_key-" + account + "=" + encKeyVal + "; Path=/; SameSite=Strict; HttpOnly");
-                        cm.setCookie(serverUrl, "enc_key=" + encKeyVal + "; Path=/; SameSite=Strict; HttpOnly");
+                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue(
+                                CredentialCookies.encKeyCookieName(account), encKeyVal));
+                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue("enc_key", encKeyVal));
                         unlockedKeys.put(account, encKeyVal);
                     }
                     cm.flush();
@@ -377,8 +356,8 @@ public class NativeSecureKeyPlugin extends Plugin {
                     String[] kv = part.trim().split("=", 2);
                     if (kv.length >= 1) {
                         String name = kv[0].trim();
-                        if (name.startsWith("remember") || name.startsWith("enc_key")) {
-                            cm.setCookie(serverUrl, name + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+                        if (CredentialCookies.isCredentialCookie(name)) {
+                            cm.setCookie(serverUrl, CredentialCookies.expiredCookieValue(name));
                         }
                     }
                 }
@@ -407,8 +386,10 @@ public class NativeSecureKeyPlugin extends Plugin {
             try {
                 CookieManager cm = CookieManager.getInstance();
                 String serverUrl = resolveServerUrl();
-                cm.setCookie(serverUrl, "remember-" + account + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
-                cm.setCookie(serverUrl, "enc_key-" + account + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+                cm.setCookie(serverUrl, CredentialCookies.expiredCookieValue(
+                        CredentialCookies.rememberCookieName(account)));
+                cm.setCookie(serverUrl, CredentialCookies.expiredCookieValue(
+                        CredentialCookies.encKeyCookieName(account)));
                 cm.flush();
             } catch (Exception ignored) {}
             call.resolve(new JSObject());
@@ -426,8 +407,8 @@ public class NativeSecureKeyPlugin extends Plugin {
                     String[] kv = part.trim().split("=", 2);
                     if (kv.length >= 1) {
                         String name = kv[0].trim();
-                        if (name.startsWith("remember") || name.startsWith("enc_key")) {
-                            cm.setCookie(serverUrl, name + "=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+                        if (CredentialCookies.isCredentialCookie(name)) {
+                            cm.setCookie(serverUrl, CredentialCookies.expiredCookieValue(name));
                         }
                     }
                 }

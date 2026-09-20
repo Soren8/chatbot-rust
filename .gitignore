@@ -17,14 +17,14 @@ target/
 .gemini/
 .claude/
 
-# Capacitor
+# Capacitor (generated outputs stay ignored; the root versioned inputs below
+# are tracked: package.json/package-lock.json pinned to the current 8.3.1
+# dependencies, and capacitor.config.json as the single source of truth for
+# native origins)
 node_modules/
 android/app/build/
 android/app/.gradle/
 android/.gradle/
 android/build/
-capacitor.config.json
-package.json
-package-lock.json
 static/index.html
 

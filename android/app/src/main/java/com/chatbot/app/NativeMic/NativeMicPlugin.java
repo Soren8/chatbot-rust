@@ -29,6 +29,7 @@ import com.chatbot.app.audio.VoiceAudioRoute;
 import com.chatbot.app.audio.VoiceModeForegroundService;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.audio.VoiceModeNativeHooks;
+import com.chatbot.app.audio.VoiceModeSessionCoordinator;
 import com.chatbot.app.audio.VoiceSessionKeepAwake;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
@@ -76,16 +77,17 @@ public class NativeMicPlugin extends Plugin {
     private boolean hasAudioFocus = false;
     /** Drops PCM callbacks queued before notification Stop or a recorder restart. */
     private final AtomicLong recordingGeneration = new AtomicLong(0);
-    private final VoiceAudioRoute voiceAudioRoute = new VoiceAudioRoute();
     private final VoiceAudioRoute.Backend voiceAudioBackend = new AudioManagerBackend();
-    private final VoiceSessionKeepAwake voiceSessionKeepAwake = new VoiceSessionKeepAwake();
     private final VoiceSessionKeepAwake.Backend keepAwakeBackend = new ActivityKeepAwakeBackend();
-    private final VoiceModeForegroundSession voiceForeground = VoiceModeForegroundSession.get();
     private final VoiceModeForegroundSession.Backend foregroundBackend = new ForegroundServiceBackend();
+    /** Owned voice-mode session: route + keep-awake + FGS + phone/notification coordination. */
+    private final VoiceModeSessionCoordinator sessionCoordinator = new VoiceModeSessionCoordinator(
+            voiceAudioBackend, keepAwakeBackend, foregroundBackend,
+            new CoordinatorMic(), new CoordinatorTts(),
+            new CoordinatorEvents(), new CoordinatorPlatform());
     private AcousticEchoCanceler echoCanceler = null;
     private AutomaticGainControl automaticGainControl = null;
     private static boolean batteryExemptionPrompted;
-    private boolean pausedForPhoneCall;
     private boolean modeListenerRegistered;
     private AudioManager.OnModeChangedListener modeChangedListener;
     private static volatile NativeMicPlugin instance;
@@ -112,6 +114,14 @@ public class NativeMicPlugin extends Plugin {
     public static boolean hasBluetoothAudioPresent() {
         NativeMicPlugin plugin = instance;
         return plugin != null && plugin.voiceAudioBackend != null && plugin.voiceAudioBackend.hasBluetoothAudio();
+    }
+
+    /** Actual voice-route ownership for TTS playback selection (not foreground state). */
+    public static boolean isVoiceRouteActive() {
+        NativeMicPlugin plugin = instance;
+        return plugin != null
+                && plugin.sessionCoordinator != null
+                && plugin.sessionCoordinator.isRouteActive();
     }
 
     @PluginMethod
@@ -218,7 +228,7 @@ public class NativeMicPlugin extends Plugin {
             }
 
             FileLogger.log(TAG, "AudioRecord source=" + recording.getAudioSource()
-                    + " routeActive=" + voiceAudioRoute.isActive());
+                    + " routeActive=" + sessionCoordinator.isRouteActive());
             enableAudioEffects(recording.getAudioSessionId());
 
             long generation = recordingGeneration.incrementAndGet();
@@ -255,7 +265,7 @@ public class NativeMicPlugin extends Plugin {
             JSObject result = new JSObject();
             result.put("started", true);
             ClientLogReporter.report("VOICE", "voice: mic capture started routeActive="
-                    + voiceAudioRoute.isActive());
+                    + sessionCoordinator.isRouteActive());
             call.resolve(result);
 
         } catch (Exception e) {
@@ -295,45 +305,45 @@ public class NativeMicPlugin extends Plugin {
     }
 
     private void completeEnterVoiceRoute(PluginCall call) {
-        boolean bluetooth = voiceAudioBackend.hasBluetoothAudio();
-        boolean applied = voiceAudioRoute.enter(voiceAudioBackend);
-        boolean keepAwake = voiceSessionKeepAwake.enter(keepAwakeBackend);
-        boolean foreground = voiceForeground.enter(foregroundBackend);
-        requestUnrestrictedBattery();
-        keepVoiceWebViewRunning();
-        FileLogger.log(TAG, "enterVoiceRoute applied=" + applied
-                + " active=" + voiceAudioRoute.isActive() + " bluetooth=" + bluetooth
-                + " keepAwake=" + keepAwake + " foreground=" + foreground);
-        ClientLogReporter.report("VOICE", "voice: enterVoiceRoute applied=" + applied
-                + " active=" + voiceAudioRoute.isActive() + " bluetooth=" + bluetooth
-                + " keepAwake=" + keepAwake + " foreground=" + foreground);
+        VoiceModeSessionCoordinator.EnterResult entered =
+                sessionCoordinator.enterVoiceSession();
+        FileLogger.log(TAG, "enterVoiceRoute applied=" + entered.applied
+                + " active=" + entered.active + " bluetooth=" + entered.bluetooth
+                + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
+                + " foregroundConfirmed=" + entered.foregroundConfirmed);
+        ClientLogReporter.report("VOICE", "voice: enterVoiceRoute applied=" + entered.applied
+                + " active=" + entered.active + " bluetooth=" + entered.bluetooth
+                + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
+                + " foregroundConfirmed=" + entered.foregroundConfirmed);
         JSObject result = new JSObject();
-        result.put("applied", applied);
-        result.put("active", voiceAudioRoute.isActive());
-        result.put("bluetooth", bluetooth);
-        result.put("keepAwake", keepAwake);
-        result.put("keepAwakeActive", voiceSessionKeepAwake.isActive());
-        result.put("foreground", foreground);
-        result.put("foregroundActive", voiceForeground.isActive());
+        result.put("applied", entered.applied);
+        result.put("active", entered.active);
+        result.put("bluetooth", entered.bluetooth);
+        result.put("keepAwake", entered.keepAwake);
+        result.put("keepAwakeActive", entered.keepAwakeActive);
+        result.put("foreground", entered.foreground);
+        result.put("foregroundActive", entered.foregroundActive);
+        result.put("foregroundConfirmed", entered.foregroundConfirmed);
         call.resolve(result);
     }
 
     /** Restore pre-voice-mode routing. Idempotent; only voice-mode teardown should call this. */
     @PluginMethod
     public void exitVoiceRoute(PluginCall call) {
-        pausedForPhoneCall = false;
-        boolean applied = voiceAudioRoute.exit(voiceAudioBackend);
-        boolean keepAwake = voiceSessionKeepAwake.exit(keepAwakeBackend);
-        boolean foreground = voiceForeground.exit(foregroundBackend);
-        FileLogger.log(TAG, "exitVoiceRoute applied=" + applied + " active=" + voiceAudioRoute.isActive()
+        VoiceModeSessionCoordinator.ExitResult exited = sessionCoordinator.exitVoiceSession();
+        boolean applied = exited.applied;
+        boolean keepAwake = exited.keepAwake;
+        boolean foreground = exited.foreground;
+        FileLogger.log(TAG, "exitVoiceRoute applied=" + applied + " active=" + exited.active
                 + " keepAwake=" + keepAwake + " foreground=" + foreground);
         JSObject result = new JSObject();
-        result.put("applied", applied);
-        result.put("active", voiceAudioRoute.isActive());
-        result.put("keepAwake", keepAwake);
-        result.put("keepAwakeActive", voiceSessionKeepAwake.isActive());
-        result.put("foreground", foreground);
-        result.put("foregroundActive", voiceForeground.isActive());
+        result.put("applied", exited.applied);
+        result.put("active", exited.active);
+        result.put("keepAwake", exited.keepAwake);
+        result.put("keepAwakeActive", exited.keepAwakeActive);
+        result.put("foreground", exited.foreground);
+        result.put("foregroundActive", exited.foregroundActive);
+        result.put("foregroundConfirmed", exited.foregroundConfirmed);
         call.resolve(result);
     }
 
@@ -356,7 +366,7 @@ public class NativeMicPlugin extends Plugin {
                     } else if (change == AudioManager.AUDIOFOCUS_GAIN) {
                         hasAudioFocus = true;
                     }
-                    if (!NativeVoiceTtsPlugin.isSessionActive()) {
+                    if (!sessionCoordinator.isTtsSessionActive()) {
                         onAudioModeOrFocusChanged();
                     }
                 })
@@ -544,73 +554,40 @@ public class NativeMicPlugin extends Plugin {
     }
 
     void reclaimAudioFocus() {
-        if (pausedForPhoneCall || !voiceAudioRoute.isActive()) {
+        if (sessionCoordinator.isPausedForPhoneCall() || !sessionCoordinator.isRouteActive()) {
             return;
         }
         if (hasAudioFocus) {
             return;
         }
-        if (NativeVoiceTtsPlugin.isSessionActive()) {
+        if (sessionCoordinator.isTtsSessionActive()) {
             return;
         }
         requestAudioFocus();
     }
 
     private void pauseForPhoneCall() {
-        if (pausedForPhoneCall) {
+        if (sessionCoordinator.isPausedForPhoneCall()) {
             return;
         }
-        if (!voiceAudioRoute.isActive() && !isRecording) {
+        if (!sessionCoordinator.isRouteActive() && !isRecording) {
             return;
         }
-        pausedForPhoneCall = true;
         FileLogger.log(TAG, "pauseForPhoneCall");
-        NativeVoiceTtsPlugin.stopIfPresent();
-        stopRecording();
-        voiceAudioRoute.exit(voiceAudioBackend);
-        voiceSessionKeepAwake.exit(keepAwakeBackend);
-        voiceForeground.exit(foregroundBackend);
-        JSObject ret = new JSObject();
-        ret.put("type", "phoneCall");
-        ret.put("active", true);
-        notifyListeners("voiceModePhoneCall", ret);
-        if (getBridge() != null) {
-            getBridge().eval(
-                    "if (window.pauseVoiceModeForPhoneCall) window.pauseVoiceModeForPhoneCall();",
-                    null);
-        }
+        sessionCoordinator.pauseForPhoneCall();
     }
 
     private void resumeAfterPhoneCall() {
-        if (!pausedForPhoneCall) {
+        if (!sessionCoordinator.isPausedForPhoneCall()) {
             return;
         }
-        pausedForPhoneCall = false;
         FileLogger.log(TAG, "resumeAfterPhoneCall");
-        JSObject ret = new JSObject();
-        ret.put("type", "phoneCall");
-        ret.put("active", false);
-        notifyListeners("voiceModePhoneCall", ret);
-        if (getBridge() != null) {
-            getBridge().eval(
-                    "if (window.resumeVoiceModeAfterPhoneCall) window.resumeVoiceModeAfterPhoneCall();",
-                    null);
-        }
+        sessionCoordinator.resumeAfterPhoneCall();
     }
 
     void stopFromNotification() {
         FileLogger.log(TAG, "stopFromNotification");
-        if (getBridge() != null) {
-            getBridge().eval("if (window.stopVoiceMode) window.stopVoiceMode();", null);
-        }
-        JSObject ret = new JSObject();
-        ret.put("type", "stop");
-        notifyListeners("voiceModeStopRequested", ret);
-        NativeVoiceTtsPlugin.stopIfPresent();
-        stopRecording();
-        voiceAudioRoute.exit(voiceAudioBackend);
-        voiceSessionKeepAwake.exit(keepAwakeBackend);
-        voiceForeground.exit(foregroundBackend);
+        sessionCoordinator.notificationStop();
     }
 
     private void requestUnrestrictedBattery() {
@@ -654,13 +631,21 @@ public class NativeMicPlugin extends Plugin {
     private final class ForegroundServiceBackend implements VoiceModeForegroundSession.Backend {
         @Override
         public boolean startForeground() {
+            return startForeground(VoiceModeForegroundSession.get().currentGeneration());
+        }
+
+        @Override
+        public boolean startForeground(long generation) {
             Context ctx = getContext();
             if (ctx == null) {
                 return false;
             }
             try {
-                VoiceModeForegroundService.start(ctx);
-                return true;
+                // Honest request acceptance: true means the platform start was
+                // issued for this exact generation, not that the service is
+                // foregrounded. Confirmation arrives asynchronously via the
+                // session generation token.
+                return VoiceModeForegroundService.start(ctx, generation);
             } catch (Exception e) {
                 FileLogger.log(TAG, "startForeground failed: " + e.getMessage(), e);
                 return false;
@@ -674,11 +659,26 @@ public class NativeMicPlugin extends Plugin {
                 return false;
             }
             try {
-                VoiceModeForegroundService.stop(ctx);
-                return true;
+                return VoiceModeForegroundService.stop(ctx)
+                        != VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
             } catch (Exception e) {
                 FileLogger.log(TAG, "stopForeground failed: " + e.getMessage(), e);
                 return false;
+            }
+        }
+
+        @Override
+        public VoiceModeForegroundSession.Backend.StopOutcome stopForeground(
+                long generation) {
+            Context ctx = getContext();
+            if (ctx == null) {
+                return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
+            }
+            try {
+                return VoiceModeForegroundService.stop(ctx, generation);
+            } catch (Exception e) {
+                FileLogger.log(TAG, "stopForeground failed: " + e.getMessage(), e);
+                return VoiceModeForegroundSession.Backend.StopOutcome.FAILED;
             }
         }
     }
@@ -841,16 +841,80 @@ public class NativeMicPlugin extends Plugin {
         call.resolve(result);
     }
 
+    private final class CoordinatorMic implements VoiceModeSessionCoordinator.MicControl {
+        @Override
+        public void stopCapture() {
+            stopRecording();
+        }
+
+        @Override
+        public boolean isCapturing() {
+            return isRecording;
+        }
+    }
+
+    /**
+     * Composition-time TTS adapter: delegates to the existing
+     * NativeVoiceTtsPlugin statics at call time, so mic reload while TTS
+     * exists (or vice versa) cannot lose control or capture a destroyed
+     * plugin instance.
+     */
+    private final class CoordinatorTts implements VoiceModeSessionCoordinator.TtsControl {
+        @Override
+        public void stopPlayback() {
+            NativeVoiceTtsPlugin.stopIfPresent();
+        }
+
+        @Override
+        public boolean isSessionActive() {
+            return NativeVoiceTtsPlugin.isSessionActive();
+        }
+    }
+
+    private final class CoordinatorEvents implements VoiceModeSessionCoordinator.SessionEvents {
+        @Override
+        public void notifyPhoneCall(boolean active, long transitionId) {
+            JSObject ret = new JSObject();
+            ret.put("type", "phoneCall");
+            ret.put("active", active);
+            ret.put("transitionId", transitionId);
+            notifyListeners("voiceModePhoneCall", ret);
+        }
+
+        @Override
+        public void notifyNotificationStop(long transitionId) {
+            JSObject ret = new JSObject();
+            ret.put("type", "stop");
+            ret.put("transitionId", transitionId);
+            notifyListeners("voiceModeStopRequested", ret);
+        }
+
+        @Override
+        public void evalJs(String script) {
+            if (getBridge() != null) {
+                getBridge().eval(script, null);
+            }
+        }
+    }
+
+    private final class CoordinatorPlatform implements VoiceModeSessionCoordinator.PlatformHooks {
+        @Override
+        public void requestBatteryExemption() {
+            requestUnrestrictedBattery();
+        }
+
+        @Override
+        public void keepWebViewAlive() {
+            keepVoiceWebViewRunning();
+        }
+    }
+
     @Override
     protected void handleOnDestroy() {
         VoiceModeNativeHooks.setHandler(null);
         VoiceModeNativeHooks.setKeepAliveHandler(null);
         unregisterModeListener();
-        pausedForPhoneCall = false;
-        stopRecording();
-        voiceAudioRoute.exit(voiceAudioBackend);
-        voiceSessionKeepAwake.exit(keepAwakeBackend);
-        voiceForeground.exit(foregroundBackend);
+        sessionCoordinator.destroy();
         super.handleOnDestroy();
     }
 }

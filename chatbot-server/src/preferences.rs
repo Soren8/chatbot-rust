@@ -2,16 +2,13 @@ use axum::{
     body::{self, Body},
     http::{header, Request, Response, StatusCode},
 };
-use chatbot_core::{
-    session,
-    user_store::UserStore,
-};
 use serde::Deserialize;
 use serde_json::json;
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_session_err, map_user_store_err,
-    HttpError,
+    api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
+    map_session_err, map_user_store_err, HttpError,
 };
+use crate::services::AppServices;
 
 #[derive(Deserialize)]
 struct UpdatePreferencesRequest {
@@ -31,6 +28,10 @@ pub async fn handle_update_preferences(
     }
 
     let (parts, body) = request.into_parts();
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 1024)
@@ -40,34 +41,32 @@ pub async fn handle_update_preferences(
     let payload: UpdatePreferencesRequest = serde_json::from_slice(&body_bytes)
         .map_err(|err| map_json_parse_err(err, "preferences::post"))?;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
+    let csrf_token = crate::request_context::extract_csrf(&headers);
 
-    let valid_csrf = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let valid_csrf = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "preferences::post::csrf"))?;
 
     if !valid_csrf {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid CSRF token"));
     }
 
-    let session = session::session_context(cookie_header.as_deref())
+    let session = identity
+        .session_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "preferences::post::session"))?;
 
     if let Some(username) = session.username {
-        let encryption_key = crate::chat_utils::extract_enc_key(&headers);
-        if let Err(response) =
-            session::validate_encryption_key_for_user(&username, encryption_key.as_ref())
+        let encryption_key =
+            crate::chat_utils::extract_enc_key_with_identity(&identity, &headers);
+        if let Err(err) =
+            chat.validate_encryption_key_for_user(&username, encryption_key.as_ref())
         {
-            return crate::build_response(response);
+            return Err(map_encryption_key_validation_err(err));
         }
 
-        let mut store = UserStore::new().map_err(|err| {
+        let mut store = accounts.users().map_err(|err| {
             map_user_store_err(err, "preferences::post::open_store", "store error")
         })?;
 

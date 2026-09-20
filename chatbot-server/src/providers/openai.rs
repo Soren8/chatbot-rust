@@ -10,7 +10,7 @@ use tracing::{debug, error, warn};
 
 use chatbot_core::config::ProviderConfig;
 
-use self::messages::ChatMessagePayload;
+use crate::providers::messages::ChatMessagePayload;
 use self::payload::{ChatCompletionRequest, ProviderRoutingOptions};
 
 /// Extra attempts after an upstream `429 Too Many Requests` when the provider
@@ -36,78 +36,9 @@ pub enum ToolStreamChunk {
 }
 
 pub mod messages {
-    use serde::Serialize;
-    use serde_json::Value;
-
-    #[derive(Clone, Serialize)]
-    #[serde(tag = "type", rename_all = "snake_case")]
-    pub enum ContentPart {
-        Text { text: String },
-        ImageUrl { image_url: ImageUrlPart },
-    }
-
-    #[derive(Clone, Serialize)]
-    pub struct ImageUrlPart {
-        pub url: String,
-    }
-
-    #[derive(Clone, Serialize)]
-    #[serde(untagged)]
-    pub enum ChatMessageContent {
-        Text(String),
-        MultiModal(Vec<ContentPart>),
-    }
-
-    #[derive(Clone, Serialize)]
-    pub struct ChatMessagePayload {
-        pub role: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub content: Option<ChatMessageContent>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub tool_calls: Option<Vec<Value>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub tool_call_id: Option<String>,
-    }
-
-    impl ChatMessagePayload {
-        pub fn system(content: String) -> Self {
-            Self {
-                role: "system".to_string(),
-                content: Some(ChatMessageContent::Text(content)),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-
-        pub fn user(content: String) -> Self {
-            Self {
-                role: "user".to_string(),
-                content: Some(ChatMessageContent::MultiModal(vec![
-                    ContentPart::Text { text: content },
-                ])),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-
-        pub fn user_with_content(content: ChatMessageContent) -> Self {
-            Self {
-                role: "user".to_string(),
-                content: Some(content),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-
-        pub fn assistant(content: String) -> Self {
-            Self {
-                role: "assistant".to_string(),
-                content: Some(ChatMessageContent::Text(content)),
-                tool_calls: None,
-                tool_call_id: None,
-            }
-        }
-    }
+    //! Backwards-compatible re-export of the shared provider message DTO.
+    //! New code imports `crate::providers::messages` directly.
+    pub use crate::providers::messages::*;
 }
 
 mod payload {
@@ -123,7 +54,7 @@ mod payload {
     #[derive(Serialize)]
     pub struct ChatCompletionRequest {
         pub model: String,
-        pub messages: Vec<crate::providers::openai::messages::ChatMessagePayload>,
+        pub messages: Vec<crate::providers::messages::ChatMessagePayload>,
         pub stream: bool,
         pub temperature: f32,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,6 +76,11 @@ pub struct OpenAiProvider {
     test_chunks: Option<Vec<String>>,
     rate_limit_retries: u32,
     rate_limit_max_wait: Duration,
+    /// Owned fake delay/tool inputs. `None` means live: read the corresponding
+    /// env var at the original stream site. `Some` means owned: use the
+    /// explicit value with no env read.
+    fake_delay_ms: Option<u64>,
+    fake_tool_query: Option<Option<String>>,
 }
 
 impl OpenAiProvider {
@@ -183,7 +119,67 @@ impl OpenAiProvider {
                     .rate_limit_max_wait_secs
                     .unwrap_or(DEFAULT_RATE_LIMIT_MAX_WAIT_SECS),
             ),
+            fake_delay_ms: None,
+            fake_tool_query: None,
         })
+    }
+
+    /// Owned construction: explicit fake chunks/delay/tool query with no env
+    /// reads. `fake_chunks` `Some` overrides `config.test_chunks`; `None`
+    /// falls back to `config.test_chunks`. `fake_tool_query` `Some` nonempty
+    /// emits that tool call; `None` (empty is normalized to `None` by the
+    /// caller) means no tool fake and no env read. Live routers keep using
+    /// [`OpenAiProvider::new`] so env lookup timing is untouched.
+    pub fn new_owned(
+        config: &ProviderConfig,
+        fake_chunks: Option<Vec<String>>,
+        fake_delay_ms: u64,
+        fake_tool_query: Option<String>,
+    ) -> Result<Self> {
+        let timeout = Duration::from_secs_f64(config.request_timeout.unwrap_or(300.0));
+        let client = Client::builder()
+            .timeout(timeout)
+            .build()
+            .context("failed to build reqwest client")?;
+
+        let test_chunks = fake_chunks.or_else(|| config.test_chunks.clone());
+        let fake_tool_query = fake_tool_query.filter(|q| !q.is_empty());
+
+        Ok(Self {
+            client,
+            base_url: config.base_url.clone(),
+            api_key: config.api_key.clone(),
+            model: config.model_name.clone(),
+            allowed_providers: config.allowed_providers.clone(),
+            test_chunks,
+            rate_limit_retries: config
+                .rate_limit_retries
+                .unwrap_or(DEFAULT_RATE_LIMIT_RETRIES),
+            rate_limit_max_wait: Duration::from_secs_f64(
+                config
+                    .rate_limit_max_wait_secs
+                    .unwrap_or(DEFAULT_RATE_LIMIT_MAX_WAIT_SECS),
+            ),
+            fake_delay_ms: Some(fake_delay_ms),
+            fake_tool_query: Some(fake_tool_query),
+        })
+    }
+
+    fn chunk_delay_ms(&self) -> u64 {
+        match self.fake_delay_ms {
+            Some(delay) => delay,
+            None => std::env::var("CHATBOT_TEST_OPENAI_CHUNK_DELAY_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+        }
+    }
+
+    fn tool_query_override(&self) -> Option<String> {
+        match &self.fake_tool_query {
+            Some(query) => query.clone(),
+            None => std::env::var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY").ok(),
+        }
     }
 
     pub fn stream_chat(
@@ -193,10 +189,8 @@ impl OpenAiProvider {
         if let Some(ref chunks) = self.test_chunks {
             let chunks = chunks.clone();
             // Optional per-chunk delay so tests can abort mid-stream (client Stop).
-            let delay_ms: u64 = std::env::var("CHATBOT_TEST_OPENAI_CHUNK_DELAY_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
+            // Live reads the env at this site; owned uses its explicit delay.
+            let delay_ms: u64 = self.chunk_delay_ms();
             if delay_ms == 0 {
                 // Special token for tests: emit a stream error instead of a text chunk.
                 let stream = tokio_stream::iter(chunks.into_iter().map(|chunk| {
@@ -331,7 +325,9 @@ impl OpenAiProvider {
         messages: Vec<ChatMessagePayload>,
         tools: &[Value],
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ToolStreamChunk>> + Send + 'static>>> {
-        if let Ok(query) = std::env::var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY") {
+        // Live reads the tool-query env at this site; owned uses its explicit
+        // fake query with the same empty-means-no-fake ordering.
+        if let Some(query) = self.tool_query_override() {
             if !query.is_empty() {
                 let stream = tokio_stream::iter(vec![Ok(ToolStreamChunk::ToolCalls(vec![
                     ToolCall {
@@ -345,10 +341,7 @@ impl OpenAiProvider {
 
         if let Some(ref chunks) = self.test_chunks {
             let chunks = chunks.clone();
-            let delay_ms: u64 = std::env::var("CHATBOT_TEST_OPENAI_CHUNK_DELAY_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
+            let delay_ms: u64 = self.chunk_delay_ms();
             let stream = async_stream::try_stream! {
                 for chunk in chunks {
                     if delay_ms > 0 {

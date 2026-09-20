@@ -14,7 +14,7 @@ use super::types::{
     SetPayloadV1, SetVersion, ThumbPayloadV1,
 };
 use crate::enc_key::EncryptionKey;
-use crate::persistence::{DataPersistence, EncryptionMode, PersistenceError};
+use crate::fernet_crypto::{self, FernetError};
 
 const HKDF_INFO: &[u8] = b"chatbot-set-payload-v1";
 const NONCE_LEN: usize = 12;
@@ -30,7 +30,7 @@ pub enum CryptoError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("legacy fernet error")]
-    Fernet(#[from] PersistenceError),
+    Fernet(#[from] FernetError),
 }
 
 /// Build AAD bytes that bind ciphertext to ownership + version.
@@ -248,9 +248,9 @@ pub fn seal_payload_fernet(
     key: &EncryptionKey,
 ) -> Result<Vec<u8>, CryptoError> {
     let json = serde_json::to_string(payload)?;
-    Ok(DataPersistence::encrypt_bytes(
+    Ok(fernet_crypto::encrypt_bytes(
         json.as_bytes(),
-        EncryptionMode::Fernet(key.as_bytes()),
+        key.as_bytes(),
     )?)
 }
 
@@ -258,7 +258,7 @@ pub fn open_payload_fernet(
     blob: &[u8],
     key: &EncryptionKey,
 ) -> Result<SetPayloadV1, CryptoError> {
-    let bytes = DataPersistence::decrypt_bytes(blob, EncryptionMode::Fernet(key.as_bytes()))?;
+    let bytes = fernet_crypto::decrypt_bytes(blob, key.as_bytes())?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 

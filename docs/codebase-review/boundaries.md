@@ -1,5 +1,7 @@
 # Observed boundaries and flow map
 
+Session 039 adds these owned edges: `AppServices → ConfigSource → request/identity/cookie policy`; `GenerationDeps → explicit provider fake inputs`; `chat.js → ChatRenderer / ChatTtsPlayback / ChatVoiceCapture → injected platform callbacks`; and `capacitor.config.json serverUrls → Gradle flavor resource → ServerUrlResolver → WebView/cookies/logging/Auto`. Live Rust compatibility remains lazy. Android Auto's separate session/CSRF/transport protocol repair is user-deferred. See the session 039 checkpoint for passing suite/build evidence and remaining completion-review scope.
+
 Evidence baseline: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3`. This map is partial; arrows below describe inspected edges, not certification of the entire flow.
 
 ## Rust composition — inspected
@@ -63,3 +65,51 @@ Cargo owns core/server tests; the server integration tree additionally contains 
 ### Boundaries worth retaining
 
 Keep the existing acyclic Cargo dependency direction, private redb tables/crypto, typed history operations, shared browser product UI, first-party asset delivery, pre-signed TTS transport, independent GPU process, and small native resource/codec/queue units. Their shortcomings are at interfaces and ownership points; another service layer or additional crates are not default remedies.
+
+## Session 003 — remediated helper boundaries
+
+Username validation (`user_store`) and set-name validation (`history` facade → HTTP/session callers) now delegate to `chatbot-core::names`. The legacy store also delegates to that domain module, mapping failures to its existing migration errors. Session mirror sealing and history Fernet payload decoding call private `fernet_crypto` directly; legacy store Fernet wrappers call the same crypto module. Only real history migration and compatibility surfaces retain the legacy-storage dependency.
+
+POST `/tts` calls private `tts::text::sanitize_text` before token insertion. That module owns markup/reasoning/URL/citation removal and currency/abbreviation/number normalization; it has no config, token, network or HTTP dependency. Private `tts::backend` owns provider synthesis (legacy/fish/kokoro request shapes, provider HTTP client, WAV parsing, per-provider fade, silence fallback, backend error mapping) and returns owned PCM plus sample rate, never an HTTP response. Private `tts::store` owns the token-session lifecycle (admission with TTL/cap eviction, cached-or-generation/busy/missing arbitration, cancel, generation lease for success/drop retry cleanup) behind one global parent store; the parent keeps token minting, access policy, codec conversion, the encoded-size cache cap with retry reset, and response construction, and `tts_opus` retains codec ownership. Browser sentence normalization remains an earlier client stage. The text-boundary change has baseline and post-refactor full-suite evidence in the session-003 checkpoint; the backend boundary has its own baseline/final evidence in the session-005 checkpoint; the store boundary has its own baseline/final evidence in the session-006 checkpoint.
+
+## Session 004 — remediated stream-decoder boundary
+
+`static/stream-decoder.js` owns the `<think>` / `[BEGIN FINAL RESPONSE]` / `[ConsoleError]` buffer/state transitions, partial-tag holds and whole-text projection with no DOM, network or config dependency. `static/chat.js` history/regenerate/chat adapters own status labels, `data-original` accumulation and markdown rendering, with explicit preserved divergences (chat strips console detail and flushes at EOF/interrupt; regenerate keeps markers visible and drops the residual). The chat template loads the decoder before the application script. Rust think-stripping, server TTS normalization and TTS text selection stay separate callers. Baseline and wired full-suite evidence is in the session-004 checkpoint.
+
+## Session 005 — remediated TTS backend-result boundary
+
+`chatbot-server/src/tts/backend.rs` owns provider synthesis and returns owned PCM plus rate; the `tts.rs` parent owns the token session, access policy, wire encoding, the encoded-size rejection with retry reset, and HTTP rendering. Provider request shapes, default rates, fade differences, error statuses/messages and log contexts are preserved verbatim. Baseline and final full-suite evidence is in the session-005 checkpoint.
+
+## Session 006 — remediated TTS token-store boundary
+
+`chatbot-server/src/tts/store.rs` owns the token-session map (`PendingTtsStore` over an `RwLock` map) with admission, cached-or-generation/busy/missing/exhausted arbitration, cancel, and a generation lease (`complete`/`fail`/drop reset). The `tts.rs` parent keeps one global `Lazy` store plus token minting, access policy, wire encoding, the encoded-size rejection with retry reset, and HTTP rendering; handlers hold no map accesses and no lock across synthesis. TTL, cap, eviction order, replay budget, statuses/messages/headers, the 8 MiB cap, missing-cancel 204, and token-collision overwrite are preserved verbatim. The single process-global store remains a MOD-003 composition lead. Baseline and final full-suite evidence is in the session-006 checkpoint.
+
+## Session 007 — remediated generation-dispatch boundary
+
+`chatbot-server/src/providers/generation.rs` owns shared generation dispatch (closed `GenerationProvider`, `build_provider`, `map_core_messages`, search-gated `dispatch_stream`); `chat.rs`/`regenerate.rs` keep validation with the unsupported guard earlier, construction timing, saved-turn rendering with append-versus-replace, capture-derived versus payload user text, stream guards/finalizers and response building. The existing OpenAI-owned message DTO remains the shared shape. Baseline and final full-suite evidence is in the session-007 checkpoint.
+
+## Session 008 — remediated message-ownership boundary
+
+Session 015 separates HTTP identity ownership into core `session_identity.rs`. Chat orchestration retains its separate store and composes purge counts via a crate-visible identity hook. Public `session::` compatibility paths remain; the module split does not alter singleton lifetimes or authorize unknown cookies.
+
+Session 014 gives raw Cookie/CSRF/IP extraction a shared request-transport owner. This module performs no session lookup or authorization; handlers preserve their distinct creating/non-creating identity calls and CSRF rules. Borrowed rate-limit cookie access and forwarding-header precedence are retained.
+
+Session 013 introduces a borrowed prompt-packing input that excludes identity, encryption, provider credentials and generation capture. The algorithm consumes this value; the compatibility wrapper still accepts `ChatContext` and supplies the provider context-size default. No new storage or lifetime ownership is introduced.
+
+Session 012 separates five prepare-validation categories from serialized HTTP errors. Chat/regenerate handlers own the choice between a raw 400 and a saved error turn; `PrepareError::Service` remains the compatibility boundary for other prepare failures. Lock lifetime and lookup-error behavior are unchanged.
+
+Session 011 gives encryption-key validation a typed core outcome consumed by a single server HTTP mapper. Core orchestration continues through `require_encryption_key`'s `ServiceResponse` adapter. Cause logging stays at validation, while the direct HTTP mapper preserves server-error counting and leaves response logging to middleware.
+
+Session 010 narrows the history facade to named service mutations and used types. `SetCache` and seven storage-format types are private implementation details; `SetPayloadV1` remains exported for migration compatibility. Generic snapshot commits remain available only inside the private store, not on `HistoryService`. Logical/materialized snapshot ownership is still unresolved.
+
+Session 009 additionally establishes `chatbot-server/src/enc_key_cookies.rs` as the encryption-key HTTP transport boundary, with compatibility re-exports from `chat_utils`. Core session/user/remember services still supply its state and verification dependencies; application composition and broader request-context ownership remain open.
+
+`chatbot-server/src/providers/messages.rs` owns the shared message DTO (`ContentPart`/`ImageUrlPart`/`ChatMessageContent`/`ChatMessagePayload` plus constructors) with OpenAI-compatible serialization; `generation.rs`, `message_utils.rs`, `xai.rs`, `search.rs`, the OpenAI internals and `payload::ChatCompletionRequest` resolve through the neutral module, while `providers::openai::messages` remains as a re-export. Handler, search-gating, XAI mapping and wire-shape behavior are unchanged. Baseline and final full-suite evidence is in the session-008 checkpoint.
+
+## Session 037 — owned TTS and rate-policy boundary
+
+`chatbot-server/src/policy.rs` owns the TTS and rate policy dimensions separately from counters, tokens and synthesis execution. `RatePolicy` selects per-identity/global budgets; `TtsPolicy` selects access, wire codec, coherent synthesis inputs and both backend endpoints. `AppServices` carries both handles; middleware and TTS/backend resolve budgets, access, codec and endpoints through the router policy. Global handles touch neither config nor env on construction and delegate per operation at the original live sites; owned handles use only explicit inputs. Production stays on the live path. Baseline and final full-suite evidence is in the session-037 checkpoint.
+
+## Session 038 — owned voice-lifecycle and credential boundaries
+
+`static/voice-lifecycle.js` owns the single browser TTS flags/cooldown/barge/session/audio lifecycle behind explicit callbacks; `chat.js` keeps queue/VAD orchestration with exact error/order flags. `audio/VoiceModeSessionCoordinator` owns handheld route/keep-awake/FGS/phone/notification composition with mic plugin hooks and no new locks; static TTS compatibility resolves at call time, the TTS plugin is unchanged, and dual-event/FGS semantics are unchanged. `static/credential-metadata.js` + `static/credential-crypto.js` own slot policy and real derivation/wrap/PRF algorithms behind required UMD imports before `enc-key.js`; `enc-key.js` keeps store lifecycle plus the `EncKey` surface. `CredentialCookies` owns names/parsing/builders and `SealedCredentialPayload` owns the `org.json` codec; the plugin keeps keystore/biometric plus the legacy export surface with no security-behavior change. Evidence is in the session-038 checkpoint.

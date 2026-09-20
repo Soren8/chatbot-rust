@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::OnceLock};
 
 use axum::{
     body::{self, Body},
-    extract::Path,
+    extract::{Extension, Path},
     http::{header, HeaderValue, Request, Response, StatusCode},
     Json,
 };
 use chatbot_core::{
-    config, remember_store, session,
-    user_store::{normalise_username, UserStore},
+    account_service::AccountService, config_source::ConfigSource, remember_store,
+    user_store::normalise_username,
 };
 use minijinja::{context, AutoEscape, Environment};
 use serde_json::json;
@@ -20,13 +20,15 @@ use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_form_parse_err, map_response_build_err,
     map_session_err, map_user_store_err, HttpError,
 };
+use crate::services::AppServices;
 
 const INVALID_CREDENTIALS: &str = "Invalid credentials";
 
 pub async fn handle_get_salt(
     Path(username): Path<String>,
+    Extension(services): Extension<AppServices>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
-    let store = UserStore::new().map_err(|err| {
+    let store = services.accounts().users().map_err(|err| {
         map_user_store_err(err, "login::get_salt", "Unable to log in")
     })?;
     let salt = store
@@ -38,13 +40,13 @@ pub async fn handle_get_salt(
 pub async fn handle_login_get(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    let cookie_header = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let identity = AppServices::from_extensions(request.extensions())
+        .identity()
+        .clone();
+    let cookie_header = crate::request_context::extract_cookie(request.headers());
 
-    let bootstrap = session::prepare_home_context(cookie_header.as_deref())
+    let bootstrap = identity
+        .prepare_home_context(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "login::get"))?;
 
     let html = render_login_template(&bootstrap.csrf_token).map_err(|err| {
@@ -63,12 +65,12 @@ pub async fn handle_login_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let body_bytes = body::to_bytes(body, 64 * 1024)
         .await
@@ -90,7 +92,8 @@ pub async fn handle_login_post(
         return invalid_credentials();
     }
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "login::post::csrf"))?;
 
     if !csrf_valid {
@@ -106,7 +109,7 @@ pub async fn handle_login_post(
         Err(_) => return invalid_credentials(),
     };
 
-    let store = UserStore::new().map_err(|err| {
+    let store = accounts.users().map_err(|err| {
         map_user_store_err(err, "login::post", "Unable to log in")
     })?;
 
@@ -115,7 +118,7 @@ pub async fn handle_login_post(
         .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?;
 
     if !valid {
-        let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+        let ip = crate::request_context::get_ip(&headers, &parts.extensions);
         tracing::info!(username = %username, ip = %ip, "Login failed");
         return invalid_credentials();
     }
@@ -138,10 +141,11 @@ pub async fn handle_login_post(
         .ensure_key_verifier(&username, &encryption_key)
         .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?;
 
-    let finalize = session::finalize_login(cookie_header.as_deref(), &username)
+    let finalize = identity
+        .finalize_login(cookie_header.as_deref(), &username)
         .map_err(|err| map_session_err(err, "login::post::finalize"))?;
 
-    let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+    let ip = crate::request_context::get_ip(&headers, &parts.extensions);
     tracing::info!(username = %username, ip = %ip, "Login successful");
 
     let mut response = Response::builder()
@@ -166,7 +170,7 @@ pub async fn handle_login_post(
         let account_tok = remember_store::extract_account_token(cookie_header.as_deref(), &username);
         let presented = account_tok.or_else(|| {
             let last = remember_store::extract_token(cookie_header.as_deref())?;
-            let store = remember_store::RememberStore::new().ok()?;
+            let store = accounts.remember().ok()?;
             if store.peek_username(Some(&last)).as_deref() == Some(username.as_str()) {
                 Some(last)
             } else {
@@ -174,8 +178,10 @@ pub async fn handle_login_post(
             }
         });
         match issue_remember_cookies(
+            &accounts,
             &username,
             presented.as_deref(),
+            &services.config_source(),
         ) {
             Ok(set_cookies) => {
                 for set_cookie in set_cookies {
@@ -195,24 +201,32 @@ pub async fn handle_login_post(
         // Unchecked "remember this computer": revoke this account's family only.
         let last = remember_store::extract_token(cookie_header.as_deref());
         let account = remember_store::extract_account_token(cookie_header.as_deref(), &username);
-        let last_belongs = match remember_store::RememberStore::new() {
+        let last_belongs = match accounts.remember() {
             Ok(store) => store.peek_username(last.as_deref()).as_deref() == Some(username.as_str()),
             Err(_) => false,
         } || (account.is_some() && account == last);
-        if let Ok(store) = remember_store::RememberStore::new() {
+        if let Ok(store) = accounts.remember() {
             store.revoke(account.as_deref());
             if last_belongs {
                 store.revoke(last.as_deref());
             }
         }
+        // Each emitted clear cookie resolves CSRF at its own site, like the
+        // original per-build reads.
+        let request_config = services.config_source();
         if last_belongs {
-            if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+            if let Ok(value) = HeaderValue::from_str(
+                &remember_store::build_clear_cookie_with_csrf(request_config.csrf()),
+            ) {
                 response = response.header(header::SET_COOKIE, value);
             }
         }
-        if let Ok(value) =
-            HeaderValue::from_str(&remember_store::build_account_clear_cookie(&username))
-        {
+        if let Ok(value) = HeaderValue::from_str(
+            &remember_store::build_account_clear_cookie_with_csrf(
+                &username,
+                request_config.csrf(),
+            ),
+        ) {
             response = response.header(header::SET_COOKIE, value);
         }
     }
@@ -221,9 +235,16 @@ pub async fn handle_login_post(
         let max_age = if remember_me {
             remember_store::REMEMBER_MAX_AGE_SECS
         } else {
-            config::app_config().session_timeout.max(60)
+            services.config_source().session_timeout().max(60)
         };
-        response = attach_enc_key_cookies(response, &username, key_str, max_age, remember_me);
+        response = attach_enc_key_cookies(
+            response,
+            &username,
+            key_str,
+            max_age,
+            remember_me,
+            &services.config_source(),
+        );
     }
 
     response
@@ -231,27 +252,42 @@ pub async fn handle_login_post(
         .map_err(|err| map_response_build_err(err, "login::post::redirect"))
 }
 
+/// Attach enc-key cookies, resolving CSRF separately at each emit site like
+/// the original per-build reads (two reads when both cookies emit).
 fn attach_enc_key_cookies(
     mut builder: axum::http::response::Builder,
     username: &str,
     key_str: &str,
     max_age: u64,
     persist_account: bool,
+    config: &ConfigSource,
 ) -> axum::http::response::Builder {
-    if let Ok(value) =
-        HeaderValue::from_str(&crate::chat_utils::build_enc_key_set_cookie(key_str, max_age))
-    {
+    if let Ok(value) = HeaderValue::from_str(
+        &crate::chat_utils::build_enc_key_set_cookie_with_csrf(
+            key_str,
+            max_age,
+            config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
     if persist_account {
-        if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_set_cookie(
-            username, key_str, max_age,
-        )) {
+        if let Ok(value) = HeaderValue::from_str(
+            &crate::chat_utils::build_enc_key_account_set_cookie_with_csrf(
+                username,
+                key_str,
+                max_age,
+                config.csrf(),
+            ),
+        ) {
             builder = builder.header(header::SET_COOKIE, value);
         }
-    } else if let Ok(value) =
-        HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_clear_cookie(username))
-    {
+    } else if let Ok(value) = HeaderValue::from_str(
+        &crate::chat_utils::build_enc_key_account_clear_cookie_with_csrf(
+            username,
+            config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
     builder
@@ -274,15 +310,23 @@ fn presented_enc_key_string(
     crate::chat_utils::enc_key_cookie_value(&key).map(str::to_string)
 }
 
+/// Issue remember cookies, resolving CSRF separately at each emit site like
+/// the original per-build reads.
 fn issue_remember_cookies(
+    accounts: &AccountService,
     username: &str,
     presented: Option<&str>,
+    config: &ConfigSource,
 ) -> Result<Vec<String>, remember_store::RememberError> {
-    let store = remember_store::RememberStore::new()?;
+    let store = accounts.remember()?;
     let token = store.issue_or_refresh(username, presented)?;
     Ok(vec![
-        remember_store::build_set_cookie(&token),
-        remember_store::build_account_set_cookie(username, &token),
+        remember_store::build_set_cookie_with_csrf(&token, config.csrf()),
+        remember_store::build_account_set_cookie_with_csrf(
+            username,
+            &token,
+            config.csrf(),
+        ),
     ])
 }
 
@@ -295,11 +339,11 @@ pub async fn handle_login_remember_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let body_bytes = body::to_bytes(body, 16 * 1024)
         .await
@@ -308,7 +352,8 @@ pub async fn handle_login_remember_post(
         from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::remember"))?;
     let csrf_token = form.get("csrf_token").map(|s| s.as_str());
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "login::remember::csrf"))?;
     if !csrf_valid {
         return Err(api_error(
@@ -333,7 +378,7 @@ pub async fn handle_login_remember_post(
         },
         None => None,
     };
-    let store = remember_store::RememberStore::new().map_err(|err| {
+    let store = accounts.remember().map_err(|err| {
         log_and_api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "remember store error",
@@ -373,10 +418,11 @@ pub async fn handle_login_remember_post(
             username,
             replacement_token,
         }) => {
-            let finalize = session::finalize_login(cookie_header.as_deref(), &username)
+            let finalize = identity
+                .finalize_login(cookie_header.as_deref(), &username)
                 .map_err(|err| map_session_err(err, "login::remember::finalize"))?;
 
-            let ip = crate::chat_utils::get_ip(&headers, &parts.extensions);
+            let ip = crate::request_context::get_ip(&headers, &parts.extensions);
             tracing::info!(username = %username, ip = %ip, "Session restored via remember token");
 
             let payload = serde_json::to_vec(&json!({
@@ -404,8 +450,15 @@ pub async fn handle_login_remember_post(
 
             for set_cookie in [
                 finalize.set_cookie,
-                remember_store::build_set_cookie(&replacement_token),
-                remember_store::build_account_set_cookie(&username, &replacement_token),
+                remember_store::build_set_cookie_with_csrf(
+                    &replacement_token,
+                    services.config_source().csrf(),
+                ),
+                remember_store::build_account_set_cookie_with_csrf(
+                    &username,
+                    &replacement_token,
+                    services.config_source().csrf(),
+                ),
             ] {
                 match HeaderValue::from_str(&set_cookie) {
                     Ok(value) => {
@@ -422,7 +475,7 @@ pub async fn handle_login_remember_post(
 
             if let Some(enc_key) = presented_enc_key_string(&headers, &username, cookie_header.as_deref())
             {
-                if let Ok(store) = UserStore::new() {
+                if let Ok(store) = accounts.users() {
                     if store
                         .verify_encryption_key(&username, enc_key.as_bytes())
                         .unwrap_or(false)
@@ -433,6 +486,7 @@ pub async fn handle_login_remember_post(
                             &enc_key,
                             remember_store::REMEMBER_MAX_AGE_SECS,
                             true,
+                            &services.config_source(),
                         );
                     }
                 }
@@ -462,11 +516,11 @@ pub async fn handle_login_forget_post(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let accounts = services.accounts().clone();
     let headers = parts.headers;
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_owned());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
     let body_bytes = body::to_bytes(body, 16 * 1024)
         .await
@@ -475,7 +529,8 @@ pub async fn handle_login_forget_post(
         from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::forget"))?;
     let csrf_token = form.get("csrf_token").map(|s| s.as_str());
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "login::forget::csrf"))?;
     if !csrf_valid {
         return Err(api_error(
@@ -496,7 +551,7 @@ pub async fn handle_login_forget_post(
 
     let last = remember_store::extract_token(cookie_header.as_deref());
     let account = remember_store::extract_account_token(cookie_header.as_deref(), &username);
-    let store = match remember_store::RememberStore::new() {
+    let store = match accounts.remember() {
         Ok(store) => store,
         Err(err) => {
             return Err(log_and_api_error(
@@ -531,23 +586,33 @@ pub async fn handle_login_forget_post(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-    if let Ok(value) =
-        HeaderValue::from_str(&remember_store::build_account_clear_cookie(&username))
-    {
+    // Each emitted clear cookie resolves CSRF at its own site.
+    let request_config = services.config_source();
+    if let Ok(value) = HeaderValue::from_str(
+        &remember_store::build_account_clear_cookie_with_csrf(
+            &username,
+            request_config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
-    if let Ok(value) =
-        HeaderValue::from_str(&crate::chat_utils::build_enc_key_account_clear_cookie(&username))
-    {
+    if let Ok(value) = HeaderValue::from_str(
+        &crate::chat_utils::build_enc_key_account_clear_cookie_with_csrf(
+            &username,
+            request_config.csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
     if last_belongs {
-        if let Ok(value) = HeaderValue::from_str(&remember_store::build_clear_cookie()) {
+        if let Ok(value) = HeaderValue::from_str(
+            &remember_store::build_clear_cookie_with_csrf(request_config.csrf()),
+        ) {
             builder = builder.header(header::SET_COOKIE, value);
         }
-        if let Ok(value) =
-            HeaderValue::from_str(&crate::chat_utils::build_enc_key_clear_cookie())
-        {
+        if let Ok(value) = HeaderValue::from_str(
+            &crate::chat_utils::build_enc_key_clear_cookie_with_csrf(request_config.csrf()),
+        ) {
             builder = builder.header(header::SET_COOKIE, value);
         }
     }

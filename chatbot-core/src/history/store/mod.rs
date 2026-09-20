@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 
 use super::crypto::{self, CryptoError};
 use super::types::{
-    BlobFormat, SetId, SetPayloadV1, SetSnapshot, SetSummary, SetVersion,
+    BlobFormat, LogicalSnapshot, SetId, SetPayloadV1, SetSnapshot, SetSummary, SetVersion,
 };
 use crate::enc_key::EncryptionKey;
 use keys::{
@@ -415,13 +415,15 @@ impl RedbHistoryStore {
 
     /// CAS commit of a full snapshot. `expected` must match stored version.
     /// Writes `snapshot` content at `expected.next()` (snapshot.version field is ignored for CAS check).
+    /// Returns the sealed logical shape for the cache: chunked commits come
+    /// back ref-normalized, whole-blob commits echo the sealed working copy.
     pub fn commit_snapshot(
         &self,
         user_id: &str,
         expected: SetVersion,
-        snapshot: &SetSnapshot,
+        mut snapshot: SetSnapshot,
         key: &EncryptionKey,
-    ) -> Result<SetVersion, StoreError> {
+    ) -> Result<(SetVersion, LogicalSnapshot), StoreError> {
         let set_id = snapshot.set_id;
         if let Ok(meta) = self.load_meta(user_id, set_id) {
             if meta.blob_format.is_chunked() {
@@ -434,7 +436,7 @@ impl RedbHistoryStore {
             return Err(StoreError::InvalidInput);
         }
 
-        let payload = SetPayloadV1::from_snapshot(snapshot);
+        let payload = SetPayloadV1::from_snapshot(&snapshot);
         let blob = crypto::seal_blob(
             user_id,
             set_id,
@@ -449,6 +451,7 @@ impl RedbHistoryStore {
         let id_key = set_id_key(set_id);
 
         let txn = self.db.begin_write()?;
+        let durable_is_default;
         {
             let mut meta_table = txn.open_table(SETS_META)?;
             let mut meta = {
@@ -459,6 +462,7 @@ impl RedbHistoryStore {
                     "corrupt set meta".into(),
                 ))?
             };
+            durable_is_default = meta.is_default;
             if meta.user_id != user_id {
                 return Err(StoreError::Forbidden);
             }
@@ -484,7 +488,13 @@ impl RedbHistoryStore {
         }
         txn.commit()?;
         debug!(%set_id, version = new_version.get(), "history set committed");
-        Ok(new_version)
+        snapshot.version = new_version;
+        snapshot.is_default = durable_is_default;
+        // Whole-blob payloads seal no pair ids; the working copy's ids are not
+        // durable until a chunk migrate assigns stable ones (and migrate
+        // invalidates this entry first). Keep the cached shape load-accurate.
+        snapshot.pair_ids.clear();
+        Ok((new_version, LogicalSnapshot::from_normalized(snapshot)))
     }
 
     pub fn delete_set(
@@ -723,14 +733,14 @@ mod tests {
         assert!(snap.history.is_empty());
 
         let next = append_pair(&snap, "hello", "world").unwrap();
-        let v2 = store
-            .commit_snapshot("alice", SetVersion(1), &next, &key)
+        let (v2, _) = store
+            .commit_snapshot("alice", SetVersion(1), next.clone(), &key)
             .unwrap();
         assert_eq!(v2, SetVersion(2));
 
         // Stale CAS fails
         let err = store
-            .commit_snapshot("alice", SetVersion(1), &next, &key)
+            .commit_snapshot("alice", SetVersion(1), next, &key)
             .unwrap_err();
         assert!(matches!(err, StoreError::Conflict { current: SetVersion(2) }));
 
@@ -757,18 +767,18 @@ mod tests {
         let snap = store.load_snapshot("alice", set_id, &key).unwrap();
         let s1 = append_pair(&snap, "u1", "a1").unwrap();
         store
-            .commit_snapshot("alice", SetVersion(1), &s1, &key)
+            .commit_snapshot("alice", SetVersion(1), s1, &key)
             .unwrap();
         let s1 = store.load_snapshot("alice", set_id, &key).unwrap();
         let s2 = append_pair(&s1, "u2", "a2").unwrap();
         store
-            .commit_snapshot("alice", SetVersion(2), &s2, &key)
+            .commit_snapshot("alice", SetVersion(2), s2, &key)
             .unwrap();
 
         let loaded = store.load_snapshot("alice", set_id, &key).unwrap();
         let deleted = delete_pair(loaded, 0, "u1").unwrap();
         store
-            .commit_snapshot("alice", SetVersion(3), &deleted, &key)
+            .commit_snapshot("alice", SetVersion(3), deleted, &key)
             .unwrap();
         let final_snap = store.load_snapshot("alice", set_id, &key).unwrap();
         assert_eq!(final_snap.history.len(), 1);
@@ -863,7 +873,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 let next = append_pair(&base, &format!("u{i}"), &format!("a{i}")).unwrap();
                 barrier.wait();
-                store.commit_snapshot("race", SetVersion(1), &next, &key)
+                store.commit_snapshot("race", SetVersion(1), next, &key).map(|(v, _)| v)
             }));
         }
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
@@ -924,7 +934,7 @@ mod tests {
         snap.is_default = true;
         snap.history.push(("u".into(), "a".into()));
         store
-            .commit_snapshot("alice", SetVersion(1), &snap, &key)
+            .commit_snapshot("alice", SetVersion(1), snap, &key)
             .unwrap();
         let reloaded = store.load_snapshot("alice", set_id, &key).unwrap();
         assert!(!reloaded.is_default, "content commit must not flip is_default");
@@ -1028,8 +1038,8 @@ mod tests {
 
         // Post-upgrade writes must work on the same file.
         let next = append_pair(&snap, "after upgrade", "ok").unwrap();
-        let v2 = store
-            .commit_snapshot(user, SetVersion(1), &next, &key)
+        let (v2, _) = store
+            .commit_snapshot(user, SetVersion(1), next, &key)
             .unwrap();
         assert_eq!(v2, SetVersion(2));
         let reloaded = store.load_snapshot(user, set_id, &key).unwrap();

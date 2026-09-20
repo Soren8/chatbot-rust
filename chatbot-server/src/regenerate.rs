@@ -1,5 +1,4 @@
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use async_stream::stream;
@@ -10,26 +9,26 @@ use axum::{
 };
 use bytes::Bytes;
 use chatbot_core::{
-    chat::{self, ChatMessageRole},
-    config::{app_config, get_provider_config},
-    session::{self, RegenerateRequestData, SessionContext},
+    chat,
+    session::{self, RegenerateRequestData},
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::chat_utils::{
-    error_as_saved_chat_turn, provider_error_parts, service_error_message, ChatLockGuard,
+    error_as_saved_chat_turn_with_service, provider_error_parts, render_finalize_outcome,
     StreamCompletionGuard,
 };
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
-    HttpError,
+    api_error, map_body_read_err, map_json_parse_err, map_prepare_history_err,
+    map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
+    map_session_operation_err, HttpError,
 };
-use crate::providers::message_utils::parse_message_content;
-use crate::providers::openai::messages::ChatMessagePayload;
-use crate::providers::openai::OpenAiProvider;
-use crate::providers::xai::XaiProvider;
+use crate::providers::generation::{
+    build_provider_with_generation, dispatch_stream, map_core_messages,
+};
+use crate::services::AppServices;
 
 #[derive(Deserialize)]
 struct RegenerateRequest {
@@ -62,6 +61,10 @@ pub async fn handle_regenerate(
     }
 
     let (parts, body) = request.into_parts();
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
+    let generation = services.generation_deps();
     let headers = parts.headers;
 
     let body_bytes = body::to_bytes(body, 5 * 1024 * 1024)
@@ -71,29 +74,29 @@ pub async fn handle_regenerate(
     let payload: RegenerateRequest = serde_json::from_slice(&body_bytes)
         .map_err(|err| map_json_parse_err(err, "regenerate::post"))?;
 
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
-    let csrf_token = headers
-        .get("X-CSRF-Token")
-        .and_then(|value| value.to_str().ok());
+    let cookie_header = crate::request_context::extract_cookie(&headers);
+    let csrf_token = crate::request_context::extract_csrf(&headers);
 
-    let csrf_valid = session::validate_csrf_token(cookie_header.as_deref(), csrf_token)
+    let csrf_valid = identity
+        .validate_csrf_token(cookie_header.as_deref(), csrf_token)
         .map_err(|err| map_session_err(err, "regenerate::post::csrf"))?;
 
     if !csrf_valid {
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
-    let encryption_key = crate::chat_utils::extract_enc_key(&headers);
-
-    let session_context = session::session_context(cookie_header.as_deref())
-        .map_err(|err| map_session_err(err, "regenerate::post::session"))?;
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "regenerate::post::session",
+    )?;
+    // Still unverified: core prepare owns key validation.
+    let (session_context, encryption_key) = data_context.into_unverified_parts();
 
     let mut selected_model = payload.model_name.clone().unwrap_or_default();
 
-    let provider_config = match get_provider_config(if selected_model.is_empty() {
+    let provider_config = match generation.get_provider_config(if selected_model.is_empty() {
         None
     } else {
         Some(selected_model.as_str())
@@ -107,7 +110,7 @@ pub async fn handle_regenerate(
             };
             error!(model = %model, "requested model not found");
             if !payload.message.trim().is_empty() {
-                return error_as_saved_chat_turn(
+                return error_as_saved_chat_turn_with_service(&chat,
                     &session_context,
                     payload.set_name.as_deref(),
                     &payload.message,
@@ -132,7 +135,7 @@ pub async fn handle_regenerate(
             "unsupported provider type for regenerate"
         );
         if !payload.message.trim().is_empty() {
-            return error_as_saved_chat_turn(
+            return error_as_saved_chat_turn_with_service(&chat,
                 &session_context,
                 payload.set_name.as_deref(),
                 &payload.message,
@@ -144,9 +147,9 @@ pub async fn handle_regenerate(
         return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type"));
     }
 
-    let app_config = app_config();
-    let save_thoughts = payload.save_thoughts.unwrap_or(app_config.save_thoughts);
-    let send_thoughts = payload.send_thoughts.unwrap_or(app_config.send_thoughts);
+    let (default_save_thoughts, default_send_thoughts) = generation.thoughts_defaults();
+    let save_thoughts = payload.save_thoughts.unwrap_or(default_save_thoughts);
+    let send_thoughts = payload.send_thoughts.unwrap_or(default_send_thoughts);
 
     let request_data = RegenerateRequestData {
         message: payload.message.as_str(),
@@ -159,26 +162,62 @@ pub async fn handle_regenerate(
         send_thoughts,
     };
 
-    let prepare = session::regenerate_prepare(
+    let prepare = chat.regenerate_prepare_leased(
         &session_context,
         &request_data,
         &provider_config,
         encryption_key.as_ref(),
     );
 
-    if let Some(py_response) = prepare.error {
-        if py_response.status == 400 && !payload.message.trim().is_empty() {
-            let msg = service_error_message(&py_response);
-            return error_as_saved_chat_turn(
-                &session_context,
-                payload.set_name.as_deref(),
-                &payload.message,
-                &msg,
-                encryption_key.as_ref(),
-                None,
-            );
+    if let Some(err) = prepare.error {
+        match err {
+            session::PrepareError::Validation(validation) => {
+                if !payload.message.trim().is_empty() {
+                    return error_as_saved_chat_turn_with_service(&chat,
+                        &session_context,
+                        payload.set_name.as_deref(),
+                        &payload.message,
+                        validation.message(),
+                        encryption_key.as_ref(),
+                        None,
+                    );
+                }
+                return Err(map_prepare_validation_err(&validation));
+            }
+            session::PrepareError::Policy(policy) => {
+                return Err(map_prepare_policy_err(&policy));
+            }
+            session::PrepareError::History(history) => {
+                if !payload.message.trim().is_empty() {
+                    if let Some(msg) = history.saved_error_message() {
+                        return error_as_saved_chat_turn_with_service(&chat,
+                            &session_context,
+                            payload.set_name.as_deref(),
+                            &payload.message,
+                            msg,
+                            encryption_key.as_ref(),
+                            None,
+                        );
+                    }
+                }
+                return Err(map_prepare_history_err(&history));
+            }
+            session::PrepareError::Session(op) => {
+                if op == session::SessionOperationError::AuthenticatedBootstrapMisuse
+                    && !payload.message.trim().is_empty()
+                {
+                    return error_as_saved_chat_turn_with_service(&chat,
+                        &session_context,
+                        payload.set_name.as_deref(),
+                        &payload.message,
+                        op.message(),
+                        encryption_key.as_ref(),
+                        None,
+                    );
+                }
+                return Err(map_session_operation_err(&op));
+            }
         }
-        return crate::build_response(py_response);
     }
 
     let context = prepare.context.ok_or_else(|| {
@@ -187,47 +226,45 @@ pub async fn handle_regenerate(
 
     let insertion_index = prepare.insertion_index;
 
-    let lock_guard = Arc::new(Mutex::new(ChatLockGuard::new(context.session_id.clone())));
+    // The lease settles this generation.
+    let lease = prepare.lease.ok_or_else(|| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "missing generation lease",
+        )
+    })?;
 
-    enum ProviderKind {
-        OpenAi(OpenAiProvider),
-        Xai(XaiProvider),
-    }
-
-    let provider_kind = match provider_type.as_str() {
-        "openai" => match OpenAiProvider::new(&context.provider) {
-            Ok(p) => ProviderKind::OpenAi(p),
-            Err(err) => {
-                error!(?err, "failed to construct OpenAI provider");
-                lock_guard.lock().unwrap().release_if_needed();
-                let (setup_msg, _) = provider_error_parts(&err);
-                return error_as_saved_chat_turn(
-                    &session_context,
-                    Some(context.set_name.as_str()),
-                    payload.message.as_str(),
-                    &setup_msg,
-                    encryption_key.as_ref(),
-                    insertion_index,
-                );
-            }
-        },
-        "xai" => match XaiProvider::new(&context.provider) {
-            Ok(p) => ProviderKind::Xai(p),
-            Err(err) => {
-                error!(?err, "failed to construct XAI provider");
-                lock_guard.lock().unwrap().release_if_needed();
-                let (setup_msg, _) = provider_error_parts(&err);
-                return error_as_saved_chat_turn(
-                    &session_context,
-                    Some(context.set_name.as_str()),
-                    payload.message.as_str(),
-                    &setup_msg,
-                    encryption_key.as_ref(),
-                    insertion_index,
-                );
-            }
-        },
-        _ => unreachable!("provider_type should be filtered earlier"),
+    let provider = match build_provider_with_generation(
+        provider_type.as_str(),
+        &context.provider,
+        &generation,
+    ) {
+        Ok(provider) => provider,
+        Err(err) => {
+            let (setup_msg, _) = provider_error_parts(&err);
+            let assistant = format!("[Error] {setup_msg}");
+            warn!(
+                error = %setup_msg,
+                user_chars = payload.message.chars().count(),
+                insertion_index,
+                "saving /chat or /regenerate error as assistant turn"
+            );
+            let _ = lease.complete_regenerate_outcome(
+                context.set_name.as_str(),
+                payload.message.as_str(),
+                &assistant,
+                insertion_index,
+                encryption_key.as_ref(),
+                context.prepare_capture.clone(),
+            );
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("X-Accel-Buffering", "no")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .body(Body::from(assistant))
+                .map_err(|err| map_response_build_err(err, "regenerate::setup_error"));
+        }
     };
 
     // Prefer the capture's coalesced user text so a UI thumbnail is not
@@ -249,128 +286,70 @@ pub async fn handle_regenerate(
         );
     }
 
-    let messages = prepared
-        .messages
-        .iter()
-        .map(|message| match message.role {
-            ChatMessageRole::System => ChatMessagePayload::system(message.content.clone()),
-            ChatMessageRole::User => {
-                let content = parse_message_content(&message.content);
-                ChatMessagePayload::user_with_content(content)
-            }
-            ChatMessageRole::Assistant => ChatMessagePayload::assistant(message.content.clone()),
-        })
-        .collect::<Vec<_>>();
+    let messages = map_core_messages(&prepared.messages);
 
-    let session_context_for_finalize = session_context.clone();
     let set_name = context.set_name.clone();
     let prepare_capture = context.prepare_capture.clone();
     let encryption_key_for_finalize = encryption_key.clone();
 
-    let mut provider_stream = match provider_kind {
-        ProviderKind::OpenAi(provider) => {
-            let use_search = payload.web_search.unwrap_or(false);
-            let brave = if use_search { crate::brave::brave_client() } else { None };
-
-            let stream_result = if let Some(ref brave) = brave {
-                let tools = vec![crate::tools::brave_web_search_tool()];
-                match crate::search::search_augmented_stream(&provider, messages.clone(), brave, &tools).await {
-                    Ok(s) => Ok(s),
-                    Err(err) => {
-                        warn!(?err, "search augmentation failed, falling back to regular streaming");
-                        provider.stream_chat(messages.clone())
-                    }
-                }
-            } else {
-                provider.stream_chat(messages.clone())
-            };
-
-            match stream_result {
-                Ok(stream) => stream,
-                Err(err) => {
-                    error!(?err, "provider stream setup failed");
-                    lock_guard.lock().unwrap().release_if_needed();
-                    let (req_msg, _) = provider_error_parts(&err);
-                    return error_as_saved_chat_turn(
-                        &session_context,
-                        Some(set_name.as_str()),
-                        user_message.as_str(),
-                        &req_msg,
-                        encryption_key.as_ref(),
-                        insertion_index,
-                    );
-                }
-            }
-        },
-        ProviderKind::Xai(xai_provider) => {
-            let web_search = payload.web_search.unwrap_or(false);
-            let use_brave = web_search && !context.provider.xai_search;
-            let brave = if use_brave { crate::brave::brave_client() } else { None };
-
-            let stream_result = if let Some(ref brave) = brave {
-                match OpenAiProvider::new(&context.provider) {
-                    Ok(openai_provider) => {
-                        let tools = vec![crate::tools::brave_web_search_tool()];
-                        match crate::search::search_augmented_stream(&openai_provider, messages.clone(), brave, &tools).await {
-                            Ok(s) => Ok(s),
-                            Err(err) => {
-                                warn!(?err, "XAI Brave search failed, falling back to native");
-                                xai_provider.stream_chat(messages.clone(), web_search)
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        warn!(?err, "failed to build OpenAI provider for XAI Brave search, using native");
-                        xai_provider.stream_chat(messages.clone(), web_search)
-                    }
-                }
-            } else {
-                xai_provider.stream_chat(messages.clone(), web_search)
-            };
-
-            match stream_result {
-                Ok(stream) => stream,
-                Err(err) => {
-                    error!(?err, "provider stream setup failed");
-                    lock_guard.lock().unwrap().release_if_needed();
-                    let (req_msg, _) = provider_error_parts(&err);
-                    return error_as_saved_chat_turn(
-                        &session_context,
-                        Some(set_name.as_str()),
-                        user_message.as_str(),
-                        &req_msg,
-                        encryption_key.as_ref(),
-                        insertion_index,
-                    );
-                }
-            }
-        },
+    let mut provider_stream = match dispatch_stream(
+        &provider,
+        &context.provider,
+        messages,
+        payload.web_search.unwrap_or(false),
+        &generation,
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(err) => {
+            error!(?err, "provider stream setup failed");
+            let (req_msg, _) = provider_error_parts(&err);
+            let assistant = format!("[Error] {req_msg}");
+            warn!(
+                error = %req_msg,
+                user_chars = user_message.chars().count(),
+                insertion_index,
+                "saving /chat or /regenerate error as assistant turn"
+            );
+            let _ = lease.complete_regenerate_outcome(
+                set_name.as_str(),
+                user_message.as_str(),
+                &assistant,
+                insertion_index,
+                encryption_key.as_ref(),
+                prepare_capture.clone(),
+            );
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("X-Accel-Buffering", "no")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .body(Body::from(assistant))
+                .map_err(|err| map_response_build_err(err, "regenerate::setup_error"));
+        }
     };
 
-    let stream_lock = lock_guard.clone();
-    let session_for_guard = session_context_for_finalize.clone();
     let set_name_for_guard = set_name.clone();
     let user_message_for_guard = user_message.clone();
     let enc_for_guard = encryption_key_for_finalize.clone();
     let capture_for_guard = prepare_capture.clone();
 
     let stream = stream! {
+        // The persist closure owns the lease. Dropping an unpolled stream
+        // releases it without persisting.
         let mut guard = StreamCompletionGuard::new(
-            stream_lock,
             save_thoughts,
-            move |final_response| {
-                regenerate_finalize(
-                    &session_for_guard,
+            move |final_response: &str| -> Result<Vec<String>, ()> {
+                let outcome = lease.complete_regenerate_outcome(
                     &set_name_for_guard,
                     &user_message_for_guard,
                     final_response,
                     insertion_index,
                     enc_for_guard.as_ref(),
                     capture_for_guard.clone(),
-                )
-                .map_err(|err| {
-                    error!(?err, "regenerate_finalize failed");
-                })
+                );
+                Ok(render_finalize_outcome(&outcome))
             },
         );
 
@@ -414,31 +393,10 @@ pub async fn handle_regenerate(
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(body_stream))
-        .map_err(|err| {
-            lock_guard.lock().unwrap().release_if_needed();
-            map_response_build_err(err, "regenerate::post::response")
-        })?;
+        // The lease moved into the stream; dropping the body releases it
+        // without persisting.
+        .map_err(|err| map_response_build_err(err, "regenerate::post::response"))?;
 
     debug!("/regenerate request handled via Rust path");
     Ok(response)
-}
-
-fn regenerate_finalize(
-    session: &SessionContext,
-    set_name: &str,
-    user_message: &str,
-    assistant_response: &str,
-    insertion_index: Option<usize>,
-    encryption_key: Option<&chatbot_core::enc_key::EncryptionKey>,
-    prepare_capture: Option<chatbot_core::history::PrepareCapture>,
-) -> Result<Vec<String>> {
-    Ok(session::regenerate_finalize_with_capture(
-        session,
-        set_name,
-        user_message,
-        assistant_response,
-        insertion_index,
-        encryption_key,
-        prepare_capture,
-    ))
 }

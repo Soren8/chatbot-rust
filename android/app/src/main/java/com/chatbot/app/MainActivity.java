@@ -1,6 +1,5 @@
 package com.chatbot.app;
 
-import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -28,6 +27,7 @@ import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
+import com.chatbot.app.util.ServerUrlResolver;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.CapConfig;
 
@@ -52,10 +52,6 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeSecureKeyPlugin.class);
         registerPlugin(LoggerPlugin.class);
         super.onCreate(savedInstanceState);
-        // TTS plays on STREAM_MUSIC, but MODE_IN_COMMUNICATION makes the
-        // hardware keys default to STREAM_VOICE_CALL. Pin them to MUSIC so
-        // they always drive TTS loudness.
-        setVolumeControlStream(AudioManager.STREAM_MUSIC);
     }
 
 
@@ -89,9 +85,17 @@ public class MainActivity extends BridgeActivity {
         // Vanadium/Chromium throttles Capacitor's WebMessage bridge in the
         // background. Keep the legacy bridge for the voice-mode event stream.
         CapConfig base = CapConfig.loadDefault(this);
+        // Flavor authority: the WebView origin is ALWAYS the build-flavor
+        // server_url resource. capacitor.config.json carries no server.url
+        // override, so the Bridge/Config URL is never consulted.
+        String flavorUrl = null;
+        try {
+            flavorUrl = getString(R.string.server_url);
+        } catch (Exception ignored) {}
+        String serverUrl = ServerUrlResolver.resolveCanonical(flavorUrl);
         config = new CapConfig.Builder(this)
                 .setHTML5mode(base.isHTML5Mode())
-                .setServerUrl(base.getServerUrl())
+                .setServerUrl(serverUrl)
                 .setErrorPath(base.getErrorPath())
                 .setHostname(base.getHostname())
                 .setStartPath(base.getStartPath())
@@ -157,7 +161,10 @@ public class MainActivity extends BridgeActivity {
         if (backgroundedAt > 0) {
             long elapsed = SystemClock.elapsedRealtime() - backgroundedAt;
             if (elapsed >= RESUME_LOCK_GRACE_MS) {
-                if (!VoiceModeForegroundSession.get().isActive() && isUserLoggedIn()) {
+                // Security gate: only a platform-confirmed foreground service
+                // bypasses the lock. A merely requested (unconfirmed) session
+                // must not skip biometric unlock.
+                if (!VoiceModeForegroundSession.get().isConfirmed() && isUserLoggedIn()) {
                     lockApp();
                     return;
                 }
@@ -166,22 +173,14 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    // Canonical native origin (flavor resource, always); authority owned by
+    // ServerUrlResolver.
     private String resolveServerUrl() {
-        String url = null;
+        String resourceUrl = null;
         try {
-            if (getBridge() != null && getBridge().getServerUrl() != null && !getBridge().getServerUrl().isEmpty()) {
-                url = getBridge().getServerUrl();
-            }
+            resourceUrl = getString(R.string.server_url);
         } catch (Exception ignored) {}
-        if (url == null || url.isEmpty()) {
-            try {
-                url = getString(R.string.server_url);
-            } catch (Exception ignored) {}
-        }
-        if (url == null || url.isEmpty()) {
-            url = "http://localhost";
-        }
-        return url;
+        return ServerUrlResolver.resolveCanonical(resourceUrl);
     }
 
     private boolean isUserLoggedIn() {
@@ -357,6 +356,9 @@ public class MainActivity extends BridgeActivity {
     }
 
 
+    // Liveness only (not a security bypass): keep the JS loop running while a
+    // voice-mode foreground request is outstanding. The resume biometric lock
+    // above instead requires isConfirmed().
     public void keepVoiceWebViewRunning() {
         if (!VoiceModeForegroundSession.get().isActive()) {
             return;

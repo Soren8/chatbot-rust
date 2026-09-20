@@ -12,6 +12,7 @@ import android.util.Log;
 import android.webkit.CookieManager;
 
 import com.chatbot.app.audio.OggOpusStreamDecoder;
+import com.chatbot.app.audio.TtsAudioPolicy;
 import com.chatbot.app.audio.TtsDownloadQueue;
 import com.chatbot.app.audio.TtsBodyInputStream;
 import com.chatbot.app.audio.VoiceAudioRoute;
@@ -38,11 +39,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs, USAGE_MEDIA.
- * CallStyle microphone FGS swallows USAGE_VOICE_COMMUNICATION playback (HTML Audio
- * still works because it is USAGE_MEDIA). Capture stays VOICE_COMMUNICATION.
- * Routing is held for the whole voice-mode session by {@code NativeMic.enterVoiceRoute};
- * this plugin does not change {@link android.media.AudioManager} mode or the communication device.
+ * Voice-mode TTS: one {@link AudioTrack} per session, queued URLs.
+ * Handheld voice mode plays USAGE_VOICE_COMMUNICATION matching capture,
+ * focus and route; standalone TTS keeps USAGE_MEDIA. Capture stays
+ * VOICE_COMMUNICATION. Routing is held for the whole voice-mode session by
+ * {@code NativeMic.enterVoiceRoute}; this plugin does not change
+ * {@link android.media.AudioManager} mode or the communication device.
  * Two downloads overlap synthesis and transfer; complete clips play in sentence order.
  */
 @CapacitorPlugin(name = "NativeVoiceTts")
@@ -85,6 +87,10 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private final Set<HttpURLConnection> activeConnections = new HashSet<>();
     private final Object connectionLock = new Object();
     private volatile int trackSampleRate = DEFAULT_SAMPLE_RATE;
+    /** Usage the live AudioTrack was built with; recreated on voice enter/exit. */
+    private volatile int trackUsage = AudioAttributes.USAGE_MEDIA;
+    /** Usage the held focus request was built with; -1 when none is held. */
+    private volatile int focusUsage = -1;
     private static volatile NativeVoiceTtsPlugin instance;
     private AudioFocusRequest currentFocusRequest;
 
@@ -557,7 +563,15 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
     }
 
-    private void requestAudioFocus() {
+    private boolean isVoiceRouteActive() {
+        try {
+            return NativeMicPlugin.isVoiceRouteActive();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void requestAudioFocus(boolean inCommunication) {
         Context ctx = getContext();
         if (ctx == null) {
             return;
@@ -566,15 +580,27 @@ public class NativeVoiceTtsPlugin extends Plugin {
         if (am == null) {
             return;
         }
-        // Acquire media focus only. Never write STREAM_MUSIC: the user's TTS
-        // level must survive track creation.
+        // Same attributes for player and focus. Never write a stream volume:
+        // the user's level must survive track creation.
+        int desiredUsage = TtsAudioPolicy.playbackUsage(inCommunication);
+        if (!TtsAudioPolicy.shouldRefreshFocus(currentFocusRequest != null, focusUsage, desiredUsage)) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && currentFocusRequest != null) {
+            try {
+                am.abandonAudioFocusRequest(currentFocusRequest);
+            } catch (Exception ignored) {
+            }
+            currentFocusRequest = null;
+        }
         AudioFocusRequest req = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(desiredUsage)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build())
                 .build();
         currentFocusRequest = req;
+        focusUsage = desiredUsage;
         am.requestAudioFocus(req);
     }
 
@@ -618,17 +644,20 @@ public class NativeVoiceTtsPlugin extends Plugin {
     }
 
     private AudioTrack ensureTrackPlaying(int sampleRate, long generation) {
+        boolean inCommunication = isVoiceRouteActive();
+        int desiredUsage = TtsAudioPolicy.playbackUsage(inCommunication);
         AudioTrack track = audioTrack;
-        if (track != null && trackSampleRate == sampleRate) {
+        if (!TtsAudioPolicy.shouldRecreateTrack(track != null,
+                trackUsage, trackSampleRate, desiredUsage, sampleRate)) {
             if (track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
                 track.play();
             }
             return track;
         }
-        // New track (or rate change): (re)acquire focus once here, not per
-        // sentence, so steady playback avoids per-sentence binder churn and
-        // mixer ducking. The reuse path above keeps held focus.
-        requestAudioFocus();
+        // New track or usage/rate change: (re)acquire matching focus once
+        // here, not per sentence, so steady playback avoids per-sentence
+        // binder churn and mixer ducking. The reuse path above keeps held focus.
+        requestAudioFocus(inCommunication);
         if (track != null) {
             try {
                 track.stop();
@@ -639,11 +668,14 @@ public class NativeVoiceTtsPlugin extends Plugin {
             bytesWritten.set(0);
         }
         trackSampleRate = sampleRate;
-        AudioAttributes attrs = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .setLegacyStreamType(AudioManager.STREAM_MUSIC)
-                .build();
+        trackUsage = desiredUsage;
+        AudioAttributes.Builder attrsBuilder = new AudioAttributes.Builder()
+                .setUsage(desiredUsage)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH);
+        if (TtsAudioPolicy.useLegacyMusicStream(inCommunication)) {
+            attrsBuilder.setLegacyStreamType(AudioManager.STREAM_MUSIC);
+        }
+        AudioAttributes attrs = attrsBuilder.build();
         AudioFormat format = new AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(sampleRate)
@@ -660,7 +692,8 @@ public class NativeVoiceTtsPlugin extends Plugin {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Context ctx = getContext();
             AudioManager am = ctx != null ? (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE) : null;
-            if (am != null && am.getMode() == AudioManager.MODE_IN_COMMUNICATION && !hasHeadsetOrBluetoothConnected(am)) {
+            if (am != null && TtsAudioPolicy.preferBuiltInSpeaker(
+                    inCommunication, hasHeadsetOrBluetoothConnected(am))) {
                 AudioDeviceInfo speaker = findBuiltInSpeaker();
                 if (speaker != null) {
                     try {
@@ -779,6 +812,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                     }
                 }
                 currentFocusRequest = null;
+                focusUsage = -1;
             }
             NativeMicPlugin.reclaimAudioFocusIfPresent();
         }

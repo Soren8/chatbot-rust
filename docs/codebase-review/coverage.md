@@ -1,5 +1,69 @@
 # Review coverage
 
+## Sessions 047–052 — implementation review and completion gate
+
+The main model personally reviewed delegated production diffs and composed callers for conversation requests/retries/stream application, queued UI/autoplay, desktop clip/queue/lifecycle cancellation, Python non-streaming routes and worker lifetime, and Android foreground service/session/NativeMic stop propagation. Review corrections required actual adapter tests rather than helper-only assertions, direct-lifecycle queue cleanup, result-after-file-cleanup ordering, serialized platform stop ordering, and queued-header draft protection. The final gate at `d55ee5d` closes the four session-046 follow-ups using those source traces and trusted red/green evidence (README sessions 047–052).
+
+New coverage includes browser deferred-fetch/media/timer VM fixtures (W01/T02), Python event-gated job/file/shutdown tests (G01/T02), and real Android service compilation against minimal fake platform classes plus foreground-stop behaviors (N02/T02). The final full suite passed at `20260919T202846-0908e2daba66`; native artifact build `20260919T201434-4ea80932e2ab` covers the unchanged final native code. This gate builds on the previous cross-component review rather than newly line-auditing all unchanged files. Source-slice and spelling-pin maintenance weaknesses remain for the later test-quality pass. No browser/device/GPU/vehicle execution, live deployment, or phases 2–7 completion is claimed.
+
+## Session 046 — fresh review at d5fef48
+
+The main model personally performed a fresh read-only cross-component source review without subagents. Coverage included Rust composition, identity/account/session operations, generation leases, history/cache/store/migration and image representations, request/error/cookie adapters, handlers, providers/search and TTS/STT; first-party browser chat, session/conversation/rendering/decoder/credential/audio/voice modules; Android activity, credential, voice/audio, Auto and origin consumers; Python settings/inference/routes/audio conversion; and relevant Docker/Compose/Gradle/Capacitor/Helm/CI integration boundaries. Concrete callers were traced across each reported boundary rather than accepting previous completion dispositions.
+
+Test implementation reads were selective: conversation-state, voice lifecycle/playback, native coordinator harness/fakes, Python route/stream lifecycle, history snapshot and router/account fixture boundaries. This is not an exhaustive assertion-by-assertion test audit or a claim that every tracked file was freshly line-audited. Protected runtime files, vendored implementations and binary assets were excluded; broad documentation accuracy and dependency audits remain later work. No tests, browser/device/GPU execution or deployments occurred. The working tree remained clean throughout the review.
+
+The result reopens MOD-009, MOD-012 and MOD-015 with four concrete ownership follow-ups (README/modularity session 046), superseding session 045's completion gate below. COR-003 is a separate source-supported history-read consistency finding. No new remediation batch or later-pass completion credit is recorded.
+
+Session 045 completes the primary phase-1 gate at `6d03545`, building on the original whole-codebase modularity review and targeted re-review of each remediation boundary. Sessions 040–044 additionally cover owned core fake inputs, event-fed playback, bounded inference lifetime, acquired-entry lease settlement and native confirmation/sequenced events. Final full suite and Android artifact used the same snapshot (README session 044). This is not a fresh exhaustive re-audit of unchanged files, device/GPU validation, or completion credit for phases 2–7. The current finding dispositions are in README session 045.
+
+Session 039 adds `config_source.rs`, expanded generation inputs, `request_config_isolation.rs`, the browser renderer/playback/capture units and their real-import fixtures, and `ServerUrlResolver` with Java behavior coverage. Distribution coverage includes both flavor endpoints, tracked Capacitor manifests and Helm support limits. Main review checked dependency timing and verifier fixes; full suite `20260919T004021-61e3b5c17139` and physical Android build `20260919T004834-bdb6347ca4d9` passed. Details and limitations are in the session 039 checkpoint. This is not the phase-completion review and does not advance later review passes.
+
+Session 038 adds `static/voice-lifecycle.js` (W01), `static/credential-metadata.js` + `static/credential-crypto.js` (W02), `audio/VoiceModeSessionCoordinator.java` (N02), `NativeSecureKey/CredentialCookies.java` + `NativeSecureKey/SealedCredentialPayload.java` (N01), `voice_lifecycle.rs` + `native_voice_coordinator.rs` + `credential_crypto.rs` + `credential_metadata.rs` + `credential_sealed_storage.rs` plus JS/Java fixtures and template/`js_syntax`/reliability pins (T02). Primary reviewed the single TTS flags/cooldown/barge/session/audio owner with queue/VAD left in `chat.js`, the route/keep-awake/FGS/phone/notification coordinator with call-time TTS compatibility and unchanged dual-event/FGS semantics, and the metadata/crypto/`org.json` owners preserving keystore/biometric plus the legacy export surface. Final full suite `20260918T194337-bd11743cd044` passed (96 suites, config valid); reds `191407Z`/`191653Z` and later reds preserved with fixture-wiring and source-pin/comment corrections only. Committed inventory grows accordingly; these additions do not advance the six later review passes.
+
+Session 037 adds `chatbot-server/src/policy.rs` and `chatbot-server/tests/tts_rate_policy_isolation.rs` (S05/S06/T02). Primary reviewed the separate optional-`Arc` owners, `AppServices` builders, TTS access/codec/synthesis/endpoint wiring, rate-budget-vs-counter split, config-free global construction with per-operation live delegation and coherent synthesis capture, and all 9 tests (5 live characterization plus 4 per-router isolation). Baseline `20260918T173805-81118f7e12cc` and final `20260918T175431-ca5ba815f889` full suites passed (91 suites, provider-config validation green); intermediate `TtsAccess` compile failure preserved in `modularity-policy-final-20260918T175321Z.log`. Committed as `33a26a1`. Production keeps the live path with no snapshot; other route/config policies remain ambient. These additions do not advance the six later review passes.
+
+Session 036 adds `chatbot-server/src/generation_deps.rs` (S04) and `chatbot-server/tests/provider_config_isolation.rs` (T02). Primary reviewed the optional-`Arc` owner, `AppServices` injection, chat/regenerate/dispatch wiring, config-free global construction with per-operation live delegation, and all 23 tests (19 characterization plus 4 two-router isolation). Baseline `20260918T164148-d5ec34ce3ce9` and final `20260918T170149-8eb2193de617` full suites passed (90 suites, provider-config validation green). Committed as `462fa8c`. These additions do not advance the six later review passes.
+
+Session 035 adds `static/session-client.js`, `chatbot-server/tests/session_client.rs` and `chatbot-server/tests/fixtures/session_client_test.js` (W01/T02). Primary reviewed explicit DOM callbacks, the single shared bootstrap, the one allowlist, preserved exceptions and all ten tests. Combined failure `...160718Z` then green `...161552Z` (job `20260918T161553-07dfccaf81ee`). Committed as `04e079e`.
+
+Session 034 adds `chatbot-core/tests/mutation_mirror_boundary.rs` (T01) and `chatbot-server/tests/mutation_mirror_boundary.rs` (T02). Primary reviewed core durable-then-mirror order, typed outputs, preserved seal-error/401 behavior and all twenty tests. Combined failures `...155319Z`/`...160028Z` then green `...161552Z`. Committed as `ca4fd8f`.
+
+Session 033 adds `chatbot-cuda/src/settings.py`, `chatbot-cuda/src/service.py`, `chatbot-cuda/tests/` and `chatbot-server/tests/voice_service_lifecycle.rs` (G01/T02). Primary reviewed raw-YAML settings, lifespan-owned inference, the shipped-app route fix and all thirty-eight Python tests. Voice-only failures `...154500Z`/`...162000Z`, voice-only green `152039` superseded by combined green `...161552Z`. Committed as `c3d4cdd`. No GPU/device/deploy coverage claimed.
+
+Session 032 adds the importable browser conversation state and its Node behavior fixture. Primary reviewed production adapters, request abort ordering, history/version transitions, and TTS fixture migrations. Reviewed full suite `20260918T144643-e8f88bd1db7d` passed. Rendering, browser voice coordination, and real-device lifecycles remain outside this extracted owner.
+
+Session 031 adds `chatbot-server/tests/data_request_context_boundary.rs`. Primary reviewed all adapter callers, borrowed verified context and 14 new tests. Full reviewed suite passed. Preferences ordering is preserved by leaving its handler unchanged; its test asserts guest/authenticated response policy, not lookup counts.
+
+Session 030 adds `chatbot-core/tests/session_operation_errors.rs` and `chatbot-server/tests/session_operation_error_boundary.rs`. Primary reviewed transport-carrier removal, all typed adapters/callers and 17 new tests. Reviewed full suite passed. New cases are post-extraction coverage; the unchanged baseline is not claimed as new before/after characterization.
+
+Session 029 adds `chatbot-core/tests/finalize_outcome_boundary.rs` and `chatbot-server/tests/finalize_stream_boundary.rs`. Primary reviewed canonical typed outcomes, compatibility adapters, both production completion callbacks and all 21 new tests. Full baseline/final/reviewed-final passed; exactly-once unlocking and expiry races are not dynamically proven by retry-only assertions.
+
+Session 028 adds `chatbot-core/src/account_service.rs`, `chatbot-core/tests/account_service_isolation.rs` and `chatbot-server/tests/router_account_service_isolation.rs`. Primary reviewed configured verifier handles, shared account/chat composition, all migrated HTTP/background callers and nine new tests; reviewed full suite passed. Provider/config isolation remains open.
+
+Session 027 adds `chatbot-core/tests/chat_service_lazy_history.rs` and `chatbot-server/tests/router_chat_service_isolation.rs`. Primary reviewed lazy-history retry, router/startup/background injection, every migrated chat/history/mirror caller and nine new tests; reviewed full suite passed. Account HTTP composition and phase-completion review remain open.
+
+Session 026 adds `chatbot-core/tests/chat_service_isolation.rs`. Primary reviewed owned chat dependencies and all moved prepare/finalize/mirror paths, global wrappers, service-bound lease settlement and eight new tests. Reviewed full suite passed. Server injection and typed core finalization remain open; no expiry-race correction is claimed.
+
+Session 025 adds `chatbot-core/tests/chat_session_isolation.rs`. Primary reviewed the state-owner constructor/methods, global adapters and all four tests. The full suite passed; authenticated service composition and clock-controlled expiry/recreation races are not claimed covered by this batch.
+
+Session 024 adds `chatbot-core/tests/account_store_inputs.rs`. Primary reviewed explicit user/remember constructors, secret-input verifier paths and five new tests; corrected duplicate verifier IO before accepting the passing reviewed full suite. Production account composition remains open.
+
+Session 023 adds `chatbot-server/src/services.rs` and `chatbot-server/tests/router_resource_isolation.rs`. Primary reviewed the owned resource context, startup/router/middleware/TTS wiring, visibility changes and all four new HTTP isolation tests; the full executor suite passed.
+
+Session 022 adds `chatbot-server/tests/generation_lease_boundary.rs` (328 tracked paths), plus six core lease unit tests. Primary reviewed full route/guard/core lease changes and all new tests. Full baseline/final/reviewed-final passed; expiry races, post-commit mirror failure and response-builder failure were not dynamically injected.
+
+Session 021 adds `chatbot-server/src/identity.rs`, `router_identity_isolation.rs` and `router_identity_composition.rs` under server tests (327 tracked paths). Primary reviewed every identity call-site migration and the seven new tests; full reviewed-final passed. No production process/server was launched.
+
+Session 020 adds `chatbot-core/tests/http_identity_isolation.rs` and `http_identity_lazy_init.rs` (324 tracked paths). Primary reviewed the owned lifecycle and lazy compatibility delegates; five new tests and the full suite pass. HTTP identity state isolation is proven at the store boundary, not yet across routers.
+
+Session 019 adds `chatbot-core/tests/history_snapshot_boundary.rs` (322 tracked paths). Primary reviewed all cache producers, normalization/commit output, migration handling and seven tests. Two warm/cold regressions failed before correction and passed afterward. Reviewed final also covers malformed literal markers; existing unit tests only adapt signatures with assertions preserved.
+
+Session 018 adds `static/voice-text.js`, `chatbot-server/tests/voice_text_boundary.rs` and its JS fixture (321 tracked paths). Primary reviewed production delegation, all moved algorithms and approved existing-test migrations. Full expanded baseline/final suites passed; browser/device execution was not performed.
+
+Session 017 adds `chatbot-server/tests/prepare_history_boundary.rs` (318 tracked paths). Four pre-extraction route tests plus four mapper tests pass with the full suite. Primary reviewed all prepare-history mappings and both handlers; conflict/store failure are covered at the mapper boundary, not by forced route races/fault injection.
+
+Session 016 adds `chatbot-server/tests/prepare_policy_boundary.rs` (317 tracked paths). Primary reviewed core policy errors, both handler arms, the HTTP mapper and nine new route tests; baseline/final full suites passed.
+
 Baseline: `4cda3039d3e5a58932a3c40afccc1e4ce33a19e3` (2026-09-16). This is a scoped review ledger, not a test coverage measurement.
 
 Session 001 inventory verification assigned all 288 baseline tracked paths, plus the four new review records, to 35 units with no unassigned paths. Assignment is inventory completeness, not review completion.
@@ -25,12 +89,16 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | — | — | — | — | — | — |
 | C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | — | — | — | — | — | — |
 | C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | — | — | — | — | — | — |
+| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | — | — | — | — | — | — |
 | T01 Core integration tests | `chatbot-core/tests/*` | R | — | — | — | — | — | — |
 | S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | — | — | — | — | — | — |
 | S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | — | — | — | — | — | — |
 | S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | R | — | — | — | — | — | — |
 | S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | — | — | — | — | — | — |
 | S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | — | — | — | — | — | — |
+| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | — | — | — | — | — | — |
+| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | — | — | — | — | — | — |
+| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | — | — | — | — | — | — |
 | S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | — | — | — | — | — | — |
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | — | — | — | — | — | — |
 | T03 Shared test support | `chatbot-test-support/src/*` | R | — | — | — | — | — | — |
@@ -128,3 +196,57 @@ Relevant seams: duplicated login/bootstrap/cookie helpers and raw users.json see
 The first architectural/modularity pass is complete for handwritten application code and test boundaries, with the seven `B` units explicitly limited to integration/packaging/document interfaces. No dependency binary, protected runtime config, live deployment, GPU execution or on-device behavior is certified. The six later passes remain open and will inspect their own criteria independently. No structural remediation has been implemented yet.
 
 Final inventory check: all 293 tracked paths (288 application-baseline paths plus five review records) map to 35 units: 28 reviewed and seven boundary-only. The MOD-001–017 definitions are unique and consecutive; relative review-document links resolve. Only the five review documents are staged, and application/test/configuration trees match the application baseline. Diff whitespace checks pass. No application test execution is implied by these checks.
+
+## Session 003 remediation coverage
+
+The table now includes C08 and S08 for the extracted modules; the new `chatbot-core/tests/live_helper_contracts.rs` belongs to T01. The inventory grows to 297 paths in 37 units (30 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for R01, C02–C05, T01, S03 and S05 was stale during implementation and was revalidated for the changed naming/Fernet/TTS boundaries through primary source/diff review and the passing full suite. The primary read both new core modules and their tests; verified the exact TTS regex/helper/test relocation against `9b2624b`; reviewed legacy compatibility/error adapters, session/history callers and memory/reset HTTP mappings; and checked that live server/session paths no longer import legacy persistence helpers. C08/S08 are reviewed at the remediation commit recorded in README. Other units retain their baseline review scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
+
+Runtime evidence is now available for this batch: baseline job `20260916T161549-8201e4a67090` and final job `20260916T163326-652a9002d614` passed the full executor suite. This supersedes the earlier no-remediation/no-test-execution statement only for session 003, not the original static review.
+
+## Session 004 remediation coverage
+
+The new `static/stream-decoder.js` belongs to W01; the new `chatbot-server/tests/stream_decoder.rs` and `chatbot-server/tests/fixtures/stream_decoder_test.js` belong to T02. The inventory grows to 300 paths in 37 units (30 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for W01 and T02 was stale during implementation and was revalidated for the changed stream-decoder boundaries through source/diff review and the passing full suite. The worker read the three browser parsers, server encoders and wire/test coverage; verified the shared tag/hold/console logic against the original loops; reviewed the explicit chat/regenerate/history adapters and template load order; and checked that no existing tests were modified. W01/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
+
+Runtime evidence for this batch: baseline job `20260916T175420-4b7dbb22aa88` passed with the new decoder plus characterization and original chat wiring untouched; the mixed-order regression failed as expected in job `20260916T180645-05a6588a814b` (`status=failed`, exit 101); the corrected wired implementation passed in final job `20260916T181236-a3251f9db599` (`status=passed`, exit 0). The earlier wired green job `20260916T180042-78771ee26d7f` is superseded: its assertions checked joined text only, not callback order.
+
+## Session 005 remediation coverage
+
+The new `chatbot-server/src/tts/backend.rs` belongs to S09; the new `chatbot-server/tests/tts_backend_boundary.rs` belongs to T02. The inventory grows to 302 paths in 38 units (31 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for S05 and T02 was stale during implementation and was revalidated for the changed TTS backend boundary through source/diff review and the passing full suite. The worker personally read the synthesis/HTTP flow, callers, error mappings and existing TTS tests; kept token lifetime, access policy, codec conversion and HTTP rendering in the parent; moved provider requests, the shared client, fade, WAV parsing, silence and error helpers narrowly with statuses/messages/log contexts preserved; and kept the encoded-size rejection status/message with retry reset via an explicit post-encode check. S09/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
+
+## Session 006 remediation coverage
+
+The new `chatbot-server/src/tts/store.rs` belongs to S10. The inventory grows to 303 paths in 39 units (32 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for S05 was stale during implementation and was revalidated for the changed TTS token-store boundary through source/diff review and the passing full suite. The worker read the token/HTTP flow, callers, error mappings and existing TTS tests; moved the wire-audio type, pending entries, TTL/cap/replay policy, prune/eviction helpers, cancel and the generation guard narrowly into the owned store with statuses/messages/headers/log contexts preserved; kept one global parent store plus minting, access policy, codec conversion, the encoded-size rejection with retry reset, and HTTP rendering; and preserved token-collision overwrite rather than fixing it. S10 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
+
+## Session 007 remediation coverage
+
+The new `chatbot-server/src/providers/generation.rs` belongs to S04; the new `chatbot-server/tests/generation_dispatch.rs` belongs to T02. The inventory grows to 305 paths in 39 units (32 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for S01, S04 and T02 was stale during implementation and was revalidated for the changed generation-dispatch boundary through source/diff review and the passing full suite. The worker read both handlers, all provider/search/brave/tool modules and the existing chat/regenerate/search/history seams; moved the closed provider enum, provider construction with provider-specific error strings, core-to-DTO mapping and search-gated streaming narrowly into the shared module with gating/warnings/timing preserved; kept validation, saved-turn rendering with append-versus-replace, user-text selection, guards/finalizers and response building in the handlers; and kept the existing OpenAI-owned DTO without a trait hierarchy. S04/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.
+
+## Session 008 remediation coverage
+
+Session 015 adds `chatbot-core/src/session_identity.rs` and `chatbot-server/tests/session_identity_boundary.rs` (316 tracked paths). Primary reviewed the complete identity move, public re-exports, guest-prefix dependency and purge composition. Six new tests and the full suite passed before/after extraction; clock-controlled expiry testing was not added.
+
+Session 014 adds `chatbot-server/src/request_context.rs` and `chatbot-server/tests/request_context_boundary.rs` (314 tracked paths). Primary reviewed all migrated transport call sites and 18 new tests. Existing IP/CSRF/authentication coverage passed before extraction; reviewed final full suite passed after test-fixture serialization.
+
+Session 013 adds `chatbot-core/tests/prompt_input_boundary.rs` (312 tracked paths). Primary reviewed the prompt algorithm extraction, borrowed inputs, default-size adapter and seven new tests. Existing prompt tests passed before extraction; new API tests and full suite passed afterward. Session lifecycle remains outside this batch.
+
+Session 012 adds `chatbot-server/tests/prepare_validation_boundary.rs` to T02 (311 tracked paths). Primary reviewed core prepare validation, both handlers and the HTTP mapper; ten new router tests pass before and after extraction. Broader session lifetimes and core service outcomes retain their open dispositions.
+
+Session 011 adds `chatbot-server/tests/enc_key_validation_boundary.rs` to T02 (310 tracked paths). Targeted review covers the typed validator in core session, its compatibility adapter, direct server mappings and seven new behavioral tests. Pre-extraction characterization and corrected full-suite verification passed; broader core and HTTP boundaries retain their earlier dispositions.
+
+Session 010 changes only existing C04 history implementation files (`api.rs`, `cache.rs`, `mod.rs`); the inventory remains 309 paths. Caller/export inventory and primary diff review revalidated this narrowed facade, supported by baseline/final full-suite passes. No tests were modified. Other units retain their previous coverage.
+
+Session 009 adds `chatbot-server/src/enc_key_cookies.rs` to the server request boundary and `chatbot-server/tests/enc_key_cookies_boundary.rs` to T02, bringing the tracked inventory to 309 paths. Targeted primary review covered the verbatim extraction, compatibility exports and new behavioral tests; baseline/final full suites passed. Unchanged units retain their prior review scope.
+
+The new `chatbot-server/src/providers/messages.rs` belongs to S04; the new `chatbot-server/tests/provider_messages.rs` belongs to T02. The inventory grows to 307 paths in 39 units (32 `R`, seven `B`). These additions do not advance the six later review passes.
+
+Modularity coverage for S04 and T02 was stale during implementation and was revalidated for the changed message-ownership boundary through source/diff review and the passing full suite. The worker inventoried every `openai::messages` consumer, moved the shared types and constructors verbatim into the neutral module, migrated all production imports, kept `openai::messages` as a re-export, preserved serialization/constructors/images/tool-call/`None` omission and the XAI mapping with no trait or schema redesign, and corrected the trait-based provider abstraction claim in `docs/design.md` to the concrete enum dispatch. S04/T02 deltas are reviewed at the remediation commit recorded in README. Other units retain their prior scope; unchanged files were not exhaustively re-audited. D01/D02 remain boundary-only despite the targeted documentation updates.

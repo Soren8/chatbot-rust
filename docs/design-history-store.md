@@ -1,5 +1,11 @@
 # Chat History Storage & Access Refactor (redb)
 
+## Snapshot ownership
+
+The process cache stores private `LogicalSnapshot` values produced by durable loads/commits. For chunked sets, decodable images are represented by stable image references; undecodable image markers remain literal text. Whole-blob migration snapshots retain their stored representation until chunk conversion. `load_logical` returns the compatibility DTO with logical text; `load` materializes an owned copy without changing the cached entry.
+
+Commits return their normalized snapshot from the existing image-normalization pass, so cache insertion requires neither a second normalization pass nor a post-commit database reload. Version/CAS and pair IDs remain aligned with the committed snapshot. Materialized reads may now load image blobs that a previously mixed-shape warm entry retained inline; no measured end-to-end performance claim is made.
+
 | Field | Value |
 | :--- | :--- |
 | **Author** | TBD |
@@ -339,9 +345,7 @@ impl HistoryService {
         key: &EncryptionKey) -> Result<(), HistoryError>;
 
     // --- content mutations (all CAS) ---
-    pub fn commit_snapshot(&self, user: &str, expected: SetVersion,
-        snapshot: &SetSnapshot, key: &EncryptionKey) -> Result<SetVersion, HistoryError>;
-
+    // Generic snapshot commit is store-internal; use named service mutations.
     pub fn append_pair(&self, user: &str, set_id: SetId, expected: SetVersion,
         user_msg: &str, assistant_msg: &str, key: &EncryptionKey)
         -> Result<SetVersion, HistoryError>;
@@ -425,7 +429,7 @@ Rules:
 
 1. `chat_finalize` **must not** read live session history for content. It builds `history' = capture.history + (user, assistant)` and commits with `expected = capture.version`.
 2. `regenerate_prepare` **must not** remove pairs from any durable or shared cache. It computes `context.history = capture.history[..index]` for the model only; full `capture.history` retained for commit/rollback.
-3. `regenerate_finalize` builds new history by replacing/inserting at `insertion_index` on **capture.history**, then `commit_snapshot` / specialized op with CAS.
+3. `regenerate_finalize` commits via the named `HistoryService::commit_regenerate` operation with CAS; snapshot writes are internal to the store.
 4. Mid-stream `load_set` in another tab updates a **different** cache key `(user, other_set_id)` and must not alter the in-flight `PrepareCapture`.
 5. Session lock (existing `SessionEntry::try_lock` → 429) remains for single-stream-per-session UX, but correctness does not depend on it alone—CAS does.
 
@@ -715,7 +719,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 
 1. **redb as durable store** — Embedded ACID KV for opaque blobs + metadata; replaces design.md Sled consideration; not SQLite; not name-based files.
 2. **Whole-set encrypted payload per `set_id` (Phase 1)** — Matches current data model; minimizes migration risk; defers per-message schema.
-3. **Narrow `HistoryService` API** — Only safe ops (`append_pair`, `delete_pair`, `commit_snapshot`, …); redb sealed inside `history::store`.
+3. **Narrow `HistoryService` API** — Named ops (`append_pair`, `delete_pair`, `commit_regenerate`, …); generic snapshot writes and redb sealed inside `history::store`. Cache implementation and unused storage-format types are private; `SetPayloadV1` remains exported for migration compatibility.
 4. **UUID `set_id` public identity; display names only in ciphertext** — Satisfies privacy constraint on set names.
 5. **CAS on monotonic `version`** — Multi-tab / multi-request safety without distributed locks; HTTP 409 on conflict.
 6. **Immutable `PrepareCapture` for chat/regenerate** — Finalize commits from snapshot only; fixes wrong-set and regenerate destructive-prepare bugs.

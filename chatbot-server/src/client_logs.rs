@@ -1,8 +1,7 @@
 use axum::{
     body::{self, Body},
-    http::{header, Method, Request, Response, StatusCode},
+    http::{Method, Request, Response, StatusCode},
 };
-use chatbot_core::session;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
@@ -11,6 +10,7 @@ use crate::http_error::{
     api_error, map_body_read_err, map_json_parse_err, map_response_build_err, map_session_err,
     HttpError,
 };
+use crate::identity::RequestIdentity;
 
 const MAX_LOG_BODY_BYTES: usize = 64 * 1024;
 const MAX_LINES: usize = 64;
@@ -81,24 +81,20 @@ pub async fn handle_client_logs(request: Request<Body>) -> Result<Response<Body>
     }
 
     let (parts, body) = request.into_parts();
-    let cookie_header = parts
-        .headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_owned());
-    let csrf_token = parts
-        .headers
-        .get("X-CSRF-Token")
-        .and_then(|v| v.to_str().ok());
+    let identity = RequestIdentity::from_extensions(&parts.extensions);
+    let cookie_header = crate::request_context::extract_cookie(&parts.headers);
+    let csrf_token = crate::request_context::extract_csrf(&parts.headers);
 
     // Log-only endpoint: no state mutation. The native reporter cannot obtain
     // the page's CSRF token, so a live session cookie is accepted as
     // authorization when no CSRF header is presented; a presented CSRF token
     // must still validate. Rate limiting applies (route is in LIMITED_PATHS).
+    // The throttling identity also accepts presented-but-unknown cookies.
     let authorized = match csrf_token {
-        Some(token) => session::validate_csrf_token(cookie_header.as_deref(), Some(token))
+        Some(token) => identity
+            .validate_csrf_token(cookie_header.as_deref(), Some(token))
             .map_err(|err| map_session_err(err, "client_logs::csrf"))?,
-        None => session::rate_limit_identity(cookie_header.as_deref()).is_some(),
+        None => identity.rate_limit_identity(cookie_header.as_deref()).is_some(),
     };
     if !authorized {
         return Err(api_error(

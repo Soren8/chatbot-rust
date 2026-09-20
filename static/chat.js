@@ -76,6 +76,20 @@ function ttHtml(html) {
 // rendering it. jQuery/vendor .html(string) calls rely on the identity
 // `default` Trusted-Types policy registered in static/tt.js.
 
+// Message rendering lives in static/chat-renderer.js; chat keeps DOM/event
+// composition and thin adapters here. Explicit deps only (no generic bag):
+// document, marked/highlight.js, Trusted-Types wrapper, markdown flag,
+// location and the shared stream decoder.
+var chatRenderer = ChatRenderer.createChatRenderer({
+  document: document,
+  getMarked: function () { return (typeof marked !== 'undefined') ? marked : undefined; },
+  getHljs: function () { return (typeof hljs !== 'undefined') ? hljs : undefined; },
+  createTrustedHtml: ttHtml,
+  isMarkdownEnabled: function () { return !(window.APP_DATA && window.APP_DATA.renderMarkdown === false); },
+  getLocation: function () { return window.location; },
+  getStreamDecoder: function () { return ChatStreamDecoder; }
+});
+
 // Ensure config exists before any DOM-ready handlers use it
 try {
   if (!window.APP_DATA || typeof window.APP_DATA !== 'object') {
@@ -216,52 +230,26 @@ if (window.EncKey && window.EncKey.purgeNonRememberedSlots && (!window.APP_DATA 
   }
 })();
 
-const SESSION_EXPIRED_SEND_MSG =
-  'Session expired or unauthorized. Your message was not sent — it is still in the input box.';
+// HTTP/session client (static/session-client.js): single owner of fetch
+// bootstrap, CSRF refresh, 401 retry, generate retry and voice HTTP helpers.
+// Chat keeps DOM callbacks (location, CSRF meta, login state) here.
+const SESSION_EXPIRED_SEND_MSG = ChatSessionClient.SESSION_EXPIRED_SEND_MSG;
+
+var sessionClient = ChatSessionClient.createSessionClient({
+  getLoggedIn: function () { return !!(window.APP_DATA && window.APP_DATA.loggedIn); },
+  getCsrfToken: function () { return window.CSRF_TOKEN; },
+  setCsrfToken: function (token) {
+    window.CSRF_TOKEN = token;
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) meta.setAttribute('content', token);
+  },
+  redirectHome: function () { window.location.href = '/'; }
+});
+sessionClient.installFetchInterceptor();
 
 function redirectHomeOnAuthFailure() {
-  if (window.APP_DATA && window.APP_DATA.loggedIn) {
-    return false;
-  }
-  window.location.href = '/';
-  return true;
+  return sessionClient.redirectHomeOnAuthFailure();
 }
-
-const originalFetch = window.fetch;
-window.fetch = function(input, init) {
-  return originalFetch.apply(this, arguments).then(response => {
-    if (response.status === 401) {
-      let url = input;
-      if (input instanceof Request) {
-        url = input.url;
-      }
-      if (typeof url === 'string' && (
-        url.includes('/chat') ||
-        url.includes('/regenerate') ||
-        url.includes('/get_sets') ||
-        url.includes('/load_set') ||
-        url.includes('/create_set') ||
-        url.includes('/fork_set') ||
-        url.includes('/delete_set') ||
-        url.includes('/rename_set') ||
-        url.includes('/update_memory') ||
-        url.includes('/update_system_prompt') ||
-        url.includes('/update_preferences') ||
-        url.includes('/delete_message') ||
-        url.includes('/reset_chat') ||
-        url.includes('/history_pair') ||
-        url.includes('/history_image')
-      )) {
-        return response;
-      }
-      if (!redirectHomeOnAuthFailure()) {
-        return response;
-      }
-      throw new Error('Session expired');
-    }
-    return response;
-  });
-};
 
 try {
   var appRoot = document.getElementById('app-root');
@@ -276,81 +264,16 @@ try {
   }
 } catch (e) { /* no-op */ }
 
-// Silent session restore after a server restart: bootstrap a fresh guest
-// session (GET /login) for a CSRF token the dead page cannot produce,
-// exchange the HttpOnly remember cookie (POST /login/remember), then adopt
-// the restored session's CSRF token so same-page requests keep validating.
-// Concurrent callers share one attempt. Resolves to a boolean.
-var sessionRefreshPromise = null;
+// Session bootstrap lives in the owned client (single shared attempt,
+// guest bypass, error recovery). Chat keeps only the thin adapter.
 function refreshSession() {
-  if (!window.APP_DATA || !window.APP_DATA.loggedIn) {
-    return Promise.resolve(false);
-  }
-  if (sessionRefreshPromise) {
-    return sessionRefreshPromise;
-  }
-  sessionRefreshPromise = originalFetch('/login')
-    .then(function (resp) {
-      if (!resp.ok) {
-        throw new Error('session bootstrap failed');
-      }
-      return resp.text();
-    })
-    .then(function (html) {
-      var match = html.match(/name="csrf_token" value="([^"]+)"/);
-      if (!match) {
-        throw new Error('csrf token not found');
-      }
-      return originalFetch('/login/remember', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'csrf_token=' + encodeURIComponent(match[1]),
-      });
-    })
-    .then(function (resp) {
-      if (!resp.ok) {
-        return false;
-      }
-      return resp.json().then(function (data) {
-        if (data && data.csrf_token) {
-          window.CSRF_TOKEN = data.csrf_token;
-          var meta = document.querySelector('meta[name="csrf-token"]');
-          if (meta) {
-            meta.setAttribute('content', data.csrf_token);
-          }
-          return true;
-        }
-        return false;
-      });
-    })
-    .catch(function () {
-      return false;
-    });
-  sessionRefreshPromise.finally(function () { sessionRefreshPromise = null; });
-  return sessionRefreshPromise;
+  return sessionClient.refreshSession();
 }
 
 // Rebuild a cached fetch init's X-CSRF-Token header after a session
 // refresh (headers were snapshotted by withCsrf at call time).
 function refreshCsrfInit(init) {
-  if (!init || !init.headers || !window.CSRF_TOKEN) {
-    return init;
-  }
-  var fresh = Object.assign({}, init);
-  var copy;
-  if (typeof Headers !== 'undefined' && init.headers instanceof Headers) {
-    copy = {};
-    init.headers.forEach(function (value, key) { copy[key] = value; });
-  } else {
-    copy = Object.assign({}, init.headers);
-  }
-  Object.keys(copy).forEach(function (key) {
-    if (key.toLowerCase() === 'x-csrf-token') {
-      copy[key] = window.CSRF_TOKEN;
-    }
-  });
-  fresh.headers = copy;
-  return fresh;
+  return sessionClient.refreshCsrfInit(init);
 }
 
 
@@ -370,174 +293,30 @@ function historyThumbUrl(pairIndex, imageIndex) {
   return historyImageUrl(pairIndex, imageIndex) + '?size=thumb';
 }
 
+// Voice/generate HTTP helpers live in the owned session client; chat keeps
+// thin adapters so call sites and vm fixtures keep the same names.
 function sleepMs(ms) {
-  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  return sessionClient.sleepMs(ms);
 }
 
 function isRetryableVoiceStatus(status) {
-  return status === 408 || status === 429 || status === 502 || status === 503 || status === 504
-    || status >= 500;
+  return sessionClient.isRetryableVoiceStatus(status);
 }
 
 function fetchVoiceRetry(url, buildOptions, attempts) {
-  attempts = attempts || 3;
-  function attempt(n) {
-    var options = typeof buildOptions === 'function' ? buildOptions() : (buildOptions || {});
-    var userSignal = options.signal;
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function () { controller.abort(); }, 60000);
-    var userAborted = false;
-    var onUserAbort = function () {
-      userAborted = true;
-      controller.abort();
-    };
-    if (userSignal) {
-      if (userSignal.aborted) {
-        clearTimeout(timeoutId);
-        var aborted = new Error('aborted');
-        aborted.name = 'AbortError';
-        return Promise.reject(aborted);
-      }
-      userSignal.addEventListener('abort', onUserAbort);
-    }
-    var opts = Object.assign({}, options, { signal: controller.signal });
-    return fetch(url, opts).then(function (res) {
-      if (res.ok) return res;
-      if (res.status === 401) {
-        redirectHomeOnAuthFailure();
-        throw new Error('Session expired');
-      }
-      if (n > 1 && isRetryableVoiceStatus(res.status)) {
-        return sleepMs(400 * Math.pow(2, attempts - n)).then(function () { return attempt(n - 1); });
-      }
-      throw new Error('request failed (' + res.status + ')');
-    }).catch(function (err) {
-      if (err && err.message === 'Session expired') throw err;
-      if (err && err.name === 'AbortError' && userAborted) throw err;
-      if (n <= 1) throw err;
-      return sleepMs(400 * Math.pow(2, attempts - n)).then(function () { return attempt(n - 1); });
-    }).finally(function () {
-      clearTimeout(timeoutId);
-      if (userSignal) userSignal.removeEventListener('abort', onUserAbort);
-    });
-  }
-  return attempt(attempts);
+  return sessionClient.fetchVoiceRetry(url, buildOptions, attempts);
 }
 
 function postVoiceSttXhr(url, buildOptions, attempts) {
-  attempts = attempts || 3;
-  function attempt(n) {
-    var options = typeof buildOptions === 'function' ? buildOptions() : (buildOptions || {});
-    var userSignal = options.signal;
-    return new Promise(function (resolve, reject) {
-      var settled = false;
-      function finish(fn, arg) {
-        if (!settled) {
-          settled = true;
-          fn(arg);
-        }
-      }
-      var abortErr = function () {
-        var err = new Error('aborted');
-        err.name = 'AbortError';
-        return err;
-      };
-      var xhr = new XMLHttpRequest();
-      xhr.open('POST', url, true);
-      var headers = options.headers || {};
-      Object.keys(headers).forEach(function (name) {
-        xhr.setRequestHeader(name, headers[name]);
-      });
-      xhr.timeout = 60000;
-      var tSend = Date.now();
-      var tLastProgress = 0;
-      var lastLoaded = 0;
-      xhr.upload.onprogress = function (ev) {
-        if (!ev || !ev.lengthComputable) return;
-        tLastProgress = Date.now();
-        lastLoaded = ev.loaded;
-      };
-      xhr.onload = function () {
-        var tDone = Date.now();
-        var upMs = tLastProgress > tSend ? tLastProgress - tSend : tDone - tSend;
-        var net = {
-          bytes: lastLoaded || options.bodyBytes || 0,
-          upMs: Math.max(1, Math.round(upMs))
-        };
-        if (xhr.status === 401) {
-          redirectHomeOnAuthFailure();
-          finish(reject, new Error('Session expired'));
-          return;
-        }
-        if (xhr.status >= 200 && xhr.status < 300) {
-          finish(resolve, { status: xhr.status, responseText: xhr.responseText, net: net });
-          return;
-        }
-        var err = new Error('request failed (' + xhr.status + ')');
-        err.retryableVoice = isRetryableVoiceStatus(xhr.status);
-        err.net = net;
-        finish(reject, err);
-      };
-      xhr.onerror = function () {
-        var err = new Error('network error');
-        err.retryableVoice = true;
-        finish(reject, err);
-      };
-      xhr.ontimeout = function () {
-        var err = new Error('timeout');
-        err.name = 'TimeoutError';
-        err.retryableVoice = true;
-        finish(reject, err);
-      };
-      xhr.onabort = function () {
-        finish(reject, abortErr());
-      };
-      var onUserAbort = function () {
-        try {
-          xhr.abort();
-        } catch (_) {
-          finish(reject, abortErr());
-        }
-      };
-      if (userSignal) {
-        if (userSignal.aborted) {
-          finish(reject, abortErr());
-          return;
-        }
-        userSignal.addEventListener('abort', onUserAbort);
-      }
-      try {
-        xhr.send(options.body);
-      } catch (sendErr) {
-        var serr = new Error(sendErr && sendErr.message ? sendErr.message : 'send failed');
-        serr.retryableVoice = true;
-        finish(reject, serr);
-      }
-    }).catch(function (err) {
-      if (err && (err.message === 'Session expired' || err.name === 'AbortError')) throw err;
-      if (n <= 1 || (err && err.retryableVoice === false)) throw err;
-      return sleepMs(400 * Math.pow(2, attempts - n)).then(function () {
-        return attempt(n - 1);
-      });
-    });
-  }
-  return attempt(attempts);
+  return sessionClient.postVoiceSttXhr(url, buildOptions, attempts);
 }
 
 function withCsrf(headers) {
-  var result = headers ? Object.assign({}, headers) : {};
-  if (window.CSRF_TOKEN) {
-    result['X-CSRF-Token'] = window.CSRF_TOKEN;
-  }
-  return result;
+  return sessionClient.withCsrf(headers);
 }
 
 async function withCsrfAsync(headers) {
-  var result = headers ? Object.assign({}, headers) : {};
-  if (window.CSRF_TOKEN) {
-    result['X-CSRF-Token'] = window.CSRF_TOKEN;
-  }
-  return result;
+  return sessionClient.withCsrfAsync(headers);
 }
 
 
@@ -546,51 +325,50 @@ function syncSelectedOptionVersion(version) {
   if ($opt.length) $opt.attr('data-version', String(version));
 }
 
-/** Apply a set version from a response or 409 body.
- *  List refreshes (`get_sets`) must not rewind: an in-flight list after delete
- *  can be stale. Mutation / 409 bodies are authoritative (`allowRewind`). */
+/** Version transitions live in static/conversation-state.js (reads advance
+ *  only; mutations/409 authoritative). window.APP_DATA stays the single
+ *  store; the option sync below is the DOM callback. */
 function applySetVersion(version, setId, options) {
   if (!window.APP_DATA) window.APP_DATA = {};
-  var allowRewind = !!(options && options.allowRewind);
-  if (setId) {
-    if (window.APP_DATA.lastSetId && setId !== window.APP_DATA.lastSetId) {
-      window.APP_DATA.lastSetId = setId;
-      if (version != null && version !== '') {
-        var switched = Number(version);
-        if (!Number.isNaN(switched)) {
-          window.APP_DATA.setVersion = switched;
-          syncSelectedOptionVersion(switched);
-        }
-      }
-      return;
-    }
-    window.APP_DATA.lastSetId = setId;
-  }
-  if (version == null || version === '') return;
-  var next = Number(version);
-  if (Number.isNaN(next)) return;
-  var current = Number(window.APP_DATA.setVersion);
-  if (!allowRewind && !Number.isNaN(current) && next < current) return;
-  window.APP_DATA.setVersion = next;
-  syncSelectedOptionVersion(next);
+  var result = ChatConversationState.applySetVersionTo(window.APP_DATA, version, setId, options);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
 function activeSetPayload(extra) {
   var $o = $('#set-selector option:selected');
-  var payload = Object.assign({}, extra || {});
-  payload.set_name = $o.attr('data-name') || $o.text() || 'default';
-  var setId = window.APP_DATA.lastSetId || $o.val();
-  if (setId) payload.set_id = setId;
-  if (window.APP_DATA.setVersion != null && window.APP_DATA.setVersion !== '') {
-    payload.expected_version = Number(window.APP_DATA.setVersion);
+  return ChatConversationState.buildActiveSetPayload({
+    setName: $o.attr('data-name') || $o.text() || 'default',
+    setId: (window.APP_DATA && window.APP_DATA.lastSetId) || $o.val(),
+    setVersion: window.APP_DATA ? window.APP_DATA.setVersion : undefined
+  }, extra);
+}
+
+function currentSetId() {
+  try {
+    if (window.APP_DATA && window.APP_DATA.lastSetId != null && window.APP_DATA.lastSetId !== '') {
+      return window.APP_DATA.lastSetId;
+    }
+    var v = $('#set-selector').val();
+    return v || null;
+  } catch (e) {
+    return (window.APP_DATA && window.APP_DATA.lastSetId) || null;
   }
-  return payload;
+}
+
+function currentSetIdentity() {
+  var $o = $('#set-selector option:selected');
+  return {
+    setName: $o.attr('data-name') || $o.text() || 'default',
+    setId: (window.APP_DATA && window.APP_DATA.lastSetId) || $o.val(),
+    setVersion: window.APP_DATA ? window.APP_DATA.setVersion : undefined
+  };
 }
 
 function noteSetVersionFromResponse(data) {
   if (!data) return;
-  var version = data.version != null ? data.version : data.current_version;
-  applySetVersion(version, data.set_id, { allowRewind: true });
+  if (!window.APP_DATA) window.APP_DATA = {};
+  var result = ChatConversationState.noteSetVersionFromResponseTo(window.APP_DATA, data);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
 /** Sync version from an authoritative READ response (load_set / history_pair).
@@ -598,8 +376,9 @@ function noteSetVersionFromResponse(data) {
  *  we must never rewind below a version the client already observed. */
 function noteSetVersionFromRead(data) {
   if (!data) return;
-  var version = data.version != null ? data.version : data.current_version;
-  applySetVersion(version, data.set_id);
+  if (!window.APP_DATA) window.APP_DATA = {};
+  var result = ChatConversationState.noteSetVersionFromReadTo(window.APP_DATA, data);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
 /** Extract a human-readable message from an error-response body. */
@@ -620,24 +399,18 @@ function apiErrorText(text, fallback) {
 /** After chat/regenerate persist, CAS version advances by one. Update immediately
  *  so delete/reset don't race the async loadSets() refresh. */
 function noteLocalVersionBumpAfterPersist() {
-  if (window.APP_DATA.setVersion == null || window.APP_DATA.setVersion === '') return;
-  var next = Number(window.APP_DATA.setVersion) + 1;
-  if (Number.isNaN(next)) return;
-  applySetVersion(next, window.APP_DATA.lastSetId);
+  if (!window.APP_DATA) return;
+  var result = ChatConversationState.noteLocalVersionBumpAfterPersistTo(window.APP_DATA);
+  if (result && result.syncVersion != null) syncSelectedOptionVersion(result.syncVersion);
 }
 
-var HISTORY_PAGE_SIZE = 40;
-var HISTORY_OFFSET = 0;
-var HISTORY_TOTAL = 0;
-var HISTORY_HAS_MORE = false;
-var HISTORY_LOADING_OLDER = false;
-var HISTORY_SET_GEN = 0;
+// History window and set-generation fencing (static/conversation-state.js).
+// Single authority for offset/total/has-more/loading/generation.
+var historyWindow = ChatConversationState.createHistoryWindow(ChatConversationState.HISTORY_PAGE_SIZE);
+var HISTORY_PAGE_SIZE = ChatConversationState.HISTORY_PAGE_SIZE;
 
 function resetHistoryWindow() {
-  HISTORY_OFFSET = 0;
-  HISTORY_TOTAL = 0;
-  HISTORY_HAS_MORE = false;
-  HISTORY_LOADING_OLDER = false;
+  historyWindow.reset();
 }
 
 function liveUserPairIndex(userMessageElement) {
@@ -646,7 +419,7 @@ function liveUserPairIndex(userMessageElement) {
   var nodes = document.querySelectorAll('#chat-content .message.user-message');
   var i = Array.prototype.indexOf.call(nodes, el);
   if (i < 0) return -1;
-  return HISTORY_OFFSET + i;
+  return ChatConversationState.userPairIndexForDomIndex(historyWindow.getOffset(), i);
 }
 
 function isLocalOnlyTurn(el) {
@@ -691,15 +464,23 @@ function paintFailedAiTurn($user, errorText) {
   if (!$ai.length) return $();
   replaceChildrenNative($ai[0], buildAiErrorChildren(errorText));
   markLocalOnlyTurn($user, $ai);
+  // Terminal chrome: settle the bound stream source keeping its last
+  // published text, or bind a finished empty source for a fresh shell.
+  var failedHost = $ai[0];
+  var failedSource = messagePlaybackSources.get(failedHost) || null;
+  if (failedSource) failedSource.finish();
+  else bindMessagePlaybackSource(failedHost, { original: '', visible: '', boundSeq: null, finished: true });
+  if (liveStreamPlaybackSource === failedSource) liveStreamPlaybackSource = null;
   return $ai;
 }
 
 function reindexUserPairIndices() {
   var nodes = document.querySelectorAll('#chat-content .message.user-message');
   for (var i = 0; i < nodes.length; i++) {
-    nodes[i].setAttribute('data-pair-index', String(HISTORY_OFFSET + i));
+    var pairIndex = ChatConversationState.userPairIndexForDomIndex(historyWindow.getOffset(), i);
+    nodes[i].setAttribute('data-pair-index', String(pairIndex));
     var img = nodes[i].querySelector('img.chat-image');
-    if (img) img.setAttribute('data-pair-index', String(HISTORY_OFFSET + i));
+    if (img) img.setAttribute('data-pair-index', String(pairIndex));
   }
 }
 
@@ -747,7 +528,7 @@ function submitResetChat(isRetry) {
     .then(result => {
       if (result.data && result.data.error === 'version_conflict') {
         noteSetVersionFromResponse(result.data);
-        if (!isRetry) return submitResetChat(true);
+        if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitResetChat(true);
         appendMessage('The chat was updated elsewhere while resetting. Please try again.', 'error-message');
         return;
       }
@@ -839,42 +620,18 @@ function beginEncKeyUnlockFlow(fromUser) {
   return encKeyUnlockInFlight;
 }
 
+// 401 classification lives in the owned session client; chat keeps thin
+// adapters so call sites stay unchanged.
 async function response401Message(response) {
-  try {
-    var body = await response.clone().json();
-    return (body.error || body.message || '').toString();
-  } catch (_) {
-    return '';
-  }
+  return sessionClient.response401Message(response);
 }
 
 async function response401Kind(response) {
-  if (response.status !== 401) {
-    return null;
-  }
-  var msg = await response401Message(response);
-  if (/encryption key|unlock|invalid encryption key/i.test(msg)) {
-    return 'enc_key';
-  }
-  return 'session';
+  return sessionClient.response401Kind(response);
 }
 
 async function handle401OrRetry(response, retryFn) {
-  var kind = await response401Kind(response);
-  if (kind === 'enc_key') {
-    throw new Error(
-      (await response401Message(response)) ||
-        'Could not unlock chats. Sign out and log in with your password.'
-    );
-  }
-  if (response.status === 401) {
-    var restored = await refreshSession();
-    if (restored && retryFn) {
-      return retryFn();
-    }
-    throw new Error('Session expired. Sign out and log in again.');
-  }
-  return response;
+  return sessionClient.handle401OrRetry(response, retryFn);
 }
 
 function logoutThisComputer() {
@@ -956,24 +713,15 @@ $(function() {
 // Pure string replace — do NOT use createTextNode + div.innerHTML here.
 // That pattern is a CodeQL js/xss-through-dom source (DOM text) that later
 // flows into .html() sinks across appendMessage / system errors.
+// Owned by static/chat-renderer.js; thin adapters preserve call sites.
 function escapeHTML(str) {
-  return String(str == null ? '' : str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return ChatRenderer.escapeHTML(str);
 }
 
 // Inverse of the common entities produced by escapeHTML.
 // Used only to undo pre-escaping before highlight.js (which escapes again).
 function decodeHTMLEntities(str) {
-  return String(str == null ? '' : str)
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#0*39;/g, "'")
-    .replace(/&amp;/g, '&');
+  return ChatRenderer.decodeHTMLEntities(str);
 }
 
 // Copy text to the clipboard in any context. The async Clipboard API is only
@@ -1026,182 +774,60 @@ function copyToClipboard(text) {
 }
 
 // Accept only data:image/*;base64,... URLs for <img src>.
-// Reconstructs from character-class-filtered parts so DOM-sourced strings never
-// flow into HTML attribute sinks (CodeQL js/xss-through-dom).
-// Returns null when the value is missing or not a safe data-image URL.
+// Owned by static/chat-renderer.js; thin adapter preserves call sites.
 function sanitizeDataImageSrc(src) {
-  if (src == null) return null;
-  const raw = String(src);
-  const m = /^data:image\/([A-Za-z0-9+.-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(raw);
-  if (!m) return null;
-  // .replace with inverted classes strips any HTML/JS meta-characters CodeQL
-  // would otherwise track from DOM text into the src attribute.
-  const subtype = m[1].replace(/[^A-Za-z0-9+.-]/g, '');
-  const b64 = m[2].replace(/[^A-Za-z0-9+/=]/g, '');
-  if (!subtype || !b64 || subtype !== m[1] || b64 !== m[2].replace(/[\s]/g, '')) {
-    return null;
-  }
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
-  return 'data:image/' + subtype + ';base64,' + b64;
+  return ChatRenderer.sanitizeDataImageSrc(src);
 }
 
 // Build the user-message display node without interpreting message text as HTML
 // (CodeQL js/xss-through-dom). Text goes through createTextNode only; images use
 // a reconstructed data:image URL from sanitizeDataImageSrc.
+// Rendering builders live in static/chat-renderer.js; thin adapters keep
+// call sites and CodeQL separation (exception text never shares a param
+// with an innerHTML sink). Chat keeps DOM/event composition.
 function buildUserMessageSpan(text, imageSrc, opts) {
-  const span = document.createElement('span');
-  span.className = 'user-message-text';
-
-  const label = document.createElement('strong');
-  label.textContent = 'You:';
-  span.appendChild(label);
-  span.appendChild(document.createTextNode(' '));
-
-  const body = document.createElement('span');
-  body.className = 'user-message-body';
-  const lines = String(text == null ? '' : text).split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (i > 0) body.appendChild(document.createElement('br'));
-    body.appendChild(document.createTextNode(lines[i]));
-  }
-  span.appendChild(body);
-
-  const safeSrc = sanitizeDataImageSrc(imageSrc) || sanitizeLightboxSrc(imageSrc);
-  if (safeSrc) {
-    span.appendChild(document.createElement('br'));
-    const img = document.createElement('img');
-    img.className = 'chat-image';
-    img.setAttribute('alt', 'Attached image');
-    img.setAttribute('title', 'Click to expand');
-    img.setAttribute('decoding', 'async');
-    if (opts && opts.pairIndex != null) {
-      img.setAttribute('data-pair-index', String(opts.pairIndex));
-    }
-    if (opts && opts.thumbnail) {
-      img.setAttribute('data-thumb', '1');
-    }
-    if (opts && opts.deferSrc) {
-      img.setAttribute('data-pending-src', safeSrc);
-    } else {
-      img.setAttribute('src', safeSrc);
-    }
-    span.appendChild(img);
-  }
-
-  return span;
+  return chatRenderer.buildUserMessageSpan(text, imageSrc, opts);
 }
 
 // Append plain text (with optional newlines → <br>) without HTML interpretation.
 function appendPlainTextWithBreaks(parent, text) {
-  const lines = String(text == null ? '' : text).split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (i > 0) parent.appendChild(document.createElement('br'));
-    parent.appendChild(document.createTextNode(lines[i]));
-  }
+  return chatRenderer.appendPlainTextWithBreaks(parent, text);
 }
 
 // System/error chrome: fixed label + plain text only (createTextNode).
 // Accepts only a scalar string — never options objects (CodeQL js/xss-through-exception
 // is field-insensitive and would join error text with sibling fields like href).
 function buildStatusMessageContent(className, text) {
-  const frag = document.createDocumentFragment();
-  const isError = className && className.indexOf('error-message') !== -1;
-  const label = document.createElement('strong');
-  label.textContent = isError ? 'Error:' : 'System:';
-  frag.appendChild(label);
-  frag.appendChild(document.createTextNode(' '));
-  appendPlainTextWithBreaks(frag, text == null ? '' : String(text));
-  return frag;
+  return chatRenderer.buildStatusMessageContent(className, text);
 }
 
 // Dedicated sets-load failure UI. Exception text is textContent only; the logout
 // href is a string literal so it cannot be joined with error.message by analysis.
 function buildSetsLoadErrorContent(errorText) {
-  const frag = document.createDocumentFragment();
-  const label = document.createElement('strong');
-  label.textContent = 'Error:';
-  frag.appendChild(label);
-  frag.appendChild(document.createTextNode(' '));
-  appendPlainTextWithBreaks(
-    frag,
-    'Could not load saved sets: ' + String(errorText == null ? '' : errorText) + ' '
-  );
-  const a = document.createElement('a');
-  a.setAttribute('href', '/logout');
-  a.textContent = 'Sign out';
-  frag.appendChild(a);
-  frag.appendChild(document.createTextNode(' and log in again if this persists.'));
-  return frag;
+  return chatRenderer.buildSetsLoadErrorContent(errorText);
 }
 
 // AI chrome builders — kept as separate functions so exception strings never
 // share a parameter/object with an innerHTML sink (CodeQL js/xss-through-exception).
 
 function buildAiLabelFragment() {
-  const frag = document.createDocumentFragment();
-  const strong = document.createElement('strong');
-  strong.textContent = 'AI:';
-  frag.appendChild(strong);
-  return frag;
+  return chatRenderer.buildAiLabelFragment();
 }
 
 // History load only. `safeHtml` must already be produced by formatAiMessage /
 // renderMarkdown (escapeHTML). Do not pass err.message here.
 function buildAiHistoryChildren(safeHtml) {
-  const frag = buildAiLabelFragment();
-  frag.appendChild(document.createTextNode('\u00A0'));
-  const textSpan = document.createElement('span');
-  textSpan.className = 'ai-message-text';
-  if (typeof safeHtml === 'string' && safeHtml) {
-    textSpan.innerHTML = ttHtml(safeHtml);
-  }
-  frag.appendChild(textSpan);
-  frag.appendChild(buildAiRegenerateContainer(true));
-  return frag;
+  return chatRenderer.buildAiHistoryChildren(safeHtml);
 }
 
 // Failed regenerate/chat: exception text via textContent only (never innerHTML).
 function buildAiErrorChildren(errorText) {
-  const frag = buildAiLabelFragment();
-  frag.appendChild(document.createTextNode(' '));
-  const errSpan = document.createElement('span');
-  errSpan.className = 'error-message';
-  errSpan.textContent = 'Error: ' + String(errorText == null ? '' : errorText);
-  frag.appendChild(errSpan);
-  frag.appendChild(buildAiRegenerateContainer(true));
-  return frag;
+  return chatRenderer.buildAiErrorChildren(errorText);
 }
 
 // Streaming / regenerate placeholder shell (static chrome only).
 function buildAiStreamChildren() {
-  const frag = buildAiLabelFragment();
-
-  const thinking = document.createElement('div');
-  thinking.className = 'thinking-container';
-  thinking.style.display = 'none';
-
-  const toggle = document.createElement('button');
-  toggle.className = 'toggle-thinking';
-  toggle.style.display = 'none';
-  toggle.type = 'button';
-  const caret = document.createElement('i');
-  caret.className = 'bi bi-caret-right-fill';
-  toggle.appendChild(caret);
-  toggle.appendChild(document.createTextNode(' Show Thinking'));
-  thinking.appendChild(toggle);
-
-  const thinkingContent = document.createElement('div');
-  thinkingContent.className = 'thinking-content';
-  thinkingContent.style.display = 'none';
-  thinking.appendChild(thinkingContent);
-  frag.appendChild(thinking);
-
-  const textSpan = document.createElement('span');
-  textSpan.className = 'ai-message-text';
-  textSpan.textContent = 'Thinking...';
-  frag.appendChild(textSpan);
-  frag.appendChild(buildAiRegenerateContainer(false));
-  return frag;
+  return chatRenderer.buildAiStreamChildren();
 }
 
 // Mount a pre-built message node into #chat-content (shared chrome, no content).
@@ -1244,161 +870,22 @@ function appendSetsLoadError(errorText) {
 }
 
 function buildAiRegenerateContainer(enabled) {
-  const container = document.createElement('div');
-  container.className = 'regenerate-container';
-
-  const regen = document.createElement('button');
-  regen.className = 'regenerate-button';
-  regen.type = 'button';
-  if (!enabled) regen.disabled = true;
-  const regenIcon = document.createElement('i');
-  regenIcon.className = 'bi bi-arrow-repeat';
-  regen.appendChild(regenIcon);
-  container.appendChild(regen);
-
-  const play = document.createElement('button');
-  play.className = 'play-button';
-  play.type = 'button';
-  const playIcon = document.createElement('i');
-  playIcon.className = 'bi bi-play-fill';
-  play.appendChild(playIcon);
-  container.appendChild(play);
-
-  return container;
+  return chatRenderer.buildAiRegenerateContainer(enabled);
 }
 
-// Configure marked with highlight.js
-if (typeof marked !== 'undefined') {
-  console.debug('Initializing marked with highlight.js');
-  const renderer = new marked.Renderer();
-  
-  // Custom code block rendering with header and copy button
-  renderer.code = function(args) {
-    // Handle both object (new marked) and positional (old marked) arguments
-    let text, lang;
-    if (typeof args === 'object' && !Array.isArray(args)) {
-      text = args.text;
-      lang = args.lang;
-    } else {
-      text = arguments[0];
-      lang = arguments[1];
-    }
-
-    // Fence language may appear in HTML attributes/text; keep it conservative.
-    const language = String(lang || 'plaintext').replace(/[^a-zA-Z0-9_+#.-]/g, '') || 'plaintext';
-    // renderMarkdown pre-escapes the whole document; undo that for the fence body
-    // so hljs receives raw source and applies its own single escape pass.
-    const rawCode = decodeHTMLEntities(text);
-    let highlighted;
-    
-    console.debug('Rendering code block:', { language, textLength: rawCode.length });
-
-    if (typeof hljs !== 'undefined') {
-      try {
-        const langObj = hljs.getLanguage(language);
-        if (langObj) {
-          highlighted = hljs.highlight(rawCode, { language }).value;
-          console.debug('Highlight.js success for:', language);
-        } else {
-          highlighted = hljs.highlightAuto(rawCode).value;
-          console.debug('Highlight.js auto-highlighting used');
-        }
-      } catch (e) {
-        console.error('Highlight.js error:', e);
-        highlighted = escapeHTML(rawCode);
-      }
-    } else {
-      console.warn('Highlight.js (hljs) is not defined');
-      highlighted = escapeHTML(rawCode);
-    }
-
-    return `<div class="code-block-container"><div class="code-block-header"><span>${escapeHTML(language)}</span><button class="copy-code-button" type="button" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button></div><pre><code class="hljs language-${escapeHTML(language)}">${highlighted}</code></pre></div>`;
-  };
-
-  marked.use({ 
-    renderer,
-    gfm: true,
-    breaks: true
-  });
-  console.debug('Marked configured with custom renderer');
-} else {
-  console.warn('Marked library not found');
-}
+// Marked/highlight.js wiring lives in the owned renderer; chat keeps the
+// single configuration call so code fences highlight exactly as before.
+chatRenderer.configureMarked();
 
 function renderMarkdown(text) {
-  if (text == null) text = '';
-  else text = String(text);
-  // Escape HTML meta-characters before markdown so values read from the DOM
-  // (e.g. #user-input) cannot be reinterpreted as markup when assigned via .html()
-  // (CodeQL js/xss-through-dom). Markdown syntax is unaffected; raw tags show as text.
-  const safe = escapeHTML(text);
-  if (window.APP_DATA && window.APP_DATA.renderMarkdown === false) {
-    return safe.replace(/\n/g, '<br>');
-  }
-  if (typeof marked !== 'undefined') {
-    try {
-      return marked.parse(safe);
-    } catch (e) {
-      console.error('Markdown parsing error:', e);
-      return safe.replace(/\n/g, '<br>');
-    }
-  }
-  return safe.replace(/\n/g, '<br>');
+  return chatRenderer.renderMarkdown(text);
 }
 
 // Top-level on purpose: appendHistoryPair / applyHistoryPage run outside the
 // logged-in document.ready closure (a nested helper is ReferenceError there).
+// History adapter: whole-text projection, no console stripping.
 function formatAiMessage(text) {
-  if (!text) return '';
-
-  const openTag = '<think>';
-  const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
-
-  let thinkingParts = [];
-  let visibleParts = [];
-  let buffer = text;
-  let state = 'visible';
-
-  while (buffer.length > 0) {
-    if (state === 'visible') {
-      const idx = buffer.indexOf(openTag);
-      if (idx !== -1) {
-        visibleParts.push(buffer.substring(0, idx));
-        buffer = buffer.substring(idx + openTag.length);
-        state = 'thinking';
-      } else {
-        visibleParts.push(buffer);
-        buffer = '';
-      }
-    } else {
-      let firstCloseIdx = -1;
-      let usedTagLen = 0;
-      for (const tag of closeTags) {
-        const idx = buffer.indexOf(tag);
-        if (idx !== -1 && (firstCloseIdx === -1 || idx < firstCloseIdx)) {
-          firstCloseIdx = idx;
-          usedTagLen = tag.length;
-        }
-      }
-      if (firstCloseIdx !== -1) {
-        thinkingParts.push(buffer.substring(0, firstCloseIdx));
-        buffer = buffer.substring(firstCloseIdx + usedTagLen);
-        state = 'visible';
-      } else {
-        thinkingParts.push(buffer);
-        buffer = '';
-      }
-    }
-  }
-
-  let html = '';
-  const fullThinking = thinkingParts.join('').trim();
-  if (fullThinking) {
-    html += `<div class="thinking-container" style="display:block;"><button class="toggle-thinking" style="display:inline-block;"><i class="bi bi-caret-right-fill"></i> Show Thinking</button><div class="thinking-content" style="display:none;">${escapeHTML(fullThinking).replace(/\n/g, '<br>')}</div></div>`;
-  }
-
-  html += renderMarkdown(visibleParts.join(''));
-  return html;
+  return chatRenderer.formatAiMessage(text);
 }
 
 // Scroll helpers for the chat content container
@@ -1439,58 +926,95 @@ function scrollToBottom() {
   }
 }
 
-let CURRENT_AUDIO = null;
-let CURRENT_AUDIO_BUTTON = null;
-/**
- * Desktop TTS controller (play-button + click-a-sentence).
- * session bumps on every stop so in-flight async work cannot affect the next play.
- * Uses one HTMLAudioElement — fully reset on stop so 2nd/3rd plays work after reload-only bugs.
- */
-let desktopTtsSession = 0;
-let desktopTtsAudio = null;
-let desktopTtsAbort = null;
-let desktopTtsPreloadCache = new Map();
-let desktopTtsCurrentBlobUrl = null;
-/** True while voice-mode TTS session is active (queued sentences). */
-let voiceModeTtsSessionActive = false;
-/** True while TTS audio is actively playing. */
-let voiceModeTtsPlaying = false;
-/**
- * In-flight desktop Voice Mode STT upload. Kept top-level because playTTS
- * (also top-level) aborts it for barge-in; a ready-block `let` is invisible
- * there and threw ReferenceError before every desktop voice-mode play.
- */
+// Voice lifecycle lives in static/voice-lifecycle.js; rendering lives in
+// static/chat-renderer.js; sentence queues live in static/tts-playback.js.
+// Chat keeps DOM/event composition with explicit adapters here.
+var voiceLifecycle = ChatVoiceLifecycle.createVoiceLifecycle({
+  now: function () { return Date.now(); },
+  createAudio: function () { return new Audio(); },
+  createAbortController: function () { return new AbortController(); },
+  revokeUrl: function (url) { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } },
+  resetPlayButton: function (button) { resetPlayButtonUi(button); },
+  clearMessageUi: function () { clearMessageTtsPlayingUi(); },
+  syncSendButton: function () {
+    if (typeof syncSendButtonState === 'function') syncSendButtonState();
+  },
+  isVoiceModeActive: function () { return !!window.voiceModeActive; },
+  stopNativePlayback: function () {
+    if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
+      window.NativeVoiceTts.stop().catch(function () {});
+    }
+  }
+});
+// Thresholds are owned; chat keeps read-only aliases.
+const TTS_LISTEN_COOLDOWN_MS = ChatVoiceLifecycle.TTS_LISTEN_COOLDOWN_MS;
+const BARGE_IN_FRAMES_DESKTOP = ChatVoiceLifecycle.BARGE_IN_FRAMES_DESKTOP;
+const BARGE_IN_SPEECH_PROB = ChatVoiceLifecycle.BARGE_IN_SPEECH_PROB;
+/** In-flight desktop voice-mode STT upload; top-level so playTTS can abort it. */
 let voiceSttAbortController = null;
-/** High-confidence Silero frames (~32 ms each) counted toward desktop barge-in. */
-let bargeInFrames = 0;
-/** Do not start utterances until this timestamp (ms) — lets AEC settle after TTS. */
-let voiceModeListenCooldownUntil = 0;
-const TTS_LISTEN_COOLDOWN_MS = 400;
-/** Bounded requeue attempts for a native TTS sentence on a spotty link. */
-const MAX_TTS_SENTENCE_RETRIES = 3;
+/** Sentence/clip bounds live in the owned TTS playback unit; chat keeps read-only aliases. */
+const MAX_TTS_SENTENCE_RETRIES = ChatTtsPlayback.MAX_TTS_SENTENCE_RETRIES;
 /** Includes token requests, downloads, ready clips, and the clip being written to AudioTrack. */
-const MAX_NATIVE_TTS_LOOKAHEAD = 4;
+const MAX_NATIVE_TTS_LOOKAHEAD = ChatTtsPlayback.MAX_NATIVE_TTS_LOOKAHEAD;
 /** Total attempts to fetch one clip from /tts_stream (within the server's replay budget). */
-const MAX_TTS_CLIP_ATTEMPTS = 2;
+const MAX_TTS_CLIP_ATTEMPTS = ChatTtsPlayback.MAX_TTS_CLIP_ATTEMPTS;
 /** Backoff between clip GET retries; grows with the attempt number. */
-const TTS_CLIP_RETRY_BACKOFF_MS = 400;
+const TTS_CLIP_RETRY_BACKOFF_MS = ChatTtsPlayback.TTS_CLIP_RETRY_BACKOFF_MS;
+
+// Desktop clip pipeline (owned sentence/clip loops in static/tts-playback.js
+// using the single voice lifecycle + voice-text; explicit HTTP/audio adapters).
+var desktopTtsClip = ChatTtsPlayback.createDesktopClipPipeline({
+  isLive: function (sessionId) { return desktopTtsIsLive(sessionId); },
+  sanitize: function (text) { return sanitizeForTTS(text); },
+  hasPreload: function (key) { return voiceLifecycle.hasPreload(key); },
+  getPreload: function (key) { return voiceLifecycle.getPreload(key); },
+  setPreload: function (key, promise) { voiceLifecycle.setPreload(key, promise); },
+  deletePreload: function (key) { voiceLifecycle.deletePreload(key); },
+  getAbortSignal: function () { return voiceLifecycle.getDesktopAbortSignal(); },
+  fetchVoiceRetry: function (url, buildOptions, attempts) { return fetchVoiceRetry(url, buildOptions, attempts); },
+  withCsrf: function (headers) { return withCsrf(headers); },
+  getAudio: function () { return getDesktopTtsAudio(); },
+  createObjectUrl: function (blob) { return URL.createObjectURL(blob); },
+  revokeObjectUrl: function (url) { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } },
+  adoptBlobUrl: function (url) { voiceLifecycle.adoptBlobUrl(url); },
+  releaseBlobUrl: function (url) { voiceLifecycle.releaseBlobUrlIfCurrent(url); },
+  isVoiceModeActive: function () { return !!window.voiceModeActive; },
+  noteClipStarted: function () { voiceLifecycle.noteDesktopClipStarted(); },
+  noteClipFinished: function () { voiceLifecycle.noteDesktopClipFinished(); },
+  notifyStarted: function () {
+    if (typeof window.notifyVoiceModeTtsStarted === 'function') window.notifyVoiceModeTtsStarted();
+  },
+  notifyEnded: function () {
+    if (typeof window.notifyVoiceModeTtsEnded === 'function') window.notifyVoiceModeTtsEnded();
+  },
+  logError: function () { console.error.apply(console, arguments); },
+  setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+  clearTimeout: function (id) { clearTimeout(id); },
+  registerClipCanceller: function (entry) { voiceLifecycle.registerDesktopClipCanceller(entry); },
+  unregisterClipCanceller: function (entry) { voiceLifecycle.unregisterDesktopClipCanceller(entry); }
+});
+
+// Active desktop queue handle from the owned playback unit. Set on start,
+// cleared on completion; stops dispose it before the session bumps.
+var activeDesktopTtsQueue = null;
+
+function disposeActiveDesktopTtsQueue() {
+  var handle = activeDesktopTtsQueue;
+  activeDesktopTtsQueue = null;
+  if (handle) handle.cancel();
+}
+
+function cancelDesktopTtsClipSession(sessionId) {
+  desktopTtsClip.cancelSession(sessionId);
+}
 
 function clearDesktopTtsPreloads() {
-  if (desktopTtsCurrentBlobUrl) {
-    try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
-    desktopTtsCurrentBlobUrl = null;
-  }
-  desktopTtsPreloadCache.forEach(function (promise) {
-    Promise.resolve(promise).then(function (clip) {
-      if (clip && clip.cleanUp) clip.cleanUp();
-    }).catch(function () {});
-  });
-  desktopTtsPreloadCache.clear();
+  voiceLifecycle.clearPreloads();
 }
 
 
 function armTtsListenCooldown() {
-  voiceModeListenCooldownUntil = Date.now() + TTS_LISTEN_COOLDOWN_MS;
+  voiceLifecycle.armListenCooldown();
 }
 
 function resetPlayButtonUi(button) {
@@ -1499,10 +1023,7 @@ function resetPlayButtonUi(button) {
 }
 
 function getDesktopTtsAudio() {
-  if (!desktopTtsAudio) {
-    desktopTtsAudio = new Audio();
-  }
-  return desktopTtsAudio;
+  return voiceLifecycle.getDesktopAudio();
 }
 
 /**
@@ -1511,17 +1032,7 @@ function getDesktopTtsAudio() {
  * blocking so the 1st play works and the 2nd (after async /tts) silently fails.
  */
 function resetDesktopTtsAudioElement() {
-  const audio = desktopTtsAudio;
-  if (!audio) return;
-  audio.onended = null;
-  audio.onerror = null;
-  audio.onloadeddata = null;
-  try { audio.pause(); } catch (e) { /* ignore */ }
-  try {
-    // Clear the resource without load() so the element keeps its user-activation media slot.
-    audio.removeAttribute('src');
-    audio.src = '';
-  } catch (e) { /* ignore */ }
+  voiceLifecycle.resetDesktopAudioElement();
 }
 
 /**
@@ -1567,48 +1078,24 @@ function primeDesktopTtsAudioFromGesture() {
 
 /**
  * Stop desktop TTS completely. Safe to call when idle.
- * Always bumps desktopTtsSession so any prior async chain becomes a no-op.
+ * Disposes the queue and settles the active clip, then bumps the session.
  */
 function stopCurrentDesktopTts() {
-  desktopTtsSession += 1;
-  if (desktopTtsAbort) {
-    try { desktopTtsAbort.abort(); } catch (e) { /* ignore */ }
-    desktopTtsAbort = null;
-  }
-  clearDesktopTtsPreloads();
-  resetDesktopTtsAudioElement();
-  const prevBtn = CURRENT_AUDIO_BUTTON;
-  CURRENT_AUDIO = null;
-  CURRENT_AUDIO_BUTTON = null;
-  voiceModeTtsSessionActive = false;
-  voiceModeTtsPlaying = false;
-  resetPlayButtonUi(prevBtn);
-  clearMessageTtsPlayingUi();
-  if (typeof syncSendButtonState === 'function') {
-    syncSendButtonState();
-  }
+  var sessionId = null;
+  try { sessionId = voiceLifecycle.currentDesktopSession(); } catch (e) { /* ignore */ }
+  disposeActiveDesktopTtsQueue();
+  cancelDesktopTtsClipSession(sessionId);
+  voiceLifecycle.stopDesktopPlayback();
 }
 
 function completeDesktopTtsPlayback(button) {
-  clearDesktopTtsPreloads();
-  CURRENT_AUDIO = null;
-  CURRENT_AUDIO_BUTTON = null;
-  resetPlayButtonUi(button);
-  clearMessageTtsPlayingUi();
-  resetDesktopTtsAudioElement();
-  voiceModeTtsSessionActive = false;
-  voiceModeTtsPlaying = false;
-  if (window.voiceModeActive) {
-    armTtsListenCooldown();
-  }
-  if (typeof syncSendButtonState === 'function') {
-    syncSendButtonState();
-  }
+  activeDesktopTtsQueue = null;
+  voiceLifecycle.completeDesktopPlayback(button);
 }
 
 
 function desktopTtsIsLive(sessionId) {
-  return sessionId === desktopTtsSession && CURRENT_AUDIO && CURRENT_AUDIO.sessionId === sessionId;
+  return voiceLifecycle.isLiveDesktop(sessionId);
 }
 
 function disablePremiumModels() {
@@ -1679,13 +1166,7 @@ function parseUserMessageContent(originalText) {
 
 /** Join a late voice fragment onto the previous user utterance. */
 function joinVoiceUtterances(previous, next) {
-  const prev = String(previous == null ? '' : previous).trim();
-  const added = String(next == null ? '' : next).trim();
-  if (!prev) return added;
-  if (!added) return prev;
-  if (added === prev || prev.endsWith(added)) return prev;
-  if (added.startsWith(prev)) return added;
-  return prev + ' ' + added;
+  return ChatVoiceText.joinVoiceUtterances(previous, next);
 }
 
 /** False end-of-speech / quick add-on window. After this, start a new turn. */
@@ -1696,11 +1177,13 @@ let lastVoiceUtteranceStartedAt = 0;
 /** True when a new STT result is a continuation of the in-flight voice turn. */
 function shouldAmendLastVoiceTurn(state) {
   state = state || {};
-  if (!state.lastUserExists || !(state.generating || state.ttsActive)) return false;
-  const endedAt = Number(state.lastSpeechEndedAt) || 0;
-  const startedAt = Number(state.utteranceStartedAt) || 0;
-  if (!endedAt || !startedAt) return false;
-  return (startedAt - endedAt) <= VOICE_AMEND_WINDOW_MS;
+  return ChatVoiceText.shouldAmendLastVoiceTurn({
+    lastUserExists: state.lastUserExists,
+    generating: state.generating,
+    ttsActive: state.ttsActive,
+    lastSpeechEndedAt: state.lastSpeechEndedAt,
+    utteranceStartedAt: state.utteranceStartedAt
+  }, VOICE_AMEND_WINDOW_MS);
 }
 
 function composeUserMessageContent(text, imageSrc, hasImage) {
@@ -1716,11 +1199,13 @@ function composeUserMessageContent(text, imageSrc, hasImage) {
 }
 
 function fetchHistoryPair(pairIndex, extra) {
+  var pairTarget = ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+  var pairGen = historyWindow.snapshot().setGen;
   return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
     return fetch('/history_pair', {
       method: 'POST',
       headers: headers,
-      body: JSON.stringify(activeSetPayload(Object.assign({ pair_index: pairIndex }, extra || {})))
+      body: JSON.stringify(ChatConversationState.buildActiveSetPayload(pairTarget, Object.assign({ pair_index: pairIndex }, extra || {})))
     });
   }).then(function(r) {
     if (r.status === 401) {
@@ -1730,6 +1215,11 @@ function fetchHistoryPair(pairIndex, extra) {
     if (!r.ok) throw new Error('Failed to load message');
     return r.json();
   }).then(function(data) {
+    if (!historyWindow.isLiveGen(pairGen)) throw new Error('Conversation switched while loading the message.');
+    var currentId = currentSetId();
+    if (data && data.set_id != null && data.set_id !== '' && String(data.set_id) !== String(currentId)) {
+      throw new Error('Conversation switched while loading the message.');
+    }
     noteSetVersionFromRead(data);
     return data;
   });
@@ -1759,15 +1249,16 @@ function updateLoadOlderBar() {
   var bar = ensureLoadOlderBar();
   if (!bar) return;
   var btn = document.getElementById('load-older-btn');
-  if (HISTORY_HAS_MORE && HISTORY_OFFSET > 0) {
+  var snap = historyWindow.snapshot();
+  if (snap.hasMore && snap.offset > 0) {
     bar.hidden = false;
     if (btn) {
-      btn.disabled = !!HISTORY_LOADING_OLDER;
-      btn.textContent = HISTORY_LOADING_OLDER
+      btn.disabled = !!snap.loadingOlder;
+      btn.textContent = snap.loadingOlder
         ? 'Loading…'
-        : (HISTORY_OFFSET === 1
+        : (snap.offset === 1
           ? 'Load older message'
-          : 'Load older messages (' + HISTORY_OFFSET + ' earlier)');
+          : 'Load older messages (' + snap.offset + ' earlier)');
     }
   } else {
     bar.hidden = true;
@@ -1800,17 +1291,17 @@ function appendHistoryPair(userMsg, aiMsg, pairIndex, mountOpts) {
   var formattedAi = formatAiMessage(aiMsg);
   var $aiMsg = appendAiHistoryMessage(formattedAi, opts);
   $aiMsg.attr('data-original', aiMsg);
+  // Settled history seeds its source from the known message data; the null
+  // sequence means it never reports generating, however busy the tracker is.
+  bindMessagePlaybackSource($aiMsg[0], { original: aiMsg, visible: '', boundSeq: null, finished: true });
 }
 
 function applyHistoryPage(data, mode) {
-  var pairs = (data && data.history) ? data.history : [];
-  var start = data && data.history_start != null ? Number(data.history_start) : 0;
-  if (Number.isNaN(start)) start = 0;
-  HISTORY_TOTAL = data && data.history_total != null ? Number(data.history_total) : pairs.length;
-  HISTORY_HAS_MORE = !!(data && data.has_more);
-  HISTORY_OFFSET = start;
+  var page = historyWindow.applyPage(data, mode);
+  var pairs = page.pairs;
+  var start = page.start;
 
-  if (mode === 'prepend') {
+  if (page.mode === 'prepend') {
     var chat = document.getElementById('chat-content');
     var prevHeight = chat ? chat.scrollHeight : 0;
     var prevTop = chat ? chat.scrollTop : 0;
@@ -1832,6 +1323,10 @@ function applyHistoryPage(data, mode) {
   }
 
   var $chat = $('#chat-content');
+  // Replacing the page detaches every bubble; finish the live stream source
+  // so its queue completes instead of following the detached stream.
+  if (liveStreamPlaybackSource) liveStreamPlaybackSource.finish();
+  liveStreamPlaybackSource = null;
   $chat.empty();
   ensureLoadOlderBar();
   for (var j = 0; j < pairs.length; j++) {
@@ -1845,14 +1340,17 @@ function applyHistoryPage(data, mode) {
 }
 
 function loadOlderMessages() {
-  if (!HISTORY_HAS_MORE || HISTORY_LOADING_OLDER || HISTORY_OFFSET <= 0) return;
   if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
-  HISTORY_LOADING_OLDER = true;
+  var req = historyWindow.beginOlderLoad({
+    setId: window.APP_DATA.lastSetId,
+    setName: window.APP_DATA.lastSet
+  });
+  if (!req) return;
   updateLoadOlderBar();
-  var before = HISTORY_OFFSET;
-  var gen = HISTORY_SET_GEN;
-  var setId = window.APP_DATA.lastSetId;
-  var setName = window.APP_DATA.lastSet;
+  var before = req.before;
+  var gen = req.gen;
+  var setId = req.setId;
+  var setName = req.setName;
   withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
     return fetch('/load_set', {
       method: 'POST',
@@ -1860,7 +1358,7 @@ function loadOlderMessages() {
       body: JSON.stringify({
         set_id: setId,
         set_name: setName,
-        limit: HISTORY_PAGE_SIZE,
+        limit: req.limit,
         before: before,
         thumbnails: true
       })
@@ -1870,13 +1368,13 @@ function loadOlderMessages() {
     if (!r.ok) throw new Error('Failed to load older messages');
     return r.json();
   }).then(function(data) {
-    if (gen !== HISTORY_SET_GEN) return;
+    if (!historyWindow.isLiveGen(gen)) return;
     noteSetVersionFromRead(data);
     applyHistoryPage(data, 'prepend');
   }).catch(function(err) {
     console.error('Failed to load older messages:', err);
   }).then(function() {
-    HISTORY_LOADING_OLDER = false;
+    historyWindow.noteOlderSettled(gen);
     updateLoadOlderBar();
   });
 }
@@ -1911,30 +1409,7 @@ function ensureImageLightbox() {
 }
 
 function sanitizeLightboxSrc(src) {
-  const dataSrc = sanitizeDataImageSrc(src);
-  if (dataSrc) return dataSrc;
-  if (src == null) return null;
-  try {
-    const u = new URL(String(src), window.location.href);
-    if (u.origin !== window.location.origin) return null;
-    const m = /^\/history_image\/([A-Za-z0-9._~-]+)\/([0-9]+)\/([0-9]+)\/([0-9]+)$/.exec(u.pathname);
-    if (!m) return null;
-    // Reconstruct from character-class-filtered captures so DOM-sourced
-    // pathname/search never flow into HTML attribute sinks (CodeQL js/xss-through-dom).
-    const setId = m[1].replace(/[^A-Za-z0-9._~-]/g, '');
-    const version = m[2].replace(/[^0-9]/g, '');
-    const pairIndex = m[3].replace(/[^0-9]/g, '');
-    const imgIdx = m[4].replace(/[^0-9]/g, '');
-    if (!setId || setId !== m[1] || version !== m[2] || pairIndex !== m[3] || imgIdx !== m[4]) {
-      return null;
-    }
-    const path = '/history_image/' + setId + '/' + version + '/' + pairIndex + '/' + imgIdx;
-    if (!u.search) return path;
-    if (u.search === '?size=thumb') return path + '?size=thumb';
-    return null;
-  } catch (e) {
-    return null;
-  }
+  return chatRenderer.sanitizeLightboxSrc(src);
 }
 
 function openImageLightbox(src) {
@@ -2066,76 +1541,99 @@ function appendMessage(message, className, pairIndex, mountOpts) {
   return $messageElement;
 }
 
-let currentAbortController = null;
-let chatRequestSeq = 0;
+// Request fencing and aborts (static/conversation-state.js): single owner
+// of the sequence and the live AbortController.
+var chatRequests = ChatConversationState.createChatRequestTracker();
 
 function beginChatRequest() {
-  chatRequestSeq += 1;
-  if (currentAbortController) {
-    try { currentAbortController.abort(); } catch (e) { /* ignore */ }
-  }
-  currentAbortController = new AbortController();
+  var seq = chatRequests.begin();
   setGeneratingState(true);
-  return chatRequestSeq;
+  return seq;
 }
 
 function isLiveChatRequest(seq) {
-  return seq === chatRequestSeq;
+  return chatRequests.isLive(seq);
+}
+
+function captureChatBinding(seq) {
+  return ChatConversationState.captureConversationBinding(
+    seq, currentSetId(), historyWindow.snapshot().setGen);
+}
+
+function isLiveConversation(binding) {
+  if (!binding) return false;
+  return ChatConversationState.isLiveConversationBinding(
+    binding, chatRequests.isLive(binding.seq),
+    historyWindow.isLiveGen(binding.setGen), currentSetId());
+}
+
+function shouldApplyChatResponse(binding, data) {
+  if (!binding) return false;
+  return ChatConversationState.shouldApplySetResponseForBinding(
+    binding, data, chatRequests.isLive(binding.seq),
+    historyWindow.isLiveGen(binding.setGen), currentSetId());
+}
+
+function captureMemoryBinding(target, gen) {
+  var setId = target && target.setId != null ? target.setId : currentSetId();
+  var setGen = (gen != null) ? gen : historyWindow.snapshot().setGen;
+  return ChatConversationState.captureSetBinding(setId, setGen);
+}
+
+function isLiveMemoryBinding(binding) {
+  if (!binding) return false;
+  return ChatConversationState.isLiveSetBinding(
+    binding, historyWindow.isLiveGen(binding.setGen), currentSetId());
+}
+
+function shouldApplyMemoryResponse(binding, data) {
+  if (!binding) return false;
+  return ChatConversationState.shouldApplySetResponseForSetBinding(
+    binding, data, historyWindow.isLiveGen(binding.setGen), currentSetId());
 }
 
 function finishChatRequest(seq) {
-  if (!isLiveChatRequest(seq)) return false;
-  currentAbortController = null;
+  if (!chatRequests.finish(seq)) return false;
   syncSendButtonState();
   return true;
 }
 
 function isVoiceTtsActive() {
-  return !!(CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying);
+  return voiceLifecycle.isTtsActive();
 }
 
 function syncSendButtonState() {
-  const generating = !!currentAbortController;
+  const generating = chatRequests.isGenerating();
   const voiceTts = !!window.voiceModeActive && isVoiceTtsActive();
   setGeneratingState(generating || voiceTts);
 }
 
 function abortChatRequestQuietly() {
-  chatRequestSeq += 1;
-  if (currentAbortController) {
-    try { currentAbortController.abort(); } catch (e) { /* ignore */ }
-    currentAbortController = null;
+  chatRequests.abortQuietly();
+}
+
+// A set switch abandons the outgoing generation: abort its fetch so the
+// reader settles, finish its detached playback source, drop its callbacks
+// via the bumped sequence, and leave the send controls usable. A replacement
+// request starts afterwards unaffected.
+function settleChatRequestForSetSwitch() {
+  if (chatRequests.isGenerating()) {
+    abortChatRequestQuietly();
+    if (typeof liveStreamPlaybackSource !== 'undefined' && liveStreamPlaybackSource) {
+      try { liveStreamPlaybackSource.finish(); } catch (e) {}
+      liveStreamPlaybackSource = null;
+    }
+    syncSendButtonState();
   }
 }
 
-function sleepMs(ms) {
-  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+// Cancellation promises must never reject unobserved.
+function swallowCancel(promise) {
+  if (promise && typeof promise.catch === 'function') promise.catch(function () {});
 }
 
 function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
-  attempt = attempt || 0;
-  return fetch(url, init).then(function (res) {
-    if (res.status === 401 && !afterRefresh) {
-      return refreshSession().then(function (restored) {
-        if (!restored) {
-          redirectHomeOnAuthFailure();
-          throw new Error('Session expired');
-        }
-        return fetchWithGenerateRetry(url, refreshCsrfInit(init), attempt, true);
-      });
-    }
-    if ((res.status === 429 || (res.status === 400 && attempt < 8)) && attempt < 12) {
-      return sleepMs(200 + attempt * 150).then(function () {
-        if (init && init.signal && init.signal.aborted) {
-          const err = new Error('Aborted');
-          err.name = 'AbortError';
-          throw err;
-        }
-        return fetchWithGenerateRetry(url, init, attempt + 1, afterRefresh);
-      });
-    }
-    return res;
-  });
+  return sessionClient.fetchWithGenerateRetry(url, init, attempt, afterRefresh);
 }
 
 function setGeneratingState(isGenerating) {
@@ -2151,154 +1649,82 @@ function handleStopClick() {
   if (typeof window.stopAllTtsPlayback === 'function') {
     window.stopAllTtsPlayback();
   }
-  if (currentAbortController) {
-    currentAbortController.abort();
-    currentAbortController = null;
-  }
+  chatRequests.stopForUser();
   syncSendButtonState();
 }
 
 // Sanitize raw markdown text for TTS: strip URLs, citations, code blocks, and formatting
 function sanitizeForTTS(text) {
-  let cleaned = String(text || '')
-    // Strip code fences: ```lang ... ``` or standalone ```
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/```[a-zA-Z0-9_-]*/g, '')
-    // Strip URLs (must come before citation removal)
-    .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
-    // Strip markdown citation links: [[1]](url) or [[1]]() -> empty
-    .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
-    // Strip remaining markdown links: [text](url) -> text
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    // Strip HTML tags: <...>
-    .replace(/<[^>]+>/g, '')
-    // Strip bold/italic: ***text***, **text**, *text*
-    .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
-    // Strip underline bold/italic: ___text___, __text__, _text_
-    .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')
-    // Strip strikethrough: ~~text~~
-    .replace(/~~([^~]+)~~/g, '$1')
-    // Strip inline code: `text`
-    .replace(/`([^`]*)`/g, '$1')
-    // Strip heading markers: ### heading
-    .replace(/^#{1,6}\s+/gm, '')
-    // Strip blockquote markers: > quote
-    .replace(/^>\s*/gm, '')
-    // Strip horizontal rules: --- or *** or ___
-    .replace(/^[-*_]{3,}\s*$/gm, '')
-    // Normalize CRLF to LF
-    .replace(/\r\n/g, '\n')
-    // Collapse horizontal whitespace (preserve newlines for paragraph/list sentence discovery)
-    .replace(/[^\S\r\n]+/g, ' ')
-    // Collapse 3+ newlines into 2
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-  // Expand currency with magnitude: $12.6 billion, $12.6B, $12.6 billion dollars
-  cleaned = cleaned.replace(/([\$€£])\s*(\d[\d,]*(?:\.\d+)?)\s*(trillion|billion|million|thousand|bn|b|m|k)\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, amt, mag) => {
-    const magLower = mag.toLowerCase();
-    const magWord = (magLower === 'k' || magLower === 'thousand') ? 'thousand'
-      : (magLower === 'm' || magLower === 'million') ? 'million'
-      : (magLower === 'b' || magLower === 'bn' || magLower === 'billion') ? 'billion'
-      : (magLower === 'trillion') ? 'trillion' : mag;
-    const curr = sym === '€' ? 'euros' : (sym === '£' ? 'pounds' : 'dollars');
-    return `${amt} ${magWord} ${curr}`;
-  });
-
-  // Expand cents-only: $0.50, $0.01
-  cleaned = cleaned.replace(/([\$€£])\s*0\.(\d{1,2})\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, centsStr) => {
-    let cents = parseInt(centsStr, 10) || 0;
-    if (centsStr.length === 1) cents *= 10;
-    if (sym === '£') return cents === 1 ? '1 penny' : `${cents} pence`;
-    return cents === 1 ? '1 cent' : `${cents} cents`;
-  });
-
-  // Expand dollars and cents: $12.50, $1.00
-  cleaned = cleaned.replace(/([\$€£])\s*(\d[\d,]*)\.(\d{1,2})\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, intStr, centsStr) => {
-    let cents = parseInt(centsStr, 10) || 0;
-    if (centsStr.length === 1) cents *= 10;
-    const intVal = parseInt(intStr.replace(/,/g, ''), 10) || 0;
-    const unit = sym === '€' ? (intVal === 1 ? 'euro' : 'euros')
-      : (sym === '£' ? (intVal === 1 ? 'pound' : 'pounds')
-      : (intVal === 1 ? 'dollar' : 'dollars'));
-    if (cents === 0) return `${intStr} ${unit}`;
-    const centsSpoken = sym === '£' ? (cents === 1 ? '1 penny' : `${cents} pence`)
-      : (cents === 1 ? '1 cent' : `${cents} cents`);
-    return `${intStr} ${unit} and ${centsSpoken}`;
-  });
-
-  // Expand integer currency: $5, $1, $100,000
-  cleaned = cleaned.replace(/([\$€£])\s*(\d[\d,]*)\b(?:\s*(dollars?|euros?|pounds?))?/gi, (m, sym, amt) => {
-    const val = parseInt(amt.replace(/,/g, ''), 10) || 0;
-    const unit = sym === '€' ? (val === 1 ? 'euro' : 'euros')
-      : (sym === '£' ? (val === 1 ? 'pound' : 'pounds')
-      : (val === 1 ? 'dollar' : 'dollars'));
-    return `${amt} ${unit}`;
-  });
-
-  // Expand Latin abbreviations
-  cleaned = cleaned
-    .replace(/\be\.g\.,?\s*/gi, 'for example ')
-    .replace(/\bi\.e\.,?\s*/gi, 'that is ')
-    .replace(/\betc\.\s*$/gim, 'etcetera.')
-    .replace(/\betc\.\b/gi, 'etcetera')
-    .replace(/\bvs\.?\b/gi, 'versus');
-
-  // Expand titles / honorifics
-  cleaned = cleaned.replace(/\b(Dr|Mr|Mrs|Ms|Prof|Sr|Jr|Gen|Col|Sgt|Lt|Capt)\.\s*/g, (m, t) => {
-    const map = { Dr: 'Doctor', Mr: 'Mister', Mrs: 'Missus', Ms: 'Ms', Prof: 'Professor', Sr: 'Senior', Jr: 'Junior', Gen: 'General', Col: 'Colonel', Sgt: 'Sergeant', Lt: 'Lieutenant', Capt: 'Captain' };
-    return (map[t] || t) + ' ';
-  });
-
-  // Common shortened words
-  cleaned = cleaned.replace(/\b(approx|dept|apt|est|govt|corp|inc|ltd|co)\.\s*/gi, (m, w) => {
-    const map = { approx: 'approximately', dept: 'department', apt: 'apartment', est: 'established', govt: 'government', corp: 'corporation', inc: 'incorporated', ltd: 'limited', co: 'company' };
-    return (map[w.toLowerCase()] || w) + ' ';
-  });
-
-  // Time: 10 a.m. / 10 p.m.
-  cleaned = cleaned.replace(/\b(\d+)\s*([ap])\.m\.\b/gi, '$1 $2M');
-
-  // Symbols
-  cleaned = cleaned
-    .replace(/(\d+(?:\.\d+)?)\s*°C\b/g, '$1 degrees Celsius')
-    .replace(/(\d+(?:\.\d+)?)\s*°F\b/g, '$1 degrees Fahrenheit')
-    .replace(/(\d+(?:\.\d+)?)\s*°\b/g, '$1 degrees')
-    .replace(/(\d+(?:\.\d+)?)\s*%/g, '$1 percent')
-    .replace(/(\w+)\s*&\s*(\w+)/g, '$1 and $2')
-    .replace(/#(\d+)\b/g, 'number $1');
-
-  // Dotted initialisms: U.S., U.S.A., A.I., D.C., Ph.D.
-  cleaned = cleaned.replace(/\b([A-Z][a-z]?)\.([A-Z][a-z]?)\.(?:([A-Z][a-z]?)\.)*/g, (m, p1, p2, p3, offset, fullStr) => {
-    const letters = m.replace(/[^a-zA-Z]/g, '');
-    const rest = fullStr.slice(offset + m.length).replace(/^["')\]}”’\s]+/, '');
-    const atEnd = !rest || /^[A-Z]/.test(rest);
-    return atEnd ? `${letters}.` : letters;
-  });
-
-  // If there are no alphanumeric characters, there is nothing speakable
-  if (!/[0-9\p{L}]/u.test(cleaned)) {
-    return '';
-  }
-  return cleaned;
+  return ChatVoiceText.sanitizeForTTS(text);
 }
 
-/** Full TTS source text for an AI message (data-original preferred, then visible DOM). */
-function getMessageTtsText($messageElement) {
-  let fullText = $messageElement.attr('data-original') || '';
-  if (fullText) {
-    fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-  }
-  if (!fullText) {
-    const $textClone = $messageElement.find('.ai-message-text').clone();
-    $textClone.find('.thinking-container').remove();
-    $textClone.find('.regenerate-container').remove();
-    fullText = $textClone.text().trim();
-  }
-  fullText = sanitizeForTTS(fullText);
-  if (fullText === 'Thinking...') return '';
-  if (/^\[Error\]/.test(fullText) || /^Error:/.test(fullText)) return '';
-  return fullText;
+// Per-message TTS playback sources, keyed by AI message host. Stream sites
+// publish the strings they render; begin/finish/cancel/failure sites bind
+// or settle against the request-tracker sequence. No progress is inferred
+// from buttons or rendered text; the adapter observer stays a text-change
+// wakeup backstop only.
+var messagePlaybackSources = new WeakMap();
+var liveStreamPlaybackSource = null;
+
+function messagePlaybackSourceDeps(boundSeq) {
+  return {
+    sanitize: function (text) { return sanitizeForTTS(text); },
+    isTrackerGenerating: function () { return chatRequests.isGenerating(); },
+    isTrackerLive: function (s) { return chatRequests.isLive(s); },
+    boundSeq: boundSeq
+  };
+}
+
+// Bind a host to a sequence, ending any prior source so replaced sessions
+// do not leak.
+function bindMessagePlaybackSource(hostEl, site) {
+  site = site || {};
+  var prev = hostEl ? messagePlaybackSources.get(hostEl) : null;
+  if (prev) prev.finish();
+  var source = ChatPlaybackSource.createMessageSource(
+    messagePlaybackSourceDeps(site.boundSeq != null ? site.boundSeq : null));
+  source.publish({ original: site.original || '', fallbackVisible: site.visible || '' });
+  if (site.finished) source.finish();
+  if (hostEl) messagePlaybackSources.set(hostEl, source);
+  return source;
+}
+
+// Migrate a host's source to a replacement generation in one atomic restart.
+function retargetMessagePlaybackSource(hostEl, seq) {
+  var source = hostEl ? messagePlaybackSources.get(hostEl) : null;
+  if (!source) return bindMessagePlaybackSource(hostEl, { original: '', visible: '', boundSeq: seq });
+  source.retarget(seq, { original: '', fallbackVisible: '' });
+  return source;
+}
+
+function lookupMessagePlaybackSource(hostEl) {
+  var source = hostEl ? messagePlaybackSources.get(hostEl) : null;
+  if (source) return source;
+  // Every AI bubble with a play button is bound at its creation site; a
+  // missing entry plays silent instead of inferring from the DOM.
+  var silent = ChatPlaybackSource.createMessageSource(messagePlaybackSourceDeps(null));
+  silent.finish();
+  return silent;
+}
+
+// Text event from a producing/updating site; drops when nothing is bound.
+function publishMessagePlaybackText($messageElement, original, visible) {
+  var host = $messageElement && $messageElement[0];
+  var source = host && messagePlaybackSources.get(host);
+  if (source) source.publish({ original: original || '', fallbackVisible: visible || '' });
+}
+
+// Terminal progress event; text is kept so queued sentences drain.
+function finishMessagePlayback($messageElement) {
+  var host = $messageElement && $messageElement[0];
+  var source = host && messagePlaybackSources.get(host);
+  if (source) source.finish();
+  if (liveStreamPlaybackSource === source) liveStreamPlaybackSource = null;
+}
+
+// Canonical wire shape for data-original and source publishes alike.
+function combinedAiOriginal(fullVisibleText, fullThinkingText) {
+  return fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
 }
 
 /**
@@ -2312,145 +1738,28 @@ function getDomPlainText(element) {
 
 /**
  * Speakable-complete trailing fragment while generation continues.
- * A colon waits for its continuation, a digit period may extend to a
- * decimal, and all-caps, abbreviation, or honorific periods may merge
- * with what streams next.
+ * Owned by static/voice-text.js; desktop/native discover share it here.
  */
 function sentenceEndsWithTerminator(sentenceText) {
-  const s = String(sentenceText || '').trim();
-  if (!s) return false;
-  if (!/(?:\.{1,}|[!?…:]|[\r\n])["'”’)\]]*\s*$/.test(s)) return false;
-  if (/:\s*["'”’)\]]*\s*$/.test(s)) return false;
-  if (/[0-9]\.\s*["'”’)\]]*\s*$/.test(s)) return false;
-  if (/\b[A-Z]{2,4}\.\s*["'”’)\]]*\s*$/.test(s)) return false;
-  if (/\b(?:e\.g|i\.e|vs|etc|approx|dept|est|apt)\.\s*["'”’)\]]*\s*$/i.test(s)) return false;
-  if (/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|Gen|Col|Sgt|Lt|Capt|St)\.\s*["'”’)\]]*\s*$/i.test(s)) return false;
-  if (/\betcetera\.\s*["'”’)\]]*\s*$/i.test(s)) return false;
-  return true;
+  return ChatVoiceText.sentenceEndsWithTerminator(sentenceText);
 }
 
-/** True if `ch` is an ASCII digit (0-9). */
-function isAsciiDigit(ch) {
-  return ch >= '0' && ch <= '9';
-}
+
 
 /**
- * Split plain text into sentences. Single algorithm used for:
- * - hover highlight bounds
- * - click-to-play sentence selection
- * - voice-mode discover
- * Do NOT sanitize before splitting (sanitize changes boundaries / can drop the first sentence).
- *
- * Ellipsis "..." / ".." / "…." is ONE terminator — never three empty "." sentences.
- *
- * Decimal/version dots like "4.6", "3.14", "1.2.3" are NOT sentence terminators
- * (a period between two digits is a number separator, not end-of-sentence).
- *
- * @returns {{start:number, end:number, text:string}[]}
+ * Split plain text into sentences ({start, end, text}[]).
+ * Owned by static/voice-text.js; hover, click-to-play and voice-mode
+ * discover share it through this adapter. Do NOT sanitize before
+ * splitting (sanitize changes boundaries).
  */
 function splitSentences(text) {
-  const out = [];
-  if (!text) return out;
-  let i = 0;
-  const n = text.length;
-  while (i < n) {
-    // Skip whitespace between sentences (not part of either sentence).
-    while (i < n && /\s/.test(text.charAt(i))) i++;
-    if (i >= n) break;
-    const start = i;
-    let end = i;
-    while (end < n) {
-      const c = text.charAt(end);
-      // Paragraph break (\n\n or \r\n\r\n) or newline before list marker / heading
-      if (c === '\n' || c === '\r') {
-        const rest = text.slice(end);
-        const isParagraphBreak = /^\r?\n\s*[\r\n]/.test(rest);
-        const isListOrHeadingBreak = /^\r?\n\s*(?:[-*]\s+|\d+\.\s+|#{1,6}\s+)/.test(rest);
-        if (isParagraphBreak || isListOrHeadingBreak) {
-          break;
-        }
-      }
-      // Colon before newline (e.g. "Here are the steps:\n")
-      if (c === ':' && end + 1 < n && /^\s*[\r\n]/.test(text.slice(end + 1))) {
-        end++;
-        break;
-      }
-      if (c === '.' || c === '!' || c === '?' || c === '\u2026' /* … */) {
-        if (c === '.') {
-          // Decimal/version dot: digit on BOTH sides → not a terminator.
-          // "4.6", "3.14", "1.2.3" stay inside one sentence so TTS does not pause.
-          const prev = end > 0 ? text.charAt(end - 1) : '';
-          const next = end + 1 < n ? text.charAt(end + 1) : '';
-          if (isAsciiDigit(prev) && isAsciiDigit(next)) {
-            end++;
-            continue;
-          }
-          // Letter on BOTH sides: "U.S", "e.g", "a.m", "i.e", "domain.com" → not a terminator.
-          if (/[a-zA-Z]/.test(prev) && /[a-zA-Z]/.test(next)) {
-            end++;
-            continue;
-          }
-          // Numbered list item marker: "1. ", "2. ", "10. " where the sentence chunk
-          // so far is purely digits → not a terminator, attach to the item text.
-          if (/^\d+$/.test(text.slice(start, end)) && end + 1 < n && /\s/.test(next)) {
-            end++;
-            continue;
-          }
-          // Honorific / Title: "Dr. Smith", "Mr. Jones", "Mrs. White" → not a terminator.
-          const wordSoFar = text.slice(start, end);
-          if (/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|Gen|Col|Sgt|Lt|Capt|St)$/i.test(wordSoFar) && end + 1 < n && /\s/.test(next)) {
-            end++;
-            continue;
-          }
-          // Common abbreviation followed by comma or space and lowercase letter/digit:
-          // "e.g. apples", "i.e. that", "vs. team", "approx. 50" → not a terminator.
-          const restAfter = text.slice(end + 1);
-          if (/\b(?:e\.g|i\.e|vs|etc|approx|dept|est|apt)$/i.test(wordSoFar) && (/^,\s*/.test(restAfter) || /^\s+[a-z0-9]/.test(restAfter))) {
-            end++;
-            continue;
-          }
-          // Dotted initialism followed by lowercase letter: "in the U.S. economy" → not a terminator.
-          if (/\b(?:[A-Za-z]\.){1,}[A-Za-z]$/.test(wordSoFar) && /^\s+[a-z]/.test(restAfter)) {
-            end++;
-            continue;
-          }
-          // Consume the whole run: "..." is one terminator, not three sentences.
-          while (end < n && text.charAt(end) === '.') end++;
-        } else if (c === '\u2026') {
-          end++;
-        } else {
-          // ! or ? — keep "?!?!" as a single trailing burst on this sentence.
-          while (end < n && (text.charAt(end) === '!' || text.charAt(end) === '?')) end++;
-        }
-        // Include trailing closers: ..."  )'
-        while (end < n && /["'”’)\]]/.test(text.charAt(end))) end++;
-        break;
-      }
-      end++;
-    }
-    if (end > start) {
-      out.push({ start: start, end: end, text: text.slice(start, end) });
-    }
-    i = end;
-  }
-  return out;
+  return ChatVoiceText.splitSentences(text);
 }
+
 
 /** Index of the sentence containing caret offset, or -1. */
 function sentenceIndexAtOffset(sentences, offset) {
-  if (!sentences || !sentences.length) return -1;
-  const o = Math.max(0, offset);
-  for (let i = 0; i < sentences.length; i++) {
-    const s = sentences[i];
-    // Whitespace before the first sentence → first sentence.
-    if (o < s.start) return i;
-    // Inside [start, end) or on the final character of the sentence.
-    if (o < s.end) return i;
-    // Exactly at end boundary: if there is a next sentence, caret sits between them → next.
-    if (o === s.end && i + 1 < sentences.length) continue;
-    if (o === s.end) return i;
-  }
-  return sentences.length - 1;
+  return ChatVoiceText.sentenceIndexAtOffset(sentences, offset);
 }
 
 /**
@@ -2630,271 +1939,52 @@ function highlightSentenceInElement(element, text, caretOffset, isPlaying) {
   return sentence;
 }
 
+// Desktop clip fetch/preload live in the owned TTS playback unit using the
+// single voice lifecycle + voice-text; explicit HTTP/audio adapters above.
 function fetchDesktopTtsClip(sessionId, text) {
-  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(null);
-  const cleaned = sanitizeForTTS(text);
-  if (!cleaned) return Promise.resolve(null);
-
-  const cacheKey = sessionId + ':' + cleaned;
-  if (desktopTtsPreloadCache.has(cacheKey)) {
-    return desktopTtsPreloadCache.get(cacheKey);
-  }
-
-  const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
-  const promise = fetchVoiceRetry('/tts', {
-    method: 'POST',
-    headers: withCsrf({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ text: cleaned }),
-    signal: signal
-  })
-  .then(function (r) {
-    if (!desktopTtsIsLive(sessionId)) return null;
-    return r.json();
-  })
-  .then(function (data) {
-    if (!desktopTtsIsLive(sessionId) || !data || !data.token) return null;
-    const clipUrl = '/tts_stream/' + encodeURIComponent(data.token);
-    return fetchVoiceRetry(clipUrl, {
-      method: 'GET',
-      headers: withCsrf({}),
-      signal: signal
-    }, MAX_TTS_CLIP_ATTEMPTS);
-  })
-  .then(function (res) {
-    if (!res || !desktopTtsIsLive(sessionId)) return null;
-    return res.blob();
-  })
-  .then(function (blob) {
-    if (!blob || !desktopTtsIsLive(sessionId)) return null;
-    // Retain the blob and mint object URLs lazily at play time: a cached
-    // (preloaded but not yet played) clip holds no URL, so an abandoned
-    // preload cleanup cannot revoke anything, and every play attempt gets
-    // a fresh URL no earlier stop could have revoked (blob 404s).
-    const clip = {
-      blobUrl: null,
-      blob: blob,
-      cleanUp: function () {
-        if (clip.blobUrl) {
-          try { URL.revokeObjectURL(clip.blobUrl); } catch (e) { /* ignore */ }
-          clip.blobUrl = null;
-        }
-      }
-    };
-    return clip;
-  })
-  .catch(function (err) {
-    desktopTtsPreloadCache.delete(cacheKey);
-    throw err;
-  });
-
-  desktopTtsPreloadCache.set(cacheKey, promise);
-  return promise;
+  return desktopTtsClip.fetchClip(sessionId, text);
 }
 
 function preloadDesktopTtsSentence(sessionId, text) {
-  if (!desktopTtsIsLive(sessionId) || !text) return;
-  const cleaned = sanitizeForTTS(text);
-  if (!cleaned) return;
-  const cacheKey = sessionId + ':' + cleaned;
-  if (desktopTtsPreloadCache.has(cacheKey)) return;
-  fetchDesktopTtsClip(sessionId, text).catch(function () {});
+  return desktopTtsClip.preloadSentence(sessionId, text);
 }
 
 /**
  * Fetch one TTS token and play it on the shared HTMLAudioElement.
- * Resolves true when that clip finished while the session is still live.
+ * Owned by static/tts-playback.js via the shared desktop clip pipeline;
+ * thin adapter preserves the call site.
  */
 function playOneTtsUtterance(sessionId, text) {
-  if (!desktopTtsIsLive(sessionId)) return Promise.resolve(false);
-  const cleaned = sanitizeForTTS(text);
-  if (!cleaned) return Promise.resolve(true);
-
-  const cacheKey = sessionId + ':' + cleaned;
-  const cached = desktopTtsPreloadCache.get(cacheKey);
-
-  // Retries token fetch and clip GET via fetchVoiceRetry
-  const signal = desktopTtsAbort ? desktopTtsAbort.signal : undefined;
-  const getClipPromise = cached
-    ? Promise.resolve(cached)
-    : fetchDesktopTtsClip(sessionId, text);
-  // Take ownership AFTER the fetch above: on a cache miss it re-caches the
-  // new promise, and a playing clip must never stay cached — otherwise
-  // clearDesktopTtsPreloads can revoke its URL mid-play, and finish()'s
-  // revoke lets a later pump retry replay the same dead URL (blob 404s).
-  // finish()/cleanUp owns the URL from here on.
-  desktopTtsPreloadCache.delete(cacheKey);
-
-  return getClipPromise.then(function (clip) {
-    if (!desktopTtsIsLive(sessionId) || !clip || !clip.blob) return false;
-    const audio = getDesktopTtsAudio();
-    return new Promise(function (resolve) {
-      if (!desktopTtsIsLive(sessionId)) {
-        clip.cleanUp();
-        resolve(false);
-        return;
-      }
-      let settled = false;
-      let clipAttempt = 0;
-
-      const finish = function (ok) {
-        if (settled) return;
-        settled = true;
-        audio.onended = null;
-        audio.onerror = null;
-        const playedUrl = clip.blobUrl;
-        clip.cleanUp();
-        if (playedUrl && desktopTtsCurrentBlobUrl === playedUrl) {
-          desktopTtsCurrentBlobUrl = null;
-        }
-        if (window.voiceModeActive) {
-          voiceModeTtsPlaying = false;
-          if (typeof window.notifyVoiceModeTtsEnded === 'function') {
-            window.notifyVoiceModeTtsEnded();
-          }
-        }
-        resolve(!!ok && desktopTtsIsLive(sessionId));
-      };
-
-      const startClip = function () {
-        if (settled) return;
-        clipAttempt += 1;
-        const myAttempt = clipAttempt;
-        let attemptFailed = false;
-        const failAttempt = function (err) {
-          if (settled || attemptFailed || myAttempt !== clipAttempt) return;
-          attemptFailed = true;
-          if (err && err.name === 'NotAllowedError') {
-            console.error('TTS audio.play() failed:', err);
-            finish(false);
-            return;
-          }
-          if (clipAttempt >= MAX_TTS_CLIP_ATTEMPTS || !desktopTtsIsLive(sessionId)) {
-            finish(false);
-            return;
-          }
-          setTimeout(function () {
-            if (settled || !desktopTtsIsLive(sessionId)) return;
-            startClip();
-          }, TTS_CLIP_RETRY_BACKOFF_MS * clipAttempt);
-        };
-        // Mint a fresh object URL for EVERY attempt from the retained blob.
-        // The previous attempt's URL may have been revoked after its load
-        // failed (stop-while-loading, an abandoned-preload cleanup, or the
-        // finished clip's own cleanUp); replaying it 404s the element, so
-        // retries must never reuse a URL. Revoking first is safe — the old
-        // load already failed — and createObjectURL failure falls through
-        // to failAttempt so the pump can never hang on an unsettled play.
-        clip.cleanUp();
-        let freshUrl = null;
-        try {
-          if (desktopTtsIsLive(sessionId) && clip.blob) {
-            freshUrl = URL.createObjectURL(clip.blob);
-          }
-        } catch (e) { /* fall through to failAttempt */ }
-        if (!freshUrl) {
-          failAttempt(null);
-          return;
-        }
-        clip.blobUrl = freshUrl;
-        if (desktopTtsCurrentBlobUrl && desktopTtsCurrentBlobUrl !== clip.blobUrl) {
-          try { URL.revokeObjectURL(desktopTtsCurrentBlobUrl); } catch (e) { /* ignore */ }
-        }
-        desktopTtsCurrentBlobUrl = clip.blobUrl;
-        audio.onended = function () { finish(true); };
-        audio.onerror = function () {
-          // Never swallow the cause: the sentence pump only reports the
-          // skip, so the MediaError code is the only record of WHY a clip
-          // was unplayable (1 aborted, 2 network, 3 decode, 4 unsupported).
-          try {
-            const mediaErr = audio.error;
-            console.error('TTS clip media error:',
-              mediaErr && mediaErr.code, mediaErr && mediaErr.message);
-          } catch (e) { /* ignore */ }
-          failAttempt(null);
-        };
-        audio.src = clip.blobUrl;
-        if (window.voiceModeActive) {
-          voiceModeTtsPlaying = true;
-          if (typeof window.notifyVoiceModeTtsStarted === 'function') {
-            window.notifyVoiceModeTtsStarted();
-          }
-        }
-        const playPromise = audio.play();
-        if (playPromise && typeof playPromise.then === 'function') {
-          playPromise.catch(function (err) {
-            // NotAllowedError already logs inside failAttempt; any OTHER
-            // rejection (e.g. NotSupportedError on unplayable bytes) must
-            // be recorded or every attempt fails with no visible cause.
-            if (!err || err.name !== 'NotAllowedError') {
-              console.error('TTS audio.play() rejected:',
-                err && err.name, err && err.message);
-            }
-            failAttempt(err);
-          });
-        }
-      };
-      startClip();
-    });
-  }).catch(function (err) {
-    if (err && (err.name === 'AbortError' || (err.message && err.message.indexOf('aborted') !== -1))) {
-      return false;
-    }
-    console.error('TTS error:', err);
-    return false;
-  });
+  return desktopTtsClip.playOne(sessionId, text);
 }
 
 /**
  * Play a fixed list of sentences (click-a-sentence path).
  * Sentences are already split from DOM text; we only sanitize per item for the API.
  */
+/**
+ * Play a fixed list of sentences (click-a-sentence path).
+ * Owned by static/tts-playback.js; DOM/event composition stays here via
+ * explicit progress callbacks (visible text is already split; queue owns
+ * retries/backoff/termination exactly).
+ */
 function playFixedSentenceList(sessionId, button, sentences) {
-  const queue = (sentences || []).slice();
-  let sentenceRetries = 0;
-
-  function pump() {
-    if (!desktopTtsIsLive(sessionId)) return;
-    if (!queue.length) {
-      completeDesktopTtsPlayback(button);
-      return;
-    }
-    const next = queue.shift();
-    if (queue.length > 0) {
-      preloadDesktopTtsSentence(sessionId, queue[0]);
-    }
-    playOneTtsUtterance(sessionId, next).then(function (ok) {
-      if (!desktopTtsIsLive(sessionId)) return;
-      if (!ok) {
-        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (window.voiceModeActive && desktopTtsIsLive(sessionId))) {
-          sentenceRetries += 1;
-          queue.unshift(next);
-          const delay = window.voiceModeActive
-            ? Math.min(400 * sentenceRetries, 3000)
-            : 400 * sentenceRetries;
-          setTimeout(function () {
-            if (!desktopTtsIsLive(sessionId)) return;
-            pump();
-          }, delay);
-          return;
-        }
-        sentenceRetries = 0;
-        queue.length = 0;
-        console.error('Desktop TTS sentence failed after retries');
-        reportVoice('VOICE-ERROR', 'TTS sentence failed (fixed list)');
-        appendMessage('Voice output failed. Try again.', 'error-message');
-        // Exhausted retries end the session with a visible error; never advance.
-        completeDesktopTtsPlayback(button);
-        return;
-      }
-      sentenceRetries = 0;
-      pump();
-    });
-  }
-
-  if (queue.length > 0) {
-    preloadDesktopTtsSentence(sessionId, queue[0]);
-  }
-  pump();
+  var handle = ChatTtsPlayback.playFixedSentenceList({
+    isLive: function (id) { return desktopTtsIsLive(id); },
+    onComplete: function (btn) { activeDesktopTtsQueue = null; completeDesktopTtsPlayback(btn); },
+    preload: function (id, text) { preloadDesktopTtsSentence(id, text); },
+    playOne: function (id, text) { return playOneTtsUtterance(id, text); },
+    reportVoice: function (kind, msg) { reportVoice(kind, msg); },
+    appendMessage: function (text, cls) { appendMessage(text, cls); },
+    logError: function () { console.error.apply(console, arguments); },
+    setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+    clearTimeout: function (id) { clearTimeout(id); },
+    registerClipCanceller: function (entry) { voiceLifecycle.registerDesktopClipCanceller(entry); },
+    unregisterClipCanceller: function (entry) { voiceLifecycle.unregisterDesktopClipCanceller(entry); },
+    isVoiceModeActive: function () { return !!window.voiceModeActive; }
+  }, sessionId, button, sentences);
+  activeDesktopTtsQueue = handle || null;
+  return handle;
 }
 
 
@@ -2902,164 +1992,41 @@ function playFixedSentenceList(sessionId, button, sentences) {
  * Play from message body (play button). Supports streaming generation.
  */
 function playMessageBodyTts(sessionId, button, $messageElement) {
-  // Absolute character offset into getMessageTtsText(); only sentences with end > consumed
-  // are enqueued. sanitizeForTTS can shrink already-consumed text later (a markdown
-  // emphasis/inline-code pair closing after the boundary sentence), so starts may
-  // drift below the boundary; ends only ever move left when sanitize shrinks
-  // completed text, so the end guard alone prevents replaying a sentence.
-  let consumedLen = 0;
-  let queue = [];
-  let running = false;
-  let observer = null;
-  let pollTimer = null;
-  let sentenceRetries = 0;
-  let retryScheduled = false;
-
-  function isStillGenerating() {
-    const currentRawText = $messageElement.find('.ai-message-text').text().trim();
-    if (currentRawText === 'Thinking...') return true;
-    const isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
-    const regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
-    return isLastAi && regenDisabled && (currentAbortController !== null);
-  }
-
-  function discoverAbsolute() {
-    if (!desktopTtsIsLive(sessionId)) return;
-    const full = getMessageTtsText($messageElement);
-    if (!full || full.length <= consumedLen) return;
-    const sentences = splitSentences(full);
-    for (let i = 0; i < sentences.length; i++) {
-      const s = sentences[i];
-      if (s.end <= consumedLen) continue;
-      // A later chunk can append only punctuation/closers to a queued sentence
-      // ("Hello." -> "Hello..."); the words are spoken, so ignore the extension
-      // instead of requeueing the whole sentence.
-      if (consumedLen > s.start) {
-        const spoken = full.slice(s.start, consumedLen);
-        const tail = s.text.slice(spoken.length);
-        if (tail && /^[\.\!\?…\"'”’\)\]]+$/.test(tail) && spoken + tail === s.text) continue;
+  // Streaming desktop queue lives in static/tts-playback.js using the single
+  // voice lifecycle + voice-text. Answer text/progress arrive via the shared
+  // per-message source bound at this message's creation/update/settle sites;
+  // this adapter only looks the source up by message host. The
+  // MutationObserver below stays solely as a text-change wakeup backstop for
+  // the queue (existing latency behavior) and never supplies progress.
+  var textEl = $messageElement.find('.ai-message-text')[0];
+  var source = lookupMessagePlaybackSource($messageElement[0]);
+  var handle = ChatTtsPlayback.playMessageBodyTts({
+    isLive: function (id) { return desktopTtsIsLive(id); },
+    onComplete: function (btn) { activeDesktopTtsQueue = null; completeDesktopTtsPlayback(btn); },
+    source: source,
+    split: function (text) { return splitSentences(text); },
+    terminator: function (text) { return sentenceEndsWithTerminator(text); },
+    preload: function (id, text) { preloadDesktopTtsSentence(id, text); },
+    playOne: function (id, text) { return playOneTtsUtterance(id, text); },
+    reportVoice: function (kind, msg) { reportVoice(kind, msg); },
+    appendMessage: function (text, cls) { appendMessage(text, cls); },
+    logError: function () { console.error.apply(console, arguments); },
+    setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+    clearTimeout: function (id) { clearTimeout(id); },
+    registerClipCanceller: function (entry) { voiceLifecycle.registerDesktopClipCanceller(entry); },
+    unregisterClipCanceller: function (entry) { voiceLifecycle.unregisterDesktopClipCanceller(entry); },
+    isVoiceModeActive: function () { return !!window.voiceModeActive; },
+    observeChanges: function (onChange) {
+      if (textEl && typeof MutationObserver === 'function') {
+        var obs = new MutationObserver(function () { onChange(); });
+        obs.observe(textEl, { childList: true, subtree: true, characterData: true });
+        return function () { try { obs.disconnect(); } catch (e) { /* ignore */ } };
       }
-      const isTrailingFragment = (i === sentences.length - 1);
-      if (isTrailingFragment && !sentenceEndsWithTerminator(s.text) && isStillGenerating()) break;
-      queue.push(s.text);
-      consumedLen = s.end;
+      return null;
     }
-    if (queue.length > 0) {
-      preloadDesktopTtsSentence(sessionId, queue[0]);
-    }
-  }
-
-  // React to streaming text updates immediately. Polling still runs as a
-  // safety net in case MutationObserver is unavailable or misses an update
-  // (e.g. the LLM was idle and emitted a long buffer in one chunk).
-  function onTextChanged() {
-    if (!desktopTtsIsLive(sessionId)) {
-      teardownObserver();
-      return;
-    }
-    discoverAbsolute();
-    if (!running && queue.length) pump();
-  }
-
-  function teardownObserver() {
-    if (observer) {
-      try { observer.disconnect(); } catch (e) { /* ignore */ }
-      observer = null;
-    }
-    if (pollTimer) {
-      clearTimeout(pollTimer);
-      pollTimer = null;
-    }
-  }
-
-  function finishIfIdle() {
-    if (!desktopTtsIsLive(sessionId)) {
-      teardownObserver();
-      return;
-    }
-    if (running || queue.length) return;
-    if (isStillGenerating()) {
-      pollTimer = setTimeout(function () {
-        pollTimer = null;
-        if (!desktopTtsIsLive(sessionId)) return;
-        discoverAbsolute();
-        pump();
-      }, 60);
-      return;
-    }
-    discoverAbsolute();
-    if (queue.length) {
-      pump();
-      return;
-    }
-    teardownObserver();
-    completeDesktopTtsPlayback(button);
-  }
-
-  function pump() {
-    if (!desktopTtsIsLive(sessionId) || running || retryScheduled) return;
-    discoverAbsolute();
-    if (!queue.length) {
-      finishIfIdle();
-      return;
-    }
-    running = true;
-    const next = queue.shift();
-    if (queue.length > 0) {
-      preloadDesktopTtsSentence(sessionId, queue[0]);
-    }
-    playOneTtsUtterance(sessionId, next).then(function (ok) {
-      running = false;
-      if (!desktopTtsIsLive(sessionId)) {
-        teardownObserver();
-        return;
-      }
-      if (!ok) {
-        // Transient failure (token fetch, clip GET, playback): requeue with
-        // backoff like the native sentence pump so a spotty link delays the
-        // sentence instead of ending speech after the last good one. Bounded
-        // so a dead sentence cannot churn forever; during active voice mode,
-        // persist retries so remote link drops pause rather than skip sentences.
-        if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (window.voiceModeActive && desktopTtsIsLive(sessionId))) {
-          sentenceRetries += 1;
-          queue.unshift(next);
-          retryScheduled = true;
-          const delay = window.voiceModeActive
-            ? Math.min(400 * sentenceRetries, 3000)
-            : 400 * sentenceRetries;
-          setTimeout(function () {
-            retryScheduled = false;
-            pump();
-          }, delay);
-          return;
-        }
-        sentenceRetries = 0;
-        queue.length = 0;
-        console.error('Desktop TTS sentence failed after retries');
-        reportVoice('VOICE-ERROR', 'TTS sentence failed (desktop)');
-        appendMessage('Voice output failed. Try again.', 'error-message');
-        // Exhausted retries end the session with a visible error; never advance.
-        teardownObserver();
-        completeDesktopTtsPlayback(button);
-        return;
-      }
-      sentenceRetries = 0;
-      pump();
-    });
-  }
-
-
-  // Hook into the visible text node so we can start TTS on the first sentence
-  // the moment it lands, without waiting for the 60 ms poll cycle. This is
-  // the main latency win since the web-search/tool-calling flow added the
-  // extra search + second LLM hop.
-  const textEl = $messageElement.find('.ai-message-text')[0];
-  if (textEl && typeof MutationObserver === 'function') {
-    observer = new MutationObserver(onTextChanged);
-    observer.observe(textEl, { childList: true, subtree: true, characterData: true });
-  }
-
-  pump();
+  }, sessionId, button);
+  activeDesktopTtsQueue = handle || null;
+  return handle;
 }
 
 /**
@@ -3077,7 +2044,7 @@ window.playTTS = function playTTS(button, options) {
   options = options || {};
 
   // Toggle stop when this control is already the active speaker.
-  if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
+  if (voiceLifecycle.isCurrentButton(button)) {
     if (typeof window.stopAllTtsPlayback === 'function') {
       window.stopAllTtsPlayback();
     } else {
@@ -3095,25 +2062,12 @@ window.playTTS = function playTTS(button, options) {
 
   const $messageElement = $(button).closest('.message');
   // stopCurrentDesktopTts bumped the session; this play owns the new value.
-  const sessionId = desktopTtsSession;
-  desktopTtsAbort = new AbortController();
-
-  CURRENT_AUDIO = {
-    sessionId: sessionId,
-    stop: function () { stopCurrentDesktopTts(); }
-  };
-  CURRENT_AUDIO_BUTTON = button;
-  if (window.voiceModeActive) {
-    bargeInFrames = 0;
+  const sessionId = voiceLifecycle.beginDesktopPlayback(button, function () {
     if (voiceSttAbortController) {
       try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
       voiceSttAbortController = null;
     }
-    voiceModeTtsSessionActive = true;
-    if (typeof syncSendButtonState === 'function') {
-      syncSendButtonState();
-    }
-  }
+  });
 
   $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
   $messageElement.addClass('tts-is-playing');
@@ -3158,7 +2112,8 @@ window.regenerateMessage = function regenerateMessage(button) {
   const $previousUserMessage = $aiMessageElement.prev('.message.user-message');
   if ($previousUserMessage.length === 0) return;
   let userText = ($previousUserMessage.attr('data-original') || ($previousUserMessage.find('.user-message-text').text() || $previousUserMessage.text() || '').replace(/^\s*You:\s*/, '')).trim();
-  if ($previousUserMessage.attr('data-local-only') === '1') {
+  // Ghost (never-saved) turns resend via /chat; only saved turns regenerate.
+  if (ChatConversationState.resolveRegenerateAction($previousUserMessage.attr('data-local-only') === '1') === 'resend-chat') {
     if (typeof window.sendMessage === 'function') {
       window.sendMessage({ reuseLastUser: true, message: userText });
     }
@@ -3168,10 +2123,13 @@ window.regenerateMessage = function regenerateMessage(button) {
   if (pairIndex < 0) return;
   const needsFull = $previousUserMessage.attr('data-thumb') === '1' || /\[IMAGE:/.test(userText);
   if (needsFull && window.APP_DATA && window.APP_DATA.loggedIn) {
+    var pairGen = historyWindow.snapshot().setGen;
     fetchHistoryPair(pairIndex).then(function(full) {
+      if (!historyWindow.isLiveGen(pairGen)) return;
       if (full && full.user) userText = full.user;
       window.performRegeneration($aiMessageElement[0], userText, pairIndex);
     }).catch(function() {
+      if (!historyWindow.isLiveGen(pairGen)) return;
       window.performRegeneration($aiMessageElement[0], userText, pairIndex);
     });
     return;
@@ -3185,16 +2143,25 @@ window.performRegeneration = function performRegeneration(aiMessageElement, user
   $target.removeAttr('data-original');
   replaceChildrenNative($target[0], buildAiStreamChildren());
 
+  const seq = beginChatRequest();
+  // Initiating set plus generation; the tracker sequence alone stays live
+  // across a set switch.
+  const regenBinding = captureChatBinding(seq);
+  // Same bubble, replacement generation: migrate its playback source so an
+  // active queue continues seamlessly into the new text, and autoplay finds
+  // the fresh sequence.
+  liveStreamPlaybackSource = retargetMessagePlaybackSource($target[0], seq);
+
 if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     const playBtn = $target.find('.play-button')[0];
-    if (playBtn) setTimeout(() => playMessageTts(playBtn), 50);
+    // The timer fires a task later; recheck the initiating binding so a
+    // queued timer cannot start playback after a switch or replacement.
+    if (playBtn) setTimeout(() => { if (isLiveChatRequest(seq) && isLiveConversation(regenBinding)) playMessageTts(playBtn); }, 50);
   }
-
-  const seq = beginChatRequest();
 
   fetchWithGenerateRetry('/regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
-    signal: currentAbortController.signal,
+    signal: chatRequests.signal(),
     body: JSON.stringify(activeSetPayload({
       message: userText,
       system_prompt: $('#user-system-prompt').val(),
@@ -3211,10 +2178,10 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       return response.text().then(t => {
         let errData = null;
         try { errData = t ? JSON.parse(t) : null; } catch (e) { errData = null; }
-        if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq)) {
+        if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq) && isLiveConversation(regenBinding)) {
           // Adopt the authoritative version and replay the regeneration once.
-          noteSetVersionFromResponse(errData);
-          if (!opts.versionRetried) {
+          if (shouldApplyChatResponse(regenBinding, errData)) noteSetVersionFromResponse(errData);
+          if (ChatConversationState.shouldRetryVersionOnce(opts.versionRetried)) {
             return window.performRegeneration(aiMessageElement, userText, pairIndex, { versionRetried: true });
           }
           throw new Error('Chat state changed elsewhere; please try again.');
@@ -3222,13 +2189,18 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         throw new Error(apiErrorText(t, 'Network response was not ok'));
       });
     }
+    if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) {
+      try { if (response.body && typeof response.body.cancel === 'function') swallowCancel(response.body.cancel()); } catch (e) {}
+          return;
+        }
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     const $msgText = $target.find('.ai-message-text');
     const $thinkingWrap = $target.find('.thinking-container');
     const $thinkingContent = $target.find('.thinking-content');
-    let buffer = '';
-    let state = 'visible';
+    // Regenerate adapter: no console stripping, no EOF flush (residual is
+    // dropped; console detail stays visible).
+    const streamState = ChatStreamDecoder.createStreamState();
     let hasWrittenToDOM = false;
     let fullVisibleText = '';
     let fullThinkingText = '';
@@ -3237,6 +2209,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
 
     function appendVisible(content) {
       if (!content) return;
+      if (!isLiveConversation(regenBinding)) return;
       fullVisibleText += content;
       $msgText.html(renderMarkdown(fullVisibleText));
       hasWrittenToDOM = true;
@@ -3251,10 +2224,12 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
              $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
           }
       }
-      $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+      $target.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+      publishMessagePlaybackText($target, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
     }
     function appendThinking(content) {
       if (!content) return;
+      if (!isLiveConversation(regenBinding)) return;
       fullThinkingText += content;
       $thinkingWrap.show();
       const $toggle = $thinkingWrap.find('.toggle-thinking');
@@ -3276,107 +2251,62 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
 
       $thinkingContent.text(fullThinkingText);
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
-      $target.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+      $target.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+      publishMessagePlaybackText($target, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
     }
-    function processBuffer() {
-      const openTag = '<think>';
-      const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
-
-      while (buffer.length > 0) {
-        if (state === 'visible') {
-          const tagStart = buffer.indexOf(openTag);
-          if (tagStart !== -1) {
-            const visiblePart = buffer.substring(0, tagStart);
-            appendVisible(visiblePart);
-            buffer = buffer.substring(tagStart + openTag.length);
-            state = 'thinking';
-            continue;
-          } else {
-            let flushableEnd = buffer.length;
-            for (let i = 1; i <= buffer.length && i <= openTag.length; i++) {
-              const suffix = buffer.substring(buffer.length - i);
-              if (openTag.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
-            }
-            const visiblePart = buffer.substring(0, flushableEnd);
-            appendVisible(visiblePart);
-            buffer = buffer.substring(flushableEnd);
-            break;
-          }
-        } else {
-          let firstCloseTagIndex = -1;
-          let actualCloseTag = '';
-
-          for (const tag of closeTags) {
-            const idx = buffer.indexOf(tag);
-            if (idx !== -1 && (firstCloseTagIndex === -1 || idx < firstCloseTagIndex)) {
-              firstCloseTagIndex = idx;
-              actualCloseTag = tag;
-            }
-          }
-
-          if (firstCloseTagIndex !== -1) {
-            const thinkingPart = buffer.substring(0, firstCloseTagIndex);
-            appendThinking(thinkingPart);
-            buffer = buffer.substring(firstCloseTagIndex + actualCloseTag.length);
-            state = 'visible';
-            continue;
-          } else {
-            let flushableEnd = buffer.length;
-            const maxTagLen = Math.max(...closeTags.map(t => t.length));
-            for (let i = 1; i <= buffer.length && i <= maxTagLen; i++) {
-              const suffix = buffer.substring(buffer.length - i);
-              if (closeTags.some(tag => tag.startsWith(suffix))) {
-                flushableEnd = buffer.length - i;
-                break;
-              }
-            }
-            const thinkingPart = buffer.substring(0, flushableEnd);
-            appendThinking(thinkingPart);
-            buffer = buffer.substring(flushableEnd);
-            break;
-          }
-        }
-      }
+    function processBuffer(chunk) {
+      ChatStreamDecoder.pushChunk(streamState, chunk, {
+        onVisible: appendVisible,
+        onThinking: appendThinking,
+        stripConsoleDetail: false
+      });
     }
             function read() {
           reader.read().then(({done, value}) => {
+            if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) {
+              try { if (typeof reader.cancel === 'function') swallowCancel(reader.cancel()); } catch (e) {}
+              return;
+            }
             if (done) {
-              const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
+              // Regenerate does not flush: the residual stays dropped.
+              const finalAiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
               $target.attr('data-original', finalAiOriginal);
               
               try {
                 $target.find('.regenerate-button').prop('disabled', false);
                 const playBtn = $target.find('.play-button').prop('disabled', false);
-                if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+                if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
+              finishMessagePlayback($target);
               var $regenUser = $target.prev('.message.user-message');
               clearLocalOnlyTurn($regenUser, $target);
               noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
             }
-            buffer += decoder.decode(value, {stream:true});
+            const chunk = decoder.decode(value, {stream:true});
             const nearBottom = shouldStickChatToBottom();
-            processBuffer();
+            processBuffer(chunk);
             if (nearBottom) {
               scrollToBottom();
             }
             read();
           }).catch(err => {
-            if (!isLiveChatRequest(seq)) return;
+            if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
             try {
               $target.find('.regenerate-button').prop('disabled', false);
               const playBtn = $target.find('.play-button').prop('disabled', false);
-              if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+              if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
             finishChatRequest(seq);
+            finishMessagePlayback($target);
           });
         }
         read();
       })
       .catch(err => {
-        if (!isLiveChatRequest(seq)) return;
+        if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
         if (err.name === 'AbortError') {
           $target.find('.ai-message-text').append(' [Stopped]');
         } else {
@@ -3386,9 +2316,13 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
         try {
           $target.find('.regenerate-button').prop('disabled', false);
           const playBtn = $target.find('.play-button').prop('disabled', false);
-          if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+          if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
         } catch (e) {}
         finishChatRequest(seq);
+        // The [Stopped] suffix lives in visible DOM only; the source keeps
+        // the last published original, so it is never spoken. Error chrome
+        // likewise keeps the last published partial text.
+        finishMessagePlayback($target);
       });
 };
 
@@ -3442,7 +2376,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
     if (!result) return;
     if (result.data && result.data.error === 'version_conflict') {
       applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
-      if (!isRetry) {
+      if (ChatConversationState.shouldRetryVersionOnce(isRetry)) {
         return handleDeleteMessage(buttonElement, true);
       }
       return handleVersionConflict(null, result.data);
@@ -3470,7 +2404,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
       noteSetVersionFromResponse(result.data);
       aiMessageElement.remove();
       userMessageElement.remove();
-      if (HISTORY_TOTAL > 0) HISTORY_TOTAL -= 1;
+      historyWindow.noteDeletedPersisted();
       reindexUserPairIndices();
       updateLoadOlderBar();
       return;
@@ -3499,7 +2433,11 @@ function handleDeleteMessage(buttonElement, isRetry) {
 function handleForkMessage(buttonElement, isRetry) {
   const $user = $(buttonElement).closest('.message.user-message');
   if (!$user.length) return;
-  if ($user.attr('data-local-only') === '1' || isLocalOnlyTurn($user)) {
+  // Only saved turns can be branched; ghost turns must send first.
+  if (!ChatConversationState.canForkTurn(ChatConversationState.isGhostTurn({
+    attrLocalOnly: $user.attr('data-local-only'),
+    computedLocalOnly: isLocalOnlyTurn($user)
+  }))) {
     appendMessage('Send this message first — only saved turns can be branched.', 'error-message');
     return;
   }
@@ -3515,7 +2453,7 @@ function handleForkMessage(buttonElement, isRetry) {
   .then(result => {
     if (result.data && result.data.error === 'version_conflict') {
       applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
-      if (!isRetry) return handleForkMessage(buttonElement, true);
+      if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return handleForkMessage(buttonElement, true);
       return handleVersionConflict(null, result.data);
     }
     if (result.ok && result.data && result.data.status === 'success') {
@@ -3793,7 +2731,7 @@ $(document).ready(function() {
       el.classList.remove('tts-can-play');
       return;
     }
-    const isPlaying = !!(CURRENT_AUDIO && $(el).closest('.message').find('.play-button')[0] === CURRENT_AUDIO_BUTTON);
+    const isPlaying = voiceLifecycle.isCurrentButton($(el).closest('.message').find('.play-button')[0]);
     el.classList.add('tts-can-play');
     el.setAttribute(
       'title',
@@ -3827,7 +2765,7 @@ $(document).ready(function() {
       ttsHoverRaf = null;
     }
     this.classList.remove('tts-can-play');
-    if (CURRENT_AUDIO && $(this).closest('.message').find('.play-button')[0] === CURRENT_AUDIO_BUTTON) {
+    if (voiceLifecycle.isCurrentButton($(this).closest('.message').find('.play-button')[0])) {
       this.setAttribute('title', 'Click to stop speech');
     } else {
       this.removeAttribute('title');
@@ -3859,7 +2797,7 @@ $(document).ready(function() {
     if (!playBtn) return;
 
     // While this message is speaking: click always stops (do not start another).
-    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === playBtn) {
+    if (voiceLifecycle.isCurrentButton(playBtn)) {
       clearTtsHoverHighlight();
       if (typeof window.stopAllTtsPlayback === 'function') {
         window.stopAllTtsPlayback();
@@ -4134,8 +3072,8 @@ $(document).ready(function() {
       }
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
-      HISTORY_SET_GEN += 1;
-      var loadGen = HISTORY_SET_GEN;
+      var loadGen = historyWindow.beginSetLoad();
+      settleChatRequestForSetSwitch();
       savePreferences();
       function fetchSet() {
         return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
@@ -4145,7 +3083,7 @@ $(document).ready(function() {
             body: JSON.stringify({
               set_id: setId,
               set_name: setName,
-              limit: HISTORY_PAGE_SIZE,
+              limit: historyWindow.getPageSize(),
               thumbnails: true
             })
           });
@@ -4168,7 +3106,7 @@ $(document).ready(function() {
         })
         .then(r => r.json())
         .then(data => {
-          if (loadGen !== HISTORY_SET_GEN) return;
+          if (!historyWindow.isLiveGen(loadGen)) return;
           if (data.name) window.APP_DATA.lastSet = data.name;
           noteSetVersionFromResponse(data);
           if (data.name) $opt.attr('data-name', data.name).text(data.name);
@@ -4177,7 +3115,7 @@ $(document).ready(function() {
           applyHistoryPage(data, 'replace');
           appendMessage('Loaded set: ' + setName, 'system-message');
         })
-        .catch(error => { appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
+        .catch(error => { if (!historyWindow.isLiveGen(loadGen)) return; appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
       });
 
     beginEncKeyUnlockFlow();
@@ -4244,7 +3182,7 @@ $(document).ready(function() {
           });
         } else if (data.error === 'version_conflict') {
           noteSetVersionFromResponse(data);
-          if (!isRetry) return submitRenameSet(setId, oldName, newName, true);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitRenameSet(setId, oldName, newName, true);
           appendMessage('The chat was updated elsewhere. Please try renaming again.', 'error-message');
         } else {
           appendMessage(data.error || 'Failed to rename set', 'error-message');
@@ -4280,7 +3218,7 @@ $(document).ready(function() {
           if (data.status === 'success') { loadSets(); appendMessage('Deleted set: ' + setName, 'system-message'); }
           else if (data.error === 'version_conflict') {
             noteSetVersionFromResponse(data);
-            if (!isRetry) return submitDeleteSet(setId, setName, true);
+            if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitDeleteSet(setId, setName, true);
             appendMessage('The chat was updated elsewhere. Please try deleting again.', 'error-message');
           }
           else { appendMessage(data.error || 'Failed to delete set', 'error-message'); }
@@ -4296,12 +3234,15 @@ $(document).ready(function() {
     return $opt.attr('data-name') || $opt.text() || 'default';
   }
 
-  // Save buttons
-  function saveSystemPromptNow(sysPromptText, isRetry) {
+  // Save buttons retain the initiating set target across 401 and
+  // version-conflict retries instead of rereading the live selection.
+  function saveSystemPromptNow(sysPromptText, isRetry, capturedTarget, capturedGen) {
+    var target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+    var binding = captureMemoryBinding(target, capturedGen);
     return fetch('/update_system_prompt', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(activeSetPayload({
+      body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {
         system_prompt: sysPromptText,
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
@@ -4313,7 +3254,7 @@ $(document).ready(function() {
               redirectHomeOnAuthFailure();
               return null;
             }
-            return saveSystemPromptNow(sysPromptText, true).then(function () { return null; });
+            return saveSystemPromptNow(sysPromptText, true, target, binding.setGen).then(function () { return null; });
           });
         }
         return r.json();
@@ -4321,26 +3262,36 @@ $(document).ready(function() {
       .then(data => {
         if (!data) return;
         if (data.status === 'success') {
+          if (!shouldApplyMemoryResponse(binding, data)) return;
           noteSetVersionFromResponse(data);
           appendMessage('System prompt saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
           // Sync the authoritative version and retry once — e.g. a chat turn
           // finalized (or a prompt updated from another tab) since page load.
-          noteSetVersionFromResponse(data);
-          if (!isRetry) return saveSystemPromptNow(sysPromptText, true);
-          appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
+          // The retry keeps the initiating set; only the version refreshes.
+          if (shouldApplyMemoryResponse(binding, data)) noteSetVersionFromResponse(data);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) {
+            var auth = data.current_version != null ? data.current_version : data.version;
+            var retryTarget = { setName: target.setName, setId: target.setId };
+            if (auth != null && auth !== '') retryTarget.setVersion = auth;
+            else if (target.setVersion != null) retryTarget.setVersion = target.setVersion;
+            return saveSystemPromptNow(sysPromptText, true, retryTarget, binding.setGen);
+          }
+          if (isLiveMemoryBinding(binding)) appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
-        else appendMessage(data.error || 'Failed to save system prompt.', 'error-message');
+        else if (isLiveMemoryBinding(binding)) appendMessage(data.error || 'Failed to save system prompt.', 'error-message');
       })
-      .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+      .catch(error => { if (isLiveMemoryBinding(binding)) appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
   }
 
-  function saveMemoryNow(memText, isRetry) {
+  function saveMemoryNow(memText, isRetry, capturedTarget, capturedGen) {
+    var target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+    var binding = captureMemoryBinding(target, capturedGen);
     return fetch('/update_memory', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(activeSetPayload({
+      body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {
         memory: memText,
         logged_in: window.APP_DATA && window.APP_DATA.loggedIn
       }))
@@ -4352,7 +3303,7 @@ $(document).ready(function() {
               redirectHomeOnAuthFailure();
               return null;
             }
-            return saveMemoryNow(memText, true).then(function () { return null; });
+            return saveMemoryNow(memText, true, target, binding.setGen).then(function () { return null; });
           });
         }
         return r.json();
@@ -4360,17 +3311,24 @@ $(document).ready(function() {
       .then(data => {
         if (!data) return;
         if (data.status === 'success') {
+          if (!shouldApplyMemoryResponse(binding, data)) return;
           noteSetVersionFromResponse(data);
           appendMessage('Memory saved successfully.', 'system-message');
           if (typeof loadSets === 'function') loadSets(false);
         } else if (data.error === 'version_conflict') {
-          noteSetVersionFromResponse(data);
-          if (!isRetry) return saveMemoryNow(memText, true);
-          appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
+          if (shouldApplyMemoryResponse(binding, data)) noteSetVersionFromResponse(data);
+          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) {
+            var auth = data.current_version != null ? data.current_version : data.version;
+            var retryTarget = { setName: target.setName, setId: target.setId };
+            if (auth != null && auth !== '') retryTarget.setVersion = auth;
+            else if (target.setVersion != null) retryTarget.setVersion = target.setVersion;
+            return saveMemoryNow(memText, true, retryTarget, binding.setGen);
+          }
+          if (isLiveMemoryBinding(binding)) appendMessage('The chat was updated elsewhere. Please try saving again.', 'error-message');
         }
-        else appendMessage(data.error || 'Failed to save memory.', 'error-message');
+        else if (isLiveMemoryBinding(binding)) appendMessage(data.error || 'Failed to save memory.', 'error-message');
       })
-      .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+      .catch(error => { if (isLiveMemoryBinding(binding)) appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
   }
 
   $('#save-system-prompt').on('click', function() {
@@ -4415,10 +3373,15 @@ $(document).ready(function() {
       pairIndex = liveUserPairIndex($pendingUserMessage);
     } else {
       const $ghost = $('#chat-content .message.user-message').last();
-      if ($ghost.attr('data-local-only') === '1') {
+      if (ChatConversationState.isGhostTurn({
+        attrLocalOnly: $ghost.attr('data-local-only'),
+        computedLocalOnly: false
+      })) {
         removeLocalOnlyTurn($ghost);
       }
-      pairIndex = HISTORY_OFFSET + document.querySelectorAll('#chat-content .message.user-message').length;
+      pairIndex = ChatConversationState.userPairIndexForDomIndex(
+        historyWindow.getOffset(),
+        document.querySelectorAll('#chat-content .message.user-message').length);
       appendMessage(fullMessage, 'user-message', pairIndex);
       $pendingUserMessage = $('#chat-content .message.user-message').last();
     }
@@ -4433,25 +3396,32 @@ $(document).ready(function() {
     });
 
     const seq = beginChatRequest();
+    // Initiating set plus generation; the tracker sequence alone stays live
+    // across a set switch.
+    const chatBinding = captureChatBinding(seq);
 
     fetchWithGenerateRetry('/chat', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
-      signal: currentAbortController.signal,
+      signal: chatRequests.signal(),
       body: JSON.stringify(requestData)
     })
       .then(response => {
+        // Guard before every success mutation: a resolved response queued
+        // behind a switch or replacement must not clear the live draft,
+        // attachment, or ghost flag. The next stage drops undefined.
+        if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
         if (response.status === 401) throw new Error(SESSION_EXPIRED_SEND_MSG);
         if (!response.ok) {
           return response.text().then(t => {
             let errData = null;
             try { errData = t ? JSON.parse(t) : null; } catch (e) { errData = null; }
-            if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq)) {
+            if (errData && errData.error === 'version_conflict' && isLiveChatRequest(seq) && isLiveConversation(chatBinding)) {
               // Server rejected our stale version (e.g. the system prompt was
               // updated, or a turn finalized, elsewhere mid-flight). Adopt the
               // authoritative version and replay this turn once.
-              noteSetVersionFromResponse(errData);
-              if (!opts.versionRetried) {
+              if (shouldApplyChatResponse(chatBinding, errData)) noteSetVersionFromResponse(errData);
+              if (ChatConversationState.shouldRetryVersionOnce(opts.versionRetried)) {
                 return sendMessage({
                   reuseLastUser: true,
                   message: fullMessage,
@@ -4474,15 +3444,25 @@ $(document).ready(function() {
         return response;
       })
       .then(response => {
+        if (!response) return;
+        if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) {
+          try { if (response.body && typeof response.body.cancel === 'function') swallowCancel(response.body.cancel()); } catch (e) {}
+          return;
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
         appendMessage(null, 'ai-message');
 
         const $targetElement = $('.ai-message:last-child');
+        // Bind this bubble's playback source to the new request sequence
+        // before any text streams or autoplay fires.
+        liveStreamPlaybackSource = bindMessagePlaybackSource($targetElement[0], { original: '', visible: '', boundSeq: seq });
 
         if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           const playBtn = $targetElement.find('.play-button')[0];
-          if (playBtn) setTimeout(() => playMessageTts(playBtn), 50);
+          // The timer fires a task later; recheck the initiating binding so a
+          // queued timer cannot start playback after a switch or replacement.
+          if (playBtn) setTimeout(() => { if (isLiveChatRequest(seq) && isLiveConversation(chatBinding)) playMessageTts(playBtn); }, 50);
         }
 
         // Initial scroll to bottom when AI starts responding
@@ -4490,8 +3470,9 @@ $(document).ready(function() {
         const $messageTextElement = $targetElement.find('.ai-message-text');
         const $thinkingContainerWrapper = $targetElement.find('.thinking-container');
         const $thinkingContentElement = $targetElement.find('.thinking-content');
-        let buffer = '';
-        let state = 'visible';
+        // Chat adapter: strips console detail to the console and flushes the
+        // residual at EOF/interrupt.
+        const streamState = ChatStreamDecoder.createStreamState();
         let hasWrittenToDOM = false;
         let fullVisibleText = '';
         let fullThinkingText = '';
@@ -4500,6 +3481,7 @@ $(document).ready(function() {
 
         function appendVisible(content) {
           if (!content) return;
+          if (!isLiveConversation(chatBinding)) return;
           fullVisibleText += content;
           $messageTextElement.html(renderMarkdown(fullVisibleText));
           hasWrittenToDOM = true;
@@ -4514,10 +3496,12 @@ $(document).ready(function() {
                  $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
               }
           }
-          $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+          $targetElement.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+          publishMessagePlaybackText($targetElement, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
         }
         function appendThinking(content) {
           if (!content) return;
+          if (!isLiveConversation(chatBinding)) return;
           fullThinkingText += content;
           $thinkingContainerWrapper.show();
           const $toggle = $thinkingContainerWrapper.find('.toggle-thinking');
@@ -4539,98 +3523,43 @@ $(document).ready(function() {
 
           $thinkingContentElement.text(fullThinkingText);
           if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
-          $targetElement.attr('data-original', fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : ''));
+          $targetElement.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
+          publishMessagePlaybackText($targetElement, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
         }
         function processChunk(chunk) {
-          buffer += chunk;
-          // Strip the server's full-error detail (sent via [ConsoleError]…[/ConsoleError])
-          // and sink it to the browser console; it must never reach the visible message.
-          let di = buffer.indexOf('[ConsoleError]');
-          while (di !== -1) {
-            const dci = buffer.indexOf('[/ConsoleError]', di);
-            if (dci === -1) break; // wait for the closing marker to arrive
-            const detail = buffer.substring(di + '[ConsoleError]'.length, dci);
-            try { console.error(detail); } catch (e) {}
-            buffer = buffer.substring(0, di) + buffer.substring(dci + '[/ConsoleError]'.length);
-            di = buffer.indexOf('[ConsoleError]');
-          }
-          const openTag = '<think>';
-          const closeTags = ['</think>', '[BEGIN FINAL RESPONSE]'];
-
-          while (buffer.length > 0) {
-            if (state === 'visible') {
-              const tagStart = buffer.indexOf(openTag);
-              if (tagStart !== -1) {
-                const visiblePart = buffer.substring(0, tagStart);
-                appendVisible(visiblePart);
-                buffer = buffer.substring(tagStart + openTag.length);
-                state = 'thinking';
-                continue;
-              } else {
-                let flushableEnd = buffer.length;
-                for (let i = 1; i <= buffer.length && i <= openTag.length; i++) {
-                  const suffix = buffer.substring(buffer.length - i);
-                  if (openTag.startsWith(suffix)) { flushableEnd = buffer.length - i; break; }
-                }
-                const visiblePart = buffer.substring(0, flushableEnd);
-                appendVisible(visiblePart);
-                buffer = buffer.substring(flushableEnd);
-                break;
-              }
-            } else if (state === 'thinking') {
-              let firstCloseTagIndex = -1;
-              let actualCloseTag = '';
-
-              for (const tag of closeTags) {
-                const idx = buffer.indexOf(tag);
-                if (idx !== -1 && (firstCloseTagIndex === -1 || idx < firstCloseTagIndex)) {
-                  firstCloseTagIndex = idx;
-                  actualCloseTag = tag;
-                }
-              }
-
-              if (firstCloseTagIndex !== -1) {
-                const thinkingPart = buffer.substring(0, firstCloseTagIndex);
-                appendThinking(thinkingPart);
-                buffer = buffer.substring(firstCloseTagIndex + actualCloseTag.length);
-                state = 'visible';
-                continue;
-              } else {
-                let flushableEnd = buffer.length;
-                const maxTagLen = Math.max(...closeTags.map(t => t.length));
-                for (let i = 1; i <= buffer.length && i <= maxTagLen; i++) {
-                  const suffix = buffer.substring(buffer.length - i);
-                  if (closeTags.some(tag => tag.startsWith(suffix))) {
-                    flushableEnd = buffer.length - i;
-                    break;
-                  }
-                }
-                const thinkingPart = buffer.substring(0, flushableEnd);
-                appendThinking(thinkingPart);
-                buffer = buffer.substring(flushableEnd);
-                break;
-              }
-            }
-          }
+          ChatStreamDecoder.pushChunk(streamState, chunk, {
+            onVisible: appendVisible,
+            onThinking: appendThinking,
+            stripConsoleDetail: true,
+            onConsoleDetail(detail) { try { console.error(detail); } catch (e) {} }
+          });
+        }
+        function flushStreamRemainder() {
+          ChatStreamDecoder.flushRemainder(streamState, {
+            onVisible: appendVisible,
+            onThinking: appendThinking
+          });
         }
         function readStream() {
           return reader.read().then(({ done, value }) => {
+            if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) {
+              try { if (typeof reader.cancel === 'function') swallowCancel(reader.cancel()); } catch (e) {}
+              return;
+            }
             if (done) {
-              if (buffer) {
-                if (state === 'thinking') appendThinking(buffer); else appendVisible(buffer);
-                buffer = '';
-              }
+              flushStreamRemainder();
               
-              const finalAiOriginal = fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
+              const finalAiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
               $targetElement.attr('data-original', finalAiOriginal);
 
               try {
                 $targetElement.find('.regenerate-button').prop('disabled', false);
                 const playBtn = $targetElement.find('.play-button').prop('disabled', false);
-                if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+                if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
               } catch (e) {}
               finishChatRequest(seq);
-              HISTORY_TOTAL = Math.max(HISTORY_TOTAL, pairIndex + 1);
+              finishMessagePlayback($targetElement);
+              historyWindow.noteChatPersisted(pairIndex);
               clearLocalOnlyTurn($pendingUserMessage, $targetElement);
               noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
@@ -4644,26 +3573,24 @@ $(document).ready(function() {
             }
             return readStream();
           }).catch(err => {
-            if (!isLiveChatRequest(seq)) return;
+            if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
             try {
               $targetElement.find('.regenerate-button').prop('disabled', false);
               const playBtn = $targetElement.find('.play-button').prop('disabled', false);
-              if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+              if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
             try { console.error('Stream read failed:', err); } catch (e) {}
             const errText = err && err.message ? err.message : String(err);
-            if (buffer) {
-              if (state === 'thinking') appendThinking(buffer); else appendVisible(buffer);
-              buffer = '';
-            }
+            flushStreamRemainder();
             appendVisible('\n[Error] The response stream was interrupted.');
             finishChatRequest(seq);
+            finishMessagePlayback($targetElement);
           });
         }
         readStream();
       })
       .catch(error => {
-        if (!isLiveChatRequest(seq)) return;
+        if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
         try { console.error('Chat request failed:', error); } catch (e) {}
         if (error.name === 'AbortError') {
           const $lastAI = $('.ai-message:last-child');
@@ -4671,8 +3598,11 @@ $(document).ready(function() {
           try {
             $lastAI.find('.regenerate-button').prop('disabled', false);
             const playBtn = $lastAI.find('.play-button').prop('disabled', false);
-            if (!playBtn.is(CURRENT_AUDIO_BUTTON)) playBtn.html('<i class="bi bi-play-fill"></i>');
+            if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
           } catch (e) {}
+          // Visible-only suffix; the source keeps the last published
+          // original so it is never spoken.
+          finishMessagePlayback($lastAI);
         } else {
           const errText = error && error.message ? error.message : String(error);
           if ($pendingUserMessage.length) {
@@ -4873,9 +3803,14 @@ $(document).ready(function() {
   let voiceModeStream = null;
   let vadSttInProgress = false;
   let voiceModeSessionGeneration = 0;
-  // High-confidence Silero frames (~32 ms each) before desktop barge-in.
-  const BARGE_IN_FRAMES_DESKTOP = 4;
-  const BARGE_IN_SPEECH_PROB = 0.85;
+  // Central gate for native pause/resume/stop: each logical event arrives
+  // twice (owned Capacitor listener plus the evalJs fallback) sharing one
+  // monotonic coordinator transition ID. Only strictly newer IDs apply, so
+  // duplicates collapse and a reordered stale event cannot invalidate a
+  // newer session. One gate per page lifetime; never reset per session.
+  var voiceTransitionGate = ChatVoiceEvents.createTransitionGate();
+  // Barge-in thresholds live in the owned voice lifecycle (top-level aliases
+  // above); the VAD frame gate delegates via voiceLifecycle.noteFrameProcessed.
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
   // Native mic bridge for Voice Mode on Android
   let nativeMicBridge = null;
@@ -4910,338 +3845,53 @@ $(document).ready(function() {
     });
   }
 
-  function NativeMicUtteranceVAD(onError) {
-    this.onError = onError;
-    this.preRollBuffer = new NativeAudio.Pcm16RingBuffer(NativeAudio.SPEECH_PREROLL_SAMPLES);
-    this.utteranceChunks = [];
-    this.startGateChunks = [];
-    this.inSpeech = false;
-    this.speechAboveCount = 0;
-    this.nonSpeechLikeCount = 0;
-    this.bargeInFired = false;
-    this.silenceMs = 0;
-    this.speechActiveMs = 0;
-    this.speechLikeMs = 0;
-    this.voicedMs = 0;
-    this.voicedWindow = [];
-    this.nativeListener = null;
-    this.isRecording = false;
-    this.chunkCount = 0;
-    this._firstFrameReported = false;
+  // Native capture lives in static/voice-capture.js (single owner of the
+  // utterance state machine and the desktop Silero factory). Chat keeps
+  // platform composition — the bridge pointer, the stop rendezvous, the
+  // permission helper — and wires explicit adapters here. Every capture need
+  // (audio thresholds, lifecycle gates, clock, log/report, recorder, bridge
+  // registry) arrives as a named hook; thresholds and phase gates are
+  // unchanged from shipped behavior.
+  function createNativeVadHost() {
+    return {
+      nativeAudio: NativeAudio,
+      voiceLifecycle: voiceLifecycle,
+      now: function () { return Date.now(); },
+      log: function (tag, msg) { nativeLog(tag, msg); },
+      report: function (kind, msg) { reportVoice(kind, msg); },
+      reportThrottled: function (key, windowMs, kind, msg) { reportVoiceThrottled(key, windowMs, kind, msg); },
+      isVoiceModeActive: function () { return !!window.voiceModeActive; },
+      onBargeIn: function () { handleBargeIn(); },
+      onUtteranceEnd: function () { handleSpeechEnd(); },
+      onUtteranceStartedAt: function (ts) { lastVoiceUtteranceStartedAt = ts; },
+      recorder: {
+        ensurePermission: function () { return ensureNativeMicPermission(); },
+        start: function () { return window.NativeMic.start(); },
+        stop: function () { return window.NativeMic.stop(); },
+        addListener: function (eventName, callback) { return window.NativeMic.addListener(eventName, callback); }
+      },
+      registry: {
+        isCurrent: function (inst) { return nativeMicBridge === inst; },
+        getStopPromise: function () { return nativeMicStopPromise; },
+        setStopPromise: function (promise) { nativeMicStopPromise = promise; }
+      }
+    };
   }
 
-  NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
-    this.speechAboveCount = 0;
-    this.nonSpeechLikeCount = 0;
-    this.startGateChunks = [];
-    this.bargeInFired = false;
-    this.silenceMs = 0;
-    this.speechActiveMs = 0;
-    this.speechLikeMs = 0;
-    this.voicedMs = 0;
-    this.voicedWindow = [];
-  };
-
-  /** Phase 1: start capture on speech-like energy. Does not stop TTS. */
-  NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
-    if (this.inSpeech) return false;
-    if (NativeAudio.pcm16IsSpeechLike(pcm16, rms)) {
-      this.startGateChunks.push(pcm16.slice());
-      this.speechAboveCount++;
-      this.nonSpeechLikeCount = 0;
-      if (this.speechAboveCount >= NativeAudio.SPEECH_START_FRAMES) {
-        nativeLog('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
-        this._beginUtterance(skipPreRoll);
-        return true;
-      }
-    } else if (rms > NativeAudio.SPEECH_RMS_THRESHOLD) {
-      this.nonSpeechLikeCount++;
-      if (this.nonSpeechLikeCount >= NativeAudio.SPEECH_START_MISS_FRAMES) {
-        this.speechAboveCount = 0;
-        this.startGateChunks = [];
-      }
-    } else {
-      this.speechAboveCount = 0;
-      this.nonSpeechLikeCount = 0;
-      this.startGateChunks = [];
-    }
-    return false;
-  };
-
-  /** Phase 2: stop TTS now if real speech is confirmed. Not called from _endUtterance. */
-  NativeMicUtteranceVAD.prototype._maybeBargeIn = function _maybeBargeIn() {
-    if (this.bargeInFired) return;
-    if (!(voiceModeTtsSessionActive || voiceModeTtsPlaying)) return;
-    if (!NativeAudio.pcm16RealSpeechDetected(this.speechLikeMs, this.voicedMs)) return;
-    this.bargeInFired = true;
-    nativeLog('VAD', 'barge-in on real speech likeMs=' + this.speechLikeMs
-      + ' voicedMs=' + this.voicedMs);
-    handleBargeIn();
-  };
-
-  NativeMicUtteranceVAD.prototype._noteVoicedFrame = function _noteVoicedFrame(copy, frameMs) {
-    this.voicedWindow.push(copy);
-    const w = NativeAudio.SPEECH_VOICED_WINDOW_FRAMES;
-    if (this.voicedWindow.length > w) this.voicedWindow.shift();
-    if (this.voicedWindow.length >= w) {
-      const win = NativeAudio.mergePcm16Chunks(this.voicedWindow);
-      if (NativeAudio.pcm16IsVoicedSpeech(win)) this.voicedMs += frameMs;
-    }
-  };
-
-  NativeMicUtteranceVAD.prototype._accumulateUtterance = function _accumulateUtterance(copy, rms, frameMs) {
-    this.utteranceChunks.push(copy);
-    if (NativeAudio.pcm16IsSpeechLike(copy, rms)) {
-      this.silenceMs = 0;
-      this.speechActiveMs += frameMs;
-      this.speechLikeMs += frameMs;
-      this._noteVoicedFrame(copy, frameMs);
-    } else {
-      this.silenceMs += frameMs;
-      this.voicedWindow = [];
-      if (this.silenceMs >= NativeAudio.SPEECH_END_SILENCE_MS) {
-        this._endUtterance();
-        return;
-      }
-    }
-    this._maybeBargeIn();
-  };
-
-  NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16) {
-    if (!this.isRecording || !window.voiceModeActive) {
-      // Button-green-but-deaf detector: frames arrive yet the session drops
-      // them (stale listener after restart, flag mismatch). Throttled.
-      reportVoiceThrottled('pcm-dropped', 10000, 'VOICE-ERROR',
-        'dropping PCM frames isRecording=' + this.isRecording
-        + ' voiceModeActive=' + !!window.voiceModeActive
-        + ' chunks=' + this.chunkCount);
-      return;
-    }
-    if (!this._firstFrameReported) {
-      this._firstFrameReported = true;
-      reportVoice('VOICE', 'first PCM frame received, capture live');
-    }
-    const copy = pcm16.slice();
-    const rms = NativeAudio.pcm16Rms(copy);
-    const frameMs = 20;
-    const now = Date.now();
-
-    this.preRollBuffer.push(copy);
-    this.chunkCount++;
-
-    // During TTS: record from speech-like start (Silero onSpeechStart). Barge-in
-    // only after real speech (REAL_SPEECH_MS + voicing), not on cough/"hey".
-    if (voiceModeTtsSessionActive || voiceModeTtsPlaying) {
-      const started = this._maybeStartUtterance(copy, rms, true);
-      if (this.inSpeech && !started) {
-        this._accumulateUtterance(copy, rms, frameMs);
-      }
-      if (this.chunkCount % 50 === 0) {
-        nativeLog('VAD', 'pcm#' + this.chunkCount + ' ttsSess=1 ttsPlay=' + voiceModeTtsPlaying
-          + ' inSpeech=' + this.inSpeech + ' speechMs=' + this.speechActiveMs
-          + ' rms=' + Math.round(rms));
-      }
-      return;
-    }
-
-    if (now < voiceModeListenCooldownUntil) {
-      return;
-    }
-
-    const started = this._maybeStartUtterance(copy, rms, false);
-    if (this.inSpeech && !started) {
-      this._accumulateUtterance(copy, rms, frameMs);
-    }
-
-    if (this.chunkCount % 50 === 0) {
-      nativeLog('VAD', 'pcm#' + this.chunkCount + ' inSpeech=' + this.inSpeech
-        + ' ttsPlay=' + voiceModeTtsPlaying + ' rms=' + Math.round(rms));
-    }
-  };
-
-  /** Start recording. Barge-in is _maybeBargeIn, not here. */
-  NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance(skipPreRoll) {
-    if (this.inSpeech) return;
-    this.inSpeech = true;
-    const startChunks = this.startGateChunks;
-    this.startGateChunks = [];
-    this._resetSpeechCounters();
-    this.utteranceStartedAt = Date.now();
-    lastVoiceUtteranceStartedAt = this.utteranceStartedAt;
-    this.speechActiveMs = startChunks.length * 20;
-    this.speechLikeMs = startChunks.length * 20;
-    this.voicedMs = NativeAudio.pcm16VoicedMsFromChunks(startChunks, 20);
-    this.voicedWindow = startChunks.slice(-NativeAudio.SPEECH_VOICED_WINDOW_FRAMES);
-    const preRoll = this.preRollBuffer.snapshotChunks();
-    this.utteranceChunks = preRoll.length ? preRoll : startChunks;
-    nativeLog('VAD', 'utterance begin (startChunks=' + startChunks.length + ' preRoll=' + this.utteranceChunks.length + ')');
-    this._maybeBargeIn();
-  };
-
-  NativeMicUtteranceVAD.prototype._endUtterance = function _endUtterance() {
-    if (!this.inSpeech) return;
-    this.inSpeech = false;
-    this.speechAboveCount = 0;
-    this.nonSpeechLikeCount = 0;
-    this.silenceMs = 0;
-    this.bargeInFired = false;
-    this.speechLikeMs = 0;
-    this.voicedMs = 0;
-    this.voicedWindow = [];
-    if (this.speechActiveMs < NativeAudio.SPEECH_MIN_ACTIVE_MS) {
-      nativeLog('VAD', 'utterance rejected: speechActiveMs=' + this.speechActiveMs
-        + ' min=' + NativeAudio.SPEECH_MIN_ACTIVE_MS);
-      reportVoice('VOICE', 'utterance rejected too short speechMs=' + this.speechActiveMs);
-      this.utteranceChunks = [];
-      this.speechActiveMs = 0;
-      return;
-    }
-    nativeLog('VAD', 'utterance end chunks=' + this.utteranceChunks.length
-      + ' speechMs=' + this.speechActiveMs);
-    reportVoice('VOICE', 'utterance end chunks=' + this.utteranceChunks.length
-      + ' speechMs=' + this.speechActiveMs);
-    handleSpeechEnd();
-  };
-
-  NativeMicUtteranceVAD.prototype.takeSpeechPcm16 = function () {
-    const pcm16 = NativeAudio.mergePcm16Chunks(this.utteranceChunks);
-    this.utteranceChunks = [];
-    return pcm16;
-  };
-
-  NativeMicUtteranceVAD.prototype.takeSpeechWavBlob = function () {
-    const pcm16 = this.takeSpeechPcm16();
-    return NativeAudio.pcm16ToWavBlob(pcm16);
-  };
-
-  NativeMicUtteranceVAD.prototype.hasSpeechCapture = function () {
-    return this.utteranceChunks.length > 0;
-  };
-
-  NativeMicUtteranceVAD.prototype.hasCompletedSpeechCapture = function () {
-    return !this.inSpeech && this.utteranceChunks.length > 0;
-  };
-
-  NativeMicUtteranceVAD.prototype.start = async function () {
-    const self = this;
-    if (typeof NativeAudio === 'undefined') {
-      throw new Error('native-audio.js not loaded');
-    }
-    try {
-      nativeLog('VAD', 'NativeMicUtteranceVAD start (RMS v' + NativeAudio.VOICE_MODE_NATIVE_VAD_VERSION + ')');
-      this.preRollBuffer.clear();
-      this.utteranceChunks = [];
-      this.startGateChunks = [];
-      this.inSpeech = false;
-      this._resetSpeechCounters();
-      this.chunkCount = 0;
-      this._firstFrameReported = false;
-
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      if (nativeMicStopPromise) {
-        await nativeMicStopPromise;
-      }
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      await ensureNativeMicPermission();
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      try {
-        await window.NativeMic.start();
-      } catch (first) {
-        const firstMsg = first && first.message ? first.message : String(first);
-        if (/permission/i.test(firstMsg)) throw first;
-        nativeLog('VAD', 'NativeMic.start retry after: ' + firstMsg);
-        if (nativeMicBridge !== this) {
-          throw new Error('native VAD start superseded');
-        }
-        const retryStopPromise = Promise.resolve().then(function () {
-          return window.NativeMic.stop();
-        });
-        nativeMicStopPromise = retryStopPromise;
-        try {
-          await retryStopPromise;
-        } finally {
-          if (nativeMicStopPromise === retryStopPromise) {
-            nativeMicStopPromise = null;
-          }
-        }
-        if (nativeMicBridge !== this) {
-          throw new Error('native VAD start superseded');
-        }
-        await window.NativeMic.start();
-      }
-
-      if (nativeMicBridge !== this) {
-        throw new Error('native VAD start superseded');
-      }
-      this.nativeListener = window.NativeMic.addListener('nativeMicData', function (data) {
-        if (!self.isRecording || !window.voiceModeActive) return;
-        if (!data || !data.data) return;
-        try {
-          self._onNativePcm(NativeAudio.decodeNativePcmBase64(data.data));
-        } catch (err) {
-          nativeLog('VAD', 'PCM decode error: ' + err.message);
-        }
-      });
-      this.isRecording = true;
-      reportVoice('VOICE', 'native VAD capture started');
-    } catch (err) {
-      nativeLog('VAD', 'NativeMicUtteranceVAD start failed: ' + (err && err.message ? err.message : err));
-      reportVoice('VOICE-ERROR', 'native VAD start failed: ' + (err && err.message ? err.message : err));
-      throw err;
-    }
-  };
-
-  NativeMicUtteranceVAD.prototype.stop = async function () {
-    try {
-      this.isRecording = false;
-      this.inSpeech = false;
-
-      if (this.nativeListener) {
-        this.nativeListener.remove();
-        this.nativeListener = null;
-      }
-
-      this.preRollBuffer.clear();
-      this.utteranceChunks = [];
-      this.startGateChunks = [];
-      if (nativeMicBridge === this) {
-        const stopPromise = Promise.resolve().then(function () {
-          return window.NativeMic.stop();
-        });
-        nativeMicStopPromise = stopPromise;
-        try {
-          await stopPromise;
-        } finally {
-          if (nativeMicStopPromise === stopPromise) {
-            nativeMicStopPromise = null;
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Error stopping Voice Mode native VAD:', err);
-    }
-  };
-
-  NativeMicUtteranceVAD.prototype.reinitialize = async function () {
-    nativeLog('VAD', 'reinitialize: native RMS VAD always running');
-  };
-
-  NativeMicUtteranceVAD.prototype.onTtsPlaybackStarted = function () {
-    this.preRollBuffer.clear();
-    this.inSpeech = false;
-    this.utteranceChunks = [];
-    this.startGateChunks = [];
-    this._resetSpeechCounters();
-  };
+  function createDesktopVadHost() {
+    return {
+      vadLib: vad,
+      log: function (tag, msg) { nativeLog(tag, msg); },
+      voiceLifecycle: voiceLifecycle,
+      onBargeIn: function () { handleBargeIn(); },
+      onSpeechEnd: function (audio) { handleSpeechEnd(audio); },
+      onSpeechStart: function () { lastVoiceUtteranceStartedAt = Date.now(); },
+      isTtsActive: function () { return isVoiceTtsActive(); }
+    };
+  }
 
   function onVoiceModeTtsStarted() {
-    voiceModeTtsPlaying = true;
+    voiceLifecycle.notePlaybackStarted();
     if (nativeMicBridge && nativeMicBridge.onTtsPlaybackStarted) {
       nativeMicBridge.onTtsPlaybackStarted();
     }
@@ -5249,7 +3899,7 @@ $(document).ready(function() {
   }
 
   function onVoiceModeTtsEnded() {
-    voiceModeTtsPlaying = false;
+    voiceLifecycle.notePlaybackEnded();
     nativeLog('VAD', 'TTS playback ended');
   }
 
@@ -5258,7 +3908,6 @@ $(document).ready(function() {
 
   let nativeVoiceTtsSessionListener = null;
   let nativeVoiceTtsSessionPromise = null;
-  let nativeVoiceTtsGeneration = 0;
 
   function nativeVoiceTtsStreamUrl(token) {
     return window.location.origin + '/tts_stream/' + encodeURIComponent(token);
@@ -5274,7 +3923,7 @@ $(document).ready(function() {
   }
 
   function invalidateNativeVoiceTts() {
-    nativeVoiceTtsGeneration += 1;
+    voiceLifecycle.invalidateNativeSession();
     if (nativeVoiceTtsSessionListener) {
       const listener = nativeVoiceTtsSessionListener;
       nativeVoiceTtsSessionListener = null;
@@ -5288,366 +3937,110 @@ $(document).ready(function() {
   }
 
   function finishNativeVoiceTts(generation, button) {
-    if (generation !== nativeVoiceTtsGeneration) return;
-    onVoiceModeTtsEnded();
-    voiceModeTtsSessionActive = false;
-    voiceModeTtsPlaying = false;
-    if (CURRENT_AUDIO && CURRENT_AUDIO.nativeGeneration === generation) {
-      CURRENT_AUDIO = null;
-      CURRENT_AUDIO_BUTTON = null;
-      resetPlayButtonUi(button);
-      clearMessageTtsPlayingUi();
-    }
-    if (nativeVoiceTtsSessionListener) {
-      const listener = nativeVoiceTtsSessionListener;
-      nativeVoiceTtsSessionListener = null;
-      Promise.resolve(listener).then(function (handle) {
-        if (handle && typeof handle.remove === 'function') {
-          handle.remove();
+    voiceLifecycle.finishNativePlayback(generation, button, {
+      onEnded: onVoiceModeTtsEnded,
+      cleanup: function () {
+        if (nativeVoiceTtsSessionListener) {
+          const listener = nativeVoiceTtsSessionListener;
+          nativeVoiceTtsSessionListener = null;
+          Promise.resolve(listener).then(function (handle) {
+            if (handle && typeof handle.remove === 'function') {
+              handle.remove();
+            }
+          }).catch(function () {});
         }
-      }).catch(function () {});
-    }
-    nativeVoiceTtsSessionPromise = null;
-    if (window.voiceModeActive) {
-      armTtsListenCooldown();
-    }
-    syncSendButtonState();
+        nativeVoiceTtsSessionPromise = null;
+      }
+    });
   }
 
+  // Native sentence queue lives in static/tts-playback.js using the single
+  // voice lifecycle + voice-text. DOM/event composition (message identity,
+  // text-change wakeup, button UI, STT abort, VAD reset) stays here via
+  // explicit source callbacks; protocols/retries are not rewritten.
   function playNativeVoiceModeTts(button, options) {
     options = options || {};
-    if (!window.NativeVoiceTts || !window.nativeVoiceTtsAvailable) {
-      window.playTTS(button, options);
-      return;
-    }
-    if (CURRENT_AUDIO && CURRENT_AUDIO_BUTTON === button) {
-      stopAllTtsPlayback();
-      return;
-    }
-    if (CURRENT_AUDIO) stopAllTtsPlayback();
-
-    invalidateNativeVoiceTts();
-    const nativeVoiceTtsStopPromise = window.NativeVoiceTts.stop().catch(function () {});
-    stopCurrentDesktopTts();
-
-    // Reset VAD state immediately so pre-click speech/room noise cannot trigger false barge-in
-    if (nativeMicBridge && typeof nativeMicBridge.onTtsPlaybackStarted === 'function') {
-      nativeMicBridge.onTtsPlaybackStarted();
-    }
-    // Abort any in-flight voice STT so stale utterances cannot disrupt playback
-    if (voiceSttAbortController) {
-      try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
-      voiceSttAbortController = null;
-    }
-
-    const generation = nativeVoiceTtsGeneration;
-    const voiceTtsAbortController = new AbortController();
-    const ttsSignal = voiceTtsAbortController.signal;
-    const $messageElement = $(button).closest('.message');
-    const pendingNativeTtsTokens = new Set();
-    let stopped = false;
-    let consumedSentences = 0;
-    let sentenceQueue = [];
-    let endRequested = false;
-    let inFlightSentences = 0;
-    let pendingEnqueues = 0;
-    let enqueueTail = Promise.resolve();
-    let sessionReady = false;
-    let sessionStarting = false;
-    let nativeBackpressure = false;
-    let lookahead = MAX_NATIVE_TTS_LOOKAHEAD;
-    const queuedNativeClips = new Map();
-    const isFixedList = !!(options.sentences && options.sentences.length);
-
-    voiceModeTtsSessionActive = true;
-    voiceModeTtsPlaying = false;
-    CURRENT_AUDIO_BUTTON = button;
-    CURRENT_AUDIO = {
-      nativeGeneration: generation,
-      stop: function () {
-        stopped = true;
-        teardownObserver();
-        pendingNativeTtsTokens.forEach(function (token) {
-          cancelNativeTtsToken(token);
-        });
-        pendingNativeTtsTokens.clear();
-        try { voiceTtsAbortController.abort(); } catch (e) { /* ignore */ }
-        invalidateNativeVoiceTts();
-        voiceModeTtsSessionActive = false;
-        voiceModeTtsPlaying = false;
-        resetPlayButtonUi(button);
-        clearMessageTtsPlayingUi();
-        window.NativeVoiceTts.stop().catch(function () {});
-      }
+    // The message host is associated inside the owned queue at the exact
+    // original point (after teardown/stop/reset, before queue fields), so
+    // the bridge-availability/toggle early paths touch no DOM. The lookup
+    // below resolves the source bound at this message's creation/update
+    // sites; every text/progress read goes through that source.
+    var messageContext = null;
+    var queueDeps = {
+      voiceLifecycle: voiceLifecycle,
+      split: function (text) { return splitSentences(text); },
+      terminator: function (text) { return sentenceEndsWithTerminator(text); },
+      sanitize: function (text) { return sanitizeForTTS(text); },
+      // Published by initMessageContext at the original association point.
+      source: null,
+      initMessageContext: function () {
+        var $messageElement = $(button).closest('.message');
+        messageContext = {
+          element: $messageElement,
+          textEl: $messageElement.find('.ai-message-text')[0]
+        };
+        queueDeps.source = lookupMessagePlaybackSource($messageElement[0]);
+      },
+      fetchVoiceRetry: function (url, buildOptions, attempts) { return fetchVoiceRetry(url, buildOptions, attempts); },
+      // Wake-only backstop for text changes; progress comes from the source.
+      observeChanges: function (onChange) {
+        var textEl = messageContext.textEl;
+        if (textEl && typeof MutationObserver === 'function') {
+          var obs = new MutationObserver(function () {
+            onChange();
+          });
+          obs.observe(textEl, { childList: true, subtree: true, characterData: true });
+          return function () { try { obs.disconnect(); } catch (e) { /* ignore */ } };
+        }
+        return null;
+      },
+      withCsrf: function (headers) { return withCsrf(headers); },
+      sleepMs: function (ms) { return sleepMs(ms); },
+      isRetryableVoiceStatus: function (status) { return isRetryableVoiceStatus(status); },
+      getNativeBridge: function () {
+        return (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) ? window.NativeVoiceTts : null;
+      },
+      streamUrl: function (token) { return nativeVoiceTtsStreamUrl(token); },
+      cancelToken: function (token) { return cancelNativeTtsToken(token); },
+      stopDesktop: function () { stopCurrentDesktopTts(); },
+      stopAll: function (opts) { stopAllTtsPlayback(opts); },
+      abortStt: function () {
+        if (voiceSttAbortController) {
+          try { voiceSttAbortController.abort(); } catch (e) { /* ignore */ }
+          voiceSttAbortController = null;
+        }
+      },
+      vadReset: function () {
+        if (nativeMicBridge && typeof nativeMicBridge.onTtsPlaybackStarted === 'function') {
+          nativeMicBridge.onTtsPlaybackStarted();
+        }
+      },
+      resetPlayButton: function (btn) { resetPlayButtonUi(btn); },
+      clearMessageUi: function () { clearMessageTtsPlayingUi(); },
+      syncSendButton: function () { syncSendButtonState(); },
+      setButtonPlaying: function (btn) {
+        $(btn).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
+        messageContext.element.addClass('tts-is-playing');
+        messageContext.element.find('.ai-message-text').addClass('tts-is-playing');
+      },
+      notifyStarted: function () { onVoiceModeTtsStarted(); },
+      notifyEnded: function () { onVoiceModeTtsEnded(); },
+      reportVoice: function (kind, msg) { reportVoice(kind, msg); },
+      appendMessage: function (text, cls) { appendMessage(text, cls); },
+      logError: function () { console.error.apply(console, arguments); },
+      setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
+      clearTimeout: function (id) { clearTimeout(id); },
+      isVoiceModeActive: function () { return !!window.voiceModeActive; },
+      getSessionPromise: function () { return nativeVoiceTtsSessionPromise; },
+      setSessionPromise: function (pr) { nativeVoiceTtsSessionPromise = pr; },
+      setSessionListener: function (l) { nativeVoiceTtsSessionListener = l; },
+      nativeStop: function () { return window.NativeVoiceTts.stop().catch(function () {}); },
+      invalidateNative: function () { invalidateNativeVoiceTts(); },
+      finishNative: function (gen, btn) { finishNativeVoiceTts(gen, btn); },
+      fallbackPlay: function (btn, opts) { window.playTTS(btn, opts); },
+      createAbortController: function () { return new AbortController(); }
     };
-    $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
-    $messageElement.addClass('tts-is-playing');
-    $messageElement.find('.ai-message-text').addClass('tts-is-playing');
-    syncSendButtonState();
-
-    function live() {
-      return !stopped && generation === nativeVoiceTtsGeneration;
-    }
-
-    function isStillGenerating() {
-      const raw = $messageElement.find('.ai-message-text').text().trim();
-      if (raw === 'Thinking...') return true;
-      const isLastAi = $messageElement.is($('#chat-content .message.ai-message').last());
-      const regenDisabled = $messageElement.find('.regenerate-button').prop('disabled');
-      return isLastAi && regenDisabled && currentAbortController !== null;
-    }
-
-    function discoverSentences() {
-      if (!live() || isFixedList) return;
-      const fullText = getMessageTtsText($messageElement);
-      if (!fullText) return;
-      const parts = splitSentences(fullText);
-      for (let i = consumedSentences; i < parts.length; i++) {
-        const part = parts[i];
-        const isTrailingFragment = (i === parts.length - 1);
-        if (isTrailingFragment && !sentenceEndsWithTerminator(part.text) && isStillGenerating()) break;
-        sentenceQueue.push(part.text);
-        consumedSentences++;
-      }
-    }
-
-    function ensureSession() {
-      if (nativeVoiceTtsSessionPromise) return nativeVoiceTtsSessionPromise;
-      nativeVoiceTtsSessionPromise = nativeVoiceTtsStopPromise.then(function () {
-        if (!live()) return null;
-        return window.NativeVoiceTts.beginSession();
-      }).then(function (res) {
-        if (!live()) return;
-        const nativeSessionGen = (res && res.generation) || 0;
-        nativeBackpressure = !!(res && res.maxQueuedClips > 0);
-        if (nativeBackpressure) lookahead = Math.min(MAX_NATIVE_TTS_LOOKAHEAD, res.maxQueuedClips);
-        let nativeStarted = false;
-        nativeVoiceTtsSessionListener = window.NativeVoiceTts.addListener('playbackState', function (data) {
-          if (!data || generation !== nativeVoiceTtsGeneration) return;
-          if (nativeSessionGen && data.generation && data.generation !== nativeSessionGen) return;
-          if (data.type === 'started') {
-            nativeStarted = true;
-            onVoiceModeTtsStarted();
-          } else if (data.type === 'clipConsumed') {
-            const job = queuedNativeClips.get(data.url);
-            if (job) {
-              queuedNativeClips.delete(data.url);
-              pendingNativeTtsTokens.delete(job.token);
-              releaseSlot(job);
-            }
-          } else if (data.type === 'ended') {
-            if (!nativeStarted && !endRequested) {
-              // Stale ended event from prior stopped session before this session began playing
-              return;
-            }
-            finishNativeVoiceTts(generation, button);
-          } else if (data.type === 'error') {
-            console.error('Native voice TTS error:', data.message);
-          }
-        });
-        return Promise.resolve(nativeVoiceTtsSessionListener);
-      });
-      return nativeVoiceTtsSessionPromise;
-    }
-
-    function markEndOfQueue() {
-      if (!live() || endRequested) return;
-      endRequested = true;
-      ensureSession().then(function () {
-        if (live()) return window.NativeVoiceTts.markEndOfQueue();
-      }).catch(function (err) {
-        if (live()) {
-          console.error('Native voice TTS session failed:', err);
-          finishNativeVoiceTts(generation, button);
-        }
-      });
-    }
-
-    // Wake the pump on streaming text updates so we don't wait out the 80 ms
-    // poll cycle between an LLM finishing a sentence and TTS starting.
-    function onTextChanged() {
-      if (!live()) {
-        teardownObserver();
-        return;
-      }
-      discoverSentences();
-      pump();
-    }
-
-    function teardownObserver() {
-      if (observer) {
-        try { observer.disconnect(); } catch (e) { /* ignore */ }
-        observer = null;
-      }
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-        pollTimer = null;
-      }
-    }
-
-    let observer = null;
-    let pollTimer = null;
-
-    // Token requests overlap, but enqueueing below remains in sentence order.
-    function postOneToken(rawText) {
-      const cleaned = sanitizeForTTS(rawText || '').trim();
-      if (!cleaned) return Promise.resolve(null);
-      return ensureSession().then(function () {
-        if (!live()) return null;
-        return fetchVoiceRetry('/tts', {
-          method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: cleaned }),
-          signal: ttsSignal
-        });
-      }).then(function (response) {
-        if (!response) return null;
-        const responseToken = response.headers && response.headers.get('X-TTS-Token');
-        if (responseToken) {
-          const token = String(responseToken);
-          pendingNativeTtsTokens.add(token);
-          if (!live()) {
-            pendingNativeTtsTokens.delete(token);
-            cancelNativeTtsToken(token);
-            return null;
-          }
-          if (response.body) response.body.cancel().catch(function () {});
-          return { token: token };
-        }
-        return response.json();
-      }).then(function (data) {
-        if (!data || !data.token) return null;
-        const token = String(data.token);
-        pendingNativeTtsTokens.add(token);
-        if (!live()) {
-          pendingNativeTtsTokens.delete(token);
-          cancelNativeTtsToken(token);
-          return null;
-        }
-        return token;
-      });
-    }
-
-    async function requestToken(text) {
-      for (let attempt = 0; live(); attempt++) {
-        try {
-          return await postOneToken(text);
-        } catch (err) {
-          if (!live() || (err && err.message === 'Session expired')) throw err;
-          const match = /request failed \((\d+)\)/.exec((err && err.message) || '');
-          const status = match ? Number(match[1]) : 0;
-          if (attempt >= MAX_TTS_SENTENCE_RETRIES || (status && !isRetryableVoiceStatus(status))) throw err;
-          await sleepMs(400 * (attempt + 1));
-        }
-      }
-      return null;
-    }
-
-    function releaseSlot(job) {
-      if (job.released) return;
-      job.released = true;
-      inFlightSentences--;
-      if (live()) pump();
-    }
-
-    function queueSentence(text) {
-      const job = { token: null, released: false };
-      inFlightSentences++;
-      pendingEnqueues++;
-      // Settle failures immediately even when an earlier sentence is still pending.
-      const prepared = requestToken(text).then(function (token) {
-        return { token: token };
-      }, function (error) { return { error: error }; });
-      enqueueTail = enqueueTail.then(function () { return prepared; }).then(async function (result) {
-        if (!live()) return;
-        if (result.error) throw result.error;
-        if (!result.token) { releaseSlot(job); return; }
-        job.token = result.token;
-        const url = nativeVoiceTtsStreamUrl(job.token);
-        if (nativeBackpressure) queuedNativeClips.set(url, job);
-        for (let attempt = 0; live(); attempt++) {
-          try {
-            await window.NativeVoiceTts.enqueue(url);
-            // Older APKs do not emit clipConsumed; keep their enqueue-ack flow working.
-            if (!nativeBackpressure) releaseSlot(job);
-            return;
-          } catch (err) {
-            if (attempt >= MAX_TTS_SENTENCE_RETRIES) throw err;
-            await sleepMs(400 * (attempt + 1));
-          }
-        }
-      }).catch(function (err) {
-        if (job.token) {
-          queuedNativeClips.delete(nativeVoiceTtsStreamUrl(job.token));
-          pendingNativeTtsTokens.delete(job.token);
-          cancelNativeTtsToken(job.token);
-        }
-        if (!live()) return;
-        console.error('Native voice TTS sentence failed after retries:', err);
-        reportVoice('VOICE-ERROR', 'TTS sentence failed (native)');
-        appendMessage('Voice output failed. Try again.', 'error-message');
-        // Exhausted retries end the session with a visible error; never advance.
-        stopped = true;
-        teardownObserver();
-        window.NativeVoiceTts.stop().catch(function () {});
-        finishNativeVoiceTts(generation, button);
-      }).then(function () {
-        pendingEnqueues--;
-        if (live()) pump();
-      });
-    }
-
-    function pump() {
-      if (!live() || endRequested) return;
-      if (!sessionReady) {
-        if (sessionStarting) return;
-        sessionStarting = true;
-        ensureSession().then(function () {
-          sessionReady = true;
-          if (live()) pump();
-        }).catch(function (err) {
-          if (!live()) return;
-          stopped = true;
-          teardownObserver();
-          console.error('Native voice TTS session failed:', err);
-          window.NativeVoiceTts.stop().catch(function () {});
-          finishNativeVoiceTts(generation, button);
-        });
-        return;
-      }
-      discoverSentences();
-      while (sentenceQueue.length > 0 && inFlightSentences < lookahead) {
-        const text = sanitizeForTTS(sentenceQueue.shift() || '').trim();
-        if (text) queueSentence(text);
-      }
-      if (!isFixedList && isStillGenerating()) {
-        if (!pollTimer) pollTimer = setTimeout(function () {
-          pollTimer = null;
-          pump();
-        }, 80);
-      } else if (sentenceQueue.length === 0 && pendingEnqueues === 0) {
-        teardownObserver();
-        markEndOfQueue();
-      }
-    }
-
-    if (isFixedList) {
-      options.sentences.forEach(function (sentence) {
-        if (sentence && String(sentence).trim()) sentenceQueue.push(String(sentence));
-      });
-    }
-
-    // React immediately to streaming text updates so TTS starts on the first
-    // complete sentence without waiting out the 80 ms poll cycle. Important
-    // for the web-search/tool-calling path: the final answer only begins
-    // streaming after the search + second LLM hop completes.
-    const textEl = $messageElement.find('.ai-message-text')[0];
-    if (textEl && typeof MutationObserver === 'function') {
-      observer = new MutationObserver(onTextChanged);
-      observer.observe(textEl, { childList: true, subtree: true, characterData: true });
-    }
-
-    pump();
+    return ChatTtsPlayback.playNativeVoiceModeTts(queueDeps, button, options);
   }
   window.playNativeVoiceModeTts = playNativeVoiceModeTts;
 
@@ -5735,9 +4128,10 @@ $(document).ready(function() {
           const routeRes = await window.NativeMic.enterVoiceRoute();
           reportVoice('VOICE', 'enterVoiceRoute ok active=' + (routeRes && routeRes.active)
             + ' bluetooth=' + (routeRes && routeRes.bluetooth)
-            + ' foreground=' + (routeRes && routeRes.foreground));
+            + ' foreground=' + (routeRes && routeRes.foreground)
+            + ' foregroundConfirmed=' + (routeRes && routeRes.foregroundConfirmed));
         }
-        startingNativeBridge = new NativeMicUtteranceVAD(function (err) {
+        startingNativeBridge = new ChatVoiceCapture.NativeMicUtteranceVAD(createNativeVadHost(), function (err) {
           nativeLog('VAD', err == null ? 'Native mic error' : String(err));
         });
         nativeMicBridge = startingNativeBridge;
@@ -5859,47 +4253,11 @@ $(document).ready(function() {
   }
   recoverAndMaybeResumeVoiceMode();
 
+  // Desktop Silero factory lives in static/voice-capture.js; this adapter
+  // supplies the message-specific callbacks (utterance timestamps, TTS-active
+  // gate, STT handoff) and the frame gate. Thresholds/paths/model unchanged.
   function createVAD(stream, hooks) {
-    hooks = hooks || {};
-    nativeLog('VAD', 'createVAD called with stream id: ' + stream.id);
-    return vad.MicVAD.new({
-      stream: stream,
-      model: 'v5',
-      baseAssetPath: '/static/deps/vad/',
-      onnxWASMBasePath: '/static/deps/vad/ort/',
-      positiveSpeechThreshold: 0.7,
-      negativeSpeechThreshold: 0.4,
-      redemptionMs: 1500,
-      minSpeechMs: 400,
-      preSpeechPadFrames: 16,
-      getStream: async () => stream,
-      onSpeechStart: hooks.onSpeechStart || function () {
-        nativeLog('VAD', 'onSpeechStart');
-        lastVoiceUtteranceStartedAt = Date.now();
-      },
-      onSpeechRealStart: hooks.onSpeechRealStart || function () {
-        nativeLog('VAD', 'onSpeechRealStart');
-        if (CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying) {
-          handleBargeIn();
-        }
-      },
-      onFrameProcessed: hooks.onFrameProcessed || function (probs) {
-        const ttsActive = CURRENT_AUDIO || voiceModeTtsSessionActive || voiceModeTtsPlaying;
-        if (ttsActive && probs.isSpeech > BARGE_IN_SPEECH_PROB) {
-          bargeInFrames++;
-          if (bargeInFrames >= BARGE_IN_FRAMES_DESKTOP) {
-            bargeInFrames = 0;
-            handleBargeIn();
-          }
-        } else {
-          bargeInFrames = 0;
-        }
-      },
-      onSpeechEnd: hooks.onSpeechEnd || function (audio) {
-        nativeLog('VAD', 'onSpeechEnd');
-        handleSpeechEnd(audio);
-      },
-    });
+    return ChatVoiceCapture.createVAD(createDesktopVadHost(), stream, hooks);
   }
 
   async function reinitializeVAD() {
@@ -5920,34 +4278,11 @@ $(document).ready(function() {
   }
 
   function stopAllTtsPlayback(opts) {
-    opts = opts || {};
-    if (stopAllTtsPlayback._busy) return;
-    stopAllTtsPlayback._busy = true;
-    try {
-      voiceModeTtsPlaying = false;
-      voiceModeTtsSessionActive = false;
-      if (opts.preserveListen) {
-        voiceModeListenCooldownUntil = 0;
-      } else {
-        armTtsListenCooldown();
-      }
-      const audio = CURRENT_AUDIO;
-      if (audio && audio.stop) {
-        try { audio.stop(); } catch (e) { /* ignore */ }
-      }
-      if (window.NativeVoiceTts && window.nativeVoiceTtsAvailable) {
-        window.NativeVoiceTts.stop().catch(function () {});
-      }
-      stopCurrentDesktopTts();
-      if (CURRENT_AUDIO_BUTTON) {
-        resetPlayButtonUi(CURRENT_AUDIO_BUTTON);
-        CURRENT_AUDIO_BUTTON = null;
-      }
-      clearMessageTtsPlayingUi();
-      syncSendButtonState();
-    } finally {
-      stopAllTtsPlayback._busy = false;
-    }
+    var sessionId = null;
+    try { sessionId = voiceLifecycle.currentDesktopSession(); } catch (e) { /* ignore */ }
+    disposeActiveDesktopTtsQueue();
+    cancelDesktopTtsClipSession(sessionId);
+    voiceLifecycle.stopAllPlayback(opts);
   }
   window.stopAllTtsPlayback = stopAllTtsPlayback;
 
@@ -5955,7 +4290,10 @@ $(document).ready(function() {
     stopAllTtsPlayback({ preserveListen: true });
   }
 
-  function stopVoiceMode() {
+  function stopVoiceMode(transitionId) {
+    // Dual delivery (listener + evalJs fallback) shares one coordinator
+    // transition ID; the central gate applies each logical stop once.
+    if (!voiceTransitionGate.claim(transitionId)) return;
     voiceModeSessionGeneration += 1;
     reportVoice('VOICE', 'voice session stopped');
     if (voiceSttAbortController) {
@@ -5981,7 +4319,7 @@ $(document).ready(function() {
     if (window.NativeMic && window.NativeMic.exitVoiceRoute) {
       window.NativeMic.exitVoiceRoute().catch(function () {});
     }
-    bargeInFrames = 0;
+    voiceLifecycle.resetBargeFrames();
     lastVoiceSpeechEndedAt = 0;
     lastVoiceUtteranceStartedAt = 0;
     persistVoiceModeWanted(false);
@@ -5992,7 +4330,11 @@ $(document).ready(function() {
   }
   window.stopVoiceMode = stopVoiceMode;
 
-  function pauseVoiceModeForPhoneCall() {
+  function pauseVoiceModeForPhoneCall(transitionId) {
+    // Dual delivery (listener + evalJs fallback) shares one coordinator
+    // transition ID; the central gate applies each logical pause once and
+    // rejects a reordered stale pause after a newer resume.
+    if (!voiceTransitionGate.claim(transitionId)) return;
     if (!window.voiceModeActive && !voiceModeWanted()) return;
     voiceModeSessionGeneration += 1;
     if (voiceSttAbortController) {
@@ -6017,20 +4359,23 @@ $(document).ready(function() {
   }
   window.pauseVoiceModeForPhoneCall = pauseVoiceModeForPhoneCall;
 
-  function resumeVoiceModeAfterPhoneCall() {
+  function resumeVoiceModeAfterPhoneCall(transitionId) {
+    // Dual delivery (listener + evalJs fallback) shares one coordinator
+    // transition ID; the central gate applies each logical resume once.
+    if (!voiceTransitionGate.claim(transitionId)) return;
     if (!voiceModeWanted()) return;
     startVoiceMode(1);
   }
   window.resumeVoiceModeAfterPhoneCall = resumeVoiceModeAfterPhoneCall;
 
   if (window.NativeMic && window.NativeMic.addListener) {
-    window.NativeMic.addListener('voiceModeStopRequested', function () {
+    window.NativeMic.addListener('voiceModeStopRequested', function (data) {
       // Always invalidate a start already waiting on permission/native setup.
-      stopVoiceMode();
+      stopVoiceMode(data && data.transitionId);
     });
     window.NativeMic.addListener('voiceModePhoneCall', function (data) {
-      if (data && data.active) pauseVoiceModeForPhoneCall();
-      else resumeVoiceModeAfterPhoneCall();
+      if (data && data.active) pauseVoiceModeForPhoneCall(data.transitionId);
+      else resumeVoiceModeAfterPhoneCall(data && data.transitionId);
     });
   }
 
@@ -6039,10 +4384,7 @@ $(document).ready(function() {
     if (!opts.ttsAlreadyStopped) {
       stopAllTtsPlayback();
     }
-    if (currentAbortController) {
-      currentAbortController.abort();
-      currentAbortController = null;
-      chatRequestSeq += 1;
+    if (chatRequests.interruptForVoiceTurn()) {
       const $lastAI = $('#chat-content .message.ai-message').last();
       if ($lastAI.length) {
         const $text = $lastAI.find('.ai-message-text');
@@ -6052,6 +4394,9 @@ $(document).ready(function() {
         }
         $lastAI.find('.regenerate-button').prop('disabled', false);
         $lastAI.find('.play-button').prop('disabled', false);
+        // Interrupted turn settles here; its source ends with the last
+        // published text while the replacement request binds fresh.
+        finishMessagePlayback($lastAI);
       }
     }
     if (voiceAmendTimer) {
@@ -6146,8 +4491,8 @@ $(document).ready(function() {
     if (!text) return;
     timing = timing || {};
     const $lastUser = $('#chat-content .message.user-message').last();
-    const generating = !!currentAbortController || $('#send-button').hasClass('is-generating');
-    const ttsActive = !!(voiceModeTtsSessionActive || voiceModeTtsPlaying);
+    const generating = chatRequests.isGenerating() || $('#send-button').hasClass('is-generating');
+    const ttsActive = voiceLifecycle.hasActiveVoiceSession();
     if (shouldAmendLastVoiceTurn({
       lastUserExists: $lastUser.length > 0,
       generating: generating,

@@ -1,7 +1,10 @@
 use axum::{http::StatusCode, Json};
 use chatbot_core::{
     history::HistoryError,
-    session::SessionError,
+    session::{
+        EncryptionKeyValidationError, PrepareHistoryError, PreparePolicyError,
+        PrepareValidationError, SessionError, SessionOperationError,
+    },
     user_store::UserStoreError,
 };
 use serde_json::{json, Value};
@@ -56,6 +59,141 @@ pub fn map_user_store_err(
 ) -> HttpError {
     error!(?err, context, "user store operation failed");
     api_error(StatusCode::INTERNAL_SERVER_ERROR, public_message)
+}
+
+/// Map a typed encryption-key validation outcome to a JSON error.
+///
+/// The `UserStore` cause for `StoreUnavailable` is already logged at the
+/// validation point in `chatbot_core::session`; this mapper adds no further
+/// cause logging. The 500 branch records the error counter; response logging
+/// belongs to the outer 5xx middleware.
+pub fn map_encryption_key_validation_err(err: EncryptionKeyValidationError) -> HttpError {
+    match err {
+        EncryptionKeyValidationError::Missing => api_error(
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.",
+        ),
+        EncryptionKeyValidationError::Invalid => {
+            api_error(StatusCode::UNAUTHORIZED, "Invalid encryption key.")
+        }
+        EncryptionKeyValidationError::StoreUnavailable => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing user store" })),
+            )
+        }
+    }
+}
+
+/// Map a pure prepare validation failure to a 400 JSON error.
+///
+/// The cause is already logged at the validation point in
+/// `chatbot_core::session`; this mapper renders the response and logs the
+/// raw 400 body. Handlers inspect `PrepareError` first: a validation failure
+/// with a nonempty user message is saved as a 200 error turn instead, so
+/// this mapper must not be invoked on that branch.
+pub fn map_prepare_validation_err(err: &PrepareValidationError) -> HttpError {
+    api_error_json(StatusCode::BAD_REQUEST, json!({ "error": err.message() }))
+}
+
+/// Map a prepare policy failure to its exact 429/403 JSON error.
+///
+/// This mapper adds no logging and records no error counter; policy
+/// rejections are expected client-visible gates, not server failures.
+pub fn map_prepare_policy_err(err: &PreparePolicyError) -> HttpError {
+    match err {
+        PreparePolicyError::Busy => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": err.message() })),
+        ),
+        PreparePolicyError::PremiumRequired => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": err.message() })))
+        }
+    }
+}
+
+/// Map a typed prepare history failure to its exact JSON error.
+///
+/// Preserves the prepare-path bodies: `NotFound` stays a 400
+/// "invalid set name" (unlike the general history 404), conflict carries
+/// only `error` + `current_version`, and the 500 branch keeps the prepare
+/// message with the error counter. The cause is already logged at the
+/// prepare point in `chatbot_core::session`; 400s log the body here, and
+/// 5xx response logging belongs to the outer middleware. Handlers inspect
+/// `PrepareError` first: a 400 history failure with a nonempty user message
+/// is saved as a 200 error turn instead, so this mapper must not be invoked
+/// on that branch.
+pub fn map_prepare_history_err(err: &PrepareHistoryError) -> HttpError {
+    match err {
+        PrepareHistoryError::Unauthorized => api_error(
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.",
+        ),
+        PrepareHistoryError::NotFound => api_error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid set name" }),
+        ),
+        PrepareHistoryError::Conflict { current_version } => api_error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "version_conflict",
+                "current_version": current_version.get(),
+            }),
+        ),
+        PrepareHistoryError::InvalidInput(msg) => api_error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": msg }),
+        ),
+        PrepareHistoryError::Forbidden => api_error(StatusCode::FORBIDDEN, "forbidden"),
+        PrepareHistoryError::Internal => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing chat history" })),
+            )
+        }
+    }
+}
+
+/// Map a typed session-operation failure to its exact JSON error.
+///
+/// 401s render their original strings with no logging or counter, the single
+/// 400 renders via the raw-body 400 path (saved-turn handling stays in
+/// chat/regenerate handlers), and 500s record the error counter once with
+/// cause already logged in core. Response 5xx logging belongs to the outer
+/// middleware.
+pub fn map_session_operation_err(err: &SessionOperationError) -> HttpError {
+    match err {
+        SessionOperationError::MissingEncryptionKey => api_error(
+            StatusCode::UNAUTHORIZED,
+            "Encryption key required. Please unlock.",
+        ),
+        SessionOperationError::InvalidEncryptionKey => {
+            api_error(StatusCode::UNAUTHORIZED, "Invalid encryption key.")
+        }
+        SessionOperationError::GuestCustomSetDenied => {
+            api_error(StatusCode::UNAUTHORIZED, "Login required for custom sets")
+        }
+        SessionOperationError::AuthenticatedBootstrapMisuse => api_error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": err.message() }),
+        ),
+        SessionOperationError::UserStoreUnavailable => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing user store" })),
+            )
+        }
+        SessionOperationError::HistoryUnavailable => {
+            crate::test_instrumentation::record_error();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error while accessing chat history" })),
+            )
+        }
+    }
 }
 
 pub fn map_body_read_err(err: impl std::fmt::Debug, context: &'static str) -> HttpError {

@@ -6,7 +6,10 @@ fn native_js_lookahead_orders_refills_retries_and_cancels() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let run = Command::new("node")
         .arg(root.join("chatbot-server/tests/fixtures/native_tts_queue_test.js"))
-        .arg(root.join("static/chat.js"))
+        .arg(root.join("static/tts-playback.js"))
+        .arg(root.join("static/conversation-state.js"))
+        .arg(root.join("static/voice-lifecycle.js"))
+        .arg(root.join("static/playback-source.js"))
         .output().expect("test image must provide the JS behavior-test runtime");
     assert!(run.status.success(), "JS queue behavior: {}", String::from_utf8_lossy(&run.stderr));
 }

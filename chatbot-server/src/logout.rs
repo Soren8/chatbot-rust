@@ -2,25 +2,26 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::session;
 use crate::http_error::{
     log_and_api_error, map_response_build_err, map_session_err, HttpError,
 };
+use crate::services::AppServices;
 
 pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, HttpError> {
+    let services = AppServices::from_extensions(request.extensions());
+    let identity = services.identity().clone();
     let headers = request.headers();
-    let ip = crate::chat_utils::get_ip(headers, request.extensions());
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_owned());
+    let ip = crate::request_context::get_ip(headers, request.extensions());
+    let cookie_header = crate::request_context::extract_cookie(headers);
 
-    let username = session::session_context(cookie_header.as_deref())
+    let username = identity
+        .session_context(cookie_header.as_deref())
         .ok()
         .and_then(|ctx| ctx.username)
         .unwrap_or_else(|| "guest".to_string());
 
-    let finalize = session::logout_user(cookie_header.as_deref())
+    let finalize = identity
+        .logout_user(cookie_header.as_deref())
         .map_err(|err| map_session_err(err, "logout::post"))?;
 
     tracing::info!(username = %username, ip = %ip, "Logout successful");
@@ -40,7 +41,12 @@ pub async fn handle_logout(request: Request<Body>) -> Result<Response<Body>, Htt
 
     builder = builder.header(header::SET_COOKIE, set_cookie);
 
-    if let Ok(value) = HeaderValue::from_str(&crate::chat_utils::build_enc_key_clear_cookie()) {
+    // Single emit resolves CSRF once, like the original per-build read.
+    if let Ok(value) = HeaderValue::from_str(
+        &crate::chat_utils::build_enc_key_clear_cookie_with_csrf(
+            services.config_source().csrf(),
+        ),
+    ) {
         builder = builder.header(header::SET_COOKIE, value);
     }
 

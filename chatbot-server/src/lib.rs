@@ -7,27 +7,36 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chatbot_core::{logging, session::ServiceResponse};
-use std::{env, net::SocketAddr, path::PathBuf};
+use chatbot_core::{logging, session_identity::HttpSessionStore};
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 mod background;
+pub use background::{
+    spawn_session_purge_task_with_identity, spawn_session_purge_task_with_services,
+};
 mod brave;
 mod chat;
 pub mod chat_utils;
 pub mod client_logs;
+pub mod enc_key_cookies;
+pub mod generation_deps;
 mod health;
 pub mod http_error;
+pub mod identity;
+pub mod services;
 mod home;
 mod login;
 mod logout;
 mod memory;
 mod preferences;
+pub mod policy;
 mod providers;
 mod rate_limit_middleware;
 mod regenerate;
+pub mod request_context;
 mod reset_chat;
 mod search;
 mod sets;
@@ -44,9 +53,44 @@ pub async fn run() -> anyhow::Result<()> {
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
 
-    background::spawn_session_purge_task();
+    // One owned application services context for the process: identity plus
+    // TTS pending tokens plus rate-limit counters plus chat (session mirror,
+    // durable history, account-key/tier gates) plus accounts (user/remember
+    // stores). The router and the background purge share this instance. Chat
+    // history opens lazily on first use via `ChatService::with_storage` with
+    // `get_or_try_init` retry, so a database failure is fallible per request
+    // and never fatal at startup, and the same database file is never opened
+    // twice (no global chat/history init). User/remember stores open per call
+    // through the shared account service. Deliberate root capture:
+    // timeout/prompt/history roots/account root/verifier secret are resolved
+    // once from `app_config()` here, with the same `HOST_DATA_DIR` /
+    // `host_data_dir` semantics as `UserStore::new` and
+    // `HistoryService::global`. Live global config remains for providers,
+    // CSRF, TTS, rate limits, cookie secure/max-age, and
+    // login/signup/home/preferences/voice-service routes.
+    let app_config = chatbot_core::config::app_config();
+    let identity = identity::RequestIdentity::with_store(Arc::new(HttpSessionStore::new(
+        app_config.session_timeout,
+    )));
+    let chat_sessions = Arc::new(chatbot_core::session::ChatSessionStore::new(
+        app_config.session_timeout,
+        app_config.default_system_prompt.clone(),
+    ));
+    let accounts = chatbot_core::account_service::AccountService::with_root_and_secret(
+        app_config.host_data_dir.clone(),
+        app_config.secret_key.clone(),
+    );
+    let chat = chatbot_core::session::ChatService::with_storage_and_accounts(
+        chat_sessions,
+        app_config.host_data_dir.clone(),
+        accounts.clone(),
+    );
+    let services = services::AppServices::with_owned_stores(identity)
+        .with_chat_service(chat)
+        .with_account_service(accounts);
+    background::spawn_session_purge_task_with_services(services.clone());
 
-    let app = build_router(static_root);
+    let app = build_router_with_services(static_root, services);
 
     let bind_addr = env::var("CHATBOT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:80".into());
     let listener = TcpListener::bind(&bind_addr).await?;
@@ -80,9 +124,9 @@ async fn set_cross_origin_isolation_headers(
 /// Guarantee: every 5xx response that reaches a client is logged at ERROR
 /// level with request context. Handler-level helpers (`log_and_api_error`,
 /// `map_*_err`, `api_error`) log the underlying cause; this catches any 5xx
-/// built without such a log (direct Response builders, `build_response`
-/// ServiceResponses, future handlers). Mounted as the outermost layer so it
-/// observes the final status of every route, including nested services.
+/// built without such a log (direct Response builders, future handlers).
+/// Mounted as the outermost layer so it observes the final status of every
+/// route, including nested services.
 async fn log_server_error_responses(
     request: axum::extract::Request<Body>,
     next: Next,
@@ -223,7 +267,54 @@ async fn sanitize_cookies_middleware(
     response
 }
 
+/// Compatibility router: identity, TTS tokens, rate-limit counters, and chat
+/// all resolve to the existing process-global stores, matching fixtures that
+/// bootstrap via the global `chatbot_core::session` and `rate_limit` APIs.
+/// Installing the (lazy) global services touches neither config nor the
+/// stores, preserving first-use initialization timing.
 pub fn build_router(static_root: PathBuf) -> Router {
+    build_router_with_services(static_root, services::AppServices::global())
+}
+
+/// Router with an explicit request identity. Compatibility semantics: the
+/// identity is owned, while TTS pending tokens, rate-limit counters, and chat
+/// stay process-global. Pass the same identity to its background purge via
+/// [`spawn_session_purge_task_with_identity`]. Routers built with different
+/// owned stores share no cookies, CSRF tokens, or login bindings. For fully
+/// independent tokens, counters, and chat, use
+/// [`build_router_with_services`] with
+/// [`services::AppServices::with_chat_service`]. Durable history mirrors the
+/// chat dimension; user/remember stores and live config (providers, CSRF,
+/// TTS, rate limits) stay global either way.
+pub fn build_router_with_identity(
+    static_root: PathBuf,
+    identity: identity::RequestIdentity,
+) -> Router {
+    build_router_with_services(
+        static_root,
+        services::AppServices::with_identity(identity),
+    )
+}
+
+/// Router with fully owned services: the given identity plus its TTS pending
+/// tokens plus its rate-limit counters plus its chat service (when configured
+/// via [`services::AppServices::with_chat_service`]) plus its account service
+/// (when configured via [`services::AppServices::with_account_service`]).
+/// Two routers built with independent [`services::AppServices`] share no
+/// cookies, CSRF tokens, login bindings, TTS tokens, rate-limit counters,
+/// session mirrors, durable history, account-key/tier gates, or user/remember
+/// records once both carry explicit chat and account services. The services'
+/// identity is also installed as the legacy `RequestIdentity` extension (same
+/// value), so existing handlers keep resolving through one source: the
+/// `AppServices` extension. Without an explicit chat service the chat/history
+/// dimension stays process-global for compatibility; without an explicit
+/// account service the user/remember dimension stays process-global. Live
+/// config (providers, CSRF, TTS, rate limits, cookie secure/max-age) stays
+/// global.
+pub fn build_router_with_services(
+    static_root: PathBuf,
+    services: services::AppServices,
+) -> Router {
     let rate_limited = Router::new()
         .route(
             "/signup",
@@ -287,6 +378,8 @@ pub fn build_router(static_root: PathBuf) -> Router {
             post(preferences::handle_update_preferences),
         )
         .merge(rate_limited)
+        .layer(axum::Extension(services.clone()))
+        .layer(axum::Extension(services.identity().clone()))
         .layer(middleware::from_fn(sanitize_cookies_middleware))
         .layer(middleware::from_fn(set_static_cache_control_headers))
         .layer(middleware::from_fn(log_server_error_responses))
@@ -304,61 +397,4 @@ pub fn resolve_static_root() -> PathBuf {
 
 async fn favicon() -> StatusCode {
     StatusCode::NO_CONTENT
-}
-
-pub(crate) fn build_response(
-    service_response: ServiceResponse,
-) -> Result<Response, http_error::HttpError> {
-    let status = StatusCode::from_u16(service_response.status)
-        .map_err(|_| http_error::api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid status"))?;
-
-    if service_response.status == 400 {
-        let preview: String = String::from_utf8_lossy(&service_response.body)
-            .chars()
-            .take(500)
-            .collect();
-        warn!(status = 400, body = %preview, "http 400");
-    }
-
-    let mut response = Response::builder()
-        .status(status)
-        .body(Body::from(service_response.body))
-        .map_err(|err| {
-            error!(?err, "failed to build response body");
-            http_error::api_error(StatusCode::INTERNAL_SERVER_ERROR, "response build error")
-        })?;
-
-    {
-        let headers = response.headers_mut();
-        for (name, value) in service_response.headers {
-            if name.eq_ignore_ascii_case("transfer-encoding") {
-                continue;
-            }
-            let header_name = match HeaderName::from_bytes(name.as_bytes()) {
-                Ok(name) => name,
-                Err(err) => {
-                    error!(?err, "invalid header name: {name}");
-                    continue;
-                }
-            };
-
-            let header_value = match HeaderValue::from_str(&value) {
-                Ok(value) => value,
-                Err(err) => {
-                    error!(?err, "invalid header value for {header_name}");
-                    continue;
-                }
-            };
-
-            headers.append(header_name, header_value);
-        }
-    }
-
-    // Record server-side errors for test instrumentation so integration
-    // tests can assert no 500s were emitted during their run.
-    if service_response.status >= 500 {
-        test_instrumentation::record_error();
-    }
-
-    Ok(response)
 }

@@ -1,18 +1,16 @@
 use axum::{
     body::Body,
-    extract::ConnectInfo,
-    http::{header, Extensions, HeaderMap, Response, StatusCode},
+    http::{header, Response, StatusCode},
 };
 use chatbot_core::{
     enc_key::EncryptionKey,
     history::{HistoryError, SetId, SetVersion},
-    session,
+    session::{self, ChatService, FinalizeOutcome},
 };
 use anyhow::Error;
 use regex::Regex;
 use serde_json::{json, Value};
-use std::net::SocketAddr;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use crate::http_error::{map_response_build_err, HttpError};
 use tracing::warn;
@@ -56,239 +54,39 @@ pub fn provider_error_parts(err: &Error) -> (String, String) {
 pub const PROVIDER_ERROR_DETAIL_OPEN: &str = "[ConsoleError]";
 pub const PROVIDER_ERROR_DETAIL_CLOSE: &str = "[/ConsoleError]";
 
-pub const ENC_KEY_COOKIE_NAME: &str = "enc_key";
+pub use crate::enc_key_cookies::{
+    ENC_KEY_COOKIE_NAME, account_enc_key_cookie_name, build_enc_key_account_clear_cookie,
+    build_enc_key_account_clear_cookie_with_csrf, build_enc_key_account_set_cookie,
+    build_enc_key_account_set_cookie_with_csrf, build_enc_key_clear_cookie,
+    build_enc_key_clear_cookie_with_csrf, build_enc_key_set_cookie,
+    build_enc_key_set_cookie_with_csrf, enc_key_cookie_value, extract_account_enc_key_cookie,
+    extract_enc_key, extract_enc_key_cookie, extract_enc_key_with_identity,
+    promote_enc_key_cookies, promote_enc_key_cookies_with_accounts,
+    promote_enc_key_cookies_with_accounts_and_config,
+};
+pub use crate::request_context::get_ip;
 
-pub fn account_enc_key_cookie_name(username: &str) -> String {
-    format!("{ENC_KEY_COOKIE_NAME}-{username}")
-}
-
-pub fn extract_enc_key(headers: &HeaderMap) -> Option<EncryptionKey> {
-    headers
-        .get("X-Enc-Key")
-        .and_then(|value| value.to_str().ok())
-        .and_then(EncryptionKey::from_header_value)
-        .or_else(|| {
-            let cookie = headers
-                .get(header::COOKIE)
-                .and_then(|value| value.to_str().ok());
-            let username = session::session_context(cookie)
-                .ok()
-                .and_then(|ctx| ctx.username);
-            let account_key = username
-                .as_deref()
-                .and_then(|u| extract_account_enc_key_cookie(cookie, u));
-            account_key.or_else(|| extract_enc_key_cookie(cookie))
-        })
-}
-
-pub fn extract_enc_key_cookie(cookie_header: Option<&str>) -> Option<EncryptionKey> {
-    decode_named_enc_cookie(cookie_header, ENC_KEY_COOKIE_NAME)
-}
-
-pub fn extract_account_enc_key_cookie(
-    cookie_header: Option<&str>,
-    username: &str,
-) -> Option<EncryptionKey> {
-    decode_named_enc_cookie(cookie_header, &account_enc_key_cookie_name(username))
-}
-
-fn decode_named_enc_cookie(cookie_header: Option<&str>, name: &str) -> Option<EncryptionKey> {
-    let header = cookie_header?;
-    let prefix = format!("{name}=");
-    for part in header.split(';') {
-        let part = part.trim();
-        let Some(value) = part.strip_prefix(&prefix) else {
-            continue;
-        };
-        if value.is_empty() {
-            continue;
-        }
-        let decoded = urlencoding::decode(value).ok()?;
-        return EncryptionKey::from_header_value(decoded.as_ref());
-    }
-    None
-}
-
-fn enc_cookie_secure_flag() -> &'static str {
-    if chatbot_core::config::app_config().csrf {
-        " Secure;"
-    } else {
-        ""
-    }
-}
-
-pub fn build_enc_key_set_cookie(key: &str, max_age_secs: u64) -> String {
-    build_named_enc_key_set_cookie(ENC_KEY_COOKIE_NAME, key, max_age_secs)
-}
-
-pub fn build_enc_key_account_set_cookie(username: &str, key: &str, max_age_secs: u64) -> String {
-    build_named_enc_key_set_cookie(&account_enc_key_cookie_name(username), key, max_age_secs)
-}
-
-fn build_named_enc_key_set_cookie(name: &str, key: &str, max_age_secs: u64) -> String {
-    let encoded = urlencoding::encode(key);
-    format!(
-        "{name}={encoded}; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age={max_age_secs}",
-        secure = enc_cookie_secure_flag()
-    )
-}
-
-pub fn build_enc_key_clear_cookie() -> String {
-    format!(
-        "{ENC_KEY_COOKIE_NAME}=; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age=0",
-        secure = enc_cookie_secure_flag()
-    )
-}
-
-pub fn build_enc_key_account_clear_cookie(username: &str) -> String {
-    let name = account_enc_key_cookie_name(username);
-    format!(
-        "{name}=; Path=/;{secure} HttpOnly; SameSite=Strict; Max-Age=0",
-        secure = enc_cookie_secure_flag()
-    )
-}
-
-pub fn enc_key_cookie_value(key: &EncryptionKey) -> Option<&str> {
-    std::str::from_utf8(key.as_bytes()).ok()
-}
-
-/// After switch-account (last-used `enc_key` cleared) or a deploy that only had
-/// last-used, copy a verified key onto the missing cookie. Does not slide
-/// max-age when both cookies are already present.
-pub fn promote_enc_key_cookies(cookie_header: Option<&str>, username: &str) -> Vec<String> {
-    let Ok(store) = chatbot_core::user_store::UserStore::new() else {
-        return Vec::new();
-    };
-    let last = extract_enc_key_cookie(cookie_header);
-    let account = extract_account_enc_key_cookie(cookie_header, username);
-
-    // Prefer account-specific cookie first.
-    let (key, from_account) = if let Some(ref acct_key) = account {
-        if store
-            .verify_encryption_key(username, acct_key.as_bytes())
-            .unwrap_or(false)
-        {
-            (acct_key, true)
-        } else {
-            return Vec::new();
-        }
-    } else if let Some(ref last_key) = last {
-        if store
-            .verify_encryption_key(username, last_key.as_bytes())
-            .unwrap_or(false)
-        {
-            (last_key, false)
-        } else {
-            return Vec::new();
-        }
-    } else {
-        return Vec::new();
-    };
-
-    let Some(key_str) = enc_key_cookie_value(key) else {
-        return Vec::new();
-    };
-
-    let remembered = chatbot_core::remember_store::extract_account_token(cookie_header, username).is_some()
-        || chatbot_core::remember_store::RememberStore::new()
-            .ok()
-            .and_then(|rs| rs.peek_username(chatbot_core::remember_store::extract_token(cookie_header).as_deref()))
-            .as_deref() == Some(username);
-
-    let max_age = if remembered {
-        chatbot_core::remember_store::REMEMBER_MAX_AGE_SECS
-    } else {
-        chatbot_core::config::app_config().session_timeout.max(60)
-    };
-
-    let mut cookies = Vec::new();
-    let last_matches = last.as_ref().map(|k| k.as_bytes()) == Some(key.as_bytes());
-    if !last_matches {
-        cookies.push(build_enc_key_set_cookie(key_str, max_age));
-    }
-    if !from_account && remembered {
-        cookies.push(build_enc_key_account_set_cookie(username, key_str, max_age));
-    }
-    cookies
-}
-
-pub fn get_ip(headers: &HeaderMap, extensions: &Extensions) -> String {
-    headers
-        .get("X-Forwarded-For")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-        .or_else(|| {
-            headers
-                .get("X-Real-IP")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string())
-        })
-        .or_else(|| {
-            extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ConnectInfo(addr)| addr.ip().to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-pub struct ChatLockGuard {
-    session_id: String,
-    released: bool,
-}
-
-impl ChatLockGuard {
-    pub fn new(session_id: String) -> Self {
-        Self {
-            session_id,
-            released: false,
-        }
-    }
-
-    pub fn mark_released(&mut self) {
-        self.released = true;
-    }
-
-    pub fn release_if_needed(&mut self) {
-        if !self.released {
-            session::release_session_lock(&self.session_id);
-            self.released = true;
-        }
-    }
-}
-
-impl Drop for ChatLockGuard {
-    fn drop(&mut self) {
-        self.release_if_needed();
-    }
-}
-
-/// Ensures session lock + history finalize run even when the client aborts
-/// mid-stream (browser Stop button / dropped response body).
+/// Settles the owned generation lease when streaming ends or is dropped.
 ///
-/// Without this, cancel leaves the generate-lock held and/or omits the chat
-/// pair from durable history, so a subsequent edit/regenerate fails with 4xx.
+/// Success persists the final text; a marked provider error releases without
+/// persisting. A dropped guard persists partial text unless a provider error
+/// was marked.
 pub struct StreamCompletionGuard {
-    lock: Arc<std::sync::Mutex<ChatLockGuard>>,
-    /// Set once lock is released and (if applicable) history is finalized.
-    settled: bool,
+    on_persist: Option<Box<dyn FnOnce(&str) -> Result<Vec<String>, ()> + Send>>,
     /// Provider stream error: unlock only, do not persist tainted text.
     skip_persist: bool,
-    on_persist: Option<Box<dyn FnOnce(&str) -> Result<Vec<String>, ()> + Send>>,
     response_text: String,
     save_thoughts: bool,
 }
 
 impl StreamCompletionGuard {
     pub fn new(
-        lock: Arc<std::sync::Mutex<ChatLockGuard>>,
         save_thoughts: bool,
         on_persist: impl FnOnce(&str) -> Result<Vec<String>, ()> + Send + 'static,
     ) -> Self {
         Self {
-            lock,
-            settled: false,
-            skip_persist: false,
             on_persist: Some(Box::new(on_persist)),
+            skip_persist: false,
             response_text: String::new(),
             save_thoughts,
         }
@@ -312,54 +110,35 @@ impl StreamCompletionGuard {
 
     /// Normal completion (stream finished without provider error).
     pub fn complete_success(&mut self) -> Vec<String> {
-        if self.settled {
-            return Vec::new();
-        }
-        self.settled = true;
         if self.skip_persist {
-            self.lock.lock().unwrap().release_if_needed();
+            self.complete_without_persist();
             return Vec::new();
         }
-        let text = self.final_text();
         match self.on_persist.take() {
-            Some(persist) => match persist(&text) {
-                Ok(extras) => {
-                    // finalize unlocks the session entry; prevent double-unlock on Drop.
-                    self.lock.lock().unwrap().mark_released();
-                    extras
-                }
+            Some(persist) => match persist(&self.final_text()) {
+                Ok(extras) => extras,
                 Err(()) => {
-                    self.lock.lock().unwrap().release_if_needed();
                     vec!["\n[Error] Failed to persist chat history".to_string()]
                 }
             },
-            None => {
-                self.lock.lock().unwrap().release_if_needed();
-                Vec::new()
-            }
+            None => Vec::new(),
         }
     }
 
-    /// Provider error path: unlock without writing history.
+    /// Release without persisting.
     pub fn complete_without_persist(&mut self) {
-        if self.settled {
-            return;
-        }
-        self.settled = true;
         self.skip_persist = true;
         self.on_persist.take();
-        self.lock.lock().unwrap().release_if_needed();
     }
 }
 
 impl Drop for StreamCompletionGuard {
     fn drop(&mut self) {
-        if self.settled {
+        if self.on_persist.is_none() {
             return;
         }
-        // Client cancelled / body dropped before the stream loop finished.
-        // Persist whatever partial assistant text we have so Stop → Edit works
-        // (pair exists for regenerate) and always release the generate-lock.
+        // Persist partial text on cancel; release without persisting after a
+        // marked provider error.
         if self.skip_persist {
             self.complete_without_persist();
         } else {
@@ -368,21 +147,42 @@ impl Drop for StreamCompletionGuard {
     }
 }
 
-pub fn service_error_message(resp: &session::ServiceResponse) -> String {
-    serde_json::from_slice::<Value>(&resp.body)
-        .ok()
-        .and_then(|v| {
-            v.get("error")
-                .and_then(|e| e.as_str())
-                .map(|s| s.to_string())
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| String::from_utf8_lossy(&resp.body).into_owned())
+/// Render a typed finalize outcome into stream-error chunks.
+///
+/// Single production renderer for `/chat` and `/regenerate` persistence.
+/// Success and no-op outcomes yield no chunks; failures yield the exact
+/// stream-error chunks. Mirrors the core compatibility rendering without
+/// depending on it.
+pub fn render_finalize_outcome(outcome: &FinalizeOutcome) -> Vec<String> {
+    match outcome {
+        FinalizeOutcome::GuestUpdated
+        | FinalizeOutcome::DurableCommitted
+        | FinalizeOutcome::NoSession => Vec::new(),
+        FinalizeOutcome::KeyValidationFailed => vec![
+            "\n[Error] Failed to save chat history: missing encryption key".to_string(),
+        ],
+        FinalizeOutcome::Conflict => vec![
+            "\n[Error] Chat history conflict — reload the set and retry.".to_string(),
+        ],
+        FinalizeOutcome::InvalidInput(msg) => {
+            vec![format!("\n[Error] Failed to save chat history: {msg}")]
+        }
+        FinalizeOutcome::StoreFailure => {
+            vec!["\n[Error] Failed to save chat history".to_string()]
+        }
+    }
 }
 
-/// Persist a /chat or /regenerate failure as a real history pair and return it
-/// as a 200 text/plain assistant turn so the client can regenerate.
-pub fn error_as_saved_chat_turn(
+/// Persist a preprepare failure as a real history pair and return it as a 200
+/// text/plain assistant turn so the client can regenerate.
+///
+/// Scoped variant: persists through the router's injected [`ChatService`] so
+/// the saved error turn lands in that router's session mirror and durable
+/// history only. Acquires its own generation lock or skips persistence when
+/// busy, never unlocking another generation. Setup failures after a successful
+/// prepare must persist through their acquired lease instead of calling this.
+pub fn error_as_saved_chat_turn_with_service(
+    chat: &ChatService,
     session: &session::SessionContext,
     set_name: Option<&str>,
     user_message: &str,
@@ -398,17 +198,19 @@ pub fn error_as_saved_chat_turn(
         insertion_index,
         "saving /chat or /regenerate error as assistant turn"
     );
-    if let Some(idx) = insertion_index {
-        session::regenerate_finalize(
-            session,
-            set,
-            user_message,
-            &assistant,
-            Some(idx),
-            encryption_key,
-        );
-    } else {
-        session::chat_finalize(session, set, user_message, &assistant, encryption_key);
+    if chat.try_acquire_generation(&session.session_id) {
+        if let Some(idx) = insertion_index {
+            let _ = chat.regenerate_finalize_outcome(
+                session,
+                set,
+                user_message,
+                &assistant,
+                Some(idx),
+                encryption_key,
+            );
+        } else {
+            let _ = chat.chat_finalize_outcome(session, set, user_message, &assistant, encryption_key);
+        }
     }
     Response::builder()
         .status(StatusCode::OK)
@@ -417,6 +219,31 @@ pub fn error_as_saved_chat_turn(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from(assistant))
         .map_err(|err| map_response_build_err(err, "chat_utils::error_as_saved_chat_turn"))
+}
+
+/// Persist a /chat or /regenerate failure as a real history pair and return it
+/// as a 200 text/plain assistant turn so the client can regenerate.
+///
+/// Compatibility wrapper: persists through the process-global chat service,
+/// preserving the existing global-router behavior. Injected routers must use
+/// [`error_as_saved_chat_turn_with_service`] with their own service instead.
+pub fn error_as_saved_chat_turn(
+    session: &session::SessionContext,
+    set_name: Option<&str>,
+    user_message: &str,
+    error_message: &str,
+    encryption_key: Option<&EncryptionKey>,
+    insertion_index: Option<usize>,
+) -> Result<Response<Body>, HttpError> {
+    error_as_saved_chat_turn_with_service(
+        &ChatService::global(),
+        session,
+        set_name,
+        user_message,
+        error_message,
+        encryption_key,
+        insertion_index,
+    )
 }
 
 /// Standard CAS conflict body for durable set mutations.
