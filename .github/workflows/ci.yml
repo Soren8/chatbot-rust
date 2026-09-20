@@ -17,3 +17,7 @@ jobs:
       - name: Verify no secrets in served assets
         run: |
           bash .github/scripts/verify_no_secrets.sh
+
+      - name: Self-test the secret scanner (fixture regression)
+        run: |
+          bash .github/scripts/test_verify_no_secrets.sh
