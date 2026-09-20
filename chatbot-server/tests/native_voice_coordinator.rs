@@ -16,6 +16,7 @@ fn voice_mode_session_coordinator_orders_phone_and_session_teardown() {
         .arg(audio.join("VoiceAudioRoute.java"))
         .arg(audio.join("VoiceSessionKeepAwake.java"))
         .arg(audio.join("VoiceModeForegroundSession.java"))
+        .arg(audio.join("VoiceModeVolumeSession.java"))
         .arg(audio.join("VoiceModeSessionCoordinator.java"))
         .arg(root.join("chatbot-server/tests/fixtures/android/media/AudioManager.java"))
         .arg(root.join("chatbot-server/tests/fixtures/android/media/AudioDeviceInfo.java"))
