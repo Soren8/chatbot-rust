@@ -15,11 +15,8 @@ import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.media.VolumeProvider;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.AutomaticGainControl;
-import android.media.session.MediaSession;
-import android.media.session.PlaybackState;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -33,7 +30,6 @@ import com.chatbot.app.audio.VoiceModeForegroundService;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.audio.VoiceModeNativeHooks;
 import com.chatbot.app.audio.VoiceModeSessionCoordinator;
-import com.chatbot.app.audio.VoiceModeVolumeSession;
 import com.chatbot.app.audio.VoiceSessionKeepAwake;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
@@ -84,10 +80,9 @@ public class NativeMicPlugin extends Plugin {
     private final VoiceAudioRoute.Backend voiceAudioBackend = new AudioManagerBackend();
     private final VoiceSessionKeepAwake.Backend keepAwakeBackend = new ActivityKeepAwakeBackend();
     private final VoiceModeForegroundSession.Backend foregroundBackend = new ForegroundServiceBackend();
-    private final VoiceModeVolumeSession.Backend volumeBackend = new MediaVolumeBackend();
-    /** Owned voice-mode session: route + volume keys + keep-awake + FGS + phone/notification coordination. */
+    /** Owned voice-mode session: route + keep-awake + FGS + phone/notification coordination. */
     private final VoiceModeSessionCoordinator sessionCoordinator = new VoiceModeSessionCoordinator(
-            voiceAudioBackend, keepAwakeBackend, foregroundBackend, volumeBackend,
+            voiceAudioBackend, keepAwakeBackend, foregroundBackend,
             new CoordinatorMic(), new CoordinatorTts(),
             new CoordinatorEvents(), new CoordinatorPlatform());
     private AcousticEchoCanceler echoCanceler = null;
@@ -119,6 +114,14 @@ public class NativeMicPlugin extends Plugin {
     public static boolean hasBluetoothAudioPresent() {
         NativeMicPlugin plugin = instance;
         return plugin != null && plugin.voiceAudioBackend != null && plugin.voiceAudioBackend.hasBluetoothAudio();
+    }
+
+    /** Actual voice-route ownership for TTS playback selection (not foreground state). */
+    public static boolean isVoiceRouteActive() {
+        NativeMicPlugin plugin = instance;
+        return plugin != null
+                && plugin.sessionCoordinator != null
+                && plugin.sessionCoordinator.isRouteActive();
     }
 
     @PluginMethod
@@ -307,13 +310,11 @@ public class NativeMicPlugin extends Plugin {
         FileLogger.log(TAG, "enterVoiceRoute applied=" + entered.applied
                 + " active=" + entered.active + " bluetooth=" + entered.bluetooth
                 + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
-                + " foregroundConfirmed=" + entered.foregroundConfirmed
-                + " volume=" + entered.volume + " volumeActive=" + entered.volumeActive);
+                + " foregroundConfirmed=" + entered.foregroundConfirmed);
         ClientLogReporter.report("VOICE", "voice: enterVoiceRoute applied=" + entered.applied
                 + " active=" + entered.active + " bluetooth=" + entered.bluetooth
                 + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
-                + " foregroundConfirmed=" + entered.foregroundConfirmed
-                + " volume=" + entered.volume);
+                + " foregroundConfirmed=" + entered.foregroundConfirmed);
         JSObject result = new JSObject();
         result.put("applied", entered.applied);
         result.put("active", entered.active);
@@ -323,8 +324,6 @@ public class NativeMicPlugin extends Plugin {
         result.put("foreground", entered.foreground);
         result.put("foregroundActive", entered.foregroundActive);
         result.put("foregroundConfirmed", entered.foregroundConfirmed);
-        result.put("volume", entered.volume);
-        result.put("volumeActive", entered.volumeActive);
         call.resolve(result);
     }
 
@@ -336,8 +335,7 @@ public class NativeMicPlugin extends Plugin {
         boolean keepAwake = exited.keepAwake;
         boolean foreground = exited.foreground;
         FileLogger.log(TAG, "exitVoiceRoute applied=" + applied + " active=" + exited.active
-                + " keepAwake=" + keepAwake + " foreground=" + foreground
-                + " volume=" + exited.volume + " volumeActive=" + exited.volumeActive);
+                + " keepAwake=" + keepAwake + " foreground=" + foreground);
         JSObject result = new JSObject();
         result.put("applied", exited.applied);
         result.put("active", exited.active);
@@ -346,8 +344,6 @@ public class NativeMicPlugin extends Plugin {
         result.put("foreground", exited.foreground);
         result.put("foregroundActive", exited.foregroundActive);
         result.put("foregroundConfirmed", exited.foregroundConfirmed);
-        result.put("volume", exited.volume);
-        result.put("volumeActive", exited.volumeActive);
         call.resolve(result);
     }
 
@@ -505,161 +501,6 @@ public class NativeMicPlugin extends Plugin {
                 FileLogger.log(TAG, "hasBluetoothAudio check failed: " + e.getMessage(), e);
             }
             return false;
-        }
-    }
-
-    /**
-     * Remote-volume platform hooks for the owned TTS volume session.
-     *
-     * <p>Holds one {@code MediaSession} with an absolute {@code
-     * VolumeProvider} for the whole voice-mode session so hardware keys and
-     * the panel slider drive music even while the communication mode is held
-     * and the activity is backgrounded or locked, including between TTS clips.
-     * The session stays playing with no callback, no metadata and no transport
-     * actions, and is never attached to the stop notice. Only explicit user
-     * key/slider gestures reach music (with the system panel); enter/exit
-     * never write a level.
-     */
-    private final class MediaVolumeBackend implements VoiceModeVolumeSession.Backend {
-        private MediaSession session;
-        private VolumeProvider provider;
-        private VolumeCallback callback;
-        private long boundGeneration = -1;
-
-        @Override
-        public int getMusicMaxVolume() {
-            try {
-                return audioManager != null
-                        ? audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) : 0;
-            } catch (RuntimeException e) {
-                return 0;
-            }
-        }
-
-        @Override
-        public int getMusicVolume() {
-            try {
-                return audioManager != null
-                        ? audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) : 0;
-            } catch (RuntimeException e) {
-                return 0;
-            }
-        }
-
-        @Override
-        public synchronized boolean createRemoteVolumeSession(
-                int maxVolume, int currentVolume, long generation, VolumeCallback cb) {
-            Context ctx = getContext();
-            if (ctx == null || cb == null) {
-                return false;
-            }
-            try {
-                int clampedMax = Math.max(maxVolume, 0);
-                int clampedCurrent = Math.max(0, Math.min(currentVolume, clampedMax));
-                releaseLocked();
-                Context app = ctx.getApplicationContext();
-                if (app == null) {
-                    app = ctx;
-                }
-                MediaSession created = new MediaSession(app, "VoiceTtsVolume");
-                session = created;
-                final VolumeCallback createdCallback = cb;
-                final long createdGeneration = generation;
-                VolumeProvider createdProvider = new VolumeProvider(
-                        VolumeProvider.VOLUME_CONTROL_ABSOLUTE, clampedMax, clampedCurrent) {
-                    @Override
-                    public void onAdjustVolume(int direction) {
-                        createdCallback.onAdjustVolume(direction, createdGeneration);
-                    }
-
-                    @Override
-                    public void onSetVolumeTo(int volume) {
-                        createdCallback.onSetVolumeTo(volume, createdGeneration);
-                    }
-                };
-                provider = createdProvider;
-                callback = cb;
-                boundGeneration = generation;
-                created.setPlaybackToRemote(createdProvider);
-                PlaybackState playing = new PlaybackState.Builder()
-                        .setState(PlaybackState.STATE_PLAYING, 0, 1.0f)
-                        .setActions(0)
-                        .build();
-                created.setPlaybackState(playing);
-                created.setActive(true);
-                FileLogger.log(TAG, "volume session active max=" + clampedMax
-                        + " current=" + clampedCurrent);
-                return true;
-            } catch (Exception e) {
-                FileLogger.log(TAG, "volume session create failed: " + e.getMessage(), e);
-                try {
-                    releaseLocked();
-                } catch (Exception ignored) {
-                }
-                return false;
-            }
-        }
-
-        @Override
-        public synchronized void setProviderVolume(int current) {
-            VolumeProvider currentProvider = provider;
-            if (currentProvider == null) {
-                return;
-            }
-            try {
-                currentProvider.setCurrentVolume(current);
-            } catch (Exception ignored) {
-            }
-        }
-
-        @Override
-        public void adjustMusicVolume(int direction) {
-            if (audioManager == null) {
-                return;
-            }
-            try {
-                audioManager.adjustStreamVolume(
-                        AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI);
-            } catch (Exception e) {
-                FileLogger.log(TAG, "adjustMusic failed: " + e.getMessage(), e);
-            }
-        }
-
-        @Override
-        public void setMusicVolume(int index) {
-            if (audioManager == null) {
-                return;
-            }
-            try {
-                audioManager.setStreamVolume(
-                        AudioManager.STREAM_MUSIC, index, AudioManager.FLAG_SHOW_UI);
-            } catch (Exception e) {
-                FileLogger.log(TAG, "setMusic failed: " + e.getMessage(), e);
-            }
-        }
-
-        @Override
-        public synchronized void releaseVolumeSession() {
-            releaseLocked();
-        }
-
-        private void releaseLocked() {
-            MediaSession current = session;
-            session = null;
-            provider = null;
-            callback = null;
-            boundGeneration = -1;
-            if (current == null) {
-                return;
-            }
-            try {
-                current.setActive(false);
-            } catch (Exception ignored) {
-            }
-            try {
-                current.release();
-            } catch (Exception ignored) {
-            }
         }
     }
 

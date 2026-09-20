@@ -246,7 +246,7 @@ fn failed_turn_keeps_regenerate_and_local_delete() {
     );
 }
 
-/// Handheld voice mode must use the VoIP/speakerphone capture path.
+/// Handheld voice mode must use the VoIP/speakerphone full-duplex path.
 /// VOICE_RECOGNITION + USAGE_MEDIA plays loud on the media speaker but keeps
 /// the close-talk mic, so the user has to speak into the phone.
 #[test]
@@ -259,6 +259,9 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
     );
     let route = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/audio/VoiceAudioRoute.java"
+    );
+    let policy = include_str!(
+        "../../android/app/src/main/java/com/chatbot/app/audio/TtsAudioPolicy.java"
     );
     let chat_js = include_str!("../../static/chat.js");
     let manifest = include_str!("../../android/app/src/main/AndroidManifest.xml");
@@ -285,9 +288,15 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
         "API 31+ must route to TYPE_BUILTIN_SPEAKER via setCommunicationDevice"
     );
     assert!(
-        tts.contains("USAGE_MEDIA")
-            && !native_tts_uses_voice_communication_playback(tts),
-        "CallStyle microphone FGS swallows USAGE_VOICE_COMMUNICATION playback; TTS must use USAGE_MEDIA like HTML Audio"
+        tts.contains("TtsAudioPolicy.playbackUsage")
+            && tts.contains("isVoiceRouteActive")
+            && policy.contains("USAGE_VOICE_COMMUNICATION")
+            && policy.contains("USAGE_MEDIA"),
+        "voice-mode TTS must play USAGE_VOICE_COMMUNICATION matching capture/focus/route; standalone keeps USAGE_MEDIA"
+    );
+    assert!(
+        !tts.contains("VolumeProvider") && !tts.contains("MediaSession"),
+        "no remote-volume workaround: local communication playback needs no MediaSession hack"
     );
     assert!(
         chat_js.contains("enterVoiceRoute") && chat_js.contains("exitVoiceRoute"),
@@ -300,10 +309,10 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
     );
     assert!(
         tts.contains("requestAudioFocus")
-            && tts.contains("STREAM_MUSIC")
+            && tts.contains("TtsAudioPolicy.shouldRefreshFocus")
             && plugin.contains("reclaimAudioFocus")
             && plugin.contains("AUDIOFOCUS_LOSS"),
-        "voice-mode TTS must reclaim media focus and unmute STREAM_MUSIC before play"
+        "voice-mode TTS must hold matching focus (player and focus share attrs) with mic reclaim on stop"
     );
     assert!(
         manifest.contains("MODIFY_AUDIO_SETTINGS"),
@@ -1633,10 +1642,6 @@ fn java_method_body<'a>(src: &'a str, signature: &str) -> Option<&'a str> {
     None
 }
 
-fn native_tts_uses_voice_communication_playback(tts: &str) -> bool {
-    tts.contains("setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)")
-}
-
 /// Voice mode TTS audio must be queued ahead in an audio queue rather than
 /// streaming directly to AudioTrack with minimal preroll. On an unreliable
 /// connection:
@@ -1843,12 +1848,16 @@ fn native_tts_audio_focus_and_speaker_routing_during_voice_mode() {
         "stopPlaybackInternal must release audio focus and notify NativeMic to reclaim focus"
     );
 
-    // 3. NativeVoiceTtsPlugin sets preferred device to speaker so media audio is not sent to earpiece
+    // 3. NativeVoiceTtsPlugin sets preferred device to speaker only where the
+    // owned route holds communication, so media is not sent to the earpiece
+    // in voice mode and standalone never forces a device.
     let ensure_track = java_method_body(tts_plugin, "private AudioTrack ensureTrackPlaying(")
         .expect("ensureTrackPlaying must be declared");
     assert!(
-        ensure_track.contains("setPreferredDevice"),
-        "ensureTrackPlaying must route AudioTrack to speaker via setPreferredDevice in MODE_IN_COMMUNICATION"
+        ensure_track.contains("setPreferredDevice")
+            && ensure_track.contains("TtsAudioPolicy.preferBuiltInSpeaker")
+            && ensure_track.contains("isVoiceRouteActive"),
+        "ensureTrackPlaying must gate setPreferredDevice on actual route ownership via the owned policy, not blind mode/foreground"
     );
 
     // 4. CURRENT_AUDIO.stop in playNativeVoiceModeTts resets button UI
@@ -2014,19 +2023,26 @@ fn native_tts_requests_audio_focus_once_per_track_not_per_sentence() {
     );
     let ensure = java_method_body(tts_plugin, "private AudioTrack ensureTrackPlaying(")
         .expect("ensureTrackPlaying must be declared");
-    let reuse = ensure
-        .find("trackSampleRate == sampleRate")
-        .expect("reuse path must check for matching sample rate");
-    let focus = ensure
-        .find("requestAudioFocus()")
-        .expect("track creation must still acquire audio focus");
     assert!(
-        focus > reuse,
-        "reusing the active AudioTrack must not re-request focus, reset volume, or rescan devices per sentence"
+        ensure.contains("TtsAudioPolicy.shouldRecreateTrack")
+            && ensure.contains("trackUsage"),
+        "reuse must require identical usage and rate; a voice enter/exit usage flip recreates even at the same rate"
+    );
+    let focus = java_method_body(tts_plugin, "private void requestAudioFocus(boolean")
+        .expect("requestAudioFocus(usage) must be declared");
+    assert!(
+        focus.contains("TtsAudioPolicy.shouldRefreshFocus")
+            && focus.contains("focusUsage"),
+        "reusing the active AudioTrack must not re-request focus per sentence; usage change refreshes once"
     );
     assert!(
-        ensure.contains("setPreferredDevice"),
-        "track creation must still route to the speaker when appropriate"
+        !ensure.contains("setStreamVolume") && !ensure.contains("adjustStreamVolume"),
+        "track creation must never write a stream volume"
+    );
+    assert!(
+        ensure.contains("setPreferredDevice")
+            && ensure.contains("TtsAudioPolicy.preferBuiltInSpeaker"),
+        "track creation must still route to the speaker when the owned route holds communication"
     );
 }
 

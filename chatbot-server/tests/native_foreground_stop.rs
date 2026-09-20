@@ -18,7 +18,6 @@ fn foreground_stop_reports_honest_outcome_with_generation_guard() {
         .arg("-d")
         .arg(output_dir.path())
         .arg(audio.join("VoiceModeForegroundSession.java"))
-        .arg(audio.join("VoiceModeVolumeSession.java"))
         .arg(audio.join("VoiceModeForegroundService.java"))
         .arg(audio.join("VoiceModeNativeHooks.java"))
         .arg(audio.join("VoiceModeSessionCoordinator.java"))
