@@ -2,10 +2,9 @@
 //!
 //! AAD: `user_id || set_id || blob_kind || version` — prevents ciphertext swap across context.
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, Payload};
-use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{Aead, AeadCore, Generate, KeyInit, Payload};
+use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
-use rand::Rng;
 use sha2::Sha256;
 use thiserror::Error;
 
@@ -144,9 +143,8 @@ fn nonce_array(bytes: [u8; NONCE_LEN]) -> aes_gcm::Nonce<<Aes256Gcm as AeadCore>
 fn aead_seal(aad: &[u8], plaintext: &[u8], enc_key: &EncryptionKey) -> Result<Vec<u8>, CryptoError> {
     let aes_key = derive_aes_key(enc_key);
     let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Encrypt)?;
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::rng().fill_bytes(&mut nonce_bytes);
-    let nonce = nonce_array(nonce_bytes);
+    // Generate a fresh random 96-bit nonce per message from the OS CSPRNG.
+    let nonce: Nonce<<Aes256Gcm as AeadCore>::NonceSize> = Nonce::generate();
     let ct = cipher
         .encrypt(
             &nonce,
@@ -157,7 +155,7 @@ fn aead_seal(aad: &[u8], plaintext: &[u8], enc_key: &EncryptionKey) -> Result<Ve
         )
         .map_err(|_| CryptoError::Encrypt)?;
     let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
-    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(nonce.as_slice());
     out.extend_from_slice(&ct);
     Ok(out)
 }
@@ -562,5 +560,52 @@ mod tests {
             pair
         );
         assert!(open_pair_v1("alice", set_id, pair_id, 2, &pblob, &key).is_err());
+    }
+
+    #[test]
+    fn seal_uses_fresh_random_nonce_and_both_open() {
+        let key = test_key();
+        let set_id = SetId::new();
+        let version = SetVersion(1);
+        let payload = SetPayloadV1 {
+            display_name: "n".into(),
+            memory: String::new(),
+            system_prompt: String::new(),
+            history: vec![],
+        };
+        let first = seal_payload_v1("alice", set_id, version, &payload, &key).unwrap();
+        let second = seal_payload_v1("alice", set_id, version, &payload, &key).unwrap();
+        // Same plaintext must seal to different blobs: fresh 96-bit nonce per message.
+        assert_ne!(first, second);
+        assert_ne!(&first[..NONCE_LEN], &second[..NONCE_LEN]);
+        assert_eq!(
+            open_payload_v1("alice", set_id, version, &first, &key).unwrap(),
+            payload
+        );
+        assert_eq!(
+            open_payload_v1("alice", set_id, version, &second, &key).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn aead_rejects_tampered_nonce_or_ciphertext() {
+        let key = test_key();
+        let set_id = SetId::new();
+        let version = SetVersion(1);
+        let payload = SetPayloadV1 {
+            display_name: "n".into(),
+            memory: String::new(),
+            system_prompt: String::new(),
+            history: vec![],
+        };
+        let blob = seal_payload_v1("alice", set_id, version, &payload, &key).unwrap();
+        let mut bad_nonce = blob.clone();
+        bad_nonce[0] ^= 0x01;
+        assert!(open_payload_v1("alice", set_id, version, &bad_nonce, &key).is_err());
+        let mut bad_ct = blob.clone();
+        let last = bad_ct.len() - 1;
+        bad_ct[last] ^= 0x01;
+        assert!(open_payload_v1("alice", set_id, version, &bad_ct, &key).is_err());
     }
 }

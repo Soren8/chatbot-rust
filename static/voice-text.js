@@ -180,20 +180,36 @@
     return out;
   }
 
+  // Strip HTML tags until no more are removed (fixpoint). A single global
+  // replace is incomplete (CodeQL js/incomplete-multi-character-sanitization):
+  // removing one tag can join the text around it into another tag, and
+  // replacements running before/after this step can reveal new tags.
+  function stripHtmlTags(s) {
+    s = String(s == null ? '' : s);
+    var prev;
+    do {
+      prev = s;
+      s = s.replace(/<[^>]+>/g, '');
+    } while (s !== prev);
+    return s;
+  }
+
   // Sanitize raw markdown text for TTS: strip URLs, citations, code blocks, and formatting
   function sanitizeForTTS(text) {
-    let cleaned = String(text || '')
+    // Strip tags before URLs: a URL inside a tag attribute would otherwise
+    // consume the tag's closing bracket (https?://[^\s)]+ eats ">"), leaving
+    // a "<a href="" fragment the later tag strip can no longer match.
+    let cleaned = stripHtmlTags(String(text || '')
       // Strip code fences: ```lang ... ``` or standalone ```
       .replace(/```[\s\S]*?```/g, '')
-      .replace(/```[a-zA-Z0-9_-]*/g, '')
+      .replace(/```[a-zA-Z0-9_-]*/g, ''));
+    cleaned = cleaned
       // Strip URLs (must come before citation removal)
       .replace(/https?:\/\/[^\s)]+|www\.[^\s)]+/g, '')
       // Strip markdown citation links: [[1]](url) or [[1]]() -> empty
       .replace(/\[\[(\d+)\]\]\([^)]*\)/g, '')
       // Strip remaining markdown links: [text](url) -> text
       .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      // Strip HTML tags: <...>
-      .replace(/<[^>]+>/g, '')
       // Strip bold/italic: ***text***, **text**, *text*
       .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
       // Strip underline bold/italic: ___text___, __text__, _text_
@@ -207,7 +223,13 @@
       // Strip blockquote markers: > quote
       .replace(/^>\s*/gm, '')
       // Strip horizontal rules: --- or *** or ___
-      .replace(/^[-*_]{3,}\s*$/gm, '')
+      .replace(/^[-*_]{3,}\s*$/gm, '');
+
+    // Strip again after markdown unwrapping: unwrapping can reveal tags that
+    // were not plain "<...>" before, and the loop above runs to a fixpoint.
+    cleaned = stripHtmlTags(cleaned);
+
+    cleaned = cleaned
       // Normalize CRLF to LF
       .replace(/\r\n/g, '\n')
       // Collapse horizontal whitespace (preserve newlines for paragraph/list sentence discovery)
