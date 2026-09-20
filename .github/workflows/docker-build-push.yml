@@ -2,6 +2,8 @@ name: Build and push Docker image
 
 on:
   push:
+    branches: ['**']
+    tags-ignore: ['android-staging-*']
   pull_request:
   release:
     types: [ published ]
@@ -17,6 +19,7 @@ env:
 jobs:
   tests:
     name: Tests (compose suite)
+    if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'android-staging-')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

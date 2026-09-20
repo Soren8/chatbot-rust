@@ -339,6 +339,23 @@ Already configured in this repo; if the app is missing everywhere, verify:
 
 ## Build Instructions
 
+### Automated staging releases
+
+The private `iac` repository owns the Android staging release workflow and its
+host setup instructions in `docs/android-releases.md`. It builds unsigned APKs
+on GitHub-hosted runners, then signs them on a local runner with a persistent key.
+Published prereleases in this repository use `android-staging-<versionCode>` tags;
+these tags and releases are excluded from the Docker publishing workflow.
+
+The staging build installs separately as `com.chatbot.app.staging` and connects
+to the staging server. In Obtainium, add this repository's GitHub URL, enable
+prereleases, and filter release tags to `^android-staging-` and APK filenames to
+`^chatbot-staging-.*\.apk$`. The first installation requires Android's normal
+installation permission; later updates can use Obtainium's background updates.
+This distribution path is for handheld testing, not Android Auto store approval.
+
+### Local debug builds
+
 Prerequisites: **JDK 21** (not 25+), Android SDK (command-line tools or Android Studio)
 
 Pinned versions (do not bump casually — library compatibility breaks on newer JDKs/AGP):
