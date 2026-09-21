@@ -352,7 +352,7 @@ dependencies = [
  "pbkdf2",
  "rand",
  "redb 2.6.3",
- "redb 4.2.0",
+ "redb 4.3.0",
  "regex",
  "serde",
  "serde_ignored",
@@ -385,7 +385,7 @@ dependencies = [
  "minijinja",
  "ogg",
  "once_cell",
- "oxc_allocator 0.150.0",
+ "oxc_allocator",
  "oxc_parser",
  "oxc_span",
  "pbkdf2",
@@ -1525,7 +1525,7 @@ checksum = "8c5deaaa43f0813b6d4a18dcc5f41bea1996f193f0a55d0242831d7f29bfa16d"
 dependencies = [
  "allocator-api2",
  "hashbrown 0.17.1",
- "oxc_data_structures 0.150.0",
+ "oxc_data_structures",
  "rustc-hash",
 ]
 
@@ -1536,9 +1536,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef5ff9b1d70a32b100145065aec1c6c455c58b19c4681d092bd88c24c53972d"
 dependencies = [
  "bitflags",
- "oxc_allocator 0.150.0",
+ "oxc_allocator",
  "oxc_ast_macros",
- "oxc_data_structures 0.150.0",
+ "oxc_data_structures",
  "oxc_diagnostics",
  "oxc_estree",
  "oxc_regular_expression",
@@ -1594,7 +1594,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "oxc_ast",
- "oxc_data_structures 0.150.0",
+ "oxc_data_structures",
  "oxc_span",
  "oxc_syntax",
 ]
@@ -1626,9 +1626,9 @@ dependencies = [
  "memchr",
  "num-bigint",
  "num-traits",
- "oxc_allocator 0.150.0",
+ "oxc_allocator",
  "oxc_ast",
- "oxc_data_structures 0.150.0",
+ "oxc_data_structures",
  "oxc_diagnostics",
  "oxc_ecmascript",
  "oxc_regular_expression",
@@ -1646,7 +1646,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf8faa9da3f4d14d5a13c1facce217231cfb5071f05ce1affb6395dd25b1de9c"
 dependencies = [
  "bitflags",
- "oxc_allocator 0.150.0",
+ "oxc_allocator",
  "oxc_ast_macros",
  "oxc_diagnostics",
  "oxc_span",
@@ -1663,7 +1663,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "674178f9b8af8135559b51fea7a416ea18efe6aa03ed5491f86f0c75f2336a43"
 dependencies = [
  "compact_str",
- "oxc_allocator 0.150.0",
+ "oxc_allocator",
  "oxc_ast_macros",
  "oxc_estree",
  "oxc_str",
@@ -1677,7 +1677,7 @@ checksum = "5fab366ed74ea0f6a67d2b70b3acfd1725999a4a62645efa330121c392e5061e"
 dependencies = [
  "compact_str",
  "hashbrown 0.17.1",
- "oxc_allocator 0.150.0",
+ "oxc_allocator",
  "oxc_estree",
 ]
 
@@ -1691,7 +1691,7 @@ dependencies = [
  "cow-utils",
  "dragonbox_ecma",
  "nonmax",
- "oxc_allocator 0.150.0",
+ "oxc_allocator",
  "oxc_ast_macros",
  "oxc_estree",
  "oxc_index",
@@ -1985,9 +1985,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "4.2.0"
+version = "4.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+checksum = "fb338a6c67830a61bed824b78c2bb034ab1ff401a20616bd7957524f4fdc2f22"
 dependencies = [
  "libc",
 ]
