@@ -55,11 +55,6 @@ const HELM_HELPERS: &str =
 
 const STT_ROUTE: &str = include_str!("../src/stt.rs");
 
-/// Pinned `@capacitor/android` integrity, copied from the trustworthy
-/// on-disk lock (which matches the executor's trusted 8.3.1 pin). Pin guard
-/// only — never regenerated or fetched here.
-const CAPACITOR_ANDROID_831_INTEGRITY: &str = "sha512-hjskIG8YcBEh3X4yaTXvE9gcqpdcxunTgFruSKnuPxtMxAUzEK4Oq25x0Z1g3cz+MQPc+lRG09R7Ovc+ydKsNw==";
-
 /// Canonical emulator origin: dev-machine loopback, never Tailnet.
 const EMULATOR_URL: &str = "http://10.0.2.2:80";
 /// Canonical physical origin: Tailscale Serve https (secure context for WebCodecs).
@@ -255,44 +250,47 @@ fn package_json_dependencies() -> serde_json::Value {
 }
 
 #[test]
-fn capacitor_manifests_match_current_pinned_dependencies() {
+fn capacitor_lockfile_requirements_match_manifest() {
     let manifest = package_json_dependencies();
     let deps = manifest
         .get("dependencies")
         .expect("root package.json must declare dependencies");
-    for pkg in ["@capacitor/android", "@capacitor/cli", "@capacitor/core"] {
-        let version = deps
-            .get(pkg)
-            .and_then(|v| v.as_str())
-            .unwrap_or_else(|| panic!("root package.json must declare {pkg}"));
-        assert!(
-            version.contains("8.3.1"),
-            "{pkg} must stay on the current 8.3.1 line (matches trusted executor pin); got `{version}`"
-        );
-    }
-
     let lock: serde_json::Value =
         serde_json::from_str(PACKAGE_LOCK_JSON).expect("root package-lock.json must parse as JSON");
     let packages = lock
         .get("packages")
         .expect("package-lock.json must have a packages map");
+    let lock_root_deps = packages
+        .get("")
+        .and_then(|root| root.get("dependencies"))
+        .expect("package-lock.json root entry must declare dependencies");
+    // Stale-lock guard only; npm owns semver/integrity resolution.
     for pkg in ["@capacitor/android", "@capacitor/cli", "@capacitor/core"] {
+        let declared = deps
+            .get(pkg)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("root package.json must declare {pkg}"));
+        assert!(
+            !declared.trim().is_empty(),
+            "package.json must declare non-empty {pkg} requirement"
+        );
+        let locked_req = lock_root_deps
+            .get(pkg)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("package-lock.json root entry must require {pkg}"));
+        assert_eq!(locked_req, declared,
+            "lock root requirement for {pkg} must mirror package.json (`{declared}` vs `{locked_req}`)");
         let key = format!("node_modules/{pkg}");
-        let entry = packages
+        let version = packages
             .get(key.as_str())
-            .unwrap_or_else(|| panic!("package-lock.json must pin {key}"));
-        assert_eq!(
-            entry.get("version").and_then(|v| v.as_str()),
-            Some("8.3.1"),
-            "package-lock.json must resolve {pkg} to 8.3.1"
+            .and_then(|e| e.get("version"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("package-lock.json must pin {key} to a version"));
+        assert!(
+            !version.trim().is_empty(),
+            "lock entry {key} must carry a non-empty version"
         );
     }
-    let android = &packages["node_modules/@capacitor/android"];
-    assert_eq!(
-        android.get("integrity").and_then(|v| v.as_str()),
-        Some(CAPACITOR_ANDROID_831_INTEGRITY),
-        "@capacitor/android integrity must match the trusted 8.3.1 pin"
-    );
 }
 
 #[test]

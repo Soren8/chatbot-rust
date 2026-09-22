@@ -339,6 +339,8 @@ Already configured in this repo; if the app is missing everywhere, verify:
 
 ## Build Instructions
 
+Capacitor dependency requirements in `package.json` must match the root entry in `package-lock.json`; the Rust distribution test checks this consistency without pinning a particular release. npm validates resolved version ranges and package integrity during installation.
+
 ### Automated staging releases
 
 The private `iac` repository owns the Android staging release workflow and its
