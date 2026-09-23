@@ -418,6 +418,13 @@ Product flavors configure `server_url` string resource:
 | `android/.../res/xml/network_security_config.xml` | Create — allow cleartext for emulator + tailscale |
 | `android/.../res/values/arrays.xml` | Create — `car_app_supported_types` |
 | `android/.../res/values/strings.xml` | Modify — `server_url` per flavor |
+| `android/.../util/ServerUrlSetting.java` + `ServerUrlSettingStore.java` | Create — persisted post-install server selection policy + prefs/cookie glue |
+| `android/.../ServerSettingsActivity.java` | Create — native Apply/Reset/Cancel server screen |
+| `android/.../MainActivity.java` | Modify — WebView origin applies the persisted override (activity recreate on change); always-available ⚙ menu + offline overlay entry |
+| `android/.../NativeSecureKeyPlugin.java` | Modify — origin-scoped credential/key pref slots; pending-unlock origin guard; cache clear on server change |
+| `android/.../util/ClientLogReporter.java` | Modify — per-call origin resolution for report uploads |
+| `android/.../car/VoiceScreen.java` | Modify — per-turn (capture at turn start) origin for /stt /chat /tts |
+| `chatbot-server/tests/fixtures/ServerSettingBehaviorTest.java` | Create — javac behavior fixture for the selection policy (run by `distribution.rs`) |
 | `static/chat.js` | Modify — `NativeMicUtteranceVAD` (RMS), voice-mode TTS, native bridge |
 | `static/deps/vad/` | Create — Silero VAD WASM assets |
 | `.gitignore` | Modify — exclude Capacitor build artifacts |
@@ -436,4 +443,50 @@ Product flavors configure `server_url` string resource:
 **Total**: ~2-3 weeks for full Android delivery. iOS nearly free after.
 # Native server selection
 
-Android build flavor always determines the server address. Root `capacitor.config.json` must define both `serverUrls.emulator` and `serverUrls.physical`; Gradle selects one as `R.string.server_url`. The emulator uses `http://10.0.2.2:80` to reach the development machine directly, without Tailscale. Physical builds use the configured HTTPS endpoint. WebView loading, credential cookies, native logging and Android Auto resolve that same flavor resource. Change the corresponding entry and rebuild the APK to change servers; do not add a competing Capacitor `server.url` override.
+Android build flavor determines the default server address. Root `capacitor.config.json` must define both `serverUrls.emulator` and `serverUrls.physical`; Gradle selects one as `R.string.server_url`. The emulator uses `http://10.0.2.2:80` to reach the development machine directly, without Tailscale. Physical builds use the configured HTTPS endpoint. Users can select another server after installation using the native settings below. WebView loading, credential cookies, native logging and Android Auto share that selection; do not add a competing Capacitor `server.url` override.
+
+### Post-install server selection (editable origin)
+
+After installation, the server origin is **editable** without an APK
+rebuild. `ServerUrlSetting` (pure Java, under `com.chatbot.app.util`) owns
+the policy; `ServerUrlSettingStore` binds it to `SharedPreferences`
+(`chatbot_server_setting/server_url_override`). Selected origin =
+validated persisted override, else the flavor default.
+
+- **Validation**: user-entered overrides must be an exact `https://` origin
+  — host[:port] only, no userinfo, query, fragment, or any path except a
+  single trailing `/` (stripped). Plain HTTP is never accepted as user
+  input; the default HTTP emulator endpoint stays reachable through the
+  flavor authority (Reset to default), never by typing it.
+- **UI**: `ServerSettingsActivity` (registered unexported in the manifest)
+  offers Apply / Reset to default / Cancel. Invalid entries show an inline
+  error and are never applied; a no-op (same origin or already-default
+  reset) closes with a canceled result — no purge, no reload.
+- **Entry points**: a small translucent always-available native ⚙ menu in
+  MainActivity (reachable while the server is up and offline alike), plus
+  the offline/error overlay (Retry / Change server on main-frame failure).
+- **Apply**: a real change purges the OLD origin's session + credential
+  cookies first (cookie jars are host-scoped, NOT host+port+scheme, so
+  nothing transfers across a port or scheme change), persists the override
+  only after the purge is acknowledged, then MainActivity
+  recreates the activity — the CapConfig origin only applies to a newly
+  created Bridge, so the old Bridge and its injected JS/cookie origin are
+  fully replaced. The remaining native surfaces re-resolve per use:
+  `ClientLogReporter` resolves the origin per report call (reports queued
+  before a switch keep their pre-switch origin; post-switch reports go to
+  the new one), and car `VoiceScreen` pins one origin per voice turn
+  (STT → chat → TTS against the origin captured at turn start), so a
+  mid-turn selection change cannot splice turn requests across two servers.
+- **No credential transfer**: enc-key wraps and sealed credential payloads
+  in `NativeSecureKeyPlugin` use origin-scoped pref slots
+  (`<originSlotToken>:<account>` — unpadded URL-safe Base64 of the full
+  origin, replacing the legacy `:<account>` format). Sealed material bound
+  to one origin can never be unlocked against another; legacy untagged
+  slots migrate read-only at the flavor default (host+port+scheme never
+  collide because the token encodes both). Pending biometric callbacks
+  re-check the selected origin before the decrypt completes and reject
+  with "server changed during unlock" if the selection moved, and the
+  process-wide unlocked-key cache is cleared on every selection change.
+- **Persistence**: the override survives restarts and app updates (app
+  prefs outlive APK updates). Reset restores the build default
+  (`ServerUrlSettingStore.resetAsync`); already-default reset is a no-op.

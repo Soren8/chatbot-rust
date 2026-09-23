@@ -30,6 +30,13 @@
 
         </activity>
 
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".ServerSettingsActivity"
+            android:label="Server settings"
+            android:theme="@style/AppTheme"
+            android:exported="false" />
+
         <service
             android:name=".audio.VoiceModeForegroundService"
             android:exported="false"

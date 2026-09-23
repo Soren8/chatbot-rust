@@ -10,6 +10,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+import android.content.Context;
 import android.webkit.CookieManager;
 
 import com.chatbot.app.BuildConfig;
@@ -22,6 +23,10 @@ import com.chatbot.app.R;
  * Debug builds only ({@code BuildConfig.DEBUG}); release builds are silent.
  * Lines are sanitized again server-side (defense in depth). The server
  * authorizes on the session cookie — the native side has no CSRF token.
+ *
+ * Each report invocation resolves the current selected origin (flavor
+ * default + persisted override) at call time: reports queued before a
+ * server switch keep that origin and never arrive at the new one.
  */
 public final class ClientLogReporter {
     private static final String TAG = "ClientLogReporter";
@@ -33,20 +38,52 @@ public final class ClientLogReporter {
     private static final int MAX_LINE_CHARS = 512;
 
     private static volatile String serverUrl;
+    private static volatile Context appContext;
 
     private ClientLogReporter() {
     }
 
-    // Canonical native origin (flavor resource, always); normalization
-    // owned by ServerUrlResolver. The pre-existing store-only-when-non-empty
-    // guard is preserved (no fallback is stored).
+    // Flavor default stays local (normalizeResource + resource literal);
+    // the selected origin applies the persisted override on top per call.
+    private static String flavorUrl(Context context) {
+        if (context == null) {
+            return null;
+        }
+        try {
+            return ServerUrlResolver.normalizeResource(context.getString(R.string.server_url));
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to resolve server_url", t);
+            return null;
+        }
+    }
+
+    /** Selected origin at call time (override + flavor default). */
+    private static String currentOrigin() {
+        Context context = appContext;
+        if (context == null) {
+            return null;
+        }
+        try {
+            return ServerUrlSetting.selected(
+                    ServerUrlSettingStore.store(context), flavorUrl(context));
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to resolve selected server url", t);
+            String flavor = flavorUrl(context);
+            return (flavor != null && !flavor.isEmpty())
+                    ? ServerUrlResolver.resolveCanonical(flavor) : null;
+        }
+    }
+
+    // Flavor default normalization owned by ServerUrlResolver; a missing
+    // flavor resource keeps the store-empty (enabled) gate unchanged.
     public static void init(Context context) {
         if (context == null) {
             return;
         }
+        appContext = context.getApplicationContext();
         try {
-            String url = ServerUrlResolver.normalizeResource(
-                    context.getString(R.string.server_url));
+            String url = ServerUrlSetting.selected(
+                    ServerUrlSettingStore.store(appContext), flavorUrl(appContext));
             if (url != null && !url.isEmpty()) {
                 serverUrl = url;
             }
@@ -64,9 +101,14 @@ public final class ClientLogReporter {
         if (!enabled() || message == null || message.isEmpty()) {
             return;
         }
+        // Target resolved at invocation: pre-switch reports keep their origin.
+        String target = currentOrigin();
+        if (target == null) {
+            return;
+        }
         StringBuilder sb = new StringBuilder();
         appendLine(sb, level + ": " + message);
-        post(serverUrl + "/client_logs", sb.toString(), false, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
+        post(target + "/client_logs", sb.toString(), false, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
     }
 
     /**
@@ -76,6 +118,11 @@ public final class ClientLogReporter {
      */
     public static void reportCrash(Thread thread, Throwable throwable) {
         if (!enabled()) {
+            return;
+        }
+        // Origin resolved at call time; the handler is dying so no race.
+        String origin = currentOrigin();
+        if (origin == null) {
             return;
         }
         StringBuilder sb = new StringBuilder();
@@ -90,7 +137,7 @@ public final class ClientLogReporter {
         for (int i = start; i < history.size(); i++) {
             appendLine(sb, history.get(i));
         }
-        post(serverUrl + "/client_logs", sb.toString(), true, CRASH_CONNECT_TIMEOUT_MS, CRASH_READ_TIMEOUT_MS);
+        post(origin + "/client_logs", sb.toString(), true, CRASH_CONNECT_TIMEOUT_MS, CRASH_READ_TIMEOUT_MS);
     }
 
     private static void appendLine(StringBuilder sb, String line) {

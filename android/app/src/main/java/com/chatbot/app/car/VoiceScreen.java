@@ -24,6 +24,7 @@ import com.chatbot.app.R;
 import com.chatbot.app.audio.OggOpusStreamDecoder;
 import com.chatbot.app.util.FileLogger;
 import com.chatbot.app.util.ServerUrlResolver;
+import com.chatbot.app.util.ServerUrlSettingStore;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -56,7 +57,6 @@ public class VoiceScreen extends Screen {
     private static final int VAD_END_SILENCE_MS = 800; // 800ms below threshold to trigger end
     private static final int MAX_UTTERANCE_MS = 15000; // hard cap
 
-    private final String serverUrl;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService captureExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -72,13 +72,30 @@ public class VoiceScreen extends Screen {
 
     public VoiceScreen(@NonNull CarContext carContext) {
         super(carContext);
-        // Canonical native origin (flavor resource, always): a car context
-        // has no Capacitor Bridge and none is read.
-        serverUrl = ServerUrlResolver.resolveCanonical(carContext.getString(R.string.server_url));
+        // Canonical native origin (flavor resource + persisted override): a
+        // car context has no Capacitor Bridge and none is read.
         audioManager = (AudioManager) carContext.getSystemService(Context.AUDIO_SERVICE);
-        Log.i(TAG, "VoiceScreen created with server: " + serverUrl);
-        FileLogger.log(TAG, "VoiceScreen created, serverUrl=" + serverUrl);
+        Log.i(TAG, "VoiceScreen created with server: " + serverUrl());
+        FileLogger.log(TAG, "VoiceScreen created, serverUrl=" + serverUrl());
         mainHandler.postDelayed(this::startCapture, 500);
+    }
+
+    /**
+     * Selected origin resolved at request time: a persisted override that
+     * changed after the car session started must not keep this screen on an
+     * obsolete server. Same authority chain as the WebView and reporter.
+     */
+    private String serverUrl() {
+        CarContext carContext = getCarContext();
+        try {
+            return ServerUrlSettingStore.selected(carContext);
+        } catch (Exception e) {
+            String flavorUrl = null;
+            try {
+                flavorUrl = carContext.getString(R.string.server_url);
+            } catch (Exception ignored) {}
+            return ServerUrlResolver.resolveCanonical(flavorUrl);
+        }
     }
 
     @NonNull
@@ -268,12 +285,18 @@ public class VoiceScreen extends Screen {
         FileLogger.log(TAG, "captureLoop exiting");
     }
 
+    /**
+     * One turn (STT → chat → TTS) runs against the origin captured when the
+     * turn starts: a mid-turn selection change must not splice its requests
+     * across two servers.
+     */
     private void handleUtterance(byte[] pcm) {
         FileLogger.log(TAG, "handleUtterance bytes=" + pcm.length);
         executor.execute(() -> {
+            String turnUrl = serverUrl();
             try {
                 setStatus("Transcribing…");
-                String text = postStt(pcm);
+                String text = postStt(turnUrl, pcm);
                 FileLogger.log(TAG, "STT result: " + text);
                 if (text == null || text.trim().isEmpty()) {
                     setStatus("Listening…");
@@ -283,7 +306,7 @@ public class VoiceScreen extends Screen {
                 mainHandler.post(this::invalidate);
 
                 setStatus("Thinking…");
-                String response = postChat(text);
+                String response = postChat(turnUrl, text);
                 FileLogger.log(TAG, "Chat response: " + (response == null ? "null" : response.substring(0, Math.min(120, response.length()))));
                 if (response == null || response.isEmpty()) {
                     setStatus("Listening…");
@@ -293,7 +316,7 @@ public class VoiceScreen extends Screen {
                 setStatus("Speaking…");
                 ttsPlaying.set(true);
                 try {
-                    playTts(response);
+                    playTts(turnUrl, response);
                 } finally {
                     ttsPlaying.set(false);
                 }
@@ -305,10 +328,10 @@ public class VoiceScreen extends Screen {
         });
     }
 
-    private String postStt(byte[] pcm) throws IOException {
+    private String postStt(String turnUrl, byte[] pcm) throws IOException {
         byte[] wav = wrapPcmAsWav(pcm, SAMPLE_RATE, 1);
         String boundary = "----chatbotauto" + UUID.randomUUID();
-        URL url = new URL(serverUrl + "/stt");
+        URL url = new URL(turnUrl + "/stt");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
@@ -343,8 +366,8 @@ public class VoiceScreen extends Screen {
         return body.substring(q1 + 1, q2);
     }
 
-    private String postChat(String text) throws IOException {
-        URL url = new URL(serverUrl + "/chat");
+    private String postChat(String turnUrl, String text) throws IOException {
+        URL url = new URL(turnUrl + "/chat");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
@@ -366,10 +389,10 @@ public class VoiceScreen extends Screen {
         return body;
     }
 
-    private void playTts(String text) throws IOException {
+    private void playTts(String turnUrl, String text) throws IOException {
         FileLogger.log(TAG, "playTts text=" + text.substring(0, Math.min(50, text.length())));
         // Step 1: get token
-        URL url = new URL(serverUrl + "/tts");
+        URL url = new URL(turnUrl + "/tts");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
@@ -394,7 +417,7 @@ public class VoiceScreen extends Screen {
         FileLogger.log(TAG, "playTts token=" + token);
 
         // Step 2: stream
-        conn = (HttpURLConnection) new URL(serverUrl + "/tts_stream/" + token).openConnection();
+        conn = (HttpURLConnection) new URL(turnUrl + "/tts_stream/" + token).openConnection();
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(60000);
         code = conn.getResponseCode();

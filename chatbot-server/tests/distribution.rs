@@ -245,6 +245,41 @@ fn canonical_resolver_behavior_runs_on_shipped_java() {
     );
 }
 
+/// The shipped pure-Java `ServerUrlSetting` behavior — persisted
+/// override selection over the flavor default, https-origin validation for
+/// user-entered overrides, defensive fallback for corrupt/empty overrides,
+/// and origin-scoped credential slots — runs under the same javac fixture.
+#[test]
+fn server_setting_behavior_runs_on_shipped_java() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let compile = Command::new("javac")
+        .args(["-encoding", "UTF-8"])
+        .arg("-d")
+        .arg(output_dir.path())
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlResolver.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlSetting.java"))
+        .arg(root.join("chatbot-server/tests/fixtures/ServerSettingBehaviorTest.java"))
+        .output()
+        .expect("test image must provide javac");
+    assert!(
+        compile.status.success(),
+        "Java compilation: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(output_dir.path())
+        .arg("ServerSettingBehaviorTest")
+        .output()
+        .expect("run native server setting behavior tests");
+    assert!(
+        run.status.success(),
+        "native server setting behavior: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn package_json_dependencies() -> serde_json::Value {
     serde_json::from_str(PACKAGE_JSON).expect("root package.json must parse as JSON")
 }

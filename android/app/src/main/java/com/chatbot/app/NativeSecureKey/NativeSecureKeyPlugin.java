@@ -22,6 +22,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import com.chatbot.app.util.ServerUrlResolver;
+import com.chatbot.app.util.ServerUrlSetting;
+import com.chatbot.app.util.ServerUrlSettingStore;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -56,9 +58,10 @@ public class NativeSecureKeyPlugin extends Plugin {
      * Keys returned by getKey for this app-process lifetime, keyed by account.
      * Lets one biometric unlock cover a whole login flow (keyauth call plus
      * the chat page that follows) and keeps password logins prompt-free,
-     * since storeKey primes the cache. Cleared on clearKey / process death.
+     * since storeKey primes the cache. Cleared on clearKey / process death and
+     * whenever the server selection changes.
      */
-    private final Map<String, String> unlockedKeys = new ConcurrentHashMap<>();
+    private static final Map<String, String> unlockedKeys = new ConcurrentHashMap<>();
 
     private static String accountSlot(String account) {
         if (account == null || account.isEmpty()) {
@@ -71,14 +74,69 @@ public class NativeSecureKeyPlugin extends Plugin {
         return base + accountSlot(account);
     }
 
-    // Canonical native origin (flavor resource, always); authority owned by
-    // ServerUrlResolver.
+    /**
+     * Origin-scoped prefs slot: key/credential wraps are bound to the origin
+     * they were sealed against, so an unlock on another server can never
+     * read them. Legacy untagged slots remain readable only while the
+     * selected origin equals the flavor default (pre-feature installs).
+     */
+    private boolean legacySlotAllowed() {
+        try {
+            Context ctx = getContext();
+            return ServerUrlSettingStore.selected(ctx).equals(
+                    ServerUrlSettingStore.flavorDefault(ctx));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String originPrefKey(String base, String account) {
+        return base + ServerUrlSetting.credentialSlot(resolveServerUrl(), account);
+    }
+
+    /** Legacy (pre-namespace) slot key; readable only at the flavor default. */
+    private String legacyPrefKey(String base, String account) {
+        return base + accountSlot(account);
+    }
+
+    /** Remove every slot (any origin token plus the legacy format). */
+    private void removeAccountSlots(String base, String account) {
+        String suffix = ":" + (account == null ? ""
+                : account.replaceAll("[^A-Za-z0-9_-]", "_"));
+        SharedPreferences.Editor editor = prefs().edit();
+        boolean any = false;
+        for (String key : prefs().getAll().keySet()) {
+            if (key.startsWith(base) && key.endsWith(suffix)) {
+                editor.remove(key);
+                any = true;
+            }
+        }
+        if (any) {
+            editor.apply();
+        }
+    }
+
+    // Canonical native origin (selected origin: flavor resource + persisted
+    // override); the pure-value authority stays in ServerUrlResolver for the
+    // flavor default.
     private String resolveServerUrl() {
+        Context ctx = getContext();
         String resourceUrl = null;
         try {
-            resourceUrl = getContext().getString(R.string.server_url);
+            resourceUrl = ctx.getString(R.string.server_url);
         } catch (Exception ignored) {}
-        return ServerUrlResolver.resolveCanonical(resourceUrl);
+        try {
+            return ServerUrlSetting.selected(
+                    ServerUrlSettingStore.store(ctx),
+                    ServerUrlResolver.resolveCanonical(resourceUrl));
+        } catch (Exception e) {
+            return ServerUrlResolver.resolveCanonical(resourceUrl);
+        }
+    }
+
+    /** Selection moved: no fragment of the old origin stays unlockable. */
+    public static void onServerSelectionChanged() {
+        unlockedKeys.clear();
     }
 
     @PluginMethod
@@ -132,8 +190,8 @@ public class NativeSecureKeyPlugin extends Plugin {
                 // One-time cleanup of the pre-multi-account single slot.
                 editor.remove(PREF_IV).remove(PREF_DATA);
             }
-            editor.putString(prefKey(PREF_IV, account), Base64.encodeToString(iv, Base64.NO_WRAP))
-                    .putString(prefKey(PREF_DATA, account), Base64.encodeToString(encrypted, Base64.NO_WRAP))
+            editor.putString(originPrefKey(PREF_IV, account), Base64.encodeToString(iv, Base64.NO_WRAP))
+                    .putString(originPrefKey(PREF_DATA, account), Base64.encodeToString(encrypted, Base64.NO_WRAP))
                     .apply();
             if (perAccount) {
                 unlockedKeys.put(account, key);
@@ -148,6 +206,23 @@ public class NativeSecureKeyPlugin extends Plugin {
         }
     }
 
+    /**
+     * Read the wrapped data-key slot for an account: origin-scoped slot
+     * first; legacy untagged slot only while the selected origin is still the
+     * flavor default (pre-feature installs migrated in place).
+     */
+    private String[] readIvData(SharedPreferences prefs, String account) {
+        String ivB64 = prefs.getString(originPrefKey(PREF_IV, account), null);
+        String dataB64 = prefs.getString(originPrefKey(PREF_DATA, account), null);
+        if (ivB64 == null || dataB64 == null) {
+            if (legacySlotAllowed()) {
+                ivB64 = prefs.getString(prefKey(PREF_IV, account), null);
+                dataB64 = prefs.getString(prefKey(PREF_DATA, account), null);
+            }
+        }
+        return new String[]{ivB64, dataB64};
+    }
+
     @PluginMethod
     public void getKey(PluginCall call) {
         String account = call.getString("account");
@@ -160,8 +235,18 @@ public class NativeSecureKeyPlugin extends Plugin {
                 return;
             }
         }
-        String ivPref = prefKey(PREF_IV, account);
-        String dataPref = prefKey(PREF_DATA, account);
+        // Origin captured before the async decrypt: a pending biometric
+        // unlock from the old server never hands key material to the
+        // after-switch page.
+        final String originAtSubmit = resolveServerUrl();
+        SharedPreferences prefs = prefs();
+        String[] ivData = readIvData(prefs, account);
+        String ivB64 = ivData[0];
+        String dataB64 = ivData[1];
+        if (ivB64 == null || dataB64 == null) {
+            call.resolve(new JSObject());
+            return;
+        }
         call.setKeepAlive(true);
         FragmentActivity activity = getActivity();
         if (activity == null) {
@@ -170,16 +255,14 @@ public class NativeSecureKeyPlugin extends Plugin {
         }
         activity.runOnUiThread(() -> {
             try {
-                SharedPreferences prefs = prefs();
-                String ivB64 = prefs.getString(ivPref, null);
-                String dataB64 = prefs.getString(dataPref, null);
-                if (ivB64 == null || dataB64 == null) {
-                    call.setKeepAlive(false);
-                    call.resolve(new JSObject());
-                    return;
-                }
                 Runnable decryptAndResolve = () -> {
                     try {
+                        if (!resolveServerUrl().equals(originAtSubmit)) {
+                            Log.w(TAG, "server changed during key unlock; aborting injection");
+                            call.setKeepAlive(false);
+                            call.reject("server changed during unlock");
+                            return;
+                        }
                         removeLegacyKeyIfPresent();
                         migrateFromV2IfNeeded();
                         SecretKey secretKey = getOrCreateKey();
@@ -254,8 +337,8 @@ public class NativeSecureKeyPlugin extends Plugin {
             byte[] encrypted = cipher.doFinal(payload.getBytes(StandardCharsets.UTF_8));
 
             prefs().edit()
-                    .putString(prefKey(PREF_CREDS_IV, account), Base64.encodeToString(iv, Base64.NO_WRAP))
-                    .putString(prefKey(PREF_CREDS_DATA, account), Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                    .putString(originPrefKey(PREF_CREDS_IV, account), Base64.encodeToString(iv, Base64.NO_WRAP))
+                    .putString(originPrefKey(PREF_CREDS_DATA, account), Base64.encodeToString(encrypted, Base64.NO_WRAP))
                     .apply();
 
             Log.i(TAG, "sealed cached credentials into keystore for account=" + account);
@@ -275,11 +358,19 @@ public class NativeSecureKeyPlugin extends Plugin {
             call.reject("account is required");
             return;
         }
-        String ivPref = prefKey(PREF_CREDS_IV, account);
-        String dataPref = prefKey(PREF_CREDS_DATA, account);
+        String ivPref = originPrefKey(PREF_CREDS_IV, account);
+        String dataPref = originPrefKey(PREF_CREDS_DATA, account);
         SharedPreferences prefs = prefs();
         String ivB64 = prefs.getString(ivPref, null);
         String dataB64 = prefs.getString(dataPref, null);
+        if (ivB64 == null || dataB64 == null) {
+            // Legacy (pre-namespace) sealed slot, valid only at the flavor default.
+            if (legacySlotAllowed()) {
+                ivB64 = prefs.getString(prefKey(PREF_CREDS_IV, account), null);
+                dataB64 = prefs.getString(prefKey(PREF_CREDS_DATA, account), null);
+            }
+        }
+        final String originAtSubmit = resolveServerUrl();
         if (ivB64 == null || dataB64 == null) {
             Log.i(TAG, "no sealed credentials for account=" + account);
             JSObject result = new JSObject();
@@ -288,6 +379,8 @@ public class NativeSecureKeyPlugin extends Plugin {
             call.resolve(result);
             return;
         }
+        final String pendingIv = ivB64;
+        final String pendingData = dataB64;
         call.setKeepAlive(true);
         FragmentActivity activity = getActivity();
         if (activity == null) {
@@ -297,13 +390,19 @@ public class NativeSecureKeyPlugin extends Plugin {
         activity.runOnUiThread(() -> {
             Runnable decryptAndInject = () -> {
                 try {
+                    if (!resolveServerUrl().equals(originAtSubmit)) {
+                        Log.w(TAG, "server changed during credential unlock; aborting injection");
+                        call.setKeepAlive(false);
+                        call.reject("server changed during unlock");
+                        return;
+                    }
                     removeLegacyKeyIfPresent();
                     migrateFromV2IfNeeded();
                     SecretKey secretKey = getOrCreateKey();
                     Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-                    byte[] iv = Base64.decode(ivB64, Base64.NO_WRAP);
+                    byte[] iv = Base64.decode(pendingIv, Base64.NO_WRAP);
                     cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(128, iv));
-                    byte[] decrypted = cipher.doFinal(Base64.decode(dataB64, Base64.NO_WRAP));
+                    byte[] decrypted = cipher.doFinal(Base64.decode(pendingData, Base64.NO_WRAP));
                     SealedCredentialPayload.Decoded payload = SealedCredentialPayload.decode(
                             new String(decrypted, StandardCharsets.UTF_8));
                     String rememberVal = payload.remember;
@@ -376,12 +475,12 @@ public class NativeSecureKeyPlugin extends Plugin {
     public void clearKey(PluginCall call) {
         String account = call.getString("account");
         if (account != null && !account.isEmpty()) {
-            prefs().edit()
-                    .remove(prefKey(PREF_IV, account))
-                    .remove(prefKey(PREF_DATA, account))
-                    .remove(prefKey(PREF_CREDS_IV, account))
-                    .remove(prefKey(PREF_CREDS_DATA, account))
-                    .apply();
+            // Remove every slot for this account: origin-scoped wraps for any
+            // origin plus the legacy untagged format.
+            removeAccountSlots(PREF_IV, account);
+            removeAccountSlots(PREF_DATA, account);
+            removeAccountSlots(PREF_CREDS_IV, account);
+            removeAccountSlots(PREF_CREDS_DATA, account);
             unlockedKeys.remove(account);
             try {
                 CookieManager cm = CookieManager.getInstance();
