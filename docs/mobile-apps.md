@@ -341,6 +341,8 @@ Already configured in this repo; if the app is missing everywhere, verify:
 
 Capacitor dependency requirements in `package.json` must match the root entry in `package-lock.json`; the Rust distribution test checks this consistency without pinning a particular release. npm validates resolved version ranges and package integrity during installation.
 
+Scoped `xcode -> uuid` override (GHSA-w5hq-g745-h8pq): `uuid` before `11.1.1` misses buffer-bounds checks in `v3`/`v5`/`v6` when a caller supplies `buf`, so the root `overrides.xcode.uuid` floor (`^11.1.1`) resolves that transitive copy to the patched release. `11.1.1` keeps a CommonJS entry (`dist/cjs`) so `xcode`'s `require('uuid').v4()` path is unchanged.
+
 ### Automated staging releases
 
 The private `iac` repository owns the Android staging release workflow and its

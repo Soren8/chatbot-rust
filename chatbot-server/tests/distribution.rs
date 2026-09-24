@@ -328,6 +328,52 @@ fn capacitor_lockfile_requirements_match_manifest() {
     }
 }
 
+/// GHSA-w5hq-g745-h8pq: every installed uuid copy must be fixed stable >=11.1.1.
+#[test]
+fn installed_uuid_copies_are_fixed_stable() {
+    let lock: serde_json::Value = serde_json::from_str(PACKAGE_LOCK_JSON).expect("lock must parse");
+    let packages = lock
+        .get("packages")
+        .and_then(|p| p.as_object())
+        .expect("lock must have packages");
+    let mut found = 0;
+    for (path, entry) in packages {
+        if path != "node_modules/uuid" && !path.ends_with("/node_modules/uuid") {
+            continue;
+        }
+        found += 1;
+        let version = entry
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("{path} must carry a version"));
+        assert!(
+            stable_version(version) >= (11, 1, 1),
+            "{path} must be fixed stable >=11.1.1; got `{version}`"
+        );
+    }
+    assert!(found > 0, "lock must install at least one uuid copy");
+}
+
+fn stable_version(raw: &str) -> (u64, u64, u64) {
+    assert!(
+        !raw.contains('-') && !raw.contains('+'),
+        "uuid must be stable, got `{raw}`"
+    );
+    let parts: Vec<&str> = raw.split('.').collect();
+    assert!(
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+        "uuid must be strict X.Y.Z, got `{raw}`"
+    );
+    (
+        parts[0].parse().unwrap(),
+        parts[1].parse().unwrap(),
+        parts[2].parse().unwrap(),
+    )
+}
+
 #[test]
 fn root_manifests_are_tracked_inputs_not_ignored() {
     for ignored in GITIGNORE.lines() {
