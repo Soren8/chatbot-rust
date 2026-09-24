@@ -106,3 +106,26 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create iac GitHub App token
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        id: iac-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.IAC_APP_ID }}
+          private-key: ${{ secrets.IAC_APP_PRIVATE_KEY }}
+          owner: Soren8
+          repositories: iac
+          permission-contents: write
+
+      - name: Notify iac of published image
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ steps.iac-token.outputs.token }}
+          PUSHED_SHA: ${{ github.sha }}
+        run: |
+          gh api repos/Soren8/iac/dispatches \
+            --method POST \
+            -f event_type=managed-repo-push \
+            -f "client_payload[repo]=Soren8/chatbot-rust" \
+            -f "client_payload[sha]=$PUSHED_SHA"

@@ -34,6 +34,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 ## CI/CD
 
 - `.github/workflows/docker-build-push.yml` runs the same compose test suite, then builds and publishes the image only if tests pass (`needs: tests`). An image existing on Docker Hub implies a green commit.
+- After a successful Docker Hub publish from a `main` push, the workflow dispatches `managed-repo-push` to `Soren8/iac`. Configure repository variable `IAC_APP_ID` and secret `IAC_APP_PRIVATE_KEY` in this repository. The GitHub App must be installed on `Soren8/iac` and have repository `Contents: Read and write` permission so the token can create a repository dispatch. The workflow mints a token scoped only to `iac`.
 - `.config-version` (repo root) is the minimum config schema version the app requires; the image carries it as the `chat.config_version` label, and the deploy side (iac) gates image deploys on it. Bump it in any PR that makes the app need new config keys. See `iac/docs/cicd.md`.
 - Config parsing tolerates unknown keys at runtime (forward-compatible config deploys); typo protection lives in the `config_example_has_no_unknown_keys` test, which fails on unknown keys in `.config.yml.example`.
 
