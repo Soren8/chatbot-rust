@@ -4,17 +4,19 @@ Project-specific agent instructions for chatbot-rust.
 
 ## Running tests
 
-Always the compose `tests` service. Do not run `cargo test` on the host or agent toolchain.
+**Use targeted tests by default for faster iteration.** Run the smallest relevant package and test target via `testctl`, adding a test-name filter when appropriate. Do not run `cargo test` on the host or agent toolchain. GitHub Actions runs the full suite before publishing; a full local run is not a routine completion requirement.
 
 ```bash
-docker compose run --rm tests
+testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package chatbot-server --test js_syntax
 ```
 
 The `tests` service caps CPU pressure at half the physical cores (`CARGO_BUILD_JOBS` / `RUST_TEST_THREADS`, min 1; SMT threads excluded) plus a hard `cpus` quota in cores' worth of CPU time (default 3, `TEST_CPUS` override) that also bounds single-rustc LLVM threads; adjust there if needed, not per-invocation.
 
-**One suite run per change set.** A green run is final — never re-run it; tee output to `temp/test-logs/` and grep the file if you need details again.
+Use `--package NAME` (repeatable), `--test TARGET` or `--lib`, and `--filter NAME` with optional `--exact` to select relevant tests. Omit selectors for a full workspace run. Select a package and target when possible to avoid compiling unrelated test binaries. Confirm the intended tests actually ran: a filter matching zero tests is not verification.
 
-If a test fails because implementation code needs fixing, fix the code and re-run. Only stop and ask the user if you believe an existing test itself needs to be modified, or if failures appear unrelated to the current change and cannot be resolved cleanly without modifying tests. Do not ignore failures, skip them, filter cargo to a subset, treat them as pre-existing noise, commit, or declare the task done while tests are failing.
+**Do not repeat unchanged green tests.** Tee output to `temp/test-logs/` and inspect the saved file if you need details again. Expand to other affected targets when the change affects shared behavior. Run the full local suite only when explicitly requested or when the affected scope cannot be covered reliably by targeted tests.
+
+If a test fails because implementation code needs fixing, fix the code and re-run the affected tests. Only stop and ask the user if you believe an existing test itself needs to be modified, or if failures appear unrelated to the current change and cannot be resolved cleanly without modifying tests. Do not narrow a selection to hide a known failure, ignore failures, or declare the task done while required tests are failing.
 
 First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`, locked in `Cargo.lock`). Do not install Node/npm for this, and do not add hand-rolled brace scanners.
 
@@ -22,7 +24,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Build & Run Commands
 
-- Tests: `docker compose run --rm tests` (full suite; ask before modifying existing tests)
+- Tests (default): `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package PACKAGE --test TARGET` (or `--lib`; optionally add `--filter NAME --exact`; ask before modifying existing tests). Omit selectors only when a full workspace run is warranted. On the host, `docker compose run --rm tests` remains the full-suite command.
 - Do not run `cargo test` / app binaries outside that container
 - Allowed compose from the sandbox: **`tests` only**. It injects its own env and does not need workspace `.env`.
 - Do **not** `docker compose up`, `build`, or recreate **`webserver`** or **`voice-service`**. Ask the **user** to rebuild/restart those on the host when a live deploy is needed.
