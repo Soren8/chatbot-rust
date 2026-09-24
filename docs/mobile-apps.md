@@ -421,8 +421,14 @@ Product flavors configure `server_url` string resource:
 | `android/.../res/values/arrays.xml` | Create — `car_app_supported_types` |
 | `android/.../res/values/strings.xml` | Modify — `server_url` per flavor |
 | `android/.../util/ServerUrlSetting.java` + `ServerUrlSettingStore.java` | Create — persisted post-install server selection policy + prefs/cookie glue |
-| `android/.../ServerSettingsActivity.java` | Create — native Apply/Reset/Cancel server screen |
-| `android/.../MainActivity.java` | Modify — WebView origin applies the persisted override (activity recreate on change); always-available ⚙ menu + offline overlay entry |
+| `android/.../ServerSettingsActivity.java` | Create — native Apply/Reset to default/Cancel card (`NoActionBar` + `adjustResize`, `ScrollView` max 420dp, URL keyboard) |
+| `android/.../util/ServerUiStyle.java` | Create — shared login-card styling (`#212529`/`#f8f9fa`/`#6c757d`/`#0d6efd`, 8/12dp rounding, 16sp sentence-case, ripple + dimmed disabled, dark bars) |
+| `android/.../ServerSettingsPlugin.java` | Create — Capacitor `ServerSettings.open` bridge delegating to MainActivity (preserves result/recreate) |
+| `android/.../MainActivity.java` | Modify — WebView origin applies the persisted override (activity recreate on change); offline card shares the helper |
+| `android/.../AndroidManifest.xml` | Modify — ServerSettingsActivity uses `NoActionBar` + `adjustResize` (no light bars, keyboard scroll) |
+| `static/templates/chat.html` | Modify — settings-panel `native-server-card` (`card mb-3`, `btn-outline-secondary btn-sm`, hidden unless native) |
+| `static/templates/login.html` | Modify — login `native-server-settings-wrap` + `native-server-settings` (`btn-outline-secondary btn-sm`, hidden unless native) |
+| `static/native-bridge.js` + `static/chat.js` + `static/login.js` | Modify — native-only reveal (`isNativePlatform`) and `ServerSettings.open` wiring |
 | `android/.../NativeSecureKeyPlugin.java` | Modify — origin-scoped credential/key pref slots; pending-unlock origin guard; cache clear on server change |
 | `android/.../util/ClientLogReporter.java` | Modify — per-call origin resolution for report uploads |
 | `android/.../car/VoiceScreen.java` | Modify — per-turn (capture at turn start) origin for /stt /chat /tts |
@@ -460,13 +466,19 @@ validated persisted override, else the flavor default.
   single trailing `/` (stripped). Plain HTTP is never accepted as user
   input; the default HTTP emulator endpoint stays reachable through the
   flavor authority (Reset to default), never by typing it.
-- **UI**: `ServerSettingsActivity` (registered unexported in the manifest)
-  offers Apply / Reset to default / Cancel. Invalid entries show an inline
-  error and are never applied; a no-op (same origin or already-default
-  reset) closes with a canceled result — no purge, no reload.
-- **Entry points**: a small translucent always-available native ⚙ menu in
-  MainActivity (reachable while the server is up and offline alike), plus
-  the offline/error overlay (Retry / Change server on main-frame failure).
+- **UI**: `ServerSettingsActivity` uses the login screen's dark palette,
+  rounded bordered fields, primary Apply button and outlined Reset/Cancel
+  buttons. `ServerUiStyle` shares this treatment with the offline screen.
+  The form is scrollable, width-limited and resizes around the URL keyboard.
+  Buttons are disabled while cookie cleanup runs. Invalid entries show an
+  inline error; a no-op closes canceled without purging or reloading.
+- **Entry points**: Server settings appears in the existing chat settings
+  panel (opened with the usual gear) and below the signup link on Login.
+  Both use the existing Bootstrap button styles and are hidden in ordinary
+  browsers. `ServerSettings.open` delegates to
+  `MainActivity.openServerSettings`, preserving the activity-result reload
+  path. When the server is unreachable, the native offline screen offers
+  Retry and Change server.
 - **Apply**: a real change purges the OLD origin's session + credential
   cookies first (cookie jars are host-scoped, NOT host+port+scheme, so
   nothing transfers across a port or scheme change), persists the override

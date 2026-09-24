@@ -32,6 +32,7 @@ import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
+import com.chatbot.app.util.ServerUiStyle;
 import com.chatbot.app.util.ServerUrlResolver;
 import com.chatbot.app.util.ServerUrlSetting;
 import com.chatbot.app.util.ServerUrlSettingStore;
@@ -61,9 +62,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeVoiceTtsPlugin.class);
         registerPlugin(NativeSecureKeyPlugin.class);
         registerPlugin(LoggerPlugin.class);
+        registerPlugin(ServerSettingsPlugin.class);
         super.onCreate(savedInstanceState);
         installOfflineErrorHandler();
-        installServerMenuEntry();
     }
 
     /**
@@ -96,32 +97,6 @@ public class MainActivity extends BridgeActivity {
             }
         });
     }
-
-    /**
-     * Small always-available server entry pinned to the content edge: works
-     * while the server is reachable and offline. Kept compact and translucent
-     * so it does not obstruct page content.
-     */
-    private void installServerMenuEntry() {
-        FrameLayout root = findViewById(android.R.id.content);
-        if (root == null) {
-            return;
-        }
-        float density = getResources().getDisplayMetrics().density;
-        TextView menu = new TextView(this);
-        menu.setText("⚙");
-        menu.setTextSize(18f);
-        menu.setTextColor(0xFFFFFFFF);
-        menu.setGravity(Gravity.CENTER);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                (int) (34 * density), (int) (34 * density));
-        params.gravity = Gravity.TOP | Gravity.END;
-        params.setMargins(0, (int) (6 * density), (int) (6 * density), 0);
-        menu.setBackgroundColor(0x66000000);
-        menu.setOnClickListener(v -> openServerSettings());
-        root.addView(menu, params);
-    }
-
 
     /**
      * Debug builds upload the crash plus recent FileLogger lines to the
@@ -276,8 +251,8 @@ public class MainActivity extends BridgeActivity {
         recreate();
     }
 
-    /** Change-server entry point (button from the offline overlay). */
-    private void openServerSettings() {
+    /** Change-server entry point (web bridge + offline overlay). */
+    public void openServerSettings() {
         try {
             startActivityForResult(
                     new Intent(this, ServerSettingsActivity.class), SETTINGS_REQUEST);
@@ -294,28 +269,55 @@ public class MainActivity extends BridgeActivity {
         if (root == null) {
             return null;
         }
+        float offlineDensity = getResources().getDisplayMetrics().density;
+        int offlinePadOuter = (int) (16 * offlineDensity);
+        int offlinePadCard = (int) (20 * offlineDensity);
         offlineOverlay = new FrameLayout(this);
         offlineOverlay.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
-        offlineOverlay.setBackgroundColor(0xFF121212);
+        offlineOverlay.setBackgroundColor(ServerUiStyle.BG_DARK);
         offlineOverlay.setClickable(true);
         offlineOverlay.setFocusable(true);
 
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(Gravity.CENTER);
-        FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(ServerUiStyle.BG_DARK);
+        scroll.setPadding(offlinePadOuter, offlinePadOuter, offlinePadOuter, offlinePadOuter);
+        FrameLayout.LayoutParams scrollParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
-        layoutParams.gravity = Gravity.CENTER;
+        scrollParams.gravity = Gravity.CENTER;
+        scroll.setLayoutParams(scrollParams);
+
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setGravity(Gravity.CENTER);
+        outer.setBackgroundColor(ServerUiStyle.BG_DARK);
+
+        int maxCard = (int) (420 * offlineDensity);
+        int avail = getResources().getDisplayMetrics().widthPixels - (int) (32 * offlineDensity);
+        int cardWidth = Math.min(avail, maxCard);
+        if (cardWidth < (int) (280 * offlineDensity)) {
+            cardWidth = ViewGroup.LayoutParams.MATCH_PARENT;
+        }
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setBackground(ServerUiStyle.cardBackground(offlineDensity));
+        layout.setPadding(offlinePadCard, offlinePadCard, offlinePadCard, offlinePadCard);
+        LinearLayout.LayoutParams layoutParams = new LinearLayout.LayoutParams(
+                cardWidth,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        layoutParams.gravity = Gravity.CENTER_HORIZONTAL;
         layout.setLayoutParams(layoutParams);
 
         TextView title = new TextView(this);
         title.setText("Server unreachable");
-        title.setTextColor(0xFFFFFFFF);
+        title.setTextColor(ServerUiStyle.TEXT_LIGHT);
         title.setTextSize(20f);
         title.setGravity(Gravity.CENTER);
         title.setPadding(0, 0, 0, 16);
@@ -323,14 +325,20 @@ public class MainActivity extends BridgeActivity {
 
         TextView selected = new TextView(this);
         selected.setText(resolveServerUrl());
-        selected.setTextColor(0xFF999999);
+        selected.setTextColor(ServerUiStyle.MUTED);
         selected.setTextSize(13f);
         selected.setGravity(Gravity.CENTER);
-        selected.setPadding(0, 0, 0, 32);
+        selected.setPadding(0, 0, 0, 16);
         layout.addView(selected);
 
         Button retryBtn = new Button(this);
         retryBtn.setText("Retry");
+        ServerUiStyle.stylePrimaryButton(retryBtn, offlineDensity);
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        retryParams.setMargins(0, (int) (12 * offlineDensity), 0, 0);
+        retryBtn.setLayoutParams(retryParams);
         retryBtn.setOnClickListener(v -> {
             if (offlineOverlay != null) {
                 offlineOverlay.setVisibility(View.GONE);
@@ -343,10 +351,18 @@ public class MainActivity extends BridgeActivity {
 
         Button settingsBtn = new Button(this);
         settingsBtn.setText("Change server");
+        ServerUiStyle.styleOutlineButton(settingsBtn, offlineDensity);
+        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        settingsParams.setMargins(0, (int) (12 * offlineDensity), 0, 0);
+        settingsBtn.setLayoutParams(settingsParams);
         settingsBtn.setOnClickListener(v -> openServerSettings());
         layout.addView(settingsBtn);
 
-        offlineOverlay.addView(layout);
+        outer.addView(layout);
+        scroll.addView(outer);
+        offlineOverlay.addView(scroll);
         root.addView(offlineOverlay);
         return offlineOverlay;
     }

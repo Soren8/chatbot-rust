@@ -672,6 +672,25 @@ $(function() {
     e.preventDefault();
     logoutThisComputer();
   });
+  try {
+    if (window.NativeBridge && window.NativeBridge.isNativePlatform()) {
+      var serverCard = document.getElementById('native-server-card');
+      var serverBtn = document.getElementById('native-server-settings');
+      if (serverCard) {
+        serverCard.style.display = '';
+      } else if (serverBtn) {
+        serverBtn.style.display = '';
+      }
+      if (serverBtn) {
+        serverBtn.addEventListener('click', function () {
+          var opener = window.NativeBridge.openServerSettings
+            ? window.NativeBridge.openServerSettings()
+            : window.NativeBridge.callNativePlugin('ServerSettings', 'open', {});
+          opener.catch(function () {});
+        });
+      }
+    }
+  } catch (e) { /* ignore */ }
   if (window.APP_DATA && window.APP_DATA.loggedIn) {
     var $hint = $('#enc-key-storage-hint');
     if ($hint.length) {

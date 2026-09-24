@@ -45,9 +45,14 @@
     return Promise.reject(new Error('Native bridge unavailable for ' + pluginName + '.' + methodName));
   }
 
+  function openServerSettings() {
+    return callNativePlugin('ServerSettings', 'open', {});
+  }
+
   global.NativeBridge = {
     isNativePlatform,
     getPlugin,
     callNativePlugin,
+    openServerSettings,
   };
 })(window);

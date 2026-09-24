@@ -266,6 +266,21 @@ function renderSavedAccountSelect() {
 $(function() {
   if (window.NativeBridge && window.NativeBridge.isNativePlatform()) {
     window.NativeBridge.callNativePlugin('NativeSecureKey', 'purgeCachedCookies').catch(function () {});
+    try {
+      var serverWrap = document.getElementById('native-server-settings-wrap');
+      var serverBtn = document.getElementById('native-server-settings');
+      if (serverWrap) {
+        serverWrap.style.display = '';
+      }
+      if (serverBtn) {
+        serverBtn.addEventListener('click', function () {
+          var opener = window.NativeBridge.openServerSettings
+            ? window.NativeBridge.openServerSettings()
+            : window.NativeBridge.callNativePlugin('ServerSettings', 'open', {});
+          opener.catch(function () {});
+        });
+      }
+    } catch (e) { /* ignore */ }
   }
   const purge = (window.EncKey && window.EncKey.purgeNonRememberedSlots)
     ? window.EncKey.purgeNonRememberedSlots()

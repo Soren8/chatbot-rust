@@ -34,7 +34,8 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".ServerSettingsActivity"
             android:label="Server settings"
-            android:theme="@style/AppTheme"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:windowSoftInputMode="adjustResize"
             android:exported="false" />
 
         <service
