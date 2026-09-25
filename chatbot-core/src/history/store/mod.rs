@@ -16,12 +16,14 @@ use super::crypto::{self, CryptoError};
 use super::types::{
     BlobFormat, LogicalSnapshot, SetId, SetPayloadV1, SetSnapshot, SetSummary, SetVersion,
 };
+use crate::config::PrivacyLevel;
 use crate::enc_key::EncryptionKey;
 use keys::{
     migrated_user_meta_key, set_id_key, user_set_key, user_sets_prefix, user_sets_prefix_end,
 };
 use tables::{
-    SetMetaValue, META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, SETS_NAME, USER_SETS,
+    META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, SETS_NAME, SETS_POLICY, SetMetaValue,
+    USER_SETS,
 };
 
 /// One set to insert during legacy migration (pre-sealed in one txn).
@@ -200,12 +202,18 @@ impl RedbHistoryStore {
                 .get(SCHEMA_KEY)?
                 .and_then(|v| v.value().first().copied())
                 .unwrap_or(0);
+            if current > SCHEMA_VERSION {
+                return Err(StoreError::Database(format!(
+                    "unsupported history schema {current}"
+                )));
+            }
             if current < SCHEMA_VERSION {
                 meta.insert(SCHEMA_KEY, [SCHEMA_VERSION].as_slice())?;
             }
             let _ = txn.open_table(SETS_META)?;
             let _ = txn.open_table(SETS_BLOB)?;
             let _ = txn.open_table(SETS_NAME)?;
+            let _ = txn.open_table(SETS_POLICY)?;
             let _ = txn.open_table(USER_SETS)?;
             let _ = txn.open_table(tables::SETS_HEADER)?;
             let _ = txn.open_table(tables::SETS_MANIFEST)?;
@@ -218,24 +226,133 @@ impl RedbHistoryStore {
     }
 
     /// Load non-sensitive meta only (no blob decrypt). Used for cache validation.
-    pub fn load_meta(
-        &self,
-        user_id: &str,
-        set_id: SetId,
-    ) -> Result<SetMetaValue, StoreError> {
+    pub fn load_meta(&self, user_id: &str, set_id: SetId) -> Result<SetMetaValue, StoreError> {
         let txn = self.db.begin_read()?;
         let meta_table = txn.open_table(SETS_META)?;
         let id_key = set_id_key(set_id);
         let meta_bytes = meta_table
             .get(id_key.as_slice())?
             .ok_or(StoreError::NotFound)?;
-        let meta = SetMetaValue::decode(meta_bytes.value()).ok_or(StoreError::Database(
-            "corrupt set meta".into(),
-        ))?;
+        let meta = SetMetaValue::decode(meta_bytes.value())
+            .ok_or(StoreError::Database("corrupt set meta".into()))?;
         if meta.user_id != user_id {
             return Err(StoreError::Forbidden);
         }
         Ok(meta)
+    }
+
+    pub fn load_policy(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<PrivacyLevel, StoreError> {
+        let _ = self.load_meta(user_id, set_id)?;
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(SETS_POLICY)?;
+        match table.get(set_id_key(set_id).as_slice())? {
+            Some(blob) => Ok(crypto::open_policy_v1(user_id, set_id, blob.value(), key)?),
+            None => Ok(PrivacyLevel::Private),
+        }
+    }
+
+    pub fn load_meta_policy(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<(SetMetaValue, PrivacyLevel), StoreError> {
+        let txn = self.db.begin_read()?;
+        let id = set_id_key(set_id);
+        let mt = txn.open_table(SETS_META)?;
+        let meta =
+            SetMetaValue::decode(mt.get(id.as_slice())?.ok_or(StoreError::NotFound)?.value())
+                .ok_or(StoreError::Database("corrupt set meta".into()))?;
+        if meta.user_id != user_id {
+            return Err(StoreError::Forbidden);
+        }
+        let pt = txn.open_table(SETS_POLICY)?;
+        let policy = match pt.get(id.as_slice())? {
+            Some(blob) => crypto::open_policy_v1(user_id, set_id, blob.value(), key)?,
+            None => PrivacyLevel::default_chat(),
+        };
+        Ok((meta, policy))
+    }
+
+    pub fn change_policy(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        expected: SetVersion,
+        level: PrivacyLevel,
+        key: &EncryptionKey,
+    ) -> Result<SetVersion, StoreError> {
+        let (meta, current_policy) = self.load_meta_policy(user_id, set_id, key)?;
+        if meta.version != expected {
+            return Err(StoreError::Conflict {
+                current: meta.version,
+            });
+        }
+        if current_policy == level {
+            return Ok(expected);
+        }
+        let next = expected.next();
+        if next == expected {
+            return Err(StoreError::InvalidInput);
+        }
+        let policy = crypto::seal_policy_v1(user_id, set_id, level, key)?;
+        let blob = if meta.blob_format.is_chunked() {
+            None
+        } else {
+            let snap = self.load_snapshot(user_id, set_id, key)?;
+            Some(crypto::seal_blob(
+                user_id,
+                set_id,
+                next,
+                meta.blob_format,
+                &SetPayloadV1::from_snapshot(&snap),
+                key,
+            )?)
+        };
+        let manifest = if meta.blob_format.is_chunked() {
+            let old = self.load_manifest(user_id, set_id, expected, key)?;
+            Some(crypto::seal_manifest_v1(user_id, set_id, next, &old, key)?)
+        } else {
+            None
+        };
+        let id = set_id_key(set_id);
+        let txn = self.db.begin_write()?;
+        {
+            let mut mt = txn.open_table(SETS_META)?;
+            let mut current =
+                SetMetaValue::decode(mt.get(id.as_slice())?.ok_or(StoreError::NotFound)?.value())
+                    .ok_or(StoreError::Database("corrupt set meta".into()))?;
+            if current.user_id != user_id {
+                return Err(StoreError::Forbidden);
+            }
+            if current.version != expected {
+                return Err(StoreError::Conflict {
+                    current: current.version,
+                });
+            }
+            current.version = next;
+            current.updated_at = now_millis();
+            mt.insert(id.as_slice(), current.encode().as_slice())?;
+            let mut pt = txn.open_table(SETS_POLICY)?;
+            pt.insert(id.as_slice(), policy.as_slice())?;
+            if let Some(blob) = blob {
+                let mut bt = txn.open_table(SETS_BLOB)?;
+                bt.insert(id.as_slice(), blob.as_slice())?;
+            }
+            if let Some(manifest) = manifest {
+                let mut table = txn.open_table(tables::SETS_MANIFEST)?;
+                table.insert(id.as_slice(), manifest.as_slice())?;
+            }
+            let mut users = txn.open_table(USER_SETS)?;
+            users.insert(user_set_key(user_id, set_id).as_slice(), current.updated_at)?;
+        }
+        txn.commit()?;
+        Ok(next)
     }
 
     pub fn load_snapshot(
@@ -263,7 +380,9 @@ impl RedbHistoryStore {
             blob.value(),
             key,
         )?;
-        Ok(payload.into_snapshot(set_id, meta.version, meta.is_default))
+        let mut snapshot = payload.into_snapshot(set_id, meta.version, meta.is_default);
+        snapshot.privacy_level = self.load_policy(user_id, set_id, key)?;
+        Ok(snapshot)
     }
 
     /// Decrypt only the sealed display name. Does not open `SETS_BLOB`.
@@ -281,9 +400,8 @@ impl RedbHistoryStore {
         let meta_bytes = meta_table
             .get(id_key.as_slice())?
             .ok_or(StoreError::NotFound)?;
-        let meta = SetMetaValue::decode(meta_bytes.value()).ok_or(StoreError::Database(
-            "corrupt set meta".into(),
-        ))?;
+        let meta = SetMetaValue::decode(meta_bytes.value())
+            .ok_or(StoreError::Database("corrupt set meta".into()))?;
         if meta.user_id != user_id {
             return Err(StoreError::Forbidden);
         }
@@ -357,6 +475,27 @@ impl RedbHistoryStore {
         is_default: bool,
         key: &EncryptionKey,
     ) -> Result<SetSummary, StoreError> {
+        self.create_set_with_policy(
+            user_id,
+            set_id,
+            display_name,
+            system_prompt,
+            is_default,
+            PrivacyLevel::default_chat(),
+            key,
+        )
+    }
+
+    pub fn create_set_with_policy(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        display_name: &str,
+        system_prompt: &str,
+        is_default: bool,
+        privacy_level: PrivacyLevel,
+        key: &EncryptionKey,
+    ) -> Result<SetSummary, StoreError> {
         let version = SetVersion(1);
         let payload = SetPayloadV1 {
             display_name: display_name.to_owned(),
@@ -365,14 +504,7 @@ impl RedbHistoryStore {
             history: Vec::new(),
         };
         let now = now_millis();
-        let blob = crypto::seal_blob(
-            user_id,
-            set_id,
-            version,
-            BlobFormat::AeadV1,
-            &payload,
-            key,
-        )?;
+        let blob = crypto::seal_blob(user_id, set_id, version, BlobFormat::AeadV1, &payload, key)?;
         let name_blob = crypto::seal_name_v1(user_id, set_id, display_name, key)?;
         let meta = SetMetaValue {
             user_id: user_id.to_owned(),
@@ -399,6 +531,9 @@ impl RedbHistoryStore {
             blob_table.insert(id_key.as_slice(), blob.as_slice())?;
             let mut name_table = txn.open_table(SETS_NAME)?;
             name_table.insert(id_key.as_slice(), name_blob.as_slice())?;
+            let policy = crypto::seal_policy_v1(user_id, set_id, privacy_level, key)?;
+            let mut policy_table = txn.open_table(SETS_POLICY)?;
+            policy_table.insert(id_key.as_slice(), policy.as_slice())?;
             let mut user_table = txn.open_table(USER_SETS)?;
             user_table.insert(user_set_key(user_id, set_id).as_slice(), now)?;
         }
@@ -410,6 +545,7 @@ impl RedbHistoryStore {
             display_name: display_name.to_owned(),
             updated_at: now,
             is_default,
+            privacy_level,
         })
     }
 
@@ -425,10 +561,12 @@ impl RedbHistoryStore {
         key: &EncryptionKey,
     ) -> Result<(SetVersion, LogicalSnapshot), StoreError> {
         let set_id = snapshot.set_id;
-        if let Ok(meta) = self.load_meta(user_id, set_id) {
-            if meta.blob_format.is_chunked() {
+        match self.load_meta(user_id, set_id) {
+            Ok(meta) if meta.blob_format.is_chunked() => {
                 return self.commit_chunked(user_id, expected, snapshot, key);
             }
+            Ok(_) => (),
+            Err(err) => return Err(err),
         }
         let new_version = expected.next();
         if new_version.get() == expected.get() {
@@ -437,6 +575,7 @@ impl RedbHistoryStore {
         }
 
         let payload = SetPayloadV1::from_snapshot(&snapshot);
+        let durable_policy = self.load_policy(user_id, set_id, key)?;
         let blob = crypto::seal_blob(
             user_id,
             set_id,
@@ -445,8 +584,9 @@ impl RedbHistoryStore {
             &payload,
             key,
         )?;
-        let name_blob =
-            crypto::seal_name_v1(user_id, set_id, &snapshot.display_name, key)?;
+        let name_blob = crypto::seal_name_v1(user_id, set_id, &snapshot.display_name, key)?;
+        let policy_blob =
+            crypto::seal_policy_v1(user_id, set_id, PrivacyLevel::default_chat(), key)?;
         let now = now_millis();
         let id_key = set_id_key(set_id);
 
@@ -458,9 +598,8 @@ impl RedbHistoryStore {
                 let existing = meta_table
                     .get(id_key.as_slice())?
                     .ok_or(StoreError::NotFound)?;
-                SetMetaValue::decode(existing.value()).ok_or(StoreError::Database(
-                    "corrupt set meta".into(),
-                ))?
+                SetMetaValue::decode(existing.value())
+                    .ok_or(StoreError::Database("corrupt set meta".into()))?
             };
             durable_is_default = meta.is_default;
             if meta.user_id != user_id {
@@ -482,6 +621,10 @@ impl RedbHistoryStore {
             blob_table.insert(id_key.as_slice(), blob.as_slice())?;
             let mut name_table = txn.open_table(SETS_NAME)?;
             name_table.insert(id_key.as_slice(), name_blob.as_slice())?;
+            let mut policy_table = txn.open_table(SETS_POLICY)?;
+            if policy_table.get(id_key.as_slice())?.is_none() {
+                policy_table.insert(id_key.as_slice(), policy_blob.as_slice())?;
+            }
 
             let mut user_table = txn.open_table(USER_SETS)?;
             user_table.insert(user_set_key(user_id, set_id).as_slice(), now)?;
@@ -490,6 +633,7 @@ impl RedbHistoryStore {
         debug!(%set_id, version = new_version.get(), "history set committed");
         snapshot.version = new_version;
         snapshot.is_default = durable_is_default;
+        snapshot.privacy_level = durable_policy;
         // Whole-blob payloads seal no pair ids; the working copy's ids are not
         // durable until a chunk migrate assigns stable ones (and migrate
         // invalidates this entry first). Keep the cached shape load-accurate.
@@ -511,9 +655,8 @@ impl RedbHistoryStore {
                 let existing = meta_table
                     .get(id_key.as_slice())?
                     .ok_or(StoreError::NotFound)?;
-                SetMetaValue::decode(existing.value()).ok_or(StoreError::Database(
-                    "corrupt set meta".into(),
-                ))?
+                SetMetaValue::decode(existing.value())
+                    .ok_or(StoreError::Database("corrupt set meta".into()))?
             };
             if meta.user_id != user_id {
                 return Err(StoreError::Forbidden);
@@ -531,6 +674,8 @@ impl RedbHistoryStore {
             blob_table.remove(id_key.as_slice())?;
             let mut name_table = txn.open_table(SETS_NAME)?;
             let _ = name_table.remove(id_key.as_slice())?;
+            let mut policy_table = txn.open_table(SETS_POLICY)?;
+            let _ = policy_table.remove(id_key.as_slice())?;
             let mut user_table = txn.open_table(USER_SETS)?;
             user_table.remove(user_set_key(user_id, set_id).as_slice())?;
         }
@@ -560,7 +705,7 @@ impl RedbHistoryStore {
         }
 
         let version = SetVersion(1);
-        let mut prepared: Vec<(SetId, Vec<u8>, Vec<u8>, Vec<u8>, u64)> =
+        let mut prepared: Vec<(SetId, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, u64)> =
             Vec::with_capacity(sets.len());
         for set in sets {
             let payload = SetPayloadV1 {
@@ -577,8 +722,9 @@ impl RedbHistoryStore {
                 &payload,
                 key,
             )?;
-            let name_blob =
-                crypto::seal_name_v1(user_id, set.set_id, &set.display_name, key)?;
+            let name_blob = crypto::seal_name_v1(user_id, set.set_id, &set.display_name, key)?;
+            let policy_blob =
+                crypto::seal_policy_v1(user_id, set.set_id, PrivacyLevel::Private, key)?;
             let meta = SetMetaValue {
                 user_id: user_id.to_owned(),
                 version,
@@ -589,7 +735,14 @@ impl RedbHistoryStore {
                 header_generation: 0,
                 pair_count: None,
             };
-            prepared.push((set.set_id, meta.encode(), blob, name_blob, set.updated_at));
+            prepared.push((
+                set.set_id,
+                meta.encode(),
+                blob,
+                name_blob,
+                policy_blob,
+                set.updated_at,
+            ));
         }
 
         let mig_key = migrated_user_meta_key(user_id);
@@ -608,8 +761,10 @@ impl RedbHistoryStore {
                     let mut meta_table = txn.open_table(SETS_META)?;
                     let mut blob_table = txn.open_table(SETS_BLOB)?;
                     let mut name_table = txn.open_table(SETS_NAME)?;
+                    let mut policy_table = txn.open_table(SETS_POLICY)?;
                     let mut user_table = txn.open_table(USER_SETS)?;
-                    for (set_id, meta_bytes, blob, name_blob, updated_at) in &prepared {
+                    for (set_id, meta_bytes, blob, name_blob, policy_blob, updated_at) in &prepared
+                    {
                         let id_key = set_id_key(*set_id);
                         let exists = meta_table.get(id_key.as_slice())?.is_some();
                         if exists {
@@ -618,7 +773,9 @@ impl RedbHistoryStore {
                         meta_table.insert(id_key.as_slice(), meta_bytes.as_slice())?;
                         blob_table.insert(id_key.as_slice(), blob.as_slice())?;
                         name_table.insert(id_key.as_slice(), name_blob.as_slice())?;
-                        user_table.insert(user_set_key(user_id, *set_id).as_slice(), *updated_at)?;
+                        policy_table.insert(id_key.as_slice(), policy_blob.as_slice())?;
+                        user_table
+                            .insert(user_set_key(user_id, *set_id).as_slice(), *updated_at)?;
                         count += 1;
                     }
                 }
@@ -632,11 +789,7 @@ impl RedbHistoryStore {
     }
 
     #[cfg(test)]
-    pub fn test_remove_history_blob(
-        &self,
-        user_id: &str,
-        set_id: SetId,
-    ) -> Result<(), StoreError> {
+    pub fn test_remove_history_blob(&self, user_id: &str, set_id: SetId) -> Result<(), StoreError> {
         let _ = self.load_meta(user_id, set_id)?;
         let txn = self.db.begin_write()?;
         {
@@ -742,7 +895,12 @@ mod tests {
         let err = store
             .commit_snapshot("alice", SetVersion(1), next, &key)
             .unwrap_err();
-        assert!(matches!(err, StoreError::Conflict { current: SetVersion(2) }));
+        assert!(matches!(
+            err,
+            StoreError::Conflict {
+                current: SetVersion(2)
+            }
+        ));
 
         let loaded = store.load_snapshot("alice", set_id, &key).unwrap();
         assert_eq!(loaded.history.len(), 1);
@@ -753,6 +911,321 @@ mod tests {
             store.load_snapshot("bob", set_id, &key),
             Err(StoreError::Forbidden)
         ));
+    }
+
+    #[test]
+    fn missing_policy_defaults_private_but_corrupt_policy_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("policy.redb")).unwrap();
+        let key = key();
+        let id = SetId::new();
+        store
+            .create_set("alice", id, "legacy", "sys", false, &key)
+            .unwrap();
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(SETS_POLICY).unwrap();
+            table.remove(set_id_key(id).as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+        assert_eq!(
+            store.load_policy("alice", id, &key).unwrap(),
+            PrivacyLevel::default_chat()
+        );
+        assert!(matches!(
+            store.load_policy("bob", id, &key),
+            Err(StoreError::Forbidden)
+        ));
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(SETS_POLICY).unwrap();
+            table
+                .insert(set_id_key(id).as_slice(), b"broken".as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        assert!(
+            store.load_policy("alice", id, &key).is_err(),
+            "corrupt policy must not silently default"
+        );
+        let wrong = EncryptionKey::from_header_value(
+            "d3Jvbmcta2V5LW1hdGVyaWFsLTAwMDAwMDAwMDAwMDAwMDAwMA==",
+        )
+        .unwrap();
+        assert!(store.load_policy("alice", id, &wrong).is_err());
+    }
+
+    #[test]
+    fn policy_ciphertext_rejects_owner_and_set_id_row_swaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("policy-swaps.redb")).unwrap();
+        let key = key();
+        let alice_id = SetId::new();
+        let bob_id = SetId::new();
+        store
+            .create_set("alice", alice_id, "alice", "sys", false, &key)
+            .unwrap();
+        store
+            .create_set_with_policy(
+                "bob",
+                bob_id,
+                "bob",
+                "sys",
+                false,
+                PrivacyLevel::NonPrivate,
+                &key,
+            )
+            .unwrap();
+
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut policies = txn.open_table(SETS_POLICY).unwrap();
+            let alice = policies
+                .get(set_id_key(alice_id).as_slice())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            let bob = policies
+                .get(set_id_key(bob_id).as_slice())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            policies
+                .insert(set_id_key(alice_id).as_slice(), bob.as_slice())
+                .unwrap();
+            policies
+                .insert(set_id_key(bob_id).as_slice(), alice.as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        assert!(
+            store.load_policy("alice", alice_id, &key).is_err(),
+            "owner/set-bound ciphertext must not open after cross-owner swap"
+        );
+        assert!(store.load_policy("bob", bob_id, &key).is_err());
+
+        let first = SetId::new();
+        let second = SetId::new();
+        store
+            .create_set("carol", first, "first", "sys", false, &key)
+            .unwrap();
+        store
+            .create_set_with_policy(
+                "carol",
+                second,
+                "second",
+                "sys",
+                false,
+                PrivacyLevel::NonPrivate,
+                &key,
+            )
+            .unwrap();
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut policies = txn.open_table(SETS_POLICY).unwrap();
+            let a = policies
+                .get(set_id_key(first).as_slice())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            let b = policies
+                .get(set_id_key(second).as_slice())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            policies
+                .insert(set_id_key(first).as_slice(), b.as_slice())
+                .unwrap();
+            policies
+                .insert(set_id_key(second).as_slice(), a.as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        assert!(
+            store.load_policy("carol", first, &key).is_err(),
+            "same-owner ciphertext must not open under another set ID"
+        );
+        assert!(store.load_policy("carol", second, &key).is_err());
+    }
+
+    #[test]
+    fn missing_policy_is_seeded_private_by_authorized_content_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("legacy-policy-write.redb")).unwrap();
+        let key = key();
+        let id = SetId::new();
+        let created = store
+            .create_set("alice", id, "legacy", "sys", false, &key)
+            .unwrap();
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut policies = txn.open_table(SETS_POLICY).unwrap();
+            policies.remove(set_id_key(id).as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+        let mut snapshot = store.load_snapshot("alice", id, &key).unwrap();
+        assert_eq!(snapshot.privacy_level, PrivacyLevel::default_chat());
+        snapshot.privacy_level = PrivacyLevel::NonPrivate; // untrusted caller DTO must not set canonical policy
+        snapshot.history.push(("u".into(), "a".into()));
+        store
+            .commit_snapshot("alice", created.version, snapshot, &key)
+            .unwrap();
+        assert_eq!(
+            store.load_policy("alice", id, &key).unwrap(),
+            PrivacyLevel::default_chat()
+        );
+        assert_eq!(
+            store
+                .load_snapshot("alice", id, &key)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::default_chat()
+        );
+
+        let version = store
+            .change_policy("alice", id, SetVersion(2), PrivacyLevel::NonPrivate, &key)
+            .unwrap();
+        let mut forged = store.load_snapshot("alice", id, &key).unwrap();
+        forged.privacy_level = PrivacyLevel::default_chat();
+        forged.history.push(("another".into(), "pair".into()));
+        store
+            .commit_snapshot("alice", version, forged, &key)
+            .unwrap();
+        assert_eq!(
+            store
+                .load_snapshot("alice", id, &key)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::NonPrivate,
+            "generic content commit cannot downgrade canonical policy"
+        );
+    }
+
+    #[test]
+    fn legacy_import_seeds_private_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("import-policy.redb")).unwrap();
+        let key = key();
+        let id = SetId::new();
+        let imported = ImportSet {
+            set_id: id,
+            display_name: "imported".into(),
+            memory: "m".into(),
+            system_prompt: "p".into(),
+            history: vec![("u".into(), "a".into())],
+            is_default: false,
+            created_at: 1,
+            updated_at: 2,
+        };
+        assert_eq!(
+            store
+                .import_sets_and_mark_migrated("alice", &[imported], &key)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store.load_policy("alice", id, &key).unwrap(),
+            PrivacyLevel::default_chat()
+        );
+    }
+
+    #[test]
+    fn policy_noop_checks_version_with_policy_in_same_read_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("policy-cas.redb")).unwrap();
+        let key = key();
+        let id = SetId::new();
+        store
+            .create_set("alice", id, "chat", "sys", false, &key)
+            .unwrap();
+        assert_eq!(
+            store
+                .change_policy("alice", id, SetVersion(1), PrivacyLevel::NonPrivate, &key)
+                .unwrap(),
+            SetVersion(2)
+        );
+
+        let (meta, policy) = store.load_meta_policy("alice", id, &key).unwrap();
+        assert_eq!(meta.version, SetVersion(2));
+        assert_eq!(policy, PrivacyLevel::NonPrivate);
+        assert!(matches!(
+            store.change_policy("alice", id, SetVersion(1), PrivacyLevel::NonPrivate, &key),
+            Err(StoreError::Conflict {
+                current: SetVersion(2)
+            })
+        ));
+
+        let (after_meta, after_policy) = store.load_meta_policy("alice", id, &key).unwrap();
+        assert_eq!(after_meta.version, SetVersion(2));
+        assert_eq!(after_policy, PrivacyLevel::NonPrivate);
+        assert_eq!(
+            store
+                .change_policy("alice", id, SetVersion(2), PrivacyLevel::NonPrivate, &key)
+                .unwrap(),
+            SetVersion(2),
+            "current-mode no-op must not advance version"
+        );
+    }
+
+    #[test]
+    fn failed_chunk_policy_change_keeps_version_and_policy_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("policy-rollback.redb")).unwrap();
+        let key = key();
+        let id = SetId::new();
+        store
+            .create_set("alice", id, "chat", "sys", false, &key)
+            .unwrap();
+        let snap = store.load_snapshot("alice", id, &key).unwrap();
+        store.migrate_set_to_chunks("alice", id, &key).unwrap();
+        let meta = store.load_meta("alice", id).unwrap();
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(tables::SETS_MANIFEST).unwrap();
+            table
+                .insert(set_id_key(id).as_slice(), b"corrupt".as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        assert!(
+            store
+                .change_policy("alice", id, meta.version, PrivacyLevel::NonPrivate, &key)
+                .is_err()
+        );
+        let (after, policy) = store.load_meta_policy("alice", id, &key).unwrap();
+        assert_eq!(after.version, meta.version);
+        assert_eq!(policy, PrivacyLevel::default_chat());
+        assert_eq!(snap.version, meta.version);
+    }
+
+    #[test]
+    fn rejects_newer_history_schema_without_downgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("newer.redb");
+        let store = RedbHistoryStore::open(&path).unwrap();
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut meta = txn.open_table(META).unwrap();
+            meta.insert(SCHEMA_KEY, [SCHEMA_VERSION + 1].as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        drop(store);
+        assert!(matches!(
+            RedbHistoryStore::open(&path),
+            Err(StoreError::Database(_))
+        ));
+        let db = Database::open(&path).unwrap();
+        let txn = db.begin_read().unwrap();
+        let meta = txn.open_table(META).unwrap();
+        assert_eq!(
+            meta.get(SCHEMA_KEY).unwrap().unwrap().value(),
+            [SCHEMA_VERSION + 1]
+        );
     }
 
     #[test]
@@ -873,7 +1346,9 @@ mod tests {
             handles.push(thread::spawn(move || {
                 let next = append_pair(&base, &format!("u{i}"), &format!("a{i}")).unwrap();
                 barrier.wait();
-                store.commit_snapshot("race", SetVersion(1), next, &key).map(|(v, _)| v)
+                store
+                    .commit_snapshot("race", SetVersion(1), next, &key)
+                    .map(|(v, _)| v)
             }));
         }
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
@@ -937,7 +1412,10 @@ mod tests {
             .commit_snapshot("alice", SetVersion(1), snap, &key)
             .unwrap();
         let reloaded = store.load_snapshot("alice", set_id, &key).unwrap();
-        assert!(!reloaded.is_default, "content commit must not flip is_default");
+        assert!(
+            !reloaded.is_default,
+            "content commit must not flip is_default"
+        );
         assert_eq!(reloaded.history.len(), 1);
     }
 
@@ -960,15 +1438,8 @@ mod tests {
             history: vec![("hello from v2".into(), "hi back".into())],
         };
         let version = SetVersion(1);
-        let blob = crypto::seal_blob(
-            user,
-            set_id,
-            version,
-            BlobFormat::AeadV1,
-            &payload,
-            &key,
-        )
-        .unwrap();
+        let blob =
+            crypto::seal_blob(user, set_id, version, BlobFormat::AeadV1, &payload, &key).unwrap();
         let meta = SetMetaValue {
             user_id: user.to_owned(),
             version,
@@ -1006,7 +1477,9 @@ mod tests {
                     .insert(id_key.as_slice(), meta_bytes.as_slice())
                     .unwrap();
                 let mut sets_blob = txn.open_table(SETS_BLOB_V2).unwrap();
-                sets_blob.insert(id_key.as_slice(), blob.as_slice()).unwrap();
+                sets_blob
+                    .insert(id_key.as_slice(), blob.as_slice())
+                    .unwrap();
                 let mut user_sets = txn.open_table(USER_SETS_V2).unwrap();
                 user_sets.insert(user_key.as_slice(), now).unwrap();
             }

@@ -308,6 +308,7 @@ pub fn apply_regenerate(
         history,
         pair_ids,
         is_default: capture.is_default,
+        privacy_level: capture.privacy_level,
     })
 }
 
@@ -335,6 +336,7 @@ pub fn apply_chat_append(
         history,
         pair_ids,
         is_default: capture.is_default,
+        privacy_level: capture.privacy_level,
     })
 }
 

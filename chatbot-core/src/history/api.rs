@@ -16,6 +16,7 @@ use super::migration;
 use super::ops::{self, OpsError};
 use super::store::{RedbHistoryStore, StoreError};
 use super::types::{LogicalSnapshot, PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
+use crate::config::PrivacyLevel;
 use crate::config::app_config;
 use crate::enc_key::EncryptionKey;
 
@@ -80,7 +81,9 @@ impl From<OpsError> for HistoryError {
     fn from(err: OpsError) -> Self {
         match err {
             OpsError::PairIndexOutOfRange => HistoryError::InvalidInput("pair_index out of range"),
-            OpsError::ContentMismatch => HistoryError::InvalidInput("content mismatch at pair_index"),
+            OpsError::ContentMismatch => {
+                HistoryError::InvalidInput("content mismatch at pair_index")
+            }
             OpsError::EmptyUserMessage => HistoryError::InvalidInput("empty user message"),
             OpsError::EmptySetName => HistoryError::InvalidInput("empty set name"),
             OpsError::HistoryTooLarge => HistoryError::InvalidInput("history too large"),
@@ -192,9 +195,9 @@ impl HistoryService {
         self.ensure_chunked(user, set_id, key)?;
         match self.store.load_meta(user, set_id) {
             Ok(meta) => {
-                if let Some(cached) =
-                    self.cache
-                        .get_snapshot_if_version(user, set_id, meta.version)
+                if let Some(cached) = self
+                    .cache
+                    .get_snapshot_if_version(user, set_id, meta.version)
                 {
                     return Ok(cached);
                 }
@@ -218,7 +221,9 @@ impl HistoryService {
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        Ok(self.load_snapshot_cached(&user, set_id, key)?.into_snapshot())
+        Ok(self
+            .load_snapshot_cached(&user, set_id, key)?
+            .into_snapshot())
     }
 
     pub fn load_page(
@@ -321,8 +326,8 @@ impl HistoryService {
         let ids = self.store.list_set_ids(&user)?;
         let mut out = Vec::with_capacity(ids.len());
         for (set_id, updated_at) in ids {
-            let meta = match self.store.load_meta(&user, set_id) {
-                Ok(m) => m,
+            let (meta, privacy_level) = match self.store.load_meta_policy(&user, set_id, key) {
+                Ok(value) => value,
                 Err(StoreError::Forbidden) => continue,
                 Err(err) => return Err(err.into()),
             };
@@ -339,19 +344,15 @@ impl HistoryService {
                     // Pre-name-row sets: decrypt the snapshot once and persist the name.
                     match self.store.load_snapshot(&user, set_id, key) {
                         Ok(snap) => {
-                            if let Err(err) = self.store.put_display_name(
-                                &user,
-                                set_id,
-                                &snap.display_name,
-                                key,
-                            ) {
+                            if let Err(err) =
+                                self.store
+                                    .put_display_name(&user, set_id, &snap.display_name, key)
+                            {
                                 return Err(err.into());
                             }
                             snap.display_name
                         }
-                        Err(StoreError::DecryptFailed) => {
-                            return Err(HistoryError::DecryptFailed)
-                        }
+                        Err(StoreError::DecryptFailed) => return Err(HistoryError::DecryptFailed),
                         Err(StoreError::Forbidden) => continue,
                         Err(err) => return Err(err.into()),
                     }
@@ -366,6 +367,7 @@ impl HistoryService {
                 display_name,
                 updated_at,
                 is_default: meta.is_default,
+                privacy_level,
             };
             self.cache.put_summary(&user, &summary);
             out.push(summary);
@@ -462,6 +464,7 @@ impl HistoryService {
             history: Vec::new(),
             pair_ids: Vec::new(),
             is_default: summary.is_default,
+            privacy_level: summary.privacy_level,
         };
         self.remember(&user, &LogicalSnapshot::from_normalized(snap));
         self.cache.put_summary(&user, &summary);
@@ -528,12 +531,13 @@ impl HistoryService {
         let effective = ops::dedup_name(&base, |c| existing.iter().any(|e| e == c));
 
         let new_id = SetId::new();
-        let summary = self.store.create_set(
+        let summary = self.store.create_set_with_policy(
             &user,
             new_id,
             &effective,
             &source.system_prompt,
             false,
+            source.privacy_level,
             key,
         )?;
         // Fresh pair ids: image blobs are bound to the new set id in AAD.
@@ -549,15 +553,18 @@ impl HistoryService {
             history: prefix,
             pair_ids,
             is_default: false,
+            privacy_level: source.privacy_level,
         };
-        let (v, committed) =
-            self.store.commit_snapshot(&user, summary.version, snap, key)?;
+        let (v, committed) = self
+            .store
+            .commit_snapshot(&user, summary.version, snap, key)?;
         let final_summary = SetSummary {
             set_id: new_id,
             version: v,
             display_name: committed.as_snapshot().display_name.clone(),
             updated_at: summary.updated_at,
             is_default: false,
+            privacy_level: source.privacy_level,
         };
         self.remember(&user, &committed);
         self.cache.put_summary(&user, &final_summary);
@@ -666,6 +673,23 @@ impl HistoryService {
         self.store.delete_set(&user, set_id, expected)?;
         self.cache.invalidate(&user, set_id);
         Ok(())
+    }
+
+    pub fn change_privacy_level(
+        &self,
+        user: &str,
+        set_id: SetId,
+        expected: SetVersion,
+        level: PrivacyLevel,
+        key: &EncryptionKey,
+    ) -> Result<SetVersion, HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        let version = self
+            .store
+            .change_policy(&user, set_id, expected, level, key)?;
+        self.cache.invalidate(&user, set_id);
+        Ok(version)
     }
 
     // --- content mutations (all CAS) ---
@@ -875,11 +899,7 @@ impl HistoryService {
     }
 
     #[cfg(test)]
-    pub fn test_remove_history_blob(
-        &self,
-        user: &str,
-        set_id: SetId,
-    ) -> Result<(), HistoryError> {
+    pub fn test_remove_history_blob(&self, user: &str, set_id: SetId) -> Result<(), HistoryError> {
         self.store
             .test_remove_history_blob(user, set_id)
             .map_err(HistoryError::from)
@@ -915,6 +935,7 @@ fn normalise_user(user: &str) -> Result<String, HistoryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PrivacyLevel;
     use crate::history::ops::apply_chat_append;
 
     fn key() -> EncryptionKey {
@@ -934,14 +955,7 @@ mod tests {
         assert_eq!(listed[0].display_name, "work");
 
         let v = svc
-            .append_pair(
-                "bob",
-                created.set_id,
-                created.version,
-                "hi",
-                "hello",
-                &key,
-            )
+            .append_pair("bob", created.set_id, created.version, "hi", "hello", &key)
             .unwrap();
         assert_eq!(v, SetVersion(2));
 
@@ -961,6 +975,144 @@ mod tests {
                 current_version: SetVersion(2)
             }
         ));
+    }
+
+    #[test]
+    fn privacy_change_is_versioned_cached_and_inherited_by_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("policy.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("policy-user", "source", &key).unwrap();
+        let v2 = svc
+            .append_pair(
+                "policy-user",
+                created.set_id,
+                created.version,
+                "question",
+                "answer",
+                &key,
+            )
+            .unwrap();
+        let v3 = svc
+            .change_privacy_level(
+                "policy-user",
+                created.set_id,
+                v2,
+                PrivacyLevel::NonPrivate,
+                &key,
+            )
+            .unwrap();
+        assert_eq!(v3, SetVersion(3));
+        assert_eq!(
+            svc.change_privacy_level(
+                "policy-user",
+                created.set_id,
+                v3,
+                PrivacyLevel::NonPrivate,
+                &key
+            )
+            .unwrap(),
+            v3
+        );
+        assert!(matches!(
+            svc.change_privacy_level(
+                "policy-user",
+                created.set_id,
+                v2,
+                PrivacyLevel::Private,
+                &key
+            ),
+            Err(HistoryError::Conflict {
+                current_version: SetVersion(3)
+            })
+        ));
+        let listed = svc.list_sets("policy-user", &key).unwrap();
+        assert_eq!(listed[0].privacy_level, PrivacyLevel::NonPrivate);
+        assert_eq!(
+            svc.load("policy-user", created.set_id, &key)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::NonPrivate
+        );
+        let fork = svc
+            .fork_set("policy-user", created.set_id, Some(v3), 0, None, &key)
+            .unwrap();
+        assert_eq!(fork.privacy_level, PrivacyLevel::NonPrivate);
+        assert_eq!(
+            svc.load("policy-user", fork.set_id, &key)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::NonPrivate
+        );
+    }
+
+    #[test]
+    fn privacy_policy_listing_refreshes_warm_and_reopened_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy-list.redb");
+        let key = key();
+        let svc = HistoryService::open_ephemeral(&path).unwrap();
+        let created = svc.create_set("policy-list", "chat", &key).unwrap();
+        let warm = svc.list_sets("policy-list", &key).unwrap();
+        assert_eq!(warm[0].privacy_level, PrivacyLevel::Private);
+        let next = svc
+            .change_privacy_level(
+                "policy-list",
+                created.set_id,
+                created.version,
+                PrivacyLevel::NonPrivate,
+                &key,
+            )
+            .unwrap();
+        let changed = svc.list_sets("policy-list", &key).unwrap();
+        assert_eq!(changed[0].version, next);
+        assert_eq!(changed[0].privacy_level, PrivacyLevel::NonPrivate);
+        drop(svc);
+
+        let reopened = HistoryService::open_ephemeral(&path).unwrap();
+        let cold = reopened.list_sets("policy-list", &key).unwrap();
+        assert_eq!(cold[0].version, next);
+        assert_eq!(cold[0].privacy_level, PrivacyLevel::NonPrivate);
+    }
+
+    #[test]
+    fn policy_change_and_load_work_for_chunked_sets() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("chunk-policy.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("chunk-policy", "chat", &key).unwrap();
+        let v2 = svc
+            .append_pair(
+                "chunk-policy",
+                created.set_id,
+                created.version,
+                "u",
+                "a",
+                &key,
+            )
+            .unwrap();
+        svc.ensure_chunked("chunk-policy", created.set_id, &key)
+            .unwrap();
+        let v3 = svc
+            .change_privacy_level(
+                "chunk-policy",
+                created.set_id,
+                v2,
+                PrivacyLevel::NonPrivate,
+                &key,
+            )
+            .unwrap();
+        let page = svc
+            .load_page("chunk-policy", created.set_id, &key, Some(10), None, true)
+            .unwrap();
+        assert_eq!(page.version, v3);
+        assert_eq!(page.privacy_level, PrivacyLevel::NonPrivate);
+        assert_eq!(
+            svc.load("chunk-policy", created.set_id, &key)
+                .unwrap()
+                .history,
+            vec![("u".into(), "a".into())]
+        );
     }
 
     #[test]
@@ -986,7 +1138,11 @@ mod tests {
         assert_eq!(reloaded.history.len(), 1);
         assert_eq!(reloaded.history[0].0, image_msg);
         assert_eq!(reloaded.history[0].1, "a cat");
-        assert!(reloaded.history[0].0.contains("[IMAGE:data:image/png;base64,"));
+        assert!(
+            reloaded.history[0]
+                .0
+                .contains("[IMAGE:data:image/png;base64,")
+        );
     }
 
     #[test]
@@ -1065,7 +1221,9 @@ mod tests {
         let created = svc.create_set("erin", "chat", &key).unwrap();
         let mut v = created.version;
         for (u, a) in [("u1", "a1"), ("u2", "a2"), ("u3", "a3")] {
-            v = svc.append_pair("erin", created.set_id, v, u, a, &key).unwrap();
+            v = svc
+                .append_pair("erin", created.set_id, v, u, a, &key)
+                .unwrap();
         }
         let snap = svc.load("erin", created.set_id, &key).unwrap();
         assert_eq!(snap.history.len(), 3);
@@ -1091,7 +1249,14 @@ mod tests {
         let key = key();
         let created = svc.create_set("frank", "chat", &key).unwrap();
         let v = svc
-            .append_pair("frank", created.set_id, created.version, "hello", "hi", &key)
+            .append_pair(
+                "frank",
+                created.set_id,
+                created.version,
+                "hello",
+                "hi",
+                &key,
+            )
             .unwrap();
         let err = svc
             .delete_pair("frank", created.set_id, v, 0, "wrong", &key)
@@ -1107,7 +1272,9 @@ mod tests {
         let v3 = svc
             .append_pair("frank", created.set_id, v2, "again", "ok", &key)
             .unwrap();
-        let v4 = svc.reset_history("frank", created.set_id, v3, &key).unwrap();
+        let v4 = svc
+            .reset_history("frank", created.set_id, v3, &key)
+            .unwrap();
         let reset = svc.load("frank", created.set_id, &key).unwrap();
         assert!(reset.history.is_empty());
         assert_eq!(reset.version, v4);
@@ -1149,10 +1316,11 @@ mod tests {
             .unwrap()
             .expect("default");
         assert_eq!(found.set_id, def.set_id);
-        assert!(svc
-            .find_by_display_name("gina", "missing", &key)
-            .unwrap()
-            .is_none());
+        assert!(
+            svc.find_by_display_name("gina", "missing", &key)
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Large image-bearing histories must stay fast on warm list/delete (no multi-second
@@ -1389,12 +1557,23 @@ mod tests {
         let err = svc
             .rename_set("uniq", b.set_id, b.version, "alpha", &key)
             .unwrap_err();
-        assert!(matches!(err, HistoryError::InvalidInput("set already exists")));
+        assert!(matches!(
+            err,
+            HistoryError::InvalidInput("set already exists")
+        ));
         // Original names unchanged
         let listed = svc.list_sets("uniq", &key).unwrap();
         assert_eq!(listed.len(), 2);
-        assert!(listed.iter().any(|s| s.set_id == a.set_id && s.display_name == "alpha"));
-        assert!(listed.iter().any(|s| s.set_id == b.set_id && s.display_name == "beta"));
+        assert!(
+            listed
+                .iter()
+                .any(|s| s.set_id == a.set_id && s.display_name == "alpha")
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|s| s.set_id == b.set_id && s.display_name == "beta")
+        );
     }
 
     #[test]
@@ -1482,7 +1661,9 @@ mod tests {
         let created = svc.create_set("forker", "trip", &key).unwrap();
         let mut v = created.version;
         for (u, a) in [("one", "a1"), ("two", "a2"), ("three", "a3")] {
-            v = svc.append_pair("forker", created.set_id, v, u, a, &key).unwrap();
+            v = svc
+                .append_pair("forker", created.set_id, v, u, a, &key)
+                .unwrap();
         }
         let forked = svc
             .fork_set("forker", created.set_id, Some(v), 1, None, &key)
@@ -1504,12 +1685,16 @@ mod tests {
         assert_eq!(forked2.display_name, "trip - branch 2");
         // Stale expected version conflicts.
         let err = svc
-            .fork_set("forker", created.set_id, Some(created.version), 0, None, &key)
+            .fork_set(
+                "forker",
+                created.set_id,
+                Some(created.version),
+                0,
+                None,
+                &key,
+            )
             .unwrap_err();
-        assert!(matches!(
-            err,
-            HistoryError::Conflict { .. }
-        ));
+        assert!(matches!(err, HistoryError::Conflict { .. }));
         // Out of range.
         let err = svc
             .fork_set("forker", created.set_id, None, 9, None, &key)

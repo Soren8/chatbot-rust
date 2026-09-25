@@ -5,6 +5,7 @@
 use aes_gcm::aead::{Aead, AeadCore, Generate, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
 
@@ -12,6 +13,7 @@ use super::types::{
     BlobFormat, HeaderV1, ImageId, ImagePayloadV1, ManifestV1, PairId, PairPayloadV1, SetId,
     SetPayloadV1, SetVersion, ThumbPayloadV1,
 };
+use crate::config::PrivacyLevel;
 use crate::enc_key::EncryptionKey;
 use crate::fernet_crypto::{self, FernetError};
 
@@ -51,6 +53,53 @@ const MANIFEST_AAD_KIND: &[u8] = b"set_manifest_v1";
 const PAIR_AAD_KIND: &[u8] = b"set_pair_v1";
 const IMAGE_AAD_KIND: &[u8] = b"set_image_v1";
 const THUMB_AAD_KIND: &[u8] = b"set_thumb_v1";
+const POLICY_AAD_KIND: &[u8] = b"set_policy_v1";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetPolicyV1 {
+    format_version: u8,
+    privacy_level: PrivacyLevel,
+}
+
+pub fn seal_policy_v1(
+    user_id: &str,
+    set_id: SetId,
+    level: PrivacyLevel,
+    key: &EncryptionKey,
+) -> Result<Vec<u8>, CryptoError> {
+    let plaintext = serde_json::to_vec(&SetPolicyV1 {
+        format_version: 1,
+        privacy_level: level,
+    })?;
+    let mut aad = Vec::with_capacity(user_id.len() + 16 + POLICY_AAD_KIND.len() + 2);
+    aad.extend_from_slice(user_id.as_bytes());
+    aad.push(0xff);
+    aad.extend_from_slice(set_id.as_bytes());
+    aad.push(0xff);
+    aad.extend_from_slice(POLICY_AAD_KIND);
+    aead_seal(&aad, &plaintext, key)
+}
+
+pub fn open_policy_v1(
+    user_id: &str,
+    set_id: SetId,
+    blob: &[u8],
+    key: &EncryptionKey,
+) -> Result<PrivacyLevel, CryptoError> {
+    let mut aad = Vec::with_capacity(user_id.len() + 16 + POLICY_AAD_KIND.len() + 2);
+    aad.extend_from_slice(user_id.as_bytes());
+    aad.push(0xff);
+    aad.extend_from_slice(set_id.as_bytes());
+    aad.push(0xff);
+    aad.extend_from_slice(POLICY_AAD_KIND);
+    let plain = aead_open(&aad, blob, key)?;
+    let policy: SetPolicyV1 = serde_json::from_slice(&plain)?;
+    if policy.format_version != 1 {
+        return Err(CryptoError::Framing);
+    }
+    Ok(policy.privacy_level)
+}
 
 /// AAD for the sealed display-name value. Not bound to set version: names are
 /// independent of history contents (updated only when the name itself changes).
@@ -140,7 +189,11 @@ fn nonce_array(bytes: [u8; NONCE_LEN]) -> aes_gcm::Nonce<<Aes256Gcm as AeadCore>
     bytes.into()
 }
 
-fn aead_seal(aad: &[u8], plaintext: &[u8], enc_key: &EncryptionKey) -> Result<Vec<u8>, CryptoError> {
+fn aead_seal(
+    aad: &[u8],
+    plaintext: &[u8],
+    enc_key: &EncryptionKey,
+) -> Result<Vec<u8>, CryptoError> {
     let aes_key = derive_aes_key(enc_key);
     let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Encrypt)?;
     // Generate a fresh random 96-bit nonce per message from the OS CSPRNG.
@@ -170,13 +223,7 @@ fn aead_open(aad: &[u8], blob: &[u8], enc_key: &EncryptionKey) -> Result<Vec<u8>
     let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Decrypt)?;
     let nonce = nonce_array(nonce_fixed);
     cipher
-        .decrypt(
-            &nonce,
-            Payload {
-                msg: ct,
-                aad,
-            },
-        )
+        .decrypt(&nonce, Payload { msg: ct, aad })
         .map_err(|_| CryptoError::Decrypt)
 }
 
@@ -252,10 +299,7 @@ pub fn seal_payload_fernet(
     )?)
 }
 
-pub fn open_payload_fernet(
-    blob: &[u8],
-    key: &EncryptionKey,
-) -> Result<SetPayloadV1, CryptoError> {
+pub fn open_payload_fernet(blob: &[u8], key: &EncryptionKey) -> Result<SetPayloadV1, CryptoError> {
     let bytes = fernet_crypto::decrypt_bytes(blob, key.as_bytes())?;
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -489,11 +533,59 @@ mod tests {
         let key = test_key();
         let set_id = SetId::new();
         let blob = seal_name_v1("alice", set_id, "secret-name", &key).unwrap();
-        assert_eq!(open_name_v1("alice", set_id, &blob, &key).unwrap(), "secret-name");
+        assert_eq!(
+            open_name_v1("alice", set_id, &blob, &key).unwrap(),
+            "secret-name"
+        );
         assert!(open_name_v1("bob", set_id, &blob, &key).is_err());
         assert!(open_name_v1("alice", SetId::new(), &blob, &key).is_err());
         // Name AAD is not the payload AAD — swapping the two ciphertexts must fail.
         assert!(open_payload_v1("alice", set_id, SetVersion(1), &blob, &key).is_err());
+    }
+
+    #[test]
+    fn policy_record_uses_named_fields_and_rejects_invalid_shapes() {
+        let key = test_key();
+        let id = SetId::new();
+        let blob = seal_policy_v1("alice", id, PrivacyLevel::NonPrivate, &key).unwrap();
+        assert_eq!(
+            open_policy_v1("alice", id, &blob, &key).unwrap(),
+            PrivacyLevel::NonPrivate
+        );
+        assert!(open_policy_v1("bob", id, &blob, &key).is_err());
+
+        let encoded = serde_json::to_string(&SetPolicyV1 {
+            format_version: 1,
+            privacy_level: PrivacyLevel::Private,
+        })
+        .unwrap();
+        assert_eq!(encoded, r#"{"format_version":1,"privacy_level":"private"}"#);
+        let mut aad = Vec::new();
+        aad.extend_from_slice(b"alice");
+        aad.push(0xff);
+        aad.extend_from_slice(id.as_bytes());
+        aad.push(0xff);
+        aad.extend_from_slice(POLICY_AAD_KIND);
+        let unsupported = aead_seal(
+            &aad,
+            br#"{"format_version":2,"privacy_level":"private"}"#,
+            &key,
+        )
+        .unwrap();
+        assert!(open_policy_v1("alice", id, &unsupported, &key).is_err());
+        assert!(
+            serde_json::from_str::<SetPolicyV1>(
+                r#"{"format_version":1,"privacy_level":"private","extra":true}"#
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_str::<SetPolicyV1>(r#"{"format_version":1}"#).is_err());
+        assert!(
+            serde_json::from_str::<SetPolicyV1>(
+                r#"{"format_version":1,"privacy_level":"unknown"}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

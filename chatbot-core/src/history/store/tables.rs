@@ -33,6 +33,9 @@ pub const THUMB_BLOBS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new(
 /// so `/get_sets` can decrypt names without opening chat content.
 pub const SETS_NAME: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("sets_name");
 
+/// set_id (16 bytes) → encrypted canonical privacy policy.
+pub const SETS_POLICY: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("sets_policy");
+
 /// (user, set_id) → updated_at le u64 (for listing/sort without decrypt)
 pub const USER_SETS: TableDefinition<'_, &[u8], u64> = TableDefinition::new("user_sets");
 
@@ -40,7 +43,7 @@ pub const USER_SETS: TableDefinition<'_, &[u8], u64> = TableDefinition::new("use
 pub const META: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("meta");
 
 pub const SCHEMA_KEY: &str = "schema";
-pub const SCHEMA_VERSION: u8 = 2;
+pub const SCHEMA_VERSION: u8 = 3;
 
 /// Binary layout of SETS_META value:
 /// ```text
@@ -89,7 +92,9 @@ impl SetMetaValue {
         if bytes.len() != base && bytes.len() != base + 8 {
             return None;
         }
-        let user_id = std::str::from_utf8(&bytes[2..2 + user_len]).ok()?.to_owned();
+        let user_id = std::str::from_utf8(&bytes[2..2 + user_len])
+            .ok()?
+            .to_owned();
         let mut o = 2 + user_len;
         let version = SetVersion(u64::from_le_bytes(bytes[o..o + 8].try_into().ok()?));
         o += 8;

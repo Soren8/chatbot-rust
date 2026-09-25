@@ -15,6 +15,7 @@ use dashmap::DashMap;
 use tracing::debug;
 
 use super::types::{LogicalSnapshot, SetId, SetSummary, SetVersion};
+use crate::config::PrivacyLevel;
 
 const DEFAULT_CAPACITY: usize = 256;
 const DEFAULT_TTL: Duration = Duration::from_secs(3600);
@@ -34,6 +35,7 @@ struct CachedSummary {
     version: SetVersion,
     display_name: String,
     is_default: bool,
+    privacy_level: PrivacyLevel,
     last_used: Instant,
 }
 
@@ -104,6 +106,7 @@ impl SetCache {
                     display_name: entry.snapshot.as_snapshot().display_name.clone(),
                     updated_at,
                     is_default: entry.snapshot.as_snapshot().is_default,
+                    privacy_level: entry.snapshot.as_snapshot().privacy_level,
                 };
                 drop(entry);
                 if let Some(mut e) = self.entries.get_mut(&map_key) {
@@ -127,6 +130,7 @@ impl SetCache {
             display_name: entry.display_name.clone(),
             updated_at,
             is_default: entry.is_default,
+            privacy_level: entry.privacy_level,
         };
         drop(entry);
         if let Some(mut e) = self.summaries.get_mut(&map_key) {
@@ -155,6 +159,7 @@ impl SetCache {
                 version: inner.version,
                 display_name: inner.display_name.clone(),
                 is_default: inner.is_default,
+                privacy_level: inner.privacy_level,
                 last_used: Instant::now(),
             },
         );
@@ -169,6 +174,7 @@ impl SetCache {
                 version: summary.version,
                 display_name: summary.display_name.clone(),
                 is_default: summary.is_default,
+                privacy_level: summary.privacy_level,
                 last_used: Instant::now(),
             },
         );
@@ -231,6 +237,7 @@ mod tests {
             history: vec![("u".into(), "a".into())],
             pair_ids: Vec::new(),
             is_default: false,
+            privacy_level: PrivacyLevel::Private,
         };
         let logical = LogicalSnapshot::from_normalized(snap);
         cache.put_snapshot("alice", &logical);

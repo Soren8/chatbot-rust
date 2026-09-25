@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
+use crate::config::PrivacyLevel;
 
 /// Opaque set identity. Safe to log and store unencrypted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -187,6 +188,8 @@ pub struct SetSnapshot {
     #[serde(default)]
     pub pair_ids: Vec<PairId>,
     pub is_default: bool,
+    #[serde(default = "PrivacyLevel::default_chat")]
+    pub privacy_level: PrivacyLevel,
 }
 
 impl SetSnapshot {
@@ -205,6 +208,7 @@ impl SetSnapshot {
             history: Vec::new(),
             pair_ids: Vec::new(),
             is_default,
+            privacy_level: PrivacyLevel::default_chat(),
         }
     }
 }
@@ -251,6 +255,7 @@ pub struct SetSummary {
     pub display_name: String,
     pub updated_at: u64,
     pub is_default: bool,
+    pub privacy_level: PrivacyLevel,
 }
 
 /// Immutable prepare-time capture for chat/regenerate finalize.
@@ -267,6 +272,7 @@ pub struct PrepareCapture {
     pub system_prompt: String,
     pub display_name: String,
     pub is_default: bool,
+    pub privacy_level: PrivacyLevel,
     /// Regenerate: index of the pair being replaced; `None` for plain chat append.
     pub insertion_index: Option<usize>,
     /// Regenerate/edit: user message text for the replaced pair.
@@ -284,6 +290,7 @@ impl PrepareCapture {
             system_prompt: snapshot.system_prompt.clone(),
             display_name: snapshot.display_name.clone(),
             is_default: snapshot.is_default,
+            privacy_level: snapshot.privacy_level,
             insertion_index: None,
             replace_user_message: None,
         }
@@ -333,6 +340,7 @@ impl SetPayloadV1 {
             history: self.history,
             pair_ids: Vec::new(),
             is_default,
+            privacy_level: PrivacyLevel::default_chat(),
         }
     }
 }
@@ -387,6 +395,7 @@ pub struct SetPage {
     pub memory: String,
     pub system_prompt: String,
     pub is_default: bool,
+    pub privacy_level: PrivacyLevel,
     pub history: Vec<HistoryPair>,
     pub history_start: usize,
     pub history_total: usize,

@@ -8,13 +8,13 @@ use tracing::debug;
 
 use super::keys::{chunk_key, chunk_prefix_end, set_chunk_prefix, set_id_key, user_set_key};
 use super::tables::{
-    SetMetaValue, IMAGE_BLOBS, PAIR_BLOBS, SETS_BLOB, SETS_HEADER, SETS_MANIFEST, SETS_META,
-    SETS_NAME, THUMB_BLOBS, USER_SETS,
+    IMAGE_BLOBS, PAIR_BLOBS, SETS_BLOB, SETS_HEADER, SETS_MANIFEST, SETS_META, SETS_NAME,
+    SetMetaValue, THUMB_BLOBS, USER_SETS,
 };
 use super::{RedbHistoryStore, StoreError};
 use crate::chat_images::{
-    defer_image_payloads, extract_images_from_user_message, materialize_full,
-    normalize_pair_for_commit, ui_thumb_jpeg, ExtractedImage,
+    ExtractedImage, defer_image_payloads, extract_images_from_user_message, materialize_full,
+    normalize_pair_for_commit, ui_thumb_jpeg,
 };
 use crate::enc_key::EncryptionKey;
 use crate::history::crypto;
@@ -31,10 +31,7 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-pub(super) fn collect_prefix_keys<T>(
-    table: &T,
-    set_id: SetId,
-) -> Result<Vec<Vec<u8>>, StoreError>
+pub(super) fn collect_prefix_keys<T>(table: &T, set_id: SetId) -> Result<Vec<Vec<u8>>, StoreError>
 where
     T: ReadableTableMetadata + ReadableTable<&'static [u8], &'static [u8]>,
 {
@@ -105,9 +102,7 @@ impl RedbHistoryStore {
         let mut pair_ids = Vec::with_capacity(manifest.pairs.len());
         for entry in &manifest.pairs {
             let ck = chunk_key(set_id, entry.pair_id.as_uuid());
-            let pair_blob = pair_table
-                .get(ck.as_slice())?
-                .ok_or(StoreError::NotFound)?;
+            let pair_blob = pair_table.get(ck.as_slice())?.ok_or(StoreError::NotFound)?;
             let pair = crypto::open_pair_v1(
                 user_id,
                 set_id,
@@ -129,6 +124,7 @@ impl RedbHistoryStore {
             history,
             pair_ids,
             is_default: meta.is_default,
+            privacy_level: self.load_policy(user_id, set_id, key)?,
         })
     }
 
@@ -152,7 +148,8 @@ impl RedbHistoryStore {
         let mut images: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
         for entry in &manifest.pairs {
             for image_id in &entry.image_ids {
-                if let Some(payload) = self.load_image_by_id(user_id, inner.set_id, *image_id, key)?
+                if let Some(payload) =
+                    self.load_image_by_id(user_id, inner.set_id, *image_id, key)?
                 {
                     images.insert(*image_id, (payload.mime, payload.bytes));
                 }
@@ -256,6 +253,7 @@ impl RedbHistoryStore {
                 memory: snap.memory,
                 system_prompt: snap.system_prompt,
                 is_default: snap.is_default,
+                privacy_level: snap.privacy_level,
                 history,
                 history_start: page.start,
                 history_total: page.total,
@@ -297,6 +295,7 @@ impl RedbHistoryStore {
             memory: logical.memory,
             system_prompt: logical.system_prompt,
             is_default: logical.is_default,
+            privacy_level: logical.privacy_level,
             history,
             history_start: page.start,
             history_total: manifest.pairs.len(),
@@ -355,7 +354,10 @@ impl RedbHistoryStore {
         let meta = self.load_meta(user_id, set_id)?;
         if !meta.blob_format.is_chunked() {
             let snap = self.load_snapshot(user_id, set_id, key)?;
-            let pair = snap.history.get(pair_index).ok_or(StoreError::InvalidInput)?;
+            let pair = snap
+                .history
+                .get(pair_index)
+                .ok_or(StoreError::InvalidInput)?;
             let payload = crate::chat_images::nth_image_data_url(&pair.0, image_index)
                 .and_then(|url| crate::chat_images::decode_image_data_url(&url))
                 .ok_or(StoreError::NotFound)?;
@@ -449,7 +451,14 @@ impl RedbHistoryStore {
             let (ref_user, imgs) = extract_images_from_user_message(user);
             let image_ids: Vec<ImageId> = imgs.iter().map(|i| i.image_id).collect();
             for img in imgs {
-                seal_extracted(user_id, set_id, &img, key, &mut sealed_images, &mut sealed_thumbs)?;
+                seal_extracted(
+                    user_id,
+                    set_id,
+                    &img,
+                    key,
+                    &mut sealed_images,
+                    &mut sealed_thumbs,
+                )?;
             }
             let payload = PairPayloadV1 {
                 user: ref_user,
@@ -485,9 +494,8 @@ impl RedbHistoryStore {
                 let existing = meta_table
                     .get(id_key.as_slice())?
                     .ok_or(StoreError::NotFound)?;
-                SetMetaValue::decode(existing.value()).ok_or(StoreError::Database(
-                    "corrupt set meta".into(),
-                ))?
+                SetMetaValue::decode(existing.value())
+                    .ok_or(StoreError::Database("corrupt set meta".into()))?
             };
             if current.blob_format.is_chunked() {
                 return Ok(false);
@@ -558,6 +566,7 @@ impl RedbHistoryStore {
         }
 
         let current_meta = self.load_meta(user_id, set_id)?;
+        let durable_policy = self.load_policy(user_id, set_id, key)?;
         if current_meta.user_id != user_id {
             return Err(StoreError::Forbidden);
         }
@@ -572,11 +581,8 @@ impl RedbHistoryStore {
         } else {
             ManifestV1 { pairs: Vec::new() }
         };
-        let old_by_id: HashMap<PairId, &ManifestPair> = old_manifest
-            .pairs
-            .iter()
-            .map(|p| (p.pair_id, p))
-            .collect();
+        let old_by_id: HashMap<PairId, &ManifestPair> =
+            old_manifest.pairs.iter().map(|p| (p.pair_id, p)).collect();
 
         let old_header = if current_meta.blob_format.is_chunked() {
             let txn = self.db.begin_read()?;
@@ -598,8 +604,8 @@ impl RedbHistoryStore {
             }
         };
 
-        let header_changed =
-            old_header.memory != snapshot.memory || old_header.system_prompt != snapshot.system_prompt;
+        let header_changed = old_header.memory != snapshot.memory
+            || old_header.system_prompt != snapshot.system_prompt;
         let header_generation = if header_changed {
             current_meta.header_generation.saturating_add(1)
         } else {
@@ -694,9 +700,16 @@ impl RedbHistoryStore {
         let manifest = ManifestV1 {
             pairs: new_manifest_pairs,
         };
-        let header_blob = crypto::seal_header_v1(user_id, set_id, header_generation, &new_header, key)?;
+        let header_blob =
+            crypto::seal_header_v1(user_id, set_id, header_generation, &new_header, key)?;
         let manifest_blob = crypto::seal_manifest_v1(user_id, set_id, new_version, &manifest, key)?;
         let name_blob = crypto::seal_name_v1(user_id, set_id, &snapshot.display_name, key)?;
+        let policy_blob = crypto::seal_policy_v1(
+            user_id,
+            set_id,
+            crate::config::PrivacyLevel::default_chat(),
+            key,
+        )?;
         let now = now_millis();
         let id_key = set_id_key(set_id);
         let new_meta = SetMetaValue {
@@ -718,9 +731,8 @@ impl RedbHistoryStore {
                 let row = meta_table
                     .get(id_key.as_slice())?
                     .ok_or(StoreError::NotFound)?;
-                SetMetaValue::decode(row.value()).ok_or(StoreError::Database(
-                    "corrupt set meta".into(),
-                ))?
+                SetMetaValue::decode(row.value())
+                    .ok_or(StoreError::Database("corrupt set meta".into()))?
             };
             if existing.user_id != user_id {
                 return Err(StoreError::Forbidden);
@@ -738,6 +750,10 @@ impl RedbHistoryStore {
             manifest_table.insert(id_key.as_slice(), manifest_blob.as_slice())?;
             let mut name_table = txn.open_table(SETS_NAME)?;
             name_table.insert(id_key.as_slice(), name_blob.as_slice())?;
+            let mut policy_table = txn.open_table(super::tables::SETS_POLICY)?;
+            if policy_table.get(id_key.as_slice())?.is_none() {
+                policy_table.insert(id_key.as_slice(), policy_blob.as_slice())?;
+            }
 
             let mut pair_table = txn.open_table(PAIR_BLOBS)?;
             for (pair_id, blob) in &pair_writes {
@@ -775,6 +791,7 @@ impl RedbHistoryStore {
         // Content commits never flip lifecycle `is_default`; the cached logical
         // shape must carry the durable flag, not the caller's working copy.
         snapshot.is_default = current_meta.is_default;
+        snapshot.privacy_level = durable_policy;
         Ok((new_version, LogicalSnapshot::from_normalized(snapshot)))
     }
 
@@ -825,5 +842,3 @@ fn seal_extracted(
     ));
     Ok(())
 }
-
-
