@@ -4,6 +4,8 @@ Project-specific agent instructions for chatbot-rust.
 
 Cross-project direction for privacy-aware chat, agents, and workspaces lives in the sibling `../ai-platform-design/design.md`; implementation details remain in this repository.
 
+The staged implementation plan for per-chat privacy and external coding-agent connections is [docs/privacy-and-agent-connections-plan.md](docs/privacy-and-agent-connections-plan.md).
+
 ## Running tests
 
 **Use targeted tests by default for faster iteration.** Run the smallest relevant package and test target via `testctl`, adding a test-name filter when appropriate. Do not run `cargo test` on the host or agent toolchain. GitHub Actions runs the full suite before publishing; a full local run is not a routine completion requirement.
