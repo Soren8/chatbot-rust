@@ -86,6 +86,8 @@ fn poison_fake_env() {
 
 fn test_provider_with_chunks(name: &str, chunks: &[&str]) -> ProviderConfig {
     ProviderConfig {
+        privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
+        search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
         provider_name: name.to_string(),
         provider_type: "openai".to_string(),
         tier: None,
@@ -310,6 +312,8 @@ async fn spawn_xai_mock(
 
 fn mock_openai_provider(base_url: &str) -> ProviderConfig {
     ProviderConfig {
+        privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
+        search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
         provider_name: "default".to_string(),
         provider_type: "openai".to_string(),
         tier: None,
@@ -330,6 +334,8 @@ fn mock_openai_provider(base_url: &str) -> ProviderConfig {
 
 fn mock_xai_provider(base_url: &str) -> ProviderConfig {
     ProviderConfig {
+        privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
+        search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
         provider_name: "default".to_string(),
         provider_type: "xai".to_string(),
         tier: None,

@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 use std::env;
@@ -9,9 +9,35 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
 
+/// Operator classification of a chat or outbound destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyLevel {
+    Private,
+    NonPrivate,
+}
+
+impl PrivacyLevel {
+    pub const fn default_chat() -> Self { Self::Private }
+    pub const fn default_destination() -> Self { Self::NonPrivate }
+}
+
+impl Default for PrivacyLevel {
+    fn default() -> Self { Self::default_destination() }
+}
+
+/// Whether a destination may receive content for the requested chat mode.
+pub const fn destination_is_eligible(task: PrivacyLevel, destination: PrivacyLevel) -> bool {
+    matches!(task, PrivacyLevel::NonPrivate) || matches!(destination, PrivacyLevel::Private)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProviderConfig {
+    #[serde(default = "PrivacyLevel::default_destination")]
+    pub privacy_level: PrivacyLevel,
+    #[serde(default = "PrivacyLevel::default_destination")]
+    pub search_privacy_level: PrivacyLevel,
     #[serde(alias = "name")]
     pub provider_name: String,
     #[serde(rename = "type")]
@@ -141,6 +167,9 @@ pub struct AppConfig {
     pub save_thoughts: bool,
     pub send_thoughts: bool,
     pub brave_api_key: Option<String>,
+    pub brave_search_privacy_level: PrivacyLevel,
+    pub stt_privacy_level: PrivacyLevel,
+    pub tts_privacy_level: PrivacyLevel,
     /// Max requests per identity per rolling minute (`0` disables).
     pub rate_limit_per_user_per_minute: u32,
     /// Max requests across all identities per rolling minute (`0` disables).
@@ -217,6 +246,12 @@ pub fn reset() {
 struct RawConfig {
     #[serde(default)]
     llms: Vec<ProviderConfig>,
+    #[serde(default = "PrivacyLevel::default_destination")]
+    brave_search_privacy_level: PrivacyLevel,
+    #[serde(default = "PrivacyLevel::default_destination")]
+    stt_privacy_level: PrivacyLevel,
+    #[serde(default = "PrivacyLevel::default_destination")]
+    tts_privacy_level: PrivacyLevel,
     #[serde(default)]
     default_llm: Option<String>,
     #[serde(default)]
@@ -498,6 +533,9 @@ fn load_app_config() -> AppConfig {
         save_thoughts,
         send_thoughts,
         brave_api_key,
+        brave_search_privacy_level: raw_config.brave_search_privacy_level,
+        stt_privacy_level: raw_config.stt_privacy_level,
+        tts_privacy_level: raw_config.tts_privacy_level,
         rate_limit_per_user_per_minute,
         rate_limit_global_per_minute,
         provider_order,
@@ -777,9 +815,11 @@ fn replace_in_str(input: &str, user_vars: &HashMap<String, String>) -> String {
         .to_string()
 }
 
-fn fallback_provider() -> ProviderConfig {
+pub fn fallback_provider() -> ProviderConfig {
     ProviderConfig {
         provider_name: "default".to_string(),
+        privacy_level: PrivacyLevel::default_destination(),
+        search_privacy_level: PrivacyLevel::default_destination(),
         provider_type: "openai".to_string(),
         tier: Some("free".to_string()),
         model_name: "local-model".to_string(),

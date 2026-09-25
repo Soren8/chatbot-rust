@@ -2931,6 +2931,8 @@ mod tests {
         };
         
         let provider = ProviderConfig {
+            privacy_level: crate::config::PrivacyLevel::default_destination(),
+            search_privacy_level: crate::config::PrivacyLevel::default_destination(),
             provider_name: "default".to_string(),
             provider_type: "openai".to_string(),
             tier: None,
@@ -3006,6 +3008,8 @@ mod tests {
             username: None,
         };
         let provider = ProviderConfig {
+            privacy_level: crate::config::PrivacyLevel::default_destination(),
+            search_privacy_level: crate::config::PrivacyLevel::default_destination(),
             provider_name: "default".to_string(),
             provider_type: "openai".to_string(),
             tier: None,
@@ -3062,6 +3066,8 @@ mod tests {
 
     fn lease_test_provider() -> ProviderConfig {
         ProviderConfig {
+            privacy_level: crate::config::PrivacyLevel::default_destination(),
+            search_privacy_level: crate::config::PrivacyLevel::default_destination(),
             provider_name: "default".to_string(),
             provider_type: "openai".to_string(),
             tier: None,

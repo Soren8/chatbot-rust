@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use crate::config::app_config;
+use crate::config::{app_config, PrivacyLevel, ProviderConfig};
 
 /// Request configuration handle: global or owned.
 ///
@@ -21,11 +21,35 @@ pub struct ConfigSource {
     owned: Option<Arc<OwnedRequestConfig>>,
 }
 
+#[derive(Clone)]
 struct OwnedRequestConfig {
     csrf: bool,
     session_timeout_secs: u64,
     default_system_prompt: String,
     voice_service_base_url: String,
+    destination_policy: Option<Arc<DestinationPolicy>>,
+}
+
+/// Explicit privacy classifications used by an independently owned router.
+#[derive(Clone, Debug)]
+pub struct DestinationPolicy {
+    providers: std::collections::HashMap<String, (PrivacyLevel, PrivacyLevel)>,
+    pub brave_search: PrivacyLevel,
+    pub stt: PrivacyLevel,
+    pub tts: PrivacyLevel,
+}
+
+impl DestinationPolicy {
+    pub fn from_providers(providers: &[ProviderConfig], brave_search: PrivacyLevel, stt: PrivacyLevel, tts: PrivacyLevel) -> Self {
+        Self {
+            providers: providers.iter().map(|provider| (provider.provider_name.clone(), (provider.privacy_level, provider.search_privacy_level))).collect(),
+            brave_search, stt, tts,
+        }
+    }
+
+    pub fn provider(&self, name: &str) -> Option<(PrivacyLevel, PrivacyLevel)> {
+        self.providers.get(name).copied()
+    }
 }
 
 impl ConfigSource {
@@ -45,7 +69,28 @@ impl ConfigSource {
                 session_timeout_secs,
                 default_system_prompt,
                 voice_service_base_url,
+                destination_policy: None,
             })),
+        }
+    }
+
+    pub fn with_destination_policy(mut self, policy: DestinationPolicy) -> Self {
+        let mut owned = self.owned.as_deref().cloned().expect("destination policy requires owned ConfigSource");
+        owned.destination_policy = Some(Arc::new(policy));
+        self.owned = Some(Arc::new(owned));
+        self
+    }
+
+    pub fn destination_policy(&self) -> Option<Arc<DestinationPolicy>> {
+        match &self.owned {
+            Some(owned) => owned.destination_policy.clone(),
+            None => {
+                let config = app_config();
+                Some(Arc::new(DestinationPolicy::from_providers(
+                    &config.provider_names().iter().filter_map(|name| config.provider(name)).cloned().collect::<Vec<_>>(),
+                    config.brave_search_privacy_level, config.stt_privacy_level, config.tts_privacy_level,
+                )))
+            }
         }
     }
 

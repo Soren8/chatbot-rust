@@ -11,6 +11,10 @@ tts_voice: "bf_emma"   # Voice for Kokoro. Other options: af_heart, af_bella, am
 # or wav (uncompressed PCM fallback for players without an Opus decoder).
 tts_codec: "opus"
 stt_enabled: true
+# Classification covers the complete configured processing path. Default is non_private.
+stt_privacy_level: non_private
+tts_privacy_level: non_private
+brave_search_privacy_level: non_private
 # Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
 # Default is anyone — suitable for LAN / local-models deploys. Use authenticated or
 # premium on internet-facing hosts that pay for GPU voice.
@@ -39,6 +43,9 @@ llms:
     model_name: "dolphin3.1-8b"
     context_size: 8192
     tier: "free"
+    # Non-private until the operator verifies the entire endpoint/processing chain.
+    privacy_level: non_private
+    search_privacy_level: non_private
     search: true  # Enables Brave Search (requires BRAVE_API_KEY)
 
   - provider_name: "GPT-4 (Premium)"
@@ -46,6 +53,8 @@ llms:
     api_key: "${OPENAI_API_KEY}"
     model_name: "gpt-4-turbo"
     tier: "premium"
+    privacy_level: non_private
+    search_privacy_level: non_private
     search: true  # Enables Brave Search (requires BRAVE_API_KEY)
     # Upstream 429 "Too Many Requests" retry (defaults shown):
     # rate_limit_retries: 5          # extra attempts after a 429 (0 disables retrying)
@@ -56,6 +65,8 @@ llms:
     api_key: "${XAI_API_KEY}"
     model_name: "grok-3-mini"
     tier: "premium"
+    privacy_level: non_private
+    search_privacy_level: non_private
     search: true
     # xai_search: true   # Default: use XAI's web search tool (no BRAVE_API_KEY needed)
     # xai_search: false  # Use Brave Search instead (requires BRAVE_API_KEY)
