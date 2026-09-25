@@ -20,6 +20,8 @@ The web frontend is the only interface. This creates three issues:
 
 Capacitor wraps the existing web UI in a native Android shell. The WebView loads from the server (not bundled), so the app always shows the latest web UI. Voice mode uses a native Kotlin plugin that captures audio and streams to `/stt`, bypassing browser restrictions. Android Auto is a separate native `CarAppService` implementing a voice-only interface (listen → transcribe → chat → TTS → speak, with an exit button).
 
+The Android launcher icon source is `android/icon.png`; density-specific launcher, round, and adaptive foreground assets live in `android/app/src/main/res/mipmap-*`. Icon changes require a new APK.
+
 ## Architecture
 
 ### TTS buffering on slow links
