@@ -98,19 +98,6 @@
                         </div>
 
                         {% if logged_in %}
-                        <div class="mb-3">
-                            <label for="privacy-select" class="form-label">Chat privacy</label>
-                            <select id="privacy-select" class="form-select" disabled>
-                                <option value="private">Private</option>
-                                <option value="standard">Standard</option>
-                                <option value="non_private">Non-private</option>
-                            </select>
-                            <details class="small mt-2">
-                                <summary>What do these levels mean?</summary>
-                                <p class="mb-0">Private: this app only / local services. Standard: reputable third parties with limited retention, such as ZDR endpoints, xAI search on ZDR teams, or Brave. Non-private: any configured service, including those that may retain data or train on it. All three keep saved history encrypted in this app. Changing levels cannot undo earlier transmissions.</p>
-                            </details>
-                            <div id="privacy-status" class="small text-warning" role="status" aria-live="polite"></div>
-                        </div>
                         <div class="row g-2 align-items-center mb-2">
                             <label class="col-12 col-md-3 col-form-label mb-0 text-start">Set</label>
                             <div class="col-12 col-md-9">
@@ -124,6 +111,23 @@
                             <button id="rename-set" class="btn btn-outline-info">Rename</button>
                             <button id="delete-set" class="btn btn-outline-danger">Delete</button>
                             <button id="reset-chat" class="btn btn-outline-warning ms-auto">Reset Chat</button>
+                        </div>
+                        <div class="mb-3">
+                            <div class="row g-2 align-items-center mb-2">
+                                <label for="privacy-select" class="col-12 col-md-3 col-form-label">Chat privacy</label>
+                                <div class="col-12 col-md-9">
+                                    <select id="privacy-select" class="form-select" disabled>
+                                        <option value="private">Private</option>
+                                        <option value="standard">Standard</option>
+                                        <option value="non_private">Non-private</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <details class="small mt-2">
+                                <summary>What do these levels mean?</summary>
+                                <p class="mb-0">Private: this app only / local services. Standard: reputable third parties with limited retention, such as ZDR endpoints, xAI search on ZDR teams, or Brave. Non-private: any configured service, including those that may retain data or train on it. All three keep saved history encrypted in this app. Changing levels cannot undo earlier transmissions.</p>
+                            </details>
+                            <div id="privacy-status" class="small text-warning" role="status" aria-live="polite"></div>
                         </div>
                         {% endif %}
                     </div>
