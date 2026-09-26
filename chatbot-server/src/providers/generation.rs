@@ -6,7 +6,7 @@
 //! append-versus-replace semantics, stream guards and finalizers stay in the
 //! handlers.
 
-use std::pin::Pin;
+use std::{fmt, pin::Pin};
 
 use anyhow::Result;
 use chatbot_core::{
@@ -27,6 +27,17 @@ pub enum GenerationProvider {
     OpenAi(OpenAiProvider),
     Xai(XaiProvider),
 }
+
+#[derive(Debug)]
+pub struct PrivacyRestrictedFallback;
+
+impl fmt::Display for PrivacyRestrictedFallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("privacy policy forbids native search fallback")
+    }
+}
+
+impl std::error::Error for PrivacyRestrictedFallback {}
 
 /// Construct the concrete provider for `provider_type` (`"openai"` | `"xai"`).
 ///
@@ -104,6 +115,7 @@ pub async fn dispatch_stream(
     provider_config: &ProviderConfig,
     messages: Vec<ChatMessagePayload>,
     web_search: bool,
+    allow_native_search_fallback: bool,
     generation: &GenerationDeps,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
     match provider {
@@ -158,16 +170,26 @@ pub async fn dispatch_stream(
                         {
                             Ok(stream) => Ok(stream),
                             Err(err) => {
-                                warn!(?err, "XAI Brave search failed, falling back to native");
-                                xai_provider.stream_chat(messages.clone(), web_search)
+                                warn!(?err, "XAI Brave search setup failed");
+                                if allow_native_search_fallback {
+                                    xai_provider.stream_chat(messages.clone(), web_search)
+                                } else {
+                                    Err(PrivacyRestrictedFallback.into())
+                                }
                             }
                         }
                     }
                     Err(err) => {
-                        warn!(?err, "failed to build OpenAI provider for XAI Brave search, using native");
-                        xai_provider.stream_chat(messages.clone(), web_search)
+                        warn!(?err, "failed to build OpenAI provider for XAI Brave search");
+                        if allow_native_search_fallback {
+                            xai_provider.stream_chat(messages.clone(), web_search)
+                        } else {
+                            Err(PrivacyRestrictedFallback.into())
+                        }
                     }
                 }
+            } else if web_search && !provider_config.xai_search && !allow_native_search_fallback {
+                Err(PrivacyRestrictedFallback.into())
             } else {
                 xai_provider.stream_chat(messages.clone(), web_search)
             }

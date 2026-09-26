@@ -21,7 +21,7 @@ use crate::chat_utils::{
     StreamCompletionGuard,
 };
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_prepare_history_err,
+    api_error, api_error_json, map_body_read_err, map_json_parse_err, map_prepare_history_err,
     map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
     map_session_operation_err, HttpError,
 };
@@ -148,6 +148,18 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type"));
     }
 
+    let privacy_binding = if let Some(user) = session_context.username.as_deref() {
+        chat.validate_encryption_key_for_user(user, encryption_key.as_ref())
+            .map_err(crate::http_error::map_encryption_key_validation_err)?;
+        let key = encryption_key.as_ref().expect("validated encryption key");
+        let history = chat.history().map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "history unavailable"))?;
+        let set_id = crate::set_privacy_coordinator::resolve_content_set(&history, user, payload.set_id.as_deref(), payload.set_name.as_deref(), key)
+            .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+        let permit = services.set_privacy().content(user, set_id).await;
+        let snapshot = history.load(user, set_id, key).map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+        Some((permit, set_id, snapshot.privacy_level))
+    } else { None };
+
     let ip = crate::request_context::get_ip(&headers, &parts.extensions);
     let username = session_context.username.as_deref().unwrap_or("guest");
     // Prefer non-sensitive set_id in logs; display names are privacy-sensitive.
@@ -185,6 +197,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         &provider_config,
         encryption_key.as_ref(),
     );
+
+    if let Some((_, set_id, captured_level)) = &privacy_binding {
+        if prepare.context.as_ref().and_then(|ctx| ctx.prepare_capture.as_ref())
+            .is_some_and(|capture| capture.set_id != *set_id || capture.privacy_level != *captured_level)
+        {
+            return Err(api_error_json(StatusCode::CONFLICT, serde_json::json!({"error":"version_conflict"})));
+        }
+    }
 
     if let Some(err) = prepare.error {
         match err {
@@ -240,6 +260,29 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     let context = prepare.context.ok_or_else(|| {
         api_error(StatusCode::INTERNAL_SERVER_ERROR, "missing chat context")
     })?;
+    if privacy_binding.is_some() && context.prepare_capture.is_none() {
+        return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "missing set privacy capture"));
+    }
+    let mut allow_native_search_fallback = true;
+    if let Some((_, _, level)) = privacy_binding.as_ref() {
+        let policy = services.config_source().destination_policy();
+        let model_level = policy.as_ref().and_then(|p| p.provider(&selected_model).map(|v| v.0)).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate);
+        if !chatbot_core::config::destination_is_eligible(*level, model_level) {
+            return Err(api_error_json(StatusCode::FORBIDDEN, serde_json::json!({"error":"privacy_restricted","destination":"model"})));
+        }
+        if payload.web_search.unwrap_or(false) {
+            let native = provider_type == "xai" && provider_config.xai_search;
+            let search_level = if native { policy.as_ref().and_then(|p| p.provider(&selected_model).map(|v| v.1)).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate) } else { policy.as_ref().map(|p| p.brave_search).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate) };
+            if !chatbot_core::config::destination_is_eligible(*level, search_level) {
+                return Err(api_error_json(StatusCode::FORBIDDEN, serde_json::json!({"error":"privacy_restricted","destination":if native {"native_search"} else {"brave_search"}})));
+            }
+            if provider_type == "xai" && !native {
+                let native_level = policy.as_ref().and_then(|p| p.provider(&selected_model).map(|v| v.1)).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate);
+                allow_native_search_fallback = chatbot_core::config::destination_is_eligible(*level, native_level);
+            }
+        }
+    }
+    let privacy_permit = privacy_binding.map(|(permit, _, _)| permit);
     // The lease settles this generation.
     let lease = prepare.lease.ok_or_else(|| {
         api_error(
@@ -302,12 +345,16 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         &context.provider,
         messages,
         payload.web_search.unwrap_or(false),
+        allow_native_search_fallback,
         &generation,
     )
     .await
     {
         Ok(stream) => stream,
         Err(err) => {
+            if err.downcast_ref::<crate::providers::generation::PrivacyRestrictedFallback>().is_some() {
+                return Err(api_error_json(StatusCode::FORBIDDEN, serde_json::json!({"error":"privacy_restricted","destination":"native_search"})));
+            }
             error!(?err, "provider stream setup failed");
             let (req_msg, _) = provider_error_parts(&err);
             let assistant = format!("[Error] {req_msg}");
@@ -340,6 +387,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     let capture_for_guard = prepare_capture.clone();
 
     let stream = stream! {
+        let _privacy_permit = privacy_permit;
         // The persist closure owns the lease. Dropping an unpolled stream
         // releases it without persisting.
         let mut guard = StreamCompletionGuard::new(

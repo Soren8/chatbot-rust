@@ -60,6 +60,8 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
+    # Test-only classification for stubbed provider streams, not for live OpenAI.
+    privacy_level: private
 "#;
 
         Self::with_config(CONFIG)

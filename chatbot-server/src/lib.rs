@@ -27,6 +27,7 @@ mod health;
 pub mod http_error;
 pub mod identity;
 pub mod services;
+pub mod set_privacy_coordinator;
 mod home;
 mod login;
 mod logout;
@@ -359,6 +360,7 @@ pub fn build_router_with_services(
         .route("/get_sets", get(sets::handle_get_sets))
         .route("/create_set", post(sets::handle_create_set))
         .route("/fork_set", post(sets::handle_fork_set))
+        .route("/set_privacy", post(sets::handle_set_privacy))
         .route("/delete_set", post(sets::handle_delete_set))
         .route("/rename_set", post(sets::handle_rename_set))
         .route("/load_set", post(sets::handle_load_set))

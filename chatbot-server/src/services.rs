@@ -46,6 +46,7 @@ use chatbot_core::session::ChatService;
 use crate::generation_deps::{summaries_from_live, GenerationDeps, ProviderSummary};
 use crate::identity::RequestIdentity;
 use crate::policy::{RatePolicy, TtsPolicy};
+use crate::set_privacy_coordinator::SetPrivacyCoordinator;
 use crate::tts::store::PendingTtsStore;
 
 /// Coherent home-render inputs for one request: default prompt plus thought
@@ -75,6 +76,7 @@ pub struct AppServices {
     rate_policy: RatePolicy,
     tts_policy: TtsPolicy,
     config: ConfigSource,
+    set_privacy: SetPrivacyCoordinator,
 }
 
 impl AppServices {
@@ -92,6 +94,7 @@ impl AppServices {
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
             config: ConfigSource::global(),
+            set_privacy: SetPrivacyCoordinator::default(),
         }
     }
 
@@ -114,6 +117,7 @@ impl AppServices {
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
             config,
+            set_privacy: SetPrivacyCoordinator::default(),
         }
     }
 
@@ -141,6 +145,7 @@ impl AppServices {
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
             config,
+            set_privacy: SetPrivacyCoordinator::default(),
         }
     }
 
@@ -257,6 +262,15 @@ impl AppServices {
     /// return their explicit values.
     pub fn config_source(&self) -> ConfigSource {
         self.config.clone()
+    }
+
+    pub(crate) fn set_privacy(&self) -> SetPrivacyCoordinator {
+        self.set_privacy.clone()
+    }
+
+    pub fn with_set_privacy_coordinator(mut self, coordinator: SetPrivacyCoordinator) -> Self {
+        self.set_privacy = coordinator;
+        self
     }
 
     /// Coherent home-render settings for `user_tier`: default prompt plus

@@ -3,6 +3,7 @@ use axum::{
     http::{header, Method, Request, Response, StatusCode},
 };
 use chatbot_core::{
+    config::PrivacyLevel,
     chat_images,
     history::{self, HistoryError, HistoryService, SetId, SetVersion},
     session::MutationMirrorError,
@@ -73,6 +74,63 @@ struct ForkSetRequest {
     pair_index: Option<i32>,
     #[serde(default)]
     new_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SetPrivacyRequest {
+    set_id: String,
+    expected_version: u64,
+    privacy_level: PrivacyLevel,
+}
+
+pub async fn handle_set_privacy(request: Request<Body>) -> Result<Response<Body>, HttpError> {
+    if request.method() != Method::POST {
+        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
+    }
+
+    let (parts, body) = request.into_parts();
+    let services = AppServices::from_extensions(&parts.extensions);
+    let identity = services.identity().clone();
+    let chat = services.chat().clone();
+    let headers = parts.headers;
+    let bytes = body::to_bytes(body, 128 * 1024)
+        .await
+        .map_err(|err| map_body_read_err(err, "sets::set_privacy"))?;
+    let payload: SetPrivacyRequest = serde_json::from_slice(&bytes)
+        .map_err(|err| map_json_parse_err(err, "sets::set_privacy"))?;
+
+    let cookie = extract_cookie(&headers);
+    validate_csrf(&identity, cookie.as_deref(), extract_csrf(&headers))?;
+    let context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie.as_deref(),
+        "sets::set_privacy::session",
+    )?;
+    let verified = context.require_authenticated(&chat)?;
+    let id = SetId::parse(&payload.set_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid set_id"))?;
+    let Some(_permit) = services.set_privacy().try_update(verified.username(), id) else {
+        return build_json_response(StatusCode::CONFLICT, json!({"error":"privacy_busy"}));
+    };
+    let history = chat.history().map_err(history_error_to_http)?;
+    match history.change_privacy_level(
+        verified.username(),
+        id,
+        SetVersion(payload.expected_version),
+        payload.privacy_level,
+        verified.key(),
+    ) {
+        Ok(version) => build_json_response(
+            StatusCode::OK,
+            json!({"status":"success","set_id":id.to_string(),"version":version.get(),"privacy_level":payload.privacy_level}),
+        ),
+        Err(HistoryError::Conflict { current_version }) => build_json_response(
+            StatusCode::CONFLICT,
+            json!({"error":"version_conflict","set_id":id.to_string(),"current_version":current_version.get()}),
+        ),
+        Err(err) => Err(history_error_to_http(err)),
+    }
 }
 
 pub async fn handle_get_sets(
@@ -803,6 +861,7 @@ pub async fn handle_fork_set(
             return build_json_response(StatusCode::BAD_REQUEST, json!({"error": msg}));
         }
     };
+    let _source_permit = services.set_privacy().content(username, source_id).await;
     let expected = payload.expected_version.map(SetVersion);
     let new_name = payload.new_name.as_deref().filter(|s| !s.trim().is_empty());
 
