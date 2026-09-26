@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
-use chatbot_core::{account_service::AccountService, remember_store, session};
+use chatbot_core::{account_service::AccountService, config::{PrivacyLevel, TtsAccess}, remember_store, session};
 use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -22,6 +22,20 @@ struct FrontendModel {
     provider_name: String,
     tier: String,
     search: bool,
+    privacy_level: PrivacyLevel,
+    search_privacy_level: PrivacyLevel,
+}
+
+#[derive(Serialize)]
+struct VoiceCapability {
+    privacy_level: PrivacyLevel,
+}
+
+#[derive(Serialize)]
+struct VoiceCapabilities {
+    stt: VoiceCapability,
+    tts: VoiceCapability,
+    tts_access: &'static str,
 }
 
 struct RestoredSession {
@@ -155,8 +169,18 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         "rendering home template with config"
     );
 
-    let available_models =
-        build_available_models_from_summaries(settings.models);
+    let policy = services.config_source().destination_policy();
+    let available_models = build_available_models_from_summaries(settings.models, &services, policy.as_deref());
+    let tts_access = match services.tts_policy().access() {
+        TtsAccess::Anyone => "anyone",
+        TtsAccess::Authenticated => "authenticated",
+        TtsAccess::Premium => "premium",
+    };
+    let voice_capabilities = VoiceCapabilities {
+        stt: VoiceCapability { privacy_level: policy.as_ref().map_or(PrivacyLevel::default_destination(), |p| p.stt) },
+        tts: VoiceCapability { privacy_level: policy.as_ref().map_or(PrivacyLevel::default_destination(), |p| p.tts) },
+        tts_access,
+    };
 
     let html = render_template(
         logged_in,
@@ -166,6 +190,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         &bootstrap.csrf_token,
         save_thoughts,
         send_thoughts,
+        &voice_capabilities,
     )
     .map_err(|err| {
         log_and_api_error(
@@ -246,13 +271,27 @@ fn resolve_user_details(accounts: &AccountService, username: Option<&str>) -> Us
 
 fn build_available_models_from_summaries(
     summaries: Vec<crate::generation_deps::ProviderSummary>,
+    services: &AppServices,
+    policy: Option<&chatbot_core::config_source::DestinationPolicy>,
 ) -> Vec<FrontendModel> {
     summaries
         .into_iter()
-        .map(|summary| FrontendModel {
-            provider_name: summary.provider_name,
-            tier: summary.tier,
-            search: summary.search,
+        .map(|summary| {
+            let classification = policy.and_then(|p| p.provider(&summary.provider_name));
+            let native_search = services.generation_deps()
+                .get_provider_config(Some(&summary.provider_name))
+                .is_some_and(|provider| provider.provider_type == "xai" && provider.xai_search);
+            FrontendModel {
+                provider_name: summary.provider_name,
+                tier: summary.tier,
+                search: summary.search,
+                privacy_level: classification.map_or(PrivacyLevel::default_destination(), |levels| levels.0),
+                search_privacy_level: if native_search {
+                    classification.map_or(PrivacyLevel::default_destination(), |levels| levels.1)
+                } else {
+                    policy.map_or(PrivacyLevel::default_destination(), |p| p.brave_search)
+                },
+            }
         })
         .collect()
 }
@@ -265,10 +304,11 @@ fn render_template(
     csrf_token: &str,
     save_thoughts: bool,
     send_thoughts: bool,
+    voice_capabilities: &VoiceCapabilities,
 ) -> Result<String, minijinja::Error> {
     let env = template_env();
     let template = env.get_template("chat.html")?;
-    template.render(context! {
+    let rendered = template.render(context! {
         logged_in => logged_in,
         username => user_details.username,
         user_tier => user_details.tier,
@@ -283,7 +323,15 @@ fn render_template(
         csrf_token => csrf_token,
         save_thoughts => save_thoughts,
         send_thoughts => send_thoughts,
-    })
+    })?;
+    // The existing template owns APP_DATA. Extend its JSON without exposing
+    // backend URLs or keys and without changing the shared asset in this stage.
+    let voice_json = serde_json::to_string(voice_capabilities).expect("voice capabilities serialize");
+    Ok(rendered.replacen(
+        "\"lastModel\":",
+        &format!("\"voiceCapabilities\": {voice_json}, \"lastModel\":"),
+        1,
+    ))
 }
 
 fn template_env() -> &'static Environment<'static> {
@@ -369,6 +417,8 @@ mod tests {
             provider_name: "test-model".to_string(),
             tier: "free".to_string(),
             search: false,
+            privacy_level: PrivacyLevel::Private,
+            search_privacy_level: PrivacyLevel::NonPrivate,
         }];
         let default_prompt = "system prompt";
         let csrf_token = "csrf";
@@ -383,6 +433,11 @@ mod tests {
             csrf_token,
             save_thoughts,
             send_thoughts,
+            &VoiceCapabilities {
+                stt: VoiceCapability { privacy_level: PrivacyLevel::Private },
+                tts: VoiceCapability { privacy_level: PrivacyLevel::NonPrivate },
+                tts_access: "anyone",
+            },
         )
         .expect("render template");
 

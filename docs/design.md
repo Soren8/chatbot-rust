@@ -171,10 +171,10 @@ Encryption-key HTTP transport helpers live in `chatbot-server/src/enc_key_cookie
   - [ ] Remove unused imports and dead code to reduce noise.
 
 - **Privacy Modes**
-  1. **Recoverable Mode**: Server-managed encryption with full account recovery.
-  2. **Private Mode**: Client-derived keys for zero-knowledge storage.
-  3. **Ephemeral Mode**: Memory-only sessions with no persistent data.
-  See [design-privacy.md](design-privacy.md) for details.
+  - [x] Saved sets support **Private** (default, including legacy sets) and **Non-private**. Both retain per-user-key encrypted history; an encrypted history is not permission to send content to an unapproved destination. Operator-classified model, model-native search, Brave search, STT and TTS destinations default to Non-private when unclassified. Private sets require Private-eligible destinations; Non-private sets may use either class, subject to existing tier/access checks.
+  - [x] An encrypted, versioned `SETS_POLICY` record is the authoritative set mode. `POST /set_privacy` uses set-version CAS; an in-process set-level coordinator keeps active content transmissions and mode changes mutually exclusive (`409 privacy_busy`). Incompatible chat/regenerate model or search and bound voice dispatch return `403 privacy_restricted` before outbound work. TTS tokens bind their initiating set and are invalidated on mode changes.
+  - [x] Shared chat UI shows the mode, waits for saved-set policy before enabling send/search/voice, gates incompatible destinations, and requires deliberate confirmation to switch to Non-private. See [design-privacy.md](design-privacy.md) for voice legacy/guest behavior and limits.
+  - [ ] Recoverable/server-managed-key storage, selectable Ephemeral saved chats and coding-agent execution are not implemented. Guest RAM-only chats are temporary **in this app**, not a guarantee about upstream retention.
 
 - **Docker & Deployment**
   - [x] Optimize the `Dockerfile` with a multi-stage build so that only artifacts ship in the final image.

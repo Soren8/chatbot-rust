@@ -102,6 +102,7 @@ try {
       window.APP_DATA = {
         userTier: (cfg && cfg.userTier) || 'free',
         availableModels: (cfg && cfg.availableModels) || [],
+        voiceCapabilities: (cfg && cfg.voiceCapabilities) || {},
         loggedIn: !!(cfg && cfg.loggedIn),
         username: (cfg && cfg.username) || null,
         saveThoughts: cfg && cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,
@@ -1120,35 +1121,68 @@ function desktopTtsIsLive(sessionId) {
   return voiceLifecycle.isLiveDesktop(sessionId);
 }
 
-function disablePremiumModels() {
-  const $selector = $('#modelSelect');
-  if ($selector.length === 0) return;
-  $selector.find('option').each(function() {
-    const isPremium = $(this).data('tier') === 'premium';
-    const userTier = (window.APP_DATA && window.APP_DATA.userTier) ? window.APP_DATA.userTier : 'free';
-    $(this).css('opacity', isPremium && userTier !== 'premium' ? '0.6' : '1');
-  });
+// A saved chat is not authorized by the DOM's default selection. Only an
+// explicitly loaded server policy can unlock its outbound controls.
+let loadedPrivacy = null;
+let privacyChanging = false;
+function chatPolicyReady() {
+  return !window.APP_DATA.loggedIn || (!!loadedPrivacy && loadedPrivacy.setId === currentSetId() && !privacyChanging);
 }
-
-let previousModel = 'default';
-window.validateModelTier = function validateModelTier() {
-  const $selected = $('#modelSelect option:checked');
-  const $premiumAlert = $('#premium-alert');
-  const $modelSelect = $('#modelSelect');
-  const userTier = (window.APP_DATA && window.APP_DATA.userTier) ? window.APP_DATA.userTier : 'free';
-  if ($selected.data('tier') === 'premium' && userTier !== 'premium') {
-    $premiumAlert.show();
-    setTimeout(() => $premiumAlert.hide(), 3000);
-    $modelSelect.val(previousModel);
-    $modelSelect.css('backgroundColor', '#3a1a1a');
-    setTimeout(() => { $modelSelect.css('backgroundColor', '#2c3e50'); }, 500);
-  } else {
-    $premiumAlert.hide();
-    $modelSelect.css('backgroundColor', '#2c3e50');
+function voicePathReady(path) {
+  return chatPolicyReady() && (!window.APP_DATA.loggedIn || loadedPrivacy.level === 'non_private'
+    || (window.APP_DATA.voiceCapabilities && window.APP_DATA.voiceCapabilities[path]
+      && window.APP_DATA.voiceCapabilities[path].privacy_level === 'private'));
+}
+function selectedModelProblem() {
+  if (!$('#modelSelect').length && !window.APP_DATA.loggedIn) return '';
+  const name = $('#modelSelect').val();
+  const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === name);
+  if (!model) return 'Select an available model before sending.';
+  if (model.tier === 'premium' && window.APP_DATA.userTier !== 'premium') return 'This model requires a Premium Account.';
+  if (window.APP_DATA.loggedIn && loadedPrivacy && loadedPrivacy.level === 'private' && model.privacy_level !== 'private') {
+    return 'This model is unavailable for Private chats. Choose a Private-eligible model or deliberately change this chat to Non-private.';
   }
-  previousModel = $modelSelect.val();
-  updateSearchToggleVisibility();
+  return '';
 }
+function searchProblem() {
+  if (!$('#web-search-toggle').hasClass('btn-primary')) return '';
+  if (!$('#modelSelect').length && !window.APP_DATA.loggedIn) return '';
+  const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === $('#modelSelect').val());
+  if (!model || !model.search) return 'Search is unavailable for this model.';
+  if (window.APP_DATA.loggedIn && loadedPrivacy && loadedPrivacy.level === 'private' && model.search_privacy_level !== 'private') {
+    return 'Search is unavailable for this Private chat; its search destination is not Private-eligible.';
+  }
+  return '';
+}
+function canSubmitChat() {
+  return chatPolicyReady() && !selectedModelProblem() && !searchProblem();
+}
+function refreshPrivacyControls() {
+  const saved = !!window.APP_DATA.loggedIn;
+  const ready = chatPolicyReady();
+  $('#chat-privacy-indicator').text(saved
+    ? (ready ? (loadedPrivacy.level === 'private' ? '🔒 Private' : 'Non-private') : 'Loading chat privacy…')
+    : 'Temporary in this app — providers may retain your requests independently.');
+  $('#privacy-select').prop('disabled', !ready).val(ready ? loadedPrivacy.level : '');
+  $('#modelSelect option').each(function() {
+    const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === this.value);
+    const reason = !model ? 'Unavailable' : model.tier === 'premium' && window.APP_DATA.userTier !== 'premium'
+      ? 'Premium required' : saved && loadedPrivacy && loadedPrivacy.level === 'private' && model.privacy_level !== 'private'
+        ? 'Not Private-eligible' : '';
+    // Keep an incompatible selection visible (including a missing saved model).
+    $(this).text(this.value + (reason ? ' — ' + reason : ''));
+  });
+  $('#model-availability').text(ready ? (selectedModelProblem() || searchProblem()) : 'Waiting for chat privacy to load.');
+  $('#send-button').prop('disabled', !ready || (!$('#send-button').hasClass('is-generating') && !canSubmitChat()));
+  $('#web-search-toggle').prop('disabled', !ready || !!selectedModelProblem());
+  $('#mic-button').prop('disabled', !voicePathReady('stt') && !$('#mic-button').hasClass('recording'));
+  $('#voice-mode-btn').prop('disabled', (!voicePathReady('stt') || !voicePathReady('tts')) && !window.voiceModeActive);
+}
+function disablePremiumModels() { refreshPrivacyControls(); }
+window.validateModelTier = function validateModelTier() {
+  updateSearchToggleVisibility();
+  refreshPrivacyControls();
+};
 
 function updateSearchToggleVisibility() {
     const $selected = $('#modelSelect option:checked');
@@ -1169,6 +1203,7 @@ function updateSearchToggleVisibility() {
         $searchToggle.removeClass('btn-primary').addClass('btn-outline-secondary');
         $searchToggle.attr('title', 'Web Search: OFF');
     }
+    refreshPrivacyControls();
 }
 
 // Wire format: plain text + optional [IMAGE:data:image/...;base64,...] tag.
@@ -1678,6 +1713,7 @@ function setGeneratingState(isGenerating) {
   } else {
     $btn.removeClass('btn-danger').addClass('btn-outline-primary').text('Send').removeClass('is-generating');
   }
+  refreshPrivacyControls();
 }
 
 function handleStopClick() {
@@ -1992,6 +2028,7 @@ function preloadDesktopTtsSentence(sessionId, text) {
  * thin adapter preserves the call site.
  */
 function playOneTtsUtterance(sessionId, text) {
+  if (!voicePathReady('tts')) return Promise.reject(new Error('Speech is unavailable for this chat privacy setting.'));
   return desktopTtsClip.playOne(sessionId, text);
 }
 
@@ -2132,6 +2169,7 @@ window.playTTSVoiceMode = function playTTSVoiceMode(button, options) {
 
 /** Voice mode uses the same playTTS / HTML Audio path as the play button. */
 function playMessageTts(button, options) {
+  if (!voicePathReady('tts')) { $('#privacy-status').text('Speech is unavailable for this chat privacy setting.'); return; }
   if (window.nativeVoiceTtsAvailable && window.NativeVoiceTts
       && typeof window.playNativeVoiceModeTts === 'function') {
     window.playNativeVoiceModeTts(button, options);
@@ -2180,6 +2218,7 @@ window.regenerateMessage = function regenerateMessage(button) {
 
 window.performRegeneration = function performRegeneration(aiMessageElement, userText, pairIndex, opts) {
   opts = opts || {};
+  if (!canSubmitChat()) { appendMessage(selectedModelProblem() || searchProblem() || 'Chat privacy is still loading.', 'error-message'); return; }
   const $target = $(aiMessageElement);
   $target.removeAttr('data-original');
   replaceChildrenNative($target[0], buildAiStreamChildren());
@@ -2658,11 +2697,11 @@ $(document).ready(function() {
   // Restore last model if available
   if (window.APP_DATA.lastModel) {
       const $modelSelect = $('#modelSelect');
-      if ($modelSelect.find(`option[value="${window.APP_DATA.lastModel}"]`).length > 0) {
-          $modelSelect.val(window.APP_DATA.lastModel);
-          previousModel = window.APP_DATA.lastModel;
-          validateModelTier();
+      if (!$modelSelect.find('option').filter(function() { return this.value === window.APP_DATA.lastModel; }).length) {
+          $modelSelect.append($('<option>').val(window.APP_DATA.lastModel).text(window.APP_DATA.lastModel + ' — Unavailable'));
       }
+      $modelSelect.val(window.APP_DATA.lastModel);
+      validateModelTier();
   }
 
   function savePreferences() {
@@ -3027,6 +3066,46 @@ $(document).ready(function() {
 
   // Load sets for logged-in users (HttpOnly enc_key cookie is sent automatically)
   if (window.APP_DATA.loggedIn) {
+    // A mode write is never replayed after a switch, including across 401s.
+    $('#privacy-select').on('change', async function() {
+      const requested = this.value;
+      this.value = loadedPrivacy ? loadedPrivacy.level : '';
+      if (!chatPolicyReady() || (requested !== 'private' && requested !== 'non_private') || requested === loadedPrivacy.level) return;
+      if (requested === 'non_private' && !confirm('Allow this chat to use Non-private services? They may retain data, train where their terms allow, or save plaintext transcripts.')) return;
+      const binding = captureVoiceBinding();
+      const expectedVersion = window.APP_DATA.setVersion;
+      if (expectedVersion == null || !binding.setId) return;
+      privacyChanging = true;
+      $('#privacy-status').text('Saving privacy setting…');
+      refreshPrivacyControls();
+      try {
+        const response = await fetch('/set_privacy', {
+          method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ set_id: binding.setId, expected_version: Number(expectedVersion), privacy_level: requested })
+        });
+        const data = await response.json();
+        if (!isLiveMemoryBinding(binding)) return;
+        if (response.ok && data.status === 'success' && data.set_id === binding.setId && data.privacy_level === requested) {
+          noteSetVersionFromResponse(data);
+          loadedPrivacy = { setId: binding.setId, level: data.privacy_level, version: Number(data.version) };
+          if (typeof window.stopVoiceMode === 'function' && window.voiceModeActive) window.stopVoiceMode();
+          if (typeof window.stopAllTtsPlayback === 'function') window.stopAllTtsPlayback();
+          $('#privacy-status').text('Chat privacy saved.');
+        } else if (data.error === 'privacy_busy') {
+          $('#privacy-status').text('Privacy cannot change while this chat is in use. Stop active requests and try again.');
+        } else if (data.error === 'version_conflict') {
+          $('#privacy-status').text('Chat changed elsewhere. Refresh this chat before changing privacy; no change was made.');
+          $('#set-selector').trigger('change');
+        } else {
+          $('#privacy-status').text('Could not save chat privacy. No change was made.');
+        }
+      } catch (_) {
+        if (isLiveMemoryBinding(binding)) $('#privacy-status').text('Could not save chat privacy. No change was made.');
+      } finally {
+        privacyChanging = false;
+        refreshPrivacyControls();
+      }
+    });
     function loadSets(shouldTriggerChange = true) {
       async function fetchSets() {
         return fetch('/get_sets', { headers: await withCsrfAsync() });
@@ -3114,6 +3193,9 @@ $(document).ready(function() {
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
       var loadGen = historyWindow.beginSetLoad();
+      loadedPrivacy = null;
+      $('#privacy-status').text('');
+      refreshPrivacyControls();
       if (typeof window.stopVoiceMode === 'function' && window.voiceModeActive) window.stopVoiceMode();
       if (typeof window.stopAllTtsPlayback === 'function') window.stopAllTtsPlayback();
       settleChatRequestForSetSwitch();
@@ -3151,14 +3233,26 @@ $(document).ready(function() {
         .then(data => {
           if (!historyWindow.isLiveGen(loadGen)) return;
           if (data.name) window.APP_DATA.lastSet = data.name;
-          noteSetVersionFromResponse(data);
+          const knownVersion = Number(window.APP_DATA.setVersion);
+          if (data.version != null && Number(data.version) < knownVersion) {
+            $('#privacy-status').text('Chat privacy may have changed elsewhere. Reload this chat before sending.');
+            refreshPrivacyControls();
+            return;
+          }
+          noteSetVersionFromRead(data);
+          if (data.privacy_level === 'private' || data.privacy_level === 'non_private') {
+            loadedPrivacy = { setId: setId, level: data.privacy_level, version: Number(data.version) };
+          } else {
+            $('#privacy-status').text('Chat privacy is unavailable. Refresh before sending.');
+          }
+          refreshPrivacyControls();
           if (data.name) $opt.attr('data-name', data.name).text(data.name);
           $('#user-system-prompt').val(data.system_prompt || '');
           $('#user-memory').val(data.memory || '');
           applyHistoryPage(data, 'replace');
           appendMessage('Loaded set: ' + setName, 'system-message');
         })
-        .catch(error => { if (!historyWindow.isLiveGen(loadGen)) return; appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
+        .catch(error => { if (!historyWindow.isLiveGen(loadGen)) return; refreshPrivacyControls(); appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
       });
 
     beginEncKeyUnlockFlow();
@@ -3384,6 +3478,7 @@ $(document).ready(function() {
 
   function sendMessage(opts) {
     opts = opts || {};
+    if (!canSubmitChat()) { appendMessage(selectedModelProblem() || searchProblem() || 'Chat privacy is still loading.', 'error-message'); return; }
     if (window.APP_DATA && (window.APP_DATA.autoplayTTS || window.voiceModeActive)) {
       primeDesktopTtsAudioFromGesture();
     }
@@ -3686,6 +3781,13 @@ $(document).ready(function() {
   // Web Search Toggle
   const $searchToggle = $('#web-search-toggle');
   $searchToggle.on('click', function() {
+      if (!chatPolicyReady() || selectedModelProblem()) return;
+      const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === $('#modelSelect').val());
+      if (!$(this).hasClass('btn-primary') && window.APP_DATA.loggedIn && loadedPrivacy.level === 'private'
+          && (!model || model.search_privacy_level !== 'private')) {
+          $('#model-availability').text('Search is unavailable for this Private chat.');
+          return;
+      }
       const isActive = $(this).hasClass('btn-primary');
       if (isActive) {
           $(this).removeClass('btn-primary').addClass('btn-outline-secondary');
@@ -3697,6 +3799,7 @@ $(document).ready(function() {
           window.APP_DATA.webSearch = true;
       }
       persistWebSearchPref();
+      refreshPrivacyControls();
   });
 
   // Persist the web-search preference to the server (per-account) so it
@@ -3733,6 +3836,7 @@ $(document).ready(function() {
     let _nativeMicListener = null;
 
     $micBtn.on('click', function () {
+      if (!$micBtn.hasClass('recording') && !voicePathReady('stt')) return;
       if ($micBtn.hasClass('recording')) {
         // Stop recording
         const binding = _nativeMicBinding;
@@ -3815,6 +3919,7 @@ $(document).ready(function() {
         _mediaRecorder.stop();
         return;
       }
+      if (!voicePathReady('stt')) return;
 
       const binding = captureVoiceBinding();
       navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
@@ -3893,6 +3998,7 @@ $(document).ready(function() {
   }
 
   $voiceModeBtn.on('click', function () {
+    if (!window.voiceModeActive && (!voicePathReady('stt') || !voicePathReady('tts'))) return;
     if (window.voiceModeActive) {
       stopVoiceMode();
     } else {
@@ -4172,6 +4278,7 @@ $(document).ready(function() {
   }
 
   async function startVoiceMode(attempt) {
+    if (!voicePathReady('stt') || !voicePathReady('tts')) return;
     attempt = attempt || 0;
     const sessionGeneration = ++voiceModeSessionGeneration;
     if (voiceSttAbortController) {

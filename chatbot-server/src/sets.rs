@@ -182,6 +182,7 @@ pub async fn handle_get_sets(
                 "modified": (s.updated_at as f64) / 1000.0,
                 "created": (s.updated_at as f64) / 1000.0,
                 "is_default": s.is_default,
+                "privacy_level": s.privacy_level,
                 "encrypted": true
             })
         })
@@ -256,6 +257,7 @@ pub async fn handle_create_set(
                 "set_id": summary.set_id.to_string(),
                 "name": summary.display_name,
                 "version": summary.version.get(),
+                "privacy_level": summary.privacy_level,
             }),
         ),
         Err(HistoryError::InvalidInput(_)) => build_json_response(
@@ -548,6 +550,7 @@ pub async fn handle_load_set(
             "set_id": loaded.set_id.to_string(),
             "name": loaded.display_name,
             "version": loaded.version.get(),
+            "privacy_level": loaded.privacy_level,
             "memory": loaded.memory,
             "system_prompt": loaded.system_prompt,
             "history": history_json,
@@ -881,6 +884,7 @@ pub async fn handle_fork_set(
                 "set_id": summary.set_id.to_string(),
                 "name": summary.display_name,
                 "version": summary.version.get(),
+                "privacy_level": summary.privacy_level,
             }),
         ),
         Err(HistoryError::Conflict { current_version }) => build_json_response(
