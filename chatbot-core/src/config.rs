@@ -89,6 +89,7 @@ impl ExternalConnectionsConfig {
 #[serde(rename_all = "snake_case")]
 pub enum PrivacyLevel {
     Private,
+    Standard,
     NonPrivate,
 }
 
@@ -103,7 +104,11 @@ impl Default for PrivacyLevel {
 
 /// Whether a destination may receive content for the requested chat mode.
 pub const fn destination_is_eligible(task: PrivacyLevel, destination: PrivacyLevel) -> bool {
-    matches!(task, PrivacyLevel::NonPrivate) || matches!(destination, PrivacyLevel::Private)
+    match task {
+        PrivacyLevel::Private => matches!(destination, PrivacyLevel::Private),
+        PrivacyLevel::Standard => !matches!(destination, PrivacyLevel::NonPrivate),
+        PrivacyLevel::NonPrivate => true,
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

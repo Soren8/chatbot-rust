@@ -16,16 +16,16 @@ The application remains multi-user. Each user owns their connections; the first 
 
 | Concern | Decision |
 | --- | --- |
-| Saved chat modes | `private` and `non_private`; missing legacy mode and new sets default to `private` |
-| Provider classification | Operator-declared `privacy_level`; omitted means `non_private` |
-| Eligibility | Private chats require Private-eligible destinations; Non-private chats allow either class, still subject to account tier and other permissions |
-| History encryption | Current user-key encryption for both modes; Non-private does not disable it |
+| Saved chat modes | Three-level target: `private`, `standard`, `non_private`; missing legacy mode and new sets default to `private`. Currently only `private` / `non_private` are implemented. |
+| Provider classification | Operator-declared `privacy_level`; omitted means `non_private`. `private` requires local or verified no-retention processing; `standard` covers reputable third parties with limited/anonymized retention, including qualified ZDR LLM endpoints, xAI search on ZDR teams (undocumented upstream retention caveat), and Brave standard 90-day / enterprise-ZDR search; `non_private` covers everything else. Verify the full route. |
+| Eligibility | Lattice `private < standard < non_private`: a chat may use a destination at its level or stricter (`private` → private; `standard` → private/standard; `non_private` → all), still subject to account tier and other permissions. |
+| History encryption | Current user-key encryption for all saved modes; neither Standard nor Non-private disables it |
 | Guest behavior | Current RAM-only app history and free-tier model policy; describe it as temporary in this app, with independent upstream retention |
 | Deferred storage modes | Recoverable/server-key storage and selectable Ephemeral chats |
 | Connections | User-owned settings: name, service URL and Basic credentials; permitted destinations enforced separately by deployment egress policy |
-| Connection privacy | All OpenCode connections are `non_private` for this release; users cannot promote them by editing a form or API request |
+| Connection privacy | All OpenCode connections remain `non_private`; users cannot promote them by editing a form or API request |
 | Connection CRUD/health | Account settings, independent of the selected chat; never send prompts, names of chats, history, or files during a check |
-| Future agent execution | Requires an owned connection and an authorized Non-private set, checked when submitting content |
+| Future agent execution | Requires an owned connection and an authorized `non_private` set, checked when submitting content; `standard` does not authorize OpenCode |
 
 ## 2. Source map and implementation constraints
 

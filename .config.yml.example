@@ -14,7 +14,8 @@ stt_enabled: true
 # Classification covers the complete configured processing path. Default is non_private.
 stt_privacy_level: non_private
 tts_privacy_level: non_private
-brave_search_privacy_level: non_private
+# Brave Search standard-plan example; verify your plan and full processing route before classifying it standard.
+brave_search_privacy_level: standard
 # Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
 # Default is anyone — suitable for LAN / local-models deploys. Use authenticated or
 # premium on internet-facing hosts that pay for GPU voice.
@@ -43,7 +44,7 @@ llms:
     model_name: "dolphin3.1-8b"
     context_size: 8192
     tier: "free"
-    # Non-private until the operator verifies the entire endpoint/processing chain.
+    # Illustrative local route: classify private only after verifying the entire endpoint/processing chain.
     privacy_level: non_private
     search_privacy_level: non_private
     search: true  # Enables Brave Search (requires BRAVE_API_KEY)

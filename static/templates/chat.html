@@ -102,9 +102,10 @@
                             <label for="privacy-select" class="form-label">Chat privacy</label>
                             <select id="privacy-select" class="form-select" disabled>
                                 <option value="private">🔒 Private</option>
+                                <option value="standard">Standard</option>
                                 <option value="non_private">Non-private</option>
                             </select>
-                            <p class="small mt-2 mb-0">Both modes keep saved history encrypted in this app. Non-private allows other services to retain data, use it for training where their terms allow, or save plaintext transcripts. Changing to Private cannot undo earlier retention.</p>
+                            <p class="small mt-2 mb-0">Private: this app only / local services. Standard: reputable third parties with limited retention, such as ZDR endpoints, xAI search on ZDR teams, or Brave. Non-private: any configured service, including those that may retain data or train on it. All three keep saved history encrypted in this app. Changing levels cannot undo earlier transmissions.</p>
                             <div id="privacy-status" class="small text-warning" role="status" aria-live="polite"></div>
                         </div>
                         <div class="row g-2 align-items-center mb-2">

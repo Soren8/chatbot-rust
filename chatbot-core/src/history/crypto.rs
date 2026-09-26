@@ -589,6 +589,20 @@ mod tests {
     }
 
     #[test]
+    fn standard_policy_seals_and_opens_without_changing_its_level() {
+        let key = test_key();
+        let id = SetId::new();
+
+        let blob = seal_policy_v1("alice", id, PrivacyLevel::Standard, &key).unwrap();
+
+        assert_eq!(
+            open_policy_v1("alice", id, &blob, &key).unwrap(),
+            PrivacyLevel::Standard
+        );
+        assert!(open_policy_v1("alice", SetId::new(), &blob, &key).is_err());
+    }
+
+    #[test]
     fn manifest_aad_binds_full_u64_version() {
         let key = test_key();
         let set_id = SetId::new();

@@ -370,3 +370,174 @@ llms:
     server.await.unwrap();
     drop(workspace);
 }
+
+#[tokio::test]
+async fn standard_chat_allows_standard_and_private_models_but_not_non_private() {
+    let _guard=test_mutex().lock().unwrap_or_else(|error| error.into_inner());
+    env::set_var("SECRET_KEY","standard_model_policy_secret");
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
+    let (address,model_hits,_,shutdown,server)=start_xai_search_mock().await;
+    let config=format!(r#"
+llms:
+  - provider_name: default
+    type: openai
+    model_name: gpt-standard
+    base_url: "http://{address}/v1"
+    api_key: "${{OPENAI_API_KEY}}"
+    context_size: 4096
+    privacy_level: standard
+  - provider_name: private-model
+    type: openai
+    model_name: gpt-private
+    base_url: "http://{address}/v1"
+    api_key: "${{OPENAI_API_KEY}}"
+    context_size: 4096
+    privacy_level: private
+  - provider_name: non-private-model
+    type: openai
+    model_name: gpt-non-private
+    base_url: "http://{address}/v1"
+    api_key: "${{OPENAI_API_KEY}}"
+    context_size: 4096
+    privacy_level: non_private
+"#);
+    let workspace=common::TestWorkspace::with_config(&config);
+    let username="standard-model-user";
+    let password="StandardPassword!42";
+    let mut users=chatbot_core::user_store::UserStore::new().unwrap();
+    users.create_user(username,&hash(password,DEFAULT_COST).unwrap()).unwrap();
+    drop(users);
+    let app=build_router_with_services(resolve_static_root(),AppServices::global());
+    let (cookie,csrf,key)=login(&app,username,password).await;
+    let (status,created)=post_json(&app,"/create_set",&cookie,Some(&csrf),&key,json!({"set_name":"standard models"})).await;
+    assert_eq!(status,StatusCode::OK,"{created}");
+    let set_id=created["set_id"].as_str().unwrap();
+    let (status,changed)=post_json(&app,"/set_privacy",&cookie,Some(&csrf),&key,json!({"set_id":set_id,"expected_version":created["version"],"privacy_level":"standard"})).await;
+    assert_eq!(status,StatusCode::OK,"{changed}");
+
+    for model in ["default","private-model"] {
+        let response=app.clone().oneshot(Request::builder().method(Method::POST).uri("/chat")
+            .header(header::CONTENT_TYPE,"application/json").header(header::COOKIE,&cookie)
+            .header("X-CSRF-Token",&csrf).header("X-Enc-Key",&key)
+            .body(Body::from(json!({"message":"allowed","set_id":set_id,"model_name":model}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK,"model {model}");
+        let body=to_bytes(response.into_body(),512*1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Brave approved answer"),"model {model}: {}",String::from_utf8_lossy(&body));
+    }
+    assert_eq!(model_hits.load(Ordering::SeqCst),2,"both eligible models must reach upstream");
+
+    let (status,denied)=post_json(&app,"/chat",&cookie,Some(&csrf),&key,json!({"message":"must not leave","set_id":set_id,"model_name":"non-private-model"})).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,"{denied}");
+    assert_eq!(denied["error"],"privacy_restricted");
+    assert_eq!(denied["destination"],"model");
+    assert_eq!(model_hits.load(Ordering::SeqCst),2,"denied model must not receive the prompt");
+
+    shutdown.send(()).ok();
+    server.await.unwrap();
+    drop(workspace);
+}
+
+#[tokio::test]
+async fn set_privacy_accepts_standard_and_rejects_stale_version() {
+    let _guard=test_mutex().lock().unwrap_or_else(|error| error.into_inner());
+    env::set_var("SECRET_KEY","standard_cas_policy_secret");
+    let workspace=common::TestWorkspace::with_config(r#"
+llms:
+  - provider_name: default
+    type: openai
+    model_name: gpt-test
+    base_url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
+    context_size: 4096
+"#);
+    let username="standard-cas-user";
+    let password="StandardPassword!42";
+    let mut users=chatbot_core::user_store::UserStore::new().unwrap();
+    users.create_user(username,&hash(password,DEFAULT_COST).unwrap()).unwrap();
+    drop(users);
+    let app=build_router_with_services(resolve_static_root(),AppServices::global());
+    let (cookie,csrf,key)=login(&app,username,password).await;
+    let (status,created)=post_json(&app,"/create_set",&cookie,Some(&csrf),&key,json!({"set_name":"standard CAS"})).await;
+    assert_eq!(status,StatusCode::OK,"{created}");
+    let set_id=created["set_id"].as_str().unwrap();
+    let version=created["version"].as_u64().unwrap();
+    let payload=json!({"set_id":set_id,"expected_version":version,"privacy_level":"standard"});
+
+    let (status,changed)=post_json(&app,"/set_privacy",&cookie,Some(&csrf),&key,payload.clone()).await;
+    assert_eq!(status,StatusCode::OK,"{changed}");
+    assert_eq!(changed["privacy_level"],"standard");
+    assert_eq!(changed["version"],version+1);
+    let (status,loaded)=post_json(&app,"/load_set",&cookie,Some(&csrf),&key,json!({"set_id":set_id})).await;
+    assert_eq!(status,StatusCode::OK,"{loaded}");
+    assert_eq!(loaded["privacy_level"],"standard");
+    let (status,conflict)=post_json(&app,"/set_privacy",&cookie,Some(&csrf),&key,payload).await;
+    assert_eq!(status,StatusCode::CONFLICT,"{conflict}");
+    assert_eq!(conflict["error"],"version_conflict");
+    assert_eq!(listed_version(&app,&cookie,&key,set_id).await,version+1);
+    drop(workspace);
+}
+
+#[tokio::test]
+async fn standard_chat_can_search_with_standard_brave_but_private_chat_cannot_use_standard_destinations() {
+    let _guard=test_mutex().lock().unwrap_or_else(|error| error.into_inner());
+    env::set_var("SECRET_KEY","standard_brave_policy_secret");
+    env::set_var("BRAVE_API_KEY","test-brave-key");
+    env::set_var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY","standard search query");
+    env::set_var("CHATBOT_TEST_BRAVE_RESULTS","standard Brave result");
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
+    let (address,model_hits,_,shutdown,server)=start_xai_search_mock().await;
+    let config=format!(r#"
+brave_search_privacy_level: standard
+llms:
+  - provider_name: default
+    type: openai
+    model_name: gpt-standard-search
+    base_url: "http://{address}/v1"
+    api_key: "${{OPENAI_API_KEY}}"
+    context_size: 4096
+    privacy_level: standard
+  - provider_name: private-model
+    type: openai
+    model_name: gpt-private-search
+    base_url: "http://{address}/v1"
+    api_key: "${{OPENAI_API_KEY}}"
+    context_size: 4096
+    privacy_level: private
+"#);
+    let workspace=common::TestWorkspace::with_config(&config);
+    let username="standard-brave-user";
+    let password="StandardPassword!42";
+    let mut users=chatbot_core::user_store::UserStore::new().unwrap();
+    users.create_user(username,&hash(password,DEFAULT_COST).unwrap()).unwrap();
+    drop(users);
+    let app=build_router_with_services(resolve_static_root(),AppServices::global());
+    let (cookie,csrf,key)=login(&app,username,password).await;
+    let (status,created)=post_json(&app,"/create_set",&cookie,Some(&csrf),&key,json!({"set_name":"standard Brave"})).await;
+    assert_eq!(status,StatusCode::OK,"{created}");
+    let set_id=created["set_id"].as_str().unwrap();
+    let (status,denied)=post_json(&app,"/chat",&cookie,Some(&csrf),&key,json!({"message":"private cannot use standard model","set_id":set_id,"model_name":"default"})).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,"{denied}");
+    assert_eq!(denied["error"],"privacy_restricted");
+    assert_eq!(denied["destination"],"model");
+    assert_eq!(model_hits.load(Ordering::SeqCst),0,"private denial must not contact the standard model");
+    let (status,denied_search)=post_json(&app,"/chat",&cookie,Some(&csrf),&key,json!({"message":"private cannot use standard Brave","set_id":set_id,"model_name":"private-model","web_search":true})).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,"{denied_search}");
+    assert_eq!(denied_search["error"],"privacy_restricted");
+    assert_eq!(denied_search["destination"],"brave_search");
+    assert_eq!(model_hits.load(Ordering::SeqCst),0,"private denial must not contact upstream search or model");
+
+    let (status,changed)=post_json(&app,"/set_privacy",&cookie,Some(&csrf),&key,json!({"set_id":set_id,"expected_version":created["version"],"privacy_level":"standard"})).await;
+    assert_eq!(status,StatusCode::OK,"{changed}");
+    let response=start_chat(&app,&cookie,&csrf,&key,set_id).await;
+    assert_eq!(response.status(),StatusCode::OK);
+    let body=to_bytes(response.into_body(),512*1024).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("Brave approved answer"),"chat stream: {}",String::from_utf8_lossy(&body));
+    assert_eq!(model_hits.load(Ordering::SeqCst),1,"standard Brave search must complete through the model");
+
+    env::remove_var("BRAVE_API_KEY");
+    env::remove_var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY");
+    env::remove_var("CHATBOT_TEST_BRAVE_RESULTS");
+    shutdown.send(()).ok();
+    server.await.unwrap();
+    drop(workspace);
+}

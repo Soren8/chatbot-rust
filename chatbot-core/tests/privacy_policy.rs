@@ -2,14 +2,19 @@ use chatbot_core::config::{destination_is_eligible, fallback_provider, PrivacyLe
 use chatbot_core::config_source::{ConfigSource, DestinationPolicy};
 
 #[test]
-fn eligibility_distinguishes_private_and_non_private_destinations() {
+fn eligibility_respects_all_three_privacy_levels() {
     for (task, destination, allowed) in [
         (PrivacyLevel::Private, PrivacyLevel::Private, true),
+        (PrivacyLevel::Private, PrivacyLevel::Standard, false),
         (PrivacyLevel::Private, PrivacyLevel::NonPrivate, false),
+        (PrivacyLevel::Standard, PrivacyLevel::Private, true),
+        (PrivacyLevel::Standard, PrivacyLevel::Standard, true),
+        (PrivacyLevel::Standard, PrivacyLevel::NonPrivate, false),
         (PrivacyLevel::NonPrivate, PrivacyLevel::Private, true),
+        (PrivacyLevel::NonPrivate, PrivacyLevel::Standard, true),
         (PrivacyLevel::NonPrivate, PrivacyLevel::NonPrivate, true),
     ] {
-        assert_eq!(destination_is_eligible(task, destination), allowed);
+        assert_eq!(destination_is_eligible(task, destination), allowed, "task={task:?}, destination={destination:?}");
     }
 }
 
@@ -18,8 +23,11 @@ fn privacy_levels_use_distinct_defaults_and_closed_serialization() {
     assert_eq!(PrivacyLevel::default_chat(), PrivacyLevel::Private);
     assert_eq!(PrivacyLevel::default_destination(), PrivacyLevel::NonPrivate);
     assert_eq!(serde_yaml::from_str::<PrivacyLevel>("private").unwrap(), PrivacyLevel::Private);
+    assert_eq!(serde_yaml::from_str::<PrivacyLevel>("standard").unwrap(), PrivacyLevel::Standard);
     assert_eq!(serde_yaml::from_str::<PrivacyLevel>("non_private").unwrap(), PrivacyLevel::NonPrivate);
+    assert_eq!(serde_yaml::to_string(&PrivacyLevel::Standard).unwrap().trim(), "standard");
     assert!(serde_yaml::from_str::<PrivacyLevel>("recoverable").is_err());
+    assert!(serde_yaml::from_str::<PrivacyLevel>("unknown").is_err());
 }
 
 #[test]
@@ -29,6 +37,21 @@ fn provider_omissions_are_non_private() {
     ).unwrap();
     assert_eq!(provider.privacy_level, PrivacyLevel::NonPrivate);
     assert_eq!(provider.search_privacy_level, PrivacyLevel::NonPrivate);
+}
+
+#[test]
+fn provider_can_classify_model_and_search_independently_as_standard() {
+    let provider: ProviderConfig = serde_yaml::from_str(
+        "provider_name: local\ntype: openai\nmodel_name: model\nprivacy_level: standard\n",
+    ).unwrap();
+    assert_eq!(provider.privacy_level, PrivacyLevel::Standard);
+    assert_eq!(provider.search_privacy_level, PrivacyLevel::NonPrivate);
+
+    let provider: ProviderConfig = serde_yaml::from_str(
+        "provider_name: remote\ntype: openai\nmodel_name: model\nsearch_privacy_level: standard\n",
+    ).unwrap();
+    assert_eq!(provider.privacy_level, PrivacyLevel::NonPrivate);
+    assert_eq!(provider.search_privacy_level, PrivacyLevel::Standard);
 }
 
 #[test]

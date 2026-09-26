@@ -138,6 +138,10 @@ async fn paused_tts_stub() -> (SocketAddr, Arc<AtomicUsize>, oneshot::Receiver<(
 }
 
 fn app_config(address: SocketAddr) -> String {
+    app_config_with_voice_level(address, "non_private")
+}
+
+fn app_config_with_voice_level(address: SocketAddr, voice_level: &str) -> String {
     format!(r#"
 llms:
   - provider_name: default
@@ -148,16 +152,20 @@ llms:
     context_size: 4096
 tts_provider: kokoro
 tts_codec: wav
-stt_privacy_level: non_private
-tts_privacy_level: non_private
+stt_privacy_level: {voice_level}
+tts_privacy_level: {voice_level}
 voice_service_host: "{}"
 voice_service_port: {}
 "#, address.ip(), address.port())
 }
 
 async fn setup(address: SocketAddr) -> (TestWorkspace, Router, Session, Session, Session, String, u64) {
+    setup_with_voice_level(address, "non_private").await
+}
+
+async fn setup_with_voice_level(address: SocketAddr, voice_level: &str) -> (TestWorkspace, Router, Session, Session, Session, String, u64) {
     env::set_var("SECRET_KEY", "voice_privacy_test_secret");
-    let workspace = TestWorkspace::with_config(&app_config(address));
+    let workspace = TestWorkspace::with_config(&app_config_with_voice_level(address, voice_level));
     let user = "voice-policy-owner";
     let password = "VoicePassword!42";
     UserStore::new().unwrap().create_user(user, &hash(password, DEFAULT_COST).unwrap()).unwrap();
@@ -174,6 +182,79 @@ async fn setup(address: SocketAddr) -> (TestWorkspace, Router, Session, Session,
     let (status, created) = json_post(&app, &first, "/create_set", json!({"set_name":"voice privacy"})).await;
     assert_eq!(status, StatusCode::OK, "{created}");
     (workspace, app, first, second, visitor, created["set_id"].as_str().unwrap().to_owned(), created["version"].as_u64().unwrap())
+}
+
+#[tokio::test]
+async fn standard_set_can_use_standard_stt_and_tts_with_upstream_synthesis() {
+    let _guard = test_lock();
+    let (addr, stt_hits, tts_hits, shutdown, server) = voice_stub().await;
+    let (_workspace, app, first, second, _, set_id, version) = setup_with_voice_level(addr, "standard").await;
+    let (status, changed) = json_post(&app, &second, "/set_privacy", json!({"set_id":set_id,"expected_version":version,"privacy_level":"standard"})).await;
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    assert_eq!(changed["privacy_level"], "standard");
+
+    let (status, transcript) = stt(&app, &first, Some(&set_id), true).await;
+    assert_eq!(status, StatusCode::OK, "{transcript}");
+    assert_eq!(transcript["text"], "stub transcript");
+    assert_eq!(stt_hits.load(Ordering::SeqCst), 1);
+
+    let (status, issued) = json_post(&app, &first, "/tts", json!({"text":"Standard voice","set_id":set_id})).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    assert_eq!(tts_hits.load(Ordering::SeqCst), 0, "POST only queues synthesis");
+    let token = issued["token"].as_str().unwrap();
+    let response = app.clone().oneshot(Request::builder().uri(format!("/tts_stream/{token}"))
+        .body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/wav");
+    let audio = to_bytes(response.into_body(), 1024).await.unwrap();
+    assert_eq!(&audio[..4], b"RIFF");
+    assert_eq!(tts_hits.load(Ordering::SeqCst), 1);
+    shutdown.send(()).unwrap(); server.await.unwrap();
+}
+
+#[tokio::test]
+async fn standard_set_denies_non_private_stt_and_tts_without_upstream() {
+    let _guard = test_lock();
+    let (addr, stt_hits, tts_hits, shutdown, server) = voice_stub().await;
+    let (_workspace, app, first, second, _, set_id, version) = setup(addr).await;
+    let (status, changed) = json_post(&app, &second, "/set_privacy", json!({"set_id":set_id,"expected_version":version,"privacy_level":"standard"})).await;
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    assert_eq!(changed["privacy_level"], "standard");
+
+    let (status, denied) = stt(&app, &first, Some(&set_id), false).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["error"], "privacy_restricted");
+    assert_eq!(denied["destination"], "stt");
+    assert_eq!(stt_hits.load(Ordering::SeqCst), 0);
+
+    let (status, denied) = json_post(&app, &first, "/tts", json!({"text":"Denied voice","set_id":set_id})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["error"], "privacy_restricted");
+    assert_eq!(denied["destination"], "tts");
+    assert!(denied.get("token").is_none(), "denial must not issue a token: {denied}");
+    assert_eq!(tts_hits.load(Ordering::SeqCst), 0);
+    shutdown.send(()).unwrap(); server.await.unwrap();
+}
+
+#[tokio::test]
+async fn private_set_denies_standard_stt_and_tts_without_upstream() {
+    let _guard = test_lock();
+    let (addr, stt_hits, tts_hits, shutdown, server) = voice_stub().await;
+    let (_workspace, app, first, _, _, set_id, _) = setup_with_voice_level(addr, "standard").await;
+
+    let (status, denied) = stt(&app, &first, Some(&set_id), true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["error"], "privacy_restricted");
+    assert_eq!(denied["destination"], "stt");
+    assert_eq!(stt_hits.load(Ordering::SeqCst), 0);
+
+    let (status, denied) = json_post(&app, &first, "/tts", json!({"text":"Private voice","set_id":set_id})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["error"], "privacy_restricted");
+    assert_eq!(denied["destination"], "tts");
+    assert!(denied.get("token").is_none(), "denial must not issue a token: {denied}");
+    assert_eq!(tts_hits.load(Ordering::SeqCst), 0);
+    shutdown.send(()).unwrap(); server.await.unwrap();
 }
 
 #[tokio::test]

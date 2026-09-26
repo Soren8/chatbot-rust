@@ -930,7 +930,15 @@ mod tests {
         txn.commit().unwrap();
         assert_eq!(
             store.load_policy("alice", id, &key).unwrap(),
-            PrivacyLevel::default_chat()
+            PrivacyLevel::Private
+        );
+        assert_eq!(
+            store.load_meta_policy("alice", id, &key).unwrap().1,
+            PrivacyLevel::Private
+        );
+        assert_eq!(
+            store.load_snapshot("alice", id, &key).unwrap().privacy_level,
+            PrivacyLevel::Private
         );
         assert!(matches!(
             store.load_policy("bob", id, &key),
@@ -944,10 +952,18 @@ mod tests {
                 .unwrap();
         }
         txn.commit().unwrap();
-        assert!(
-            store.load_policy("alice", id, &key).is_err(),
-            "corrupt policy must not silently default"
-        );
+        assert!(matches!(
+            store.load_policy("alice", id, &key),
+            Err(StoreError::DecryptFailed)
+        ));
+        assert!(matches!(
+            store.load_meta_policy("alice", id, &key),
+            Err(StoreError::DecryptFailed)
+        ));
+        assert!(matches!(
+            store.load_snapshot("alice", id, &key),
+            Err(StoreError::DecryptFailed)
+        ));
         let wrong = EncryptionKey::from_header_value(
             "d3Jvbmcta2V5LW1hdGVyaWFsLTAwMDAwMDAwMDAwMDAwMDAwMA==",
         )

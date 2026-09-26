@@ -1125,13 +1125,22 @@ function desktopTtsIsLive(sessionId) {
 // explicitly loaded server policy can unlock its outbound controls.
 let loadedPrivacy = null;
 let privacyChanging = false;
+const PRIVACY_LEVELS = ['private', 'standard', 'non_private'];
+function privacyEligible(destination, chatLevel) {
+  const required = PRIVACY_LEVELS.indexOf(chatLevel);
+  const classified = PRIVACY_LEVELS.indexOf(destination);
+  return required >= 0 && (classified < 0 ? 2 : classified) <= required;
+}
+function privacyLabel(level) {
+  return level === 'private' ? 'Private' : level === 'standard' ? 'Standard' : 'Non-private';
+}
 function chatPolicyReady() {
   return !window.APP_DATA.loggedIn || (!!loadedPrivacy && loadedPrivacy.setId === currentSetId() && !privacyChanging);
 }
 function voicePathReady(path) {
-  return chatPolicyReady() && (!window.APP_DATA.loggedIn || loadedPrivacy.level === 'non_private'
-    || (window.APP_DATA.voiceCapabilities && window.APP_DATA.voiceCapabilities[path]
-      && window.APP_DATA.voiceCapabilities[path].privacy_level === 'private'));
+  return chatPolicyReady() && (!window.APP_DATA.loggedIn
+    || !!(window.APP_DATA.voiceCapabilities && window.APP_DATA.voiceCapabilities[path]
+      && privacyEligible(window.APP_DATA.voiceCapabilities[path].privacy_level, loadedPrivacy.level)));
 }
 function selectedModelProblem() {
   if (!$('#modelSelect').length && !window.APP_DATA.loggedIn) return '';
@@ -1139,8 +1148,8 @@ function selectedModelProblem() {
   const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === name);
   if (!model) return 'Select an available model before sending.';
   if (model.tier === 'premium' && window.APP_DATA.userTier !== 'premium') return 'This model requires a Premium Account.';
-  if (window.APP_DATA.loggedIn && loadedPrivacy && loadedPrivacy.level === 'private' && model.privacy_level !== 'private') {
-    return 'This model is unavailable for Private chats. Choose a Private-eligible model or deliberately change this chat to Non-private.';
+  if (window.APP_DATA.loggedIn && loadedPrivacy && !privacyEligible(model.privacy_level, loadedPrivacy.level)) {
+    return 'This model is unavailable for ' + privacyLabel(loadedPrivacy.level) + ' chats. Choose an eligible model or change this chat’s privacy level.';
   }
   return '';
 }
@@ -1149,8 +1158,8 @@ function searchProblem() {
   if (!$('#modelSelect').length && !window.APP_DATA.loggedIn) return '';
   const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === $('#modelSelect').val());
   if (!model || !model.search) return 'Search is unavailable for this model.';
-  if (window.APP_DATA.loggedIn && loadedPrivacy && loadedPrivacy.level === 'private' && model.search_privacy_level !== 'private') {
-    return 'Search is unavailable for this Private chat; its search destination is not Private-eligible.';
+  if (window.APP_DATA.loggedIn && loadedPrivacy && !privacyEligible(model.search_privacy_level, loadedPrivacy.level)) {
+    return 'Search is unavailable for this ' + privacyLabel(loadedPrivacy.level) + ' chat; its search destination is not eligible.';
   }
   return '';
 }
@@ -1160,17 +1169,20 @@ function canSubmitChat() {
 function refreshPrivacyControls() {
   const saved = !!window.APP_DATA.loggedIn;
   const ready = chatPolicyReady();
+  const currentPolicy = loadedPrivacy && loadedPrivacy.setId === currentSetId();
   $('#chat-privacy-indicator').text(saved
-    ? (ready ? (loadedPrivacy.level === 'private' ? '🔒 Private' : 'Non-private') : 'Loading chat privacy…')
+    ? (currentPolicy ? (loadedPrivacy.level === 'private' ? '🔒 ' : '') + privacyLabel(loadedPrivacy.level) : 'Loading chat privacy…')
     : 'Temporary in this app — providers may retain your requests independently.');
   $('#privacy-select').prop('disabled', !ready).val(ready ? loadedPrivacy.level : '');
   $('#modelSelect option').each(function() {
     const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === this.value);
     const reason = !model ? 'Unavailable' : model.tier === 'premium' && window.APP_DATA.userTier !== 'premium'
-      ? 'Premium required' : saved && loadedPrivacy && loadedPrivacy.level === 'private' && model.privacy_level !== 'private'
-        ? 'Not Private-eligible' : '';
+      ? 'Premium required' : saved && loadedPrivacy && !privacyEligible(model.privacy_level, loadedPrivacy.level)
+        ? 'Not ' + privacyLabel(loadedPrivacy.level) + '-eligible' : '';
     // Keep an incompatible selection visible (including a missing saved model).
-    $(this).text(this.value + (reason ? ' — ' + reason : ''));
+    const selected = this.selected;
+    $(this).text(this.value + (reason ? ' — ' + reason : ''))
+      .prop('hidden', !!reason && !selected).prop('disabled', !!reason && !selected);
   });
   $('#model-availability').text(ready ? (selectedModelProblem() || searchProblem()) : 'Waiting for chat privacy to load.');
   $('#send-button').prop('disabled', !ready || (!$('#send-button').hasClass('is-generating') && !canSubmitChat()));
@@ -3070,8 +3082,9 @@ $(document).ready(function() {
     $('#privacy-select').on('change', async function() {
       const requested = this.value;
       this.value = loadedPrivacy ? loadedPrivacy.level : '';
-      if (!chatPolicyReady() || (requested !== 'private' && requested !== 'non_private') || requested === loadedPrivacy.level) return;
-      if (requested === 'non_private' && !confirm('Allow this chat to use Non-private services? They may retain data, train where their terms allow, or save plaintext transcripts.')) return;
+      if (!chatPolicyReady() || !PRIVACY_LEVELS.includes(requested) || requested === loadedPrivacy.level) return;
+      if (PRIVACY_LEVELS.indexOf(requested) > PRIVACY_LEVELS.indexOf(loadedPrivacy.level)
+          && !confirm('Allow this chat to use ' + privacyLabel(requested) + ' services? Standard services have limited retention; Non-private services may retain data or train on it. Earlier transmissions cannot be undone.')) return;
       const binding = captureVoiceBinding();
       const expectedVersion = window.APP_DATA.setVersion;
       if (expectedVersion == null || !binding.setId) return;
@@ -3085,14 +3098,23 @@ $(document).ready(function() {
         });
         const data = await response.json();
         if (!isLiveMemoryBinding(binding)) return;
+        if (data.error === 'privacy_busy') {
+          $('#privacy-status').text('Privacy cannot change while this chat is in use. Stop active requests and try again.');
+          return;
+        }
+        // Another mutation on this set may have advanced the version while
+        // the policy write was in flight. Never paint a stale acknowledgement.
+        if (Number(window.APP_DATA.setVersion) !== Number(expectedVersion)) {
+          $('#privacy-status').text('Chat changed while saving privacy. Reloading this chat.');
+          $('#set-selector').trigger('change');
+          return;
+        }
         if (response.ok && data.status === 'success' && data.set_id === binding.setId && data.privacy_level === requested) {
           noteSetVersionFromResponse(data);
           loadedPrivacy = { setId: binding.setId, level: data.privacy_level, version: Number(data.version) };
           if (typeof window.stopVoiceMode === 'function' && window.voiceModeActive) window.stopVoiceMode();
           if (typeof window.stopAllTtsPlayback === 'function') window.stopAllTtsPlayback();
           $('#privacy-status').text('Chat privacy saved.');
-        } else if (data.error === 'privacy_busy') {
-          $('#privacy-status').text('Privacy cannot change while this chat is in use. Stop active requests and try again.');
         } else if (data.error === 'version_conflict') {
           $('#privacy-status').text('Chat changed elsewhere. Refresh this chat before changing privacy; no change was made.');
           $('#set-selector').trigger('change');
@@ -3240,7 +3262,7 @@ $(document).ready(function() {
             return;
           }
           noteSetVersionFromRead(data);
-          if (data.privacy_level === 'private' || data.privacy_level === 'non_private') {
+          if (PRIVACY_LEVELS.includes(data.privacy_level)) {
             loadedPrivacy = { setId: setId, level: data.privacy_level, version: Number(data.version) };
           } else {
             $('#privacy-status').text('Chat privacy is unavailable. Refresh before sending.');
@@ -3783,9 +3805,9 @@ $(document).ready(function() {
   $searchToggle.on('click', function() {
       if (!chatPolicyReady() || selectedModelProblem()) return;
       const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === $('#modelSelect').val());
-      if (!$(this).hasClass('btn-primary') && window.APP_DATA.loggedIn && loadedPrivacy.level === 'private'
-          && (!model || model.search_privacy_level !== 'private')) {
-          $('#model-availability').text('Search is unavailable for this Private chat.');
+      if (!$(this).hasClass('btn-primary') && window.APP_DATA.loggedIn
+          && (!model || !privacyEligible(model.search_privacy_level, loadedPrivacy.level))) {
+          $('#model-availability').text('Search is unavailable for this ' + privacyLabel(loadedPrivacy.level) + ' chat.');
           return;
       }
       const isActive = $(this).hasClass('btn-primary');

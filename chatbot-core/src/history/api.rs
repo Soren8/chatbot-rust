@@ -1116,6 +1116,132 @@ mod tests {
     }
 
     #[test]
+    fn standard_policy_changes_are_versioned_and_projected_by_list_load_and_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("standard-policy.redb");
+        let key = key();
+        let svc = HistoryService::open_ephemeral(&path).unwrap();
+        let created = svc.create_set("standard-user", "chat", &key).unwrap();
+        let v2 = svc
+            .append_pair(
+                "standard-user",
+                created.set_id,
+                created.version,
+                "u",
+                "a",
+                &key,
+            )
+            .unwrap();
+        let v3 = svc
+            .change_privacy_level(
+                "standard-user",
+                created.set_id,
+                v2,
+                PrivacyLevel::Standard,
+                &key,
+            )
+            .unwrap();
+        assert_eq!(v3, SetVersion(3));
+        assert!(matches!(
+            svc.change_privacy_level(
+                "standard-user",
+                created.set_id,
+                v2,
+                PrivacyLevel::Private,
+                &key
+            ),
+            Err(HistoryError::Conflict {
+                current_version: SetVersion(3)
+            })
+        ));
+        assert_eq!(
+            svc.list_sets("standard-user", &key).unwrap()[0].privacy_level,
+            PrivacyLevel::Standard
+        );
+        assert_eq!(
+            svc.load("standard-user", created.set_id, &key)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::Standard
+        );
+        let page = svc
+            .load_page("standard-user", created.set_id, &key, Some(1), None, true)
+            .unwrap();
+        assert_eq!(page.version, v3);
+        assert_eq!(page.privacy_level, PrivacyLevel::Standard);
+        assert_eq!(
+            svc.change_privacy_level(
+                "standard-user",
+                created.set_id,
+                v3,
+                PrivacyLevel::Standard,
+                &key
+            )
+            .unwrap(),
+            v3
+        );
+        drop(svc);
+
+        let reopened = HistoryService::open_ephemeral(&path).unwrap();
+        assert_eq!(
+            reopened.list_sets("standard-user", &key).unwrap()[0].privacy_level,
+            PrivacyLevel::Standard
+        );
+        assert_eq!(
+            reopened
+                .load("standard-user", created.set_id, &key)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::Standard
+        );
+        assert_eq!(
+            reopened
+                .load_page("standard-user", created.set_id, &key, Some(1), None, true)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::Standard
+        );
+
+        let v4 = reopened
+            .change_privacy_level(
+                "standard-user",
+                created.set_id,
+                v3,
+                PrivacyLevel::NonPrivate,
+                &key,
+            )
+            .unwrap();
+        assert_eq!(v4, SetVersion(4));
+        let v5 = reopened
+            .change_privacy_level(
+                "standard-user",
+                created.set_id,
+                v4,
+                PrivacyLevel::Standard,
+                &key,
+            )
+            .unwrap();
+        assert_eq!(v5, SetVersion(5));
+        let v6 = reopened
+            .change_privacy_level(
+                "standard-user",
+                created.set_id,
+                v5,
+                PrivacyLevel::Private,
+                &key,
+            )
+            .unwrap();
+        assert_eq!(v6, SetVersion(6));
+        assert_eq!(
+            reopened
+                .load("standard-user", created.set_id, &key)
+                .unwrap()
+                .privacy_level,
+            PrivacyLevel::Private
+        );
+    }
+
+    #[test]
     fn commit_chat_append_preserves_image_data_url_payload() {
         let dir = tempfile::tempdir().unwrap();
         let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
