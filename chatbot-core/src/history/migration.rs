@@ -3,7 +3,6 @@
 //! **On-disk format readers live permanently in [`crate::legacy_sets_json`].**
 //! This file only orchestrates import into the sealed redb store.
 
-
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -59,13 +58,8 @@ pub fn ensure_user_migrated(
         .map_err(map_persistence)?;
 
     if !sets_path.exists() {
-        // Already bak'd or brand-new user
-        let bak = sets_path.parent().map(|p| p.join(MIGRATED_BAK_FILENAME)).unwrap_or_else(|| PathBuf::from(MIGRATED_BAK_FILENAME));
-        if bak.exists() {
-            // File was renamed earlier but flag missing — do not re-import; just flag.
-            store.mark_user_migrated_empty(user)?;
-            return Ok(());
-        }
+        // Brand-new user, or an earlier migration already renamed the file to
+        // `.migrated.bak`: nothing to import in either case.
         store.mark_user_migrated_empty(user)?;
         return Ok(());
     }
@@ -102,8 +96,10 @@ pub fn ensure_user_migrated(
         });
     }
 
-    // Ensure exactly one default flag after migration.
-    if imports.is_empty() {
+    // Ensure exactly one default flag after migration. `list_sets` always
+    // yields the default entry, and any import named "default" already
+    // carries `is_default`, so a missing flag means no default was imported.
+    if !imports.iter().any(|s| s.is_default) {
         imports.push(ImportSet {
             set_id: SetId::new(),
             display_name: "default".into(),
@@ -114,23 +110,6 @@ pub fn ensure_user_migrated(
             created_at: 0,
             updated_at: 0,
         });
-    } else if !imports.iter().any(|s| s.is_default) {
-        // Prefer name "default" if present; otherwise create an empty default set
-        // so ensure_default_set does not invent a second empty set later.
-        if let Some(slot) = imports.iter_mut().find(|s| s.display_name == "default") {
-            slot.is_default = true;
-        } else {
-            imports.push(ImportSet {
-                set_id: SetId::new(),
-                display_name: "default".into(),
-                memory: String::new(),
-                system_prompt: default_system_prompt.to_owned(),
-                history: Vec::new(),
-                is_default: true,
-                created_at: 0,
-                updated_at: 0,
-            });
-        }
     }
 
     let count = store.import_sets_and_mark_migrated(user, &imports, key)?;
@@ -393,6 +372,26 @@ mod tests {
         let snap = svc.load(user, project.set_id, &key).unwrap();
         assert_eq!(snap.history.len(), 1);
         // Exactly one default flag
+        assert_eq!(listed.iter().filter(|s| s.is_default).count(), 1);
+    }
+
+    #[test]
+    fn migration_treats_empty_legacy_file_as_single_default() {
+        let data = tempfile::tempdir().unwrap();
+        let redb_path = data.path().join("history").join("redb");
+        let key = key();
+        let user = "emptyset";
+        let user_dir = data.path().join("user_sets").join(user);
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::write(user_dir.join("sets.json"), b"{}").unwrap();
+
+        let svc =
+            HistoryService::open_with_data_dir(&redb_path, data.path(), "sys").unwrap();
+        let listed = svc.list_sets(user, &key).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].is_default && listed[0].display_name == "default");
+        let snap = svc.load(user, listed[0].set_id, &key).unwrap();
+        assert!(snap.history.is_empty());
         assert_eq!(listed.iter().filter(|s| s.is_default).count(), 1);
     }
 
