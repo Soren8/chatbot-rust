@@ -101,6 +101,22 @@ pub fn map_core_messages(messages: &[ChatMessage]) -> Vec<ChatMessagePayload> {
         .collect()
 }
 
+/// Native XAI streaming when Brave setup fails, or a fail-closed privacy
+/// error when native fallback is not permitted. Setup failures never
+/// silently fall through to an unrestricted path.
+fn fallback_or_restricted(
+    xai_provider: &XaiProvider,
+    messages: Vec<ChatMessagePayload>,
+    web_search: bool,
+    allow_native_search_fallback: bool,
+) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
+    if allow_native_search_fallback {
+        xai_provider.stream_chat(messages, web_search)
+    } else {
+        Err(PrivacyRestrictedFallback.into())
+    }
+}
+
 /// Open the provider stream with shared search policy.
 ///
 /// OpenAI uses Brave search when `web_search` is set and a client exists.
@@ -153,46 +169,101 @@ pub async fn dispatch_stream(
             } else {
                 None
             };
+            let Some(brave) = brave else {
+                return if use_brave && !allow_native_search_fallback {
+                    Err(PrivacyRestrictedFallback.into())
+                } else {
+                    xai_provider.stream_chat(messages, web_search)
+                };
+            };
 
-            if let Some(ref brave) = brave {
-                // Use Brave search via XAI's OpenAI-compatible /chat/completions endpoint
-                // through the same generation handle so owned fakes stay scoped.
-                match generation.openai_provider(provider_config) {
-                    Ok(openai_provider) => {
-                        let tools = vec![crate::tools::brave_web_search_tool()];
-                        match crate::search::search_augmented_stream(
-                            &openai_provider,
-                            messages.clone(),
-                            brave,
-                            &tools,
-                        )
-                        .await
-                        {
-                            Ok(stream) => Ok(stream),
-                            Err(err) => {
-                                warn!(?err, "XAI Brave search setup failed");
-                                if allow_native_search_fallback {
-                                    xai_provider.stream_chat(messages.clone(), web_search)
-                                } else {
-                                    Err(PrivacyRestrictedFallback.into())
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        warn!(?err, "failed to build OpenAI provider for XAI Brave search");
-                        if allow_native_search_fallback {
-                            xai_provider.stream_chat(messages.clone(), web_search)
-                        } else {
-                            Err(PrivacyRestrictedFallback.into())
-                        }
-                    }
+            // Use Brave search via XAI's OpenAI-compatible /chat/completions endpoint
+            // through the same generation handle so owned fakes stay scoped.
+            let openai_provider = match generation.openai_provider(provider_config) {
+                Ok(provider) => provider,
+                Err(err) => {
+                    warn!(?err, "failed to build OpenAI provider for XAI Brave search");
+                    return fallback_or_restricted(
+                        xai_provider,
+                        messages,
+                        web_search,
+                        allow_native_search_fallback,
+                    );
                 }
-            } else if web_search && !provider_config.xai_search && !allow_native_search_fallback {
-                Err(PrivacyRestrictedFallback.into())
-            } else {
-                xai_provider.stream_chat(messages.clone(), web_search)
+            };
+            let tools = vec![crate::tools::brave_web_search_tool()];
+            match crate::search::search_augmented_stream(
+                &openai_provider,
+                messages.clone(),
+                &brave,
+                &tools,
+            )
+            .await
+            {
+                Ok(stream) => Ok(stream),
+                Err(err) => {
+                    warn!(?err, "XAI Brave search setup failed");
+                    fallback_or_restricted(
+                        xai_provider,
+                        messages,
+                        web_search,
+                        allow_native_search_fallback,
+                    )
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chatbot_core::config::PrivacyLevel;
+
+    use super::*;
+
+    fn xai_config_without_native_search() -> ProviderConfig {
+        ProviderConfig {
+            privacy_level: PrivacyLevel::default_destination(),
+            provider_name: "xai".to_owned(),
+            provider_type: "xai".to_owned(),
+            tier: None,
+            model_name: "grok-test".to_owned(),
+            context_size: None,
+            base_url: "http://127.0.0.1:1".to_owned(),
+            api_key: None,
+            allowed_providers: Vec::new(),
+            request_timeout: None,
+            rate_limit_retries: None,
+            rate_limit_max_wait_secs: None,
+            test_chunks: None,
+            search: true,
+            xai_search: false,
+            xai_zdr: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn xai_search_without_brave_key_and_without_fallback_is_fail_closed() {
+        let config = xai_config_without_native_search();
+        let generation = GenerationDeps::new(HashMap::new(), "xai".to_owned(), false, false, None);
+        let provider = generation
+            .xai_provider(&config)
+            .expect("xai provider builds");
+        let err = match dispatch_stream(
+            &GenerationProvider::Xai(provider),
+            &config,
+            Vec::new(),
+            true,
+            false,
+            &generation,
+        )
+        .await
+        {
+            Err(err) => err,
+            Ok(_) => panic!("fail-closed without native fallback"),
+        };
+        assert!(err.downcast_ref::<PrivacyRestrictedFallback>().is_some());
     }
 }
