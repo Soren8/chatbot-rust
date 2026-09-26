@@ -1,6 +1,6 @@
 # chatbot Helm chart (sample)
 
-Minimal sample chart for the Rust **webserver** image. The GPU **voice-service** is disabled by default (`voiceService.enabled: false`) because it typically runs on host networking with NVIDIA devices — mirror your Compose layout or run voice on bare metal.
+Minimal sample chart for the Rust **webserver** image. The GPU **voice-service** is disabled by default (`voiceService.enabled: false`); unlike Compose, this chart does not deploy voice, so run it separately and configure its reachable address.
 
 ## Sample-only values (unsupported)
 
@@ -24,7 +24,7 @@ helm install chatbot deploy/helm/chatbot \
 
 ## Host networking (default)
 
-`webserver.hostNetwork: true` matches root `docker-compose.yml` so the webserver can reach `voice-service` on `127.0.0.1:5100`. For cluster-internal networking, set `hostNetwork: false` and point `voice_service_host` in the ConfigMap at your voice Service DNS name.
+`webserver.hostNetwork: true` is a chart-only default (Compose uses a bridge). Point `voice_service_host` in the ConfigMap at a reachable host endpoint, or set `hostNetwork: false` and use a cluster voice Service DNS name.
 
 ## Probes
 

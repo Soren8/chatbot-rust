@@ -4,7 +4,7 @@ webserver:
     tag: latest
     pullPolicy: IfNotPresent
   replicaCount: 1
-  # Match root docker-compose host networking for local GPU voice-service on :5100.
+  # Chart-only host networking; root Compose instead uses a bridge.
   hostNetwork: true
   service:
     type: ClusterIP

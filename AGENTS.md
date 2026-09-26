@@ -28,7 +28,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Build & Run Commands
 
-- Tests (default): `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package PACKAGE --test TARGET` (or `--lib`; optionally add `--filter NAME --exact`; ask before modifying existing tests). Omit selectors only when a full workspace run is warranted. On the host, `docker compose run --rm tests` remains the full-suite command.
+- Tests (default): `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package PACKAGE --test TARGET` (or `--lib`; optionally add `--filter NAME --exact`; ask before modifying existing tests). Omit selectors only when a full workspace run is warranted. On the host, start DNS with `docker compose up -d --build dns` before `docker compose run --rm tests` (full suite).
 - Do not run `cargo test` / app binaries outside that container
 - Allowed compose from the sandbox: **`tests` only**. It injects its own env and does not need workspace `.env`.
 - Do **not** `docker compose up`, `build`, or recreate **`webserver`** or **`voice-service`**. Ask the **user** to rebuild/restart those on the host when a live deploy is needed.

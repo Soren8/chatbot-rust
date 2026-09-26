@@ -30,15 +30,18 @@ Not a single line of code in this repository was written manually. Human work in
 
 ## Development Workflow
 1. Copy `.config.yml.example` to `.config.yml` and adjust provider settings.
+   Set `voice_service_host: voice-service` in existing configs; the voice service is on the Compose bridge, not host localhost. Linux host-based providers can use `host.docker.internal` from the webserver.
 1. Add API keys to environment variables or copy `.env.example` to `.env` and adjust.
 1. Run the integration and unit tests:
    ```bash
+   docker compose up -d --build dns
    docker compose run --rm tests
    ```
 1. Build the runtime image and start services:
    ```bash
    docker compose up --build
    ```
+   Webserver publishes port 80 by default; set `CHATBOT_PORT` to the same port as a custom `CHATBOT_BIND_ADDR` (which must listen on `0.0.0.0`). Set `DNS_SUBNET` and `DNS_ADDRESS` together if `172.29.0.0/16` overlaps your network; recreate the Compose default network on first rollout.
    RUST_BUILD_TARGET=debug by default, you may want to set it to release.
 1. Keep caches under `temp/` as described in `AGENTS.md`.
 
