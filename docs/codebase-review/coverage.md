@@ -1,5 +1,11 @@
 # Review coverage
 
+## Session 054 — simplicity batch review and scope expansion
+
+At `8bca512`, primary review covered the complete committed deletion diff, the legacy module declaration, `history/migration.rs` production orchestration, storage key helpers, provider-module visibility and the complete generation dispatcher. Supporting reads covered `policy.rs`, browser privacy/control functions at `static/chat.js:1124–1219`, and the request-application fixture's source-slice declarations and initial environment. Stored executor failure evidence was inspected. These are partial simplicity reads of C04/C05/S04/W01/T02 and composition boundaries, not whole-unit completion. No application tests were rerun.
+
+Phase 2 is reopened. The expanded scope and candidate evidence are in [simplicity.md](simplicity.md); the original simplicity column remains uncompleted. A fresh inventory must account for post-phase-one additions, including DNS, privacy/agent connections and Android server settings, before repository-wide review credit is recorded.
+
 ## Sessions 047–052 — implementation review and completion gate
 
 The main model personally reviewed delegated production diffs and composed callers for conversation requests/retries/stream application, queued UI/autoplay, desktop clip/queue/lifecycle cancellation, Python non-streaming routes and worker lifetime, and Android foreground service/session/NativeMic stop propagation. Review corrections required actual adapter tests rather than helper-only assertions, direct-lifecycle queue cleanup, result-after-file-cleanup ordering, serialized platform stop ordering, and queued-header draft protection. The final gate at `d55ee5d` closes the four session-046 follow-ups using those source traces and trusted red/green evidence (README sessions 047–052).

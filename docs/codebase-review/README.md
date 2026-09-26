@@ -1,10 +1,18 @@
 # Codebase review program
 
-Latest resume point: session 053 — simplicity known-leads batch complete on `refactor`. Earlier checkpoints record their original scope and status.
+Latest resume point: session 054 — primary review reopens phase 2 and expands its simplicity scope on `refactor`. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 simplicity is complete for the user-authorized known-leads scope; a fresh simplicity review and phases 3–7 have not started.**
+Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 is reopened: its small cleanup batch has targeted verification, but the full-suite gate failed and fresh simplicity coverage remains incomplete. Phases 3–7 have not started.**
+
+## Session 054 — primary review and expanded simplicity scope, 2026-09-26
+
+At the user's request, the primary reviewer inspected `8bca512`, the stored executor results, the migration module tree and live orchestrator, private provider-module visibility and generation dispatch, and the browser privacy controls plus the failing request-application fixture. The three deletions are sound within the repository. They constitute a small known-leads batch, not a completed simplicity pass. Session 053's completion verdict is superseded.
+
+The full run stopped at `conversation_request_application`, so later targets have no result from that run. Baseline reproduction establishes that the failure predates the cleanup; it does not waive the user's full-suite completion gate. No application tests were rerun for this documentation-only review.
+
+The expanded scope is a fresh repository-wide simplicity review with bounded remediation, moderate aggressiveness, targeted development tests and one final passing full suite. Initial source-supported candidates and the required coverage/verification boundaries are recorded in [simplicity.md](simplicity.md). This scope expansion does not mark that review or its implementation complete.
 
 ## Session 053 — simplicity known-leads batch, 2026-09-26
 
@@ -16,7 +24,7 @@ Branch `refactor` off main (`f7b008f`). User scoped phase 2 to remediate-known-l
 
 Deliberately kept: `persistence.rs` compat alias (used by test-support/`live_helper_contracts`), `chat_utils::get_ip` re-export (pinned by tests), serde/schema `allow(dead_code)` fields (wire compat), `Example*` template tests (test-quality pass scope), `tt.js`/theme (referenced by templates).
 
-Verification: core lib 181/181, `provider_messages` 4/4, `generation_dispatch` 15/15, `live_helper_contracts` 16/16, all exit 0 (`temp/test-logs/simplicity-*-20260926.log`). Full suite is green except pre-existing `conversation_request_application_fences_stale_responses` (`canSubmitChat is not defined` in the JS fixture), reproduced on pristine main via stash (`temp/test-logs/main-baseline-conv-req-app-20260926.log`, exit 101); unrelated to this batch and left untouched per scope. No APK build (no Android changes).
+Verification: core lib 181/181, `provider_messages` 4/4, `generation_dispatch` 15/15, `live_helper_contracts` 16/16, all exit 0 (`temp/test-logs/simplicity-*-20260926.log`). The full suite stopped at pre-existing `conversation_request_application_fences_stale_responses` (`canSubmitChat is not defined` in the JS fixture), reproduced on pristine main via stash (`temp/test-logs/main-baseline-conv-req-app-20260926.log`, exit 101). Targets after that failure were not executed by this run; full-suite validation remains incomplete. No APK build (no Android changes).
 
 ## Session 052 — follow-up completion review, 2026-09-19
 
