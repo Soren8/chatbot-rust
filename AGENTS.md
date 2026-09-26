@@ -59,6 +59,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Important Notes
 
+- **NEVER destroy uncommitted work.** Do not run `git checkout --`, `git restore`, `git reset --hard`, `git clean -f`, `rm` on untracked files, or any equivalent that discards uncommitted changes — including files owned by other agents. Uncommitted work is sacrosanct. Only the user may authorize discarding it, explicitly, per path.
 - **IMPORTANT:** Desktop and mobile (Capacitor) must work as similarly as possible. Diverge only when a Capacitor/WebView/OS limitation makes the shared path impossible. Do not invent a second architecture, playback pipeline, or API shape for native.
 - Before starting work, read `docs/design.md` and `docs/design-privacy.md` to align with the current architecture and privacy posture.
 - Always validate provider configurations before committing
