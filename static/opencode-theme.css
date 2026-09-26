@@ -1,0 +1,677 @@
+/* OpenCode TUI ("opencode" dark theme) visual override for chatbot-rust.
+   Load after Bootstrap and /static/style.css.
+   Palette source: packages/tui/src/theme/assets/opencode.json (dark). */
+
+:root {
+  color-scheme: dark;
+  --oc-bg: #0a0a0a;
+  --oc-sidebar: #141414;
+  --oc-surface: #141414;
+  --oc-raised: #1e1e1e;
+  --oc-hover: #282828;
+  --oc-border: #484848;
+  --oc-border-subtle: #3c3c3c;
+  --oc-border-active: #606060;
+  --oc-text: #eeeeee;
+  --oc-secondary: #808080;
+  --oc-muted: #808080;
+  --oc-primary: #fab283;
+  --oc-primary-hover: #ffc09f;
+  --oc-blue: #5c9cf5;
+  --oc-accent: #56b6c2;
+  --oc-link: #56b6c2;
+  --oc-link-url: #fab283;
+  --oc-focus: #5c9cf5;
+  --oc-success: #7fd88f;
+  --oc-danger: #e06c75;
+  --oc-warning: #f5a742;
+  --oc-purple: #9d7cd8;
+  --oc-yellow: #e5c07b;
+
+  --bs-body-bg: var(--oc-bg);
+  --bs-body-color: var(--oc-text);
+  --bs-dark: var(--oc-bg);
+  --bs-dark-rgb: 10, 10, 10;
+  --bs-light-rgb: 238, 238, 238;
+  --bs-border-color: var(--oc-border);
+  --bs-link-color: var(--oc-link);
+  --bs-link-hover-color: var(--oc-link);
+}
+
+body {
+  background: var(--oc-bg);
+  color: var(--oc-text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body.bg-dark,
+.navbar.bg-dark,
+.login-page.bg-dark {
+  background-color: var(--oc-bg) !important;
+}
+
+a,
+a:hover,
+a:focus {
+  color: var(--oc-link);
+}
+
+a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ai-message-text a {
+  color: var(--oc-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.navbar {
+  min-height: 56px;
+  border-bottom: 1px solid var(--oc-border);
+}
+
+.navbar-brand {
+  color: var(--oc-text);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.navbar .nav-link {
+  color: var(--oc-link) !important;
+  text-decoration: none;
+}
+
+.navbar .nav-link:hover,
+.navbar .nav-link:focus {
+  color: var(--oc-link) !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.navbar .dropdown .dropdown-toggle {
+  background-color: var(--oc-bg);
+}
+
+#settings-col {
+  background: var(--oc-sidebar);
+  border-right: 1px solid var(--oc-border);
+}
+
+#settingsCollapse {
+  color: var(--oc-text);
+}
+
+#settingsCollapse h5,
+#settingsCollapse h6 {
+  font-weight: 500;
+}
+
+#chat-area {
+  background: var(--oc-bg);
+}
+
+#chat-box,
+#chat-box.card,
+#chat-content.card-body {
+  background: var(--oc-bg);
+  color: var(--oc-text);
+}
+
+#chat-box.card {
+  background: var(--oc-bg) !important;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.card,
+.card-body,
+.card-header {
+  color: var(--oc-text);
+  border-color: var(--oc-border);
+}
+
+.card,
+.card.bg-dark {
+  background: var(--oc-surface) !important;
+  border-radius: 8px;
+}
+
+.card-body {
+  background: var(--oc-surface);
+}
+
+.card-header {
+  background: var(--oc-raised);
+  border-bottom: 1px solid var(--oc-border);
+}
+
+.text-hint,
+.form-text,
+.navbar-text {
+  color: var(--oc-muted);
+}
+
+.btn {
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.btn:focus-visible,
+.regenerate-button:focus-visible,
+.play-button:focus-visible,
+.delete-button:focus-visible,
+.edit-button:focus-visible,
+.branch-button:focus-visible,
+.copy-code-button:focus-visible,
+.toggle-thinking:focus-visible {
+  outline: 2px solid var(--oc-focus);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  --bs-btn-color: #0a0a0a;
+  --bs-btn-bg: var(--oc-primary);
+  --bs-btn-border-color: var(--oc-primary);
+  --bs-btn-hover-color: #0a0a0a;
+  --bs-btn-hover-bg: var(--oc-primary-hover);
+  --bs-btn-hover-border-color: var(--oc-primary-hover);
+  --bs-btn-active-color: #0a0a0a;
+  --bs-btn-active-bg: var(--oc-primary);
+  --bs-btn-active-border-color: var(--oc-primary);
+}
+
+.btn-outline-primary,
+.btn-outline-secondary,
+.btn-outline-info,
+.btn-outline-light {
+  --bs-btn-color: var(--oc-secondary);
+  --bs-btn-border-color: var(--oc-border);
+  --bs-btn-hover-color: var(--oc-text);
+  --bs-btn-hover-bg: var(--oc-hover);
+  --bs-btn-hover-border-color: var(--oc-border-active);
+  --bs-btn-active-color: var(--oc-text);
+  --bs-btn-active-bg: var(--oc-hover);
+  --bs-btn-active-border-color: var(--oc-border-active);
+}
+
+.navbar .btn-outline-light {
+  color: var(--oc-secondary);
+  border-color: var(--oc-border);
+}
+
+.navbar .btn-outline-light:hover,
+.navbar .btn-outline-light:focus {
+  background: var(--oc-hover);
+  color: var(--oc-text);
+  border-color: var(--oc-border-active);
+}
+
+.dropdown-menu,
+.dropdown-menu-dark {
+  --bs-dropdown-bg: var(--oc-surface);
+  --bs-dropdown-color: var(--oc-text);
+  --bs-dropdown-link-color: var(--oc-secondary);
+  --bs-dropdown-link-hover-color: var(--oc-text);
+  --bs-dropdown-link-hover-bg: var(--oc-hover);
+  --bs-dropdown-link-active-color: var(--oc-text);
+  --bs-dropdown-link-active-bg: var(--oc-hover);
+  --bs-dropdown-border-color: var(--oc-border);
+  background: var(--oc-surface);
+  border: 1px solid var(--oc-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.dropdown-divider {
+  border-color: var(--oc-border);
+}
+
+.form-control,
+.form-select,
+.edit-textarea {
+  background: var(--oc-surface);
+  color: var(--oc-text);
+  border: 1px solid var(--oc-border);
+  border-radius: 6px;
+}
+
+.login-page .form-control.bg-dark,
+.login-page .form-select.bg-dark {
+  background: var(--oc-surface) !important;
+}
+
+.form-control::placeholder,
+.edit-textarea::placeholder {
+  color: var(--oc-muted);
+}
+
+.form-control:focus,
+.form-select:focus,
+.edit-textarea:focus {
+  background: var(--oc-surface);
+  color: var(--oc-text);
+  border-color: var(--oc-focus);
+  box-shadow: 0 0 0 2px rgb(92 156 245 / 22%);
+}
+
+.form-check-input {
+  background-color: var(--oc-raised);
+  border-color: var(--oc-border-active);
+}
+
+.form-check-input:checked {
+  background-color: var(--oc-focus);
+  border-color: var(--oc-focus);
+}
+
+#chat-area .input-group {
+  padding: 5px;
+  background: var(--oc-raised);
+  border: 1px solid var(--oc-border);
+  border-radius: 8px;
+}
+
+#chat-area .input-group:focus-within {
+  border-color: var(--oc-focus);
+  box-shadow: 0 0 0 2px rgb(92 156 245 / 22%);
+}
+
+#chat-area .input-group .btn {
+  border: 0;
+  border-radius: 5px;
+}
+
+#chat-area .input-group .btn-outline-secondary {
+  color: var(--oc-muted);
+}
+
+#chat-area .input-group .btn-outline-secondary:hover {
+  color: var(--oc-text);
+  background: var(--oc-hover);
+}
+
+#user-input,
+#user-input:focus {
+  background: transparent;
+  border: 0;
+  color: var(--oc-text);
+  box-shadow: none;
+}
+
+#send-button {
+  background: transparent;
+  border-color: var(--oc-border);
+  color: var(--oc-secondary);
+}
+
+#send-button:hover {
+  background: var(--oc-hover);
+  border-color: var(--oc-border-active);
+  color: var(--oc-text);
+}
+
+.message {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.message.user-message {
+  background: var(--oc-surface);
+  color: var(--oc-text);
+  border: 1px solid var(--oc-border-subtle);
+  text-align: left;
+}
+
+.message.ai-message {
+  background: transparent;
+  color: var(--oc-text);
+  text-align: left;
+}
+
+.ai-message > strong {
+  color: var(--oc-secondary);
+  font-weight: 400;
+}
+
+.ai-message-text a {
+  color: var(--oc-link);
+}
+
+.system-message,
+.error-message {
+  background: var(--oc-raised);
+  border: 1px solid var(--oc-border);
+  border-radius: 6px;
+  color: var(--oc-secondary);
+}
+
+.error-message {
+  border-color: rgb(224 108 117 / 40%);
+  color: var(--oc-danger);
+}
+
+.thinking-container {
+  border-left: 0;
+  padding-left: 0;
+  color: var(--oc-secondary);
+}
+
+.toggle-thinking {
+  color: var(--oc-warning);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.toggle-thinking:hover {
+  color: var(--oc-warning);
+}
+
+/* TUI-style expand/collapse marker. Chatbot JS signals toggle state through
+   the caret icon (caret-right = collapsed, caret-down = expanded), so the
+   marker keys off it and the caret glyph itself is hidden. */
+.toggle-thinking > i {
+  display: none;
+}
+
+.toggle-thinking::before {
+  content: "+ ";
+}
+
+.toggle-thinking:has(> i.bi-caret-down-fill)::before {
+  content: "- ";
+}
+
+.thinking-content {
+  background: transparent;
+  color: var(--oc-secondary);
+  font-size: 13px;
+}
+
+.regenerate-button,
+.play-button,
+.delete-button,
+.edit-button,
+.branch-button {
+  background: var(--oc-raised);
+  color: var(--oc-secondary);
+  border: 1px solid var(--oc-border);
+  border-radius: 6px;
+}
+
+.regenerate-button:hover,
+.play-button:hover,
+.delete-button:hover,
+.edit-button:hover,
+.branch-button:hover {
+  background: var(--oc-hover);
+  color: var(--oc-text);
+  transform: none;
+}
+
+.play-button.playing {
+  background: var(--oc-hover);
+  color: var(--oc-text);
+}
+
+.play-button:disabled,
+.regenerate-button:disabled {
+  background: var(--oc-surface);
+  color: var(--oc-muted);
+  opacity: 0.55;
+}
+
+.delete-button::before {
+  background: var(--oc-danger);
+}
+
+#voice-mode-btn.active {
+  color: var(--oc-success);
+  border-color: var(--oc-success);
+}
+
+#mic-button.recording {
+  color: var(--oc-danger);
+  border-color: var(--oc-danger);
+}
+
+.code-block-container {
+  border: 1px solid var(--oc-border-subtle);
+  border-radius: 8px;
+}
+
+.code-block-header {
+  background: var(--oc-raised);
+  color: var(--oc-muted);
+  border-bottom: 1px solid var(--oc-border-subtle);
+}
+
+.ai-message pre,
+.code-block-container .hljs {
+  background: var(--oc-surface) !important;
+  color: var(--oc-text);
+}
+
+/* TUI "opencode" syntax palette over vendored highlight.js github-dark. */
+.ai-message .hljs {
+  color: var(--oc-text);
+}
+
+.ai-message .hljs-comment,
+.ai-message .hljs-quote {
+  color: var(--oc-muted);
+  font-style: italic;
+}
+
+.ai-message .hljs-keyword,
+.ai-message .hljs-selector-tag,
+.ai-message .hljs-doctag,
+.ai-message .hljs-template-tag {
+  color: var(--oc-purple);
+}
+
+.ai-message .hljs-string,
+.ai-message .hljs-regexp,
+.ai-message .hljs-meta .hljs-string {
+  color: var(--oc-success);
+}
+
+.ai-message .hljs-title,
+.ai-message .hljs-title.function_,
+.ai-message .hljs-built_in,
+.ai-message .hljs-symbol,
+.ai-message .hljs-bullet {
+  color: var(--oc-primary);
+}
+
+.ai-message .hljs-title.class_,
+.ai-message .hljs-type {
+  color: var(--oc-yellow);
+}
+
+.ai-message .hljs-number,
+.ai-message .hljs-literal {
+  color: var(--oc-warning);
+}
+
+.ai-message .hljs-variable,
+.ai-message .hljs-template-variable,
+.ai-message .hljs-name {
+  color: var(--oc-danger);
+}
+
+.ai-message .hljs-operator,
+.ai-message .hljs-selector-attr,
+.ai-message .hljs-selector-class,
+.ai-message .hljs-selector-id,
+.ai-message .hljs-attr,
+.ai-message .hljs-attribute {
+  color: var(--oc-accent);
+}
+
+.ai-message .hljs-addition {
+  color: #4fd6be;
+  background-color: #20303b;
+}
+
+.ai-message .hljs-deletion {
+  color: #c53b53;
+  background-color: #37222c;
+}
+
+.copy-code-button {
+  color: var(--oc-muted);
+}
+
+.copy-code-button:hover {
+  color: var(--oc-text);
+  background: var(--oc-hover);
+}
+
+.copy-code-button.copied {
+  color: var(--oc-success);
+}
+
+.copy-code-button.copy-failed {
+  color: var(--oc-danger);
+}
+
+:not(pre) > code {
+  background: rgb(127 216 143 / 8%);
+  color: var(--oc-success);
+}
+
+.ai-message-text h1,
+.ai-message-text h2,
+.ai-message-text h3,
+.ai-message-text h4,
+.ai-message-text h5,
+.ai-message-text h6,
+.ai-message h1,
+.ai-message h2,
+.ai-message h3,
+.ai-message h4,
+.ai-message h5,
+.ai-message h6 {
+  color: var(--oc-purple);
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.ai-message-text strong,
+.ai-message-text b {
+  color: var(--oc-warning);
+  font-weight: 600;
+}
+
+.ai-message > strong {
+  color: var(--oc-secondary);
+  font-weight: 400;
+}
+
+.message.user-message > strong,
+.user-message > strong {
+  color: var(--oc-text);
+  font-weight: 600;
+}
+
+.ai-message-text em,
+.ai-message em {
+  color: var(--oc-yellow);
+}
+
+.ai-message-text ul > li::marker,
+.ai-message ul > li::marker,
+.user-message ul > li::marker {
+  color: var(--oc-primary);
+}
+
+.ai-message-text ol > li::marker,
+.ai-message ol > li::marker,
+.user-message ol > li::marker {
+  color: var(--oc-accent);
+}
+
+.ai-message th,
+.ai-message td,
+.ai-message table {
+  border-color: var(--oc-border);
+}
+
+.ai-message th {
+  background: var(--oc-raised);
+}
+
+.ai-message-text blockquote,
+.user-message-text blockquote {
+  border-left-color: var(--oc-yellow);
+  color: var(--oc-yellow);
+  font-style: italic;
+}
+
+.image-preview-container {
+  background: var(--oc-raised);
+}
+
+.chat-image,
+.edit-image-thumb {
+  border-color: var(--oc-border);
+}
+
+.tts-sentence-highlight {
+  background: rgb(86 108 194 / 22%);
+  box-shadow: 0 0 0 1px rgb(86 108 194 / 40%);
+}
+
+.tts-sentence-highlight-playing {
+  background: rgb(224 108 117 / 20%);
+  box-shadow: 0 0 0 1px rgb(224 108 117 / 45%);
+}
+
+.tts-hover-play-icon {
+  background: var(--oc-surface);
+  border-color: var(--oc-accent);
+  color: var(--oc-accent);
+}
+
+.tts-hover-play-icon.is-stop {
+  border-color: var(--oc-danger);
+  color: var(--oc-danger);
+}
+
+::-webkit-scrollbar-track {
+  background: var(--oc-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--oc-border);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--oc-border-active);
+}
+
+@media (max-width: 767.98px) {
+  #settings-col {
+    border-right: 0;
+    border-bottom: 1px solid var(--oc-border);
+  }
+
+  #chat-area .input-group {
+    padding-bottom: calc(5px + env(safe-area-inset-bottom, 0px));
+  }
+
+  #user-input {
+    min-width: 0;
+    font-size: 16px;
+  }
+}
