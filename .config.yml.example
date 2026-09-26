@@ -14,6 +14,17 @@ stt_enabled: true
 # Classification covers the complete configured processing path. Default is non_private.
 stt_privacy_level: non_private
 tts_privacy_level: non_private
+# Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
+# Default is anyone — suitable for LAN / local-models deploys. Use authenticated or
+# premium on internet-facing hosts that pay for GPU voice.
+tts_access: anyone
+# Voice service connection (the vertically integrated chatbot-cuda container)
+voice_service_host: voice-service
+voice_service_port: 5100
+# GPU device index (as shown by nvidia-smi) for the voice service.
+# Set to 0 for the first GPU, 1 for the second, etc.
+voice_gpu_device: 0
+
 # Search destinations are shared across LLMs; absent classifications default to non_private.
 search_providers:
   # Brave standard retains anonymized logs for 90 days; enterprise ZDR can qualify as private after verification.
@@ -22,17 +33,6 @@ search_providers:
   # Team-ZDR covers xAI storage; upstream provider logging is undocumented.
   xai_native:
     privacy_level: standard
-# Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
-# Default is anyone — suitable for LAN / local-models deploys. Use authenticated or
-# premium on internet-facing hosts that pay for GPU voice.
-tts_access: anyone
-
-# Voice service connection (the vertically integrated chatbot-cuda container)
-voice_service_host: voice-service
-voice_service_port: 5100
-# GPU device index (as shown by nvidia-smi) for the voice service.
-# Set to 0 for the first GPU, 1 for the second, etc.
-voice_gpu_device: 0
 
 default_llm: "Local LLM (Free Tier)"
 default_system_prompt: "You are a helpful AI assistant. Provide clear and concise answers to user queries."
