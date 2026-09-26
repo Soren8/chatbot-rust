@@ -1193,7 +1193,6 @@ function refreshPrivacyControls() {
 function disablePremiumModels() { refreshPrivacyControls(); }
 window.validateModelTier = function validateModelTier() {
   updateSearchToggleVisibility();
-  refreshPrivacyControls();
 };
 
 function updateSearchToggleVisibility() {
@@ -2618,7 +2617,8 @@ $(document).ready(function() {
     window.location.reload();
   });
 
-  disablePremiumModels();
+  // Visibility sync ends with a full privacy-control refresh, so no
+  // separate initial refresh is needed here.
   updateSearchToggleVisibility();
 
   // Initialize checkboxes

@@ -101,6 +101,12 @@ const slices = [
     '/**\n * Play TTS for an AI message.'],
   ['  function stopAllTtsPlayback(opts) {',
     '  function stopVoicePlaybackOnly() {'],
+  ['function currentSetId() {',
+    'function currentSetIdentity() {'],
+  ['function isLiveMemoryBinding(binding) {',
+    'function appendVoiceSetId(form, binding) {'],
+  ['function chatPolicyReady() {',
+    'function selectedModelProblem() {'],
 ];
 
 function loadSlice(startAnchor, endAnchor) {
@@ -147,11 +153,15 @@ function makeRig(opts) {
   }
   FakeMutationObserver.prototype.observe = function () {};
   FakeMutationObserver.prototype.disconnect = function () { state.observerDisconnects.push(this); };
-  const window = {};
+  const window = { APP_DATA: { loggedIn: false, autoplayTTS: false } };
+  // Real conversation owners for the voice-binding helpers: guest world with
+  // a fresh history window, so bindings stay live without login state.
+  const historyWindow = conversationState.createHistoryWindow(40);
   const context = vm.createContext({
     ChatVoiceLifecycle: voiceLifecycleMod,
     ChatTtsPlayback: ttsPlayback,
     ChatPlaybackSource: playbackSource,
+    ChatConversationState: conversationState,
     sanitizeForTTS: voiceText.sanitizeForTTS,
     splitSentences: voiceText.splitSentences,
     sentenceEndsWithTerminator: voiceText.sentenceEndsWithTerminator,
@@ -168,6 +178,7 @@ function makeRig(opts) {
     window,
     document: { querySelectorAll: () => [] },
     $: () => ({ removeClass() { return this; }, prop() { return this; }, html() { return this; } }),
+    historyWindow,
     syncSendButtonState: () => {},
     reportVoice: (k, m) => { state.reports.push(k + ':' + m); },
     appendMessage: (t) => { state.chatErrors.push(String(t)); },
@@ -290,6 +301,8 @@ async function checkFixedRetry() {
   const realComplete = voiceLifecycle.completeDesktopPlayback.bind(voiceLifecycle);
   voiceLifecycle.completeDesktopPlayback = (b) => { completedCalls += 1; return realComplete(b); };
   const sessionId = voiceLifecycle.beginDesktopPlayback({});
+  // Mirror production's click path: capture the voice binding before playing.
+  vm.runInContext('desktopTtsBinding = captureVoiceBinding();', rig.context);
   V('playFixedSentenceList')(sessionId, {}, ['Alpha one here.', 'Beta two here.']);
   await flush();
   await flush();

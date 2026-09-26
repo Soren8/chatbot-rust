@@ -45,6 +45,8 @@ const slices = [
   ['function refreshSession() {', 'function historyImageUrl(pairIndex, imageIndex) {'],
   ['function withCsrf(headers) {', 'var historyWindow = ChatConversationState.createHistoryWindow'],
   ['function liveUserPairIndex(userMessageElement) {', 'function isLocalOnlyTurn(el) {'],
+  ['function currentSetId() {', 'function currentSetIdentity() {'],
+  ['let loadedPrivacy = null;', 'function refreshPrivacyControls() {'],
   ['async function response401Message(response) {', 'function logoutThisComputer() {'],
   ['function fetchHistoryPair(pairIndex, extra) {', 'function sizeEditTextarea(textarea) {'],
   ['function beginChatRequest() {', '// Sanitize raw markdown text for TTS'],
@@ -171,6 +173,21 @@ function makeWorld() {
     lastSet: 'A',
     setVersion: 5,
     autoplayTTS: false,
+    userTier: 'free',
+    webSearch: false,
+    availableModels: [
+      {
+        provider_name: 'model-a',
+        tier: 'free',
+        privacy_level: 'private',
+        search: true,
+        search_privacy_level: 'private',
+      },
+    ],
+    voiceCapabilities: {
+      stt: { privacy_level: 'private' },
+      tts: { privacy_level: 'private' },
+    },
   };
   const window = {
     APP_DATA,
@@ -334,6 +351,8 @@ function makeWorld() {
     reindexUserPairIndices: () => {},
     scrollToBottom: () => {},
     shouldStickChatToBottom: () => false,
+    // Leaf DOM sink: control-state projection with no request-ownership role.
+    refreshPrivacyControls: () => {},
     playMessageTts: (b) => { ttsPlays.push(b); },
     primeDesktopTtsAudioFromGesture: () => {},
     activeSetName: () => sel.name,
@@ -345,6 +364,9 @@ function makeWorld() {
   for (const [startAnchor, endAnchor] of slices) {
     vm.runInContext(loadSlice(startAnchor, endAnchor), ctx);
   }
+  // Model the loaded server privacy policy for the initially selected set,
+  // so the real eligibility chain authorizes sends (search toggle stays off).
+  vm.runInContext('loadedPrivacy = ({ setId: "set-A", level: "private" });', ctx);
   // The regen slice assigns window handlers; expose bare aliases for direct
   // calls, then point the window entry at the submit spy for the pair tests.
   vm.runInContext('var regenerateMessage = window.regenerateMessage; var performRegeneration = window.performRegeneration;', ctx);
@@ -386,6 +408,8 @@ function makeWorld() {
       APP_DATA.lastSetId = id;
       APP_DATA.lastSet = name;
       APP_DATA.setVersion = version;
+      // Model the policy load for the newly selected set, as production does.
+      vm.runInContext('loadedPrivacy = ({ setId: ' + JSON.stringify(id) + ', level: "private" });', ctx);
       historyWindow.beginSetLoad();
       vm.runInContext('settleChatRequestForSetSwitch()', ctx);
     },
