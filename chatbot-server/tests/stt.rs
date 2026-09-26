@@ -10,6 +10,8 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use bcrypt::{hash, DEFAULT_COST};
+use chatbot_core::user_store::{CreateOutcome, UserStore};
 use chatbot_server::{build_router, resolve_static_root};
 use chatbot_test_support::TestWorkspace;
 use once_cell::sync::Lazy;
@@ -374,6 +376,58 @@ async fn stt_rejects_audio_exceeding_max_audio_bytes() {
 
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");
+}
+
+#[tokio::test]
+async fn authenticated_legacy_stt_requires_valid_user_key_before_dispatch() {
+    common::init_tracing();
+    let _lock = STT_TEST_MUTEX.lock().unwrap();
+    let (router, received) = stt_success_router();
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let config = stt_test_config(&addr.ip().to_string(), addr.port());
+    let _workspace = TestWorkspace::with_config(&config.replace(
+        "tts_provider: kokoro", "tts_provider: kokoro\n# Local stub: no retention.\nstt_privacy_level: private",
+    ));
+    let app = build_router(resolve_static_root());
+    let mut users = UserStore::new().unwrap();
+    let hashed = hash("password123", DEFAULT_COST).unwrap();
+    assert!(matches!(users.create_user("legacystt", &hashed), Ok(CreateOutcome::Created)));
+
+    let login_page = app.clone().oneshot(Request::builder().uri("/login").body(Body::empty()).unwrap()).await.unwrap();
+    let guest_cookie = common::extract_cookie(login_page.headers()[header::SET_COOKIE].to_str().unwrap());
+    let body = axum::body::to_bytes(login_page.into_body(), 64 * 1024).await.unwrap();
+    let login_csrf = common::extract_csrf_token(std::str::from_utf8(&body).unwrap()).unwrap();
+    let form = format!("username=legacystt&password=password123&csrf_token={login_csrf}");
+    let login = app.clone().oneshot(Request::builder().method(Method::POST).uri("/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, guest_cookie).body(Body::from(form)).unwrap()).await.unwrap();
+    assert_eq!(login.status(), StatusCode::FOUND);
+    let cookie = common::extract_cookie(login.headers()[header::SET_COOKIE].to_str().unwrap());
+    let home = app.clone().oneshot(Request::builder().uri("/").header(header::COOKIE, &cookie)
+        .body(Body::empty()).unwrap()).await.unwrap();
+    let body = axum::body::to_bytes(home.into_body(), 256 * 1024).await.unwrap();
+    let csrf = META_TOKEN_RE.captures(std::str::from_utf8(&body).unwrap()).unwrap()[1].to_owned();
+    let valid_key = common::derive_encryption_key_header("legacystt", "password123");
+    let boundary = "legacyvoice";
+    let multipart = format!("--{boundary}\r\ncontent-disposition: form-data; name=\"audio\"; filename=\"a.webm\"\r\ncontent-type: audio/webm\r\n\r\nfakeaudio\r\n--{boundary}--\r\n");
+
+    for key in [None, Some("invalid-key"), Some(valid_key.as_str())] {
+        let mut request = Request::builder().method(Method::POST).uri("/stt")
+            .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+            .header("X-CSRF-Token", &csrf).header(header::COOKIE, &cookie);
+        if let Some(key) = key {
+            request = request.header("X-Enc-Key", key);
+        }
+        let response = app.clone().oneshot(request.body(Body::from(multipart.clone())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), if key == Some(valid_key.as_str()) {
+            StatusCode::OK
+        } else {
+            StatusCode::UNAUTHORIZED
+        }, "key case {key:?}");
+        assert_eq!(*received.lock().unwrap(), if key == Some(valid_key.as_str()) { 9 } else { 0 });
+    }
+    shutdown.send(()).ok();
+    handle.join().unwrap();
 }
 
 /// The server must always report which audio codec arrived (info level, so it

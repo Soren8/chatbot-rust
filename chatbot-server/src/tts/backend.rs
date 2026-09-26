@@ -114,7 +114,7 @@ pub(super) async fn synthesize_pcm(
 
     if !status.is_success() {
         let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "TTS backend returned error for /tts_stream");
+        error!(?status, error_len = message.len(), "TTS backend returned error for /tts_stream");
         return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
     }
 
@@ -188,7 +188,7 @@ async fn handle_fish_speech(text: String, tts_base_url: String) -> Result<Synthe
     if !status.is_success() {
         let bytes = response.bytes().await.unwrap_or_default();
         let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "Fish Speech backend returned error");
+        error!(?status, error_len = message.len(), "Fish Speech backend returned error");
         return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
     }
 
@@ -246,7 +246,7 @@ async fn handle_kokoro_tts(
 
     if !status.is_success() {
         let message = extract_backend_error(status, &bytes);
-        error!(?status, message, "Kokoro TTS voice service returned error");
+        error!(?status, error_len = message.len(), "Kokoro TTS voice service returned error");
         return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
     }
 

@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+use chatbot_core::{config::PrivacyLevel, history::SetId};
+
 const MAX_PENDING_TTS: usize = 128;
 const TTS_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
 // Initial transfer plus three retries, matching NativeVoiceTts MAX_CLIP_ATTEMPTS.
@@ -29,6 +31,53 @@ struct PendingTts {
     created_at: Instant,
     replay_count: u8,
     generating: bool,
+    binding: TtsBinding,
+    destination: TtsDestination,
+}
+
+/// Who a pending TTS token may synthesize for. The decryption key is never
+/// stored; the binding carries only ownership and the required privacy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TtsBinding {
+    /// Authenticated set-bound request.
+    Set {
+        owner: String,
+        set_id: SetId,
+        required: PrivacyLevel,
+    },
+    /// Authenticated request without a set identity: immutable Private.
+    LegacyPrivate { owner: String },
+    /// Guest request without a set identity: existing access, no guarantee.
+    Guest,
+}
+
+/// Synthesis inputs captured at POST so delayed GET synthesizes the admitted
+/// destination instead of a newly selected backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TtsDestination {
+    pub(crate) provider: String,
+    pub(crate) voice: Option<String>,
+    pub(crate) voice_service_base_url: String,
+    pub(crate) tts_base_url: String,
+    pub(crate) codec: String,
+    pub(crate) required: PrivacyLevel,
+}
+
+impl TtsDestination {
+    pub(crate) fn fallback() -> Self {
+        Self {
+            provider: String::new(),
+            voice: None,
+            voice_service_base_url: String::new(),
+            tts_base_url: String::new(),
+            codec: "opus".to_string(),
+            required: PrivacyLevel::NonPrivate,
+        }
+    }
+}
+
+pub(crate) fn normalise_tts_owner(owner: &str) -> String {
+    owner.trim().to_lowercase()
 }
 
 /// Arbitration of one GET /tts_stream/{token} against the store.
@@ -39,6 +88,8 @@ pub(crate) enum BeginOutcome<'a> {
     /// hands out a lease that settles the flag after synthesis.
     Begin {
         text: String,
+        binding: TtsBinding,
+        destination: TtsDestination,
         lease: GenerationLease<'a>,
     },
     /// Another request is already generating this token.
@@ -65,6 +116,18 @@ impl PendingTtsStore {
     /// Admit a fresh token. Returns false when full with nothing safe to
     /// evict. Reinserting an existing token overwrites it.
     pub(crate) fn insert(&self, token: String, text: String) -> bool {
+        self.insert_bound(token, text, TtsBinding::Guest, TtsDestination::fallback())
+    }
+
+    /// Admit a fresh token with its privacy binding and captured synthesis
+    /// destination. Returns false when full with nothing safe to evict.
+    pub(crate) fn insert_bound(
+        &self,
+        token: String,
+        text: String,
+        binding: TtsBinding,
+        destination: TtsDestination,
+    ) -> bool {
         let mut map = self.map.write().expect("tts lock");
         insert_pending_tts(
             &mut map,
@@ -75,8 +138,36 @@ impl PendingTtsStore {
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
+                binding,
+                destination,
             },
         )
+    }
+
+    /// Snapshot a token's binding and destination without arbitrating
+    /// generation. Callers acquire the set permit after this snapshot and
+    /// then call [`begin`](Self::begin), which re-checks existence.
+    pub(crate) fn snapshot(&self, token: &str) -> Option<(TtsBinding, TtsDestination)> {
+        let mut map = self.map.write().expect("tts lock");
+        prune_pending_tts(&mut map);
+        map.get(token)
+            .map(|pending| (pending.binding.clone(), pending.destination.clone()))
+    }
+
+    /// Remove all pending/cached tokens bound to one owned set. Called while
+    /// holding that set's exclusive privacy permit during a successful mode
+    /// change so stale tokens cannot synthesize under a new mode.
+    pub(crate) fn invalidate_owner_set(&self, owner: &str, set_id: SetId) {
+        let owner = normalise_tts_owner(owner);
+        let mut map = self.map.write().expect("tts lock");
+        map.retain(|_, pending| match &pending.binding {
+            TtsBinding::Set {
+                owner: bound,
+                set_id: bound_id,
+                ..
+            } => bound != &owner || *bound_id != set_id,
+            _ => true,
+        });
     }
 
     /// Arbitrate one stream request: cached audio, first generation with a
@@ -101,6 +192,8 @@ impl PendingTtsStore {
             pending.generating = true;
             BeginOutcome::Begin {
                 text: pending.text.clone(),
+                binding: pending.binding.clone(),
+                destination: pending.destination.clone(),
                 lease: GenerationLease {
                     store: self,
                     token: token.to_string(),
@@ -224,6 +317,8 @@ mod tests {
                     created_at: Instant::now(),
                     replay_count: 0,
                     generating: false,
+                    binding: TtsBinding::Guest,
+                    destination: TtsDestination::fallback(),
                 },
             );
         }
@@ -242,6 +337,8 @@ mod tests {
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
 
@@ -269,6 +366,8 @@ mod tests {
                 created_at: now - Duration::from_secs(11 * 60),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         map.insert(
@@ -279,6 +378,8 @@ mod tests {
                 created_at: now - Duration::from_secs(9 * 60),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         map.insert(
@@ -289,6 +390,8 @@ mod tests {
                 created_at: now,
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
 
@@ -319,6 +422,8 @@ mod tests {
                     created_at: Instant::now(),
                     replay_count: 0,
                     generating: false,
+                    binding: TtsBinding::Guest,
+                    destination: TtsDestination::fallback(),
                 },
             );
         }
@@ -330,6 +435,8 @@ mod tests {
                 created_at: now - Duration::from_secs(11 * 60),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         assert_eq!(map.len(), MAX_PENDING_TTS);
@@ -343,6 +450,8 @@ mod tests {
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
 
@@ -368,6 +477,8 @@ mod tests {
                     created_at: Instant::now(),
                     replay_count: 0,
                     generating: false,
+                    binding: TtsBinding::Guest,
+                    destination: TtsDestination::fallback(),
                 },
             );
         }
@@ -383,6 +494,8 @@ mod tests {
                 created_at: now - Duration::from_secs(5 * 60),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         map.insert(
@@ -397,6 +510,8 @@ mod tests {
                 created_at: now - Duration::from_secs(4 * 60),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         map.insert(
@@ -407,6 +522,8 @@ mod tests {
                 created_at: now - Duration::from_secs(2 * 60),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         assert_eq!(map.len(), MAX_PENDING_TTS);
@@ -420,6 +537,8 @@ mod tests {
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
 
@@ -453,6 +572,8 @@ mod tests {
                     created_at: Instant::now(),
                     replay_count: 0,
                     generating: false,
+                    binding: TtsBinding::Guest,
+                    destination: TtsDestination::fallback(),
                 },
             );
         }
@@ -464,6 +585,8 @@ mod tests {
                 created_at: now - Duration::from_secs(2 * 60),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         assert_eq!(map.len(), MAX_PENDING_TTS);
@@ -477,6 +600,8 @@ mod tests {
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
 
@@ -502,6 +627,8 @@ mod tests {
                     created_at: Instant::now(),
                     replay_count: 0,
                     generating: false,
+                    binding: TtsBinding::Guest,
+                    destination: TtsDestination::fallback(),
                 },
             );
         }
@@ -513,6 +640,8 @@ mod tests {
                 created_at: now - Duration::from_secs(5 * 60),
                 replay_count: 0,
                 generating: true,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         map.insert(
@@ -527,6 +656,8 @@ mod tests {
                 created_at: now - Duration::from_secs(5 * 60),
                 replay_count: 0,
                 generating: true,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
         assert_eq!(map.len(), MAX_PENDING_TTS);
@@ -540,6 +671,8 @@ mod tests {
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
 
@@ -565,6 +698,8 @@ mod tests {
                     created_at: Instant::now(),
                     replay_count: 0,
                     generating: false,
+                    binding: TtsBinding::Guest,
+                    destination: TtsDestination::fallback(),
                 },
             );
         }
@@ -579,6 +714,8 @@ mod tests {
                 created_at: Instant::now(),
                 replay_count: 0,
                 generating: false,
+                binding: TtsBinding::Guest,
+                destination: TtsDestination::fallback(),
             },
         );
 
@@ -651,7 +788,7 @@ mod tests {
         insert_text(&store, "token", "hello");
 
         let first = store.begin("token");
-        let BeginOutcome::Begin { text, lease } = first else {
+        let BeginOutcome::Begin { text, lease, .. } = first else {
             panic!("first stream must start generation");
         };
         assert_eq!(text, "hello");

@@ -199,6 +199,7 @@ NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance(skipP
   this.startGateChunks = [];
   this._resetSpeechCounters();
   this.utteranceStartedAt = host.now();
+  this.utteranceBinding = host.captureBinding ? host.captureBinding() : null;
   host.onUtteranceStartedAt(this.utteranceStartedAt);
   this.speechActiveMs = startChunks.length * 20;
   this.speechLikeMs = startChunks.length * 20;
@@ -233,13 +234,16 @@ NativeMicUtteranceVAD.prototype._endUtterance = function _endUtterance() {
     + ' speechMs=' + this.speechActiveMs);
   host.report('VOICE', 'utterance end chunks=' + this.utteranceChunks.length
     + ' speechMs=' + this.speechActiveMs);
-  host.onUtteranceEnd();
+  this.completedBinding = this.utteranceBinding;
+  host.onUtteranceEnd(this.completedBinding);
+  this.utteranceBinding = null;
 };
 
 NativeMicUtteranceVAD.prototype.takeSpeechPcm16 = function () {
   var host = this._host;
   const pcm16 = host.nativeAudio.mergePcm16Chunks(this.utteranceChunks);
   this.utteranceChunks = [];
+  this.completedBinding = null;
   return pcm16;
 };
 
@@ -267,6 +271,7 @@ NativeMicUtteranceVAD.prototype.start = async function () {
     host.log('VAD', 'NativeMicUtteranceVAD start (RMS v' + host.nativeAudio.VOICE_MODE_NATIVE_VAD_VERSION + ')');
     this.preRollBuffer.clear();
     this.utteranceChunks = [];
+    this.completedBinding = null;
     this.startGateChunks = [];
     this.inSpeech = false;
     this._resetSpeechCounters();
@@ -346,6 +351,7 @@ NativeMicUtteranceVAD.prototype.stop = async function () {
 
     this.preRollBuffer.clear();
     this.utteranceChunks = [];
+    this.completedBinding = null;
     this.startGateChunks = [];
     if (host.registry.isCurrent(this)) {
       const stopPromise = Promise.resolve().then(function () {

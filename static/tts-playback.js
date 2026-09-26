@@ -75,6 +75,7 @@
     var getAbortSignal = deps.getAbortSignal;
     var fetchVoiceRetry = deps.fetchVoiceRetry;
     var withCsrf = deps.withCsrf;
+    var getSetId = deps.getSetId;
     var getAudio = deps.getAudio;
     var createObjectUrl = deps.createObjectUrl;
     var adoptBlobUrl = deps.adoptBlobUrl;
@@ -118,7 +119,7 @@
       var promise = fetchVoiceRetry('/tts', {
         method: 'POST',
         headers: withCsrf({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ text: cleaned }),
+        body: JSON.stringify(Object.assign({ text: cleaned }, getSetId && getSetId() ? { set_id: getSetId() } : {})),
         signal: signal
       })
       .then(function (r) {
@@ -314,7 +315,7 @@
         if (err && (err.name === 'AbortError' || (err.message && err.message.indexOf('aborted') !== -1))) {
           return false;
         }
-        logError('TTS error:', err);
+        logError('TTS error:', err && err.name);
         return false;
       });
     }
@@ -670,6 +671,8 @@
     // per-message source on deps at this point.
     if (typeof deps.initMessageContext === 'function') deps.initMessageContext();
     source = deps.source || source;
+    var binding = deps.binding;
+    if (deps.isBindingLive && !deps.isBindingLive(binding)) return;
     var pendingNativeTtsTokens = new Set();
     var stopped = false;
     var consumedSentences = 0;
@@ -704,7 +707,8 @@
     syncSendButton();
 
     function live() {
-      return !stopped && voiceLifecycle.isLiveNativeGeneration(generation);
+      return !stopped && voiceLifecycle.isLiveNativeGeneration(generation)
+        && (!deps.isBindingLive || deps.isBindingLive(binding));
     }
 
     function discoverSentences() {
@@ -734,7 +738,7 @@
         if (nativeBackpressure) lookahead = Math.min(MAX_NATIVE_TTS_LOOKAHEAD, res.maxQueuedClips);
         var nativeStarted = false;
         var listenerPromise = bridge.addListener('playbackState', function (data) {
-          if (!data || !voiceLifecycle.isLiveNativeGeneration(generation)) return;
+          if (!data || !live()) return;
           if (nativeSessionGen && data.generation && data.generation !== nativeSessionGen) return;
           if (data.type === 'started') {
             nativeStarted = true;
@@ -813,7 +817,7 @@
         return fetchVoiceRetry('/tts', {
           method: 'POST',
           headers: withCsrf({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: cleaned }),
+          body: JSON.stringify(Object.assign({ text: cleaned }, deps.isAuthenticated && deps.isAuthenticated() && binding && binding.setId ? { set_id: binding.setId } : {})),
           signal: ttsSignal
         });
       }).then(function (response) {
@@ -899,7 +903,7 @@
           cancelToken(job.token);
         }
         if (!live()) return;
-        logError('Native voice TTS sentence failed after retries:', err);
+          logError('Native voice TTS sentence failed after retries:', err && err.name);
         reportVoice('VOICE-ERROR', 'TTS sentence failed (native)');
         appendMessage('Voice output failed. Try again.', 'error-message');
         stopped = true;
@@ -925,7 +929,7 @@
           if (!live()) return;
           stopped = true;
           teardownObserver();
-          logError('Native voice TTS session failed:', err);
+          logError('Native voice TTS session failed:', err && err.name);
           bridge.stop().catch(function () {});
           if (typeof deps.finishNative === 'function') deps.finishNative(generation, button);
           else voiceLifecycle.finishNativePlayback(generation, button);

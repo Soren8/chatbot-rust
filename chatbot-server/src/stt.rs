@@ -11,8 +11,8 @@ use serde_json::Value;
 use tracing::error;
 
 use crate::http_error::{
-    api_error, log_and_api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
-    map_serialization_err, map_session_err, HttpError,
+    api_error, api_error_json, log_and_api_error, map_body_read_err, map_encryption_key_validation_err,
+    map_json_parse_err, map_response_build_err, map_serialization_err, map_session_err, HttpError,
 };
 use crate::services::AppServices;
 
@@ -33,11 +33,13 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
-    let headers = &parts.headers;
+    // Clone headers: parts is rebuilt into a multipart request below, but the
+    // privacy binding afterwards still needs cookie/CSRF/IP inputs.
+    let headers = parts.headers.clone();
 
-    let cookie_header = crate::request_context::extract_cookie(headers);
+    let cookie_header = crate::request_context::extract_cookie(&headers);
 
-    let csrf_token = crate::request_context::extract_csrf(headers);
+    let csrf_token = crate::request_context::extract_csrf(&headers);
 
     let csrf_valid = identity
         .validate_csrf_token(cookie_header.as_deref(), csrf_token)
@@ -63,10 +65,16 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     let mut audio_data: Option<Vec<u8>> = None;
     let mut audio_content_type = String::from("audio/webm");
     let mut audio_file_name = String::from("audio.webm");
+    let mut set_id_raw: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().map(|n| n.to_owned());
         if name.as_deref() == Some("audio") {
+            if audio_data.is_some() {
+                // Drain duplicate audio fields without buffering them.
+                let _ = field.bytes().await;
+                continue;
+            }
             if let Some(ct) = field.content_type() {
                 audio_content_type = ct.to_owned();
             }
@@ -81,7 +89,21 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
                 return Err(api_error(StatusCode::BAD_REQUEST, "audio file too large"));
             }
             audio_data = Some(data.to_vec());
-            break;
+            // Do not break: a set_id metadata field may follow the audio.
+        } else if name.as_deref() == Some("set_id") {
+            if set_id_raw.is_none() {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|err| map_body_read_err(err, "stt::post::set_id"))?;
+                if text.len() > 512 {
+                    return Err(api_error(StatusCode::BAD_REQUEST, "set_id too large"));
+                }
+                let trimmed = text.trim().to_owned();
+                if !trimmed.is_empty() {
+                    set_id_raw = Some(trimmed);
+                }
+            }
         }
     }
 
@@ -104,6 +126,73 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         compressed,
         "STT audio received"
     );
+
+    // Privacy binding: the initiating conversation authorizes voice
+    // dispatch. Client-supplied privacy levels never authorize anything.
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "stt::post::session",
+    )?;
+    let (session_context, encryption_key) = data_context.into_unverified_parts();
+    let chat = services.chat().clone();
+    let stt_level = services
+        .config_source()
+        .destination_policy()
+        .map(|policy| policy.stt)
+        .unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate);
+    // Shared set permits are held across the single outbound voice-service
+    // call so a mode change cannot slip between authorization and dispatch.
+    let _stt_permit = match session_context.username.as_deref() {
+        Some(user) => {
+            if let Some(raw) = set_id_raw.as_deref() {
+                // Bound requests read the authoritative stored mode, which
+                // requires the valid per-request user key.
+                let key = encryption_key.as_ref().ok_or_else(|| {
+                    api_error(StatusCode::UNAUTHORIZED, "Encryption key required. Please unlock.")
+                })?;
+                chat.validate_encryption_key_for_user(user, Some(key))
+                    .map_err(map_encryption_key_validation_err)?;
+                let history = chat.history().map_err(|_| {
+                    api_error(StatusCode::INTERNAL_SERVER_ERROR, "history unavailable")
+                })?;
+                let set_id =
+                    crate::set_privacy_coordinator::resolve_content_set(&history, user, Some(raw), None, key)
+                        .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+                let permit = services.set_privacy().content(user, set_id).await;
+                let snapshot = history
+                    .load(user, set_id, key)
+                    .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+                if !chatbot_core::config::destination_is_eligible(snapshot.privacy_level, stt_level) {
+                    return Err(api_error_json(
+                        StatusCode::FORBIDDEN,
+                        serde_json::json!({"error":"privacy_restricted","destination":"stt"}),
+                    ));
+                }
+                Some(permit)
+            } else {
+                chat.validate_encryption_key_for_user(user, encryption_key.as_ref())
+                    .map_err(map_encryption_key_validation_err)?;
+                if !chatbot_core::config::destination_is_eligible(
+                    chatbot_core::config::PrivacyLevel::Private,
+                    stt_level,
+                ) {
+                    return Err(api_error_json(
+                        StatusCode::FORBIDDEN,
+                        serde_json::json!({"error":"privacy_restricted","destination":"stt","hint":"bind_set_id"}),
+                    ));
+                }
+                None
+            }
+        }
+        None => {
+            if set_id_raw.is_some() {
+                return Err(api_error(StatusCode::BAD_REQUEST, "set_id requires login"));
+            }
+            None
+        }
+    };
 
     let config = services.config_source();
     let base = config.voice_service_base_url();
@@ -142,7 +231,7 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
 
     if !status.is_success() {
         let message = extract_error(status, &body_bytes);
-        error!(?status, message, "voice service STT returned error");
+        error!(?status, error_len = message.len(), "voice service STT returned error");
         return Err(api_error(StatusCode::BAD_GATEWAY, "STT backend provider error"));
     }
 

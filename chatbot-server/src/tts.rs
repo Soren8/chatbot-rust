@@ -11,8 +11,9 @@ use serde_json::json;
 use tracing::{debug, error};
 
 use crate::http_error::{
-    api_error, map_body_read_err, map_json_parse_err, map_response_build_err,
-    map_serialization_err, map_session_err, map_user_store_err, HttpError,
+    api_error, api_error_json, map_body_read_err, map_encryption_key_validation_err,
+    map_json_parse_err, map_response_build_err, map_serialization_err, map_session_err,
+    map_user_store_err, HttpError,
 };
 use crate::identity::RequestIdentity;
 use crate::policy::TtsPolicy;
@@ -22,7 +23,7 @@ use crate::tts_opus;
 mod backend;
 pub(crate) mod store;
 mod text;
-use store::{BeginOutcome, PendingTtsStore, TtsWireAudio};
+use store::{BeginOutcome, PendingTtsStore, TtsBinding, TtsDestination, TtsWireAudio};
 use text::sanitize_text;
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
@@ -44,6 +45,8 @@ pub(crate) fn global_pending_store() -> &'static PendingTtsStore {
 struct ApiTtsRequest {
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    set_id: Option<String>,
 }
 
 pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpError> {
@@ -108,22 +111,119 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         _ => return Err(api_error(StatusCode::BAD_REQUEST, "No text provided")),
     };
 
-    debug!(raw_text_len = raw_text.len(), raw_text_preview = ?raw_text.get(..100.min(raw_text.len())), "handle_tts: received text");
+    let raw_len = raw_text.len();
+    debug!(text_len = raw_len, "handle_tts: received text");
 
     let cleaned = sanitize_text(&raw_text);
     if cleaned.is_empty() {
         tracing::warn!(
-            raw_text_preview = ?raw_text.get(..100.min(raw_text.len())),
+            text_len = raw_len,
+            cleaned_len = cleaned.len(),
             "sanitized /tts payload is empty; streaming silence instead of failing the sentence"
         );
     }
 
-    // Generate a temporary token and store the cleaned text
+    // Privacy binding: guests keep existing access with no guarantee; a guest
+    // must not supply a set identity. Authenticated callers either bind an
+    // owned set (key required) or fall back to an immutable Private context.
+    let data_context = crate::request_context::DataRequestContext::resolve(
+        &identity,
+        &headers,
+        cookie_header.as_deref(),
+        "tts::post::session",
+    )?;
+    let (session_context, encryption_key) = data_context.into_unverified_parts();
+    let chat = services.chat().clone();
+    let (binding, destination) = match session_context.username.as_deref() {
+        Some(user) => {
+            let tts_level = services
+                .config_source()
+                .destination_policy()
+                .map(|policy| policy.tts)
+                .unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate);
+            if let Some(raw) = payload.set_id.as_deref().filter(|id| !id.trim().is_empty()) {
+                // Bound requests read the authoritative stored mode, which
+                // requires the valid per-request user key.
+                let key = encryption_key.as_ref().ok_or_else(|| {
+                    api_error(StatusCode::UNAUTHORIZED, "Encryption key required. Please unlock.")
+                })?;
+                chat.validate_encryption_key_for_user(user, Some(key))
+                    .map_err(map_encryption_key_validation_err)?;
+                let history = chat.history().map_err(|_| {
+                    api_error(StatusCode::INTERNAL_SERVER_ERROR, "history unavailable")
+                })?;
+                let set_id =
+                    crate::set_privacy_coordinator::resolve_content_set(&history, user, Some(raw), None, key)
+                        .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+                let permit = services.set_privacy().content(user, set_id).await;
+                let snapshot = history
+                    .load(user, set_id, key)
+                    .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+                let required = snapshot.privacy_level;
+                if !chatbot_core::config::destination_is_eligible(required, tts_level) {
+                    return Err(api_error_json(
+                        StatusCode::FORBIDDEN,
+                        serde_json::json!({"error":"privacy_restricted","destination":"tts"}),
+                    ));
+                }
+                let destination = capture_tts_destination(&services, required);
+                // Release the shared permit after admission; queued tokens
+                // must not hold privacy settings locked.
+                drop(permit);
+                (
+                    TtsBinding::Set {
+                        owner: crate::tts::store::normalise_tts_owner(user),
+                        set_id,
+                        required,
+                    },
+                    destination,
+                )
+            } else {
+                chat.validate_encryption_key_for_user(user, encryption_key.as_ref())
+                    .map_err(map_encryption_key_validation_err)?;
+                let required = chatbot_core::config::PrivacyLevel::Private;
+                if !chatbot_core::config::destination_is_eligible(required, tts_level) {
+                    return Err(api_error_json(
+                        StatusCode::FORBIDDEN,
+                        serde_json::json!({"error":"privacy_restricted","destination":"tts","hint":"bind_set_id"}),
+                    ));
+                }
+                let destination = capture_tts_destination(&services, required);
+                (
+                    TtsBinding::LegacyPrivate {
+                        owner: crate::tts::store::normalise_tts_owner(user),
+                    },
+                    destination,
+                )
+            }
+        }
+        None => {
+            if payload
+                .set_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+            {
+                return Err(api_error(StatusCode::BAD_REQUEST, "set_id requires login"));
+            }
+            (
+                TtsBinding::Guest,
+                capture_tts_destination(
+                    &services,
+                    chatbot_core::config::PrivacyLevel::NonPrivate,
+                ),
+            )
+        }
+    };
+
+    // Generate a temporary token and store the cleaned text. The decryption
+    // key is never stored in the token.
     let mut token_bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    
-    let inserted = services.pending_tts().insert(token.clone(), cleaned);
+
+    let inserted = services
+        .pending_tts()
+        .insert_bound(token.clone(), cleaned, binding, destination);
     if !inserted {
         return Err(api_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -144,40 +244,144 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .map_err(|err| map_response_build_err(err, "tts::post::token_response"))
 }
 
+fn capture_tts_destination(
+    services: &AppServices,
+    required: chatbot_core::config::PrivacyLevel,
+) -> TtsDestination {
+    let policy = services.tts_policy();
+    let synthesis = policy.synthesis();
+    TtsDestination {
+        provider: synthesis.provider,
+        voice: synthesis.voice,
+        voice_service_base_url: synthesis.voice_service_base_url,
+        tts_base_url: policy.tts_base_url(),
+        codec: policy.codec(),
+        required,
+    }
+}
+
+fn current_tts_destination(services: &AppServices) -> TtsDestination {
+    capture_tts_destination(
+        services,
+        chatbot_core::config::PrivacyLevel::NonPrivate,
+    )
+}
+
+fn tts_destination_unchanged(captured: &TtsDestination, current: &TtsDestination) -> bool {
+    captured.provider == current.provider
+        && captured.voice == current.voice
+        && captured.voice_service_base_url == current.voice_service_base_url
+        && captured.tts_base_url == current.tts_base_url
+        && captured.codec == current.codec
+}
+
 pub async fn handle_tts_stream(
     Path(token): Path<String>,
     Extension(services): Extension<AppServices>,
 ) -> Result<Response<Body>, HttpError> {
-    let (cleaned, cached_audio, lease) = match services.pending_tts().begin(&token) {
-        BeginOutcome::Cached(audio) => (String::new(), Some(audio), None),
-        BeginOutcome::Begin { text, lease } => (text, None, Some(lease)),
-        BeginOutcome::Busy => {
-            return Err(api_error(
-                StatusCode::TOO_MANY_REQUESTS,
-                "TTS generation already in progress",
-            ));
-        }
-        BeginOutcome::Missing => {
-            debug!(token = %token, "invalid or expired TTS token");
-            return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
-        }
-        BeginOutcome::Exhausted => {
-            return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
-        }
+    // Snapshot the binding without holding the token-map lock across await,
+    // then acquire the set permit before arbitrating generation.
+    let snapshot = services.pending_tts().snapshot(&token);
+    let Some((binding, captured)) = snapshot else {
+        debug!("invalid or expired TTS token");
+        return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
     };
 
+    // Coordinator-before-token-map order: hold the shared set permit across
+    // re-fetch and synthesis so a mode change cannot slip between them.
+    let _permit = match &binding {
+        TtsBinding::Set { owner, set_id, .. } => {
+            Some(services.set_privacy().content(owner, *set_id).await)
+        }
+        TtsBinding::LegacyPrivate { .. } | TtsBinding::Guest => None,
+    };
+
+    let (cleaned, cached_audio, lease, admitted_binding, admitted_destination) =
+        match services.pending_tts().begin(&token) {
+            BeginOutcome::Cached(audio) => {
+                (String::new(), Some(audio), None, binding, captured)
+            }
+            BeginOutcome::Begin {
+                text,
+                binding,
+                destination,
+                lease,
+            } => (text, None, Some(lease), binding, destination),
+            BeginOutcome::Busy => {
+                return Err(api_error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "TTS generation already in progress",
+                ));
+            }
+            BeginOutcome::Missing => {
+                debug!("invalid or expired TTS token");
+                return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
+            }
+            BeginOutcome::Exhausted => {
+                return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
+            }
+        };
+
     if let Some(audio) = cached_audio {
+        // Cached clips involve no new upstream send.
         return build_tts_audio_response(audio);
     }
 
     let lease = lease.expect("begin without cached audio yields a generation lease");
 
-    let tts_policy = services.tts_policy();
-    let result = backend::synthesize_pcm(cleaned.clone(), &tts_policy).await;
+    // Revalidate the captured destination against current config and policy.
+    // A mode change invalidates queued tokens, so a surviving token must
+    // still be eligible; a backend reconfiguration fails closed.
+    let current = current_tts_destination(&services);
+    if !tts_destination_unchanged(&admitted_destination, &current) {
+        lease.fail();
+        services.pending_tts().cancel(&token);
+        return Err(api_error_json(
+            StatusCode::CONFLICT,
+            serde_json::json!({"error":"tts_config_changed"}),
+        ));
+    }
+    match &admitted_binding {
+        TtsBinding::Set { .. } | TtsBinding::LegacyPrivate { .. } => {
+            let tts_level = services
+                .config_source()
+                .destination_policy()
+                .map(|policy| policy.tts)
+                .unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate);
+            // The admitted destination carries the required level captured at
+            // POST; a swapped binding cannot relax this check.
+            if !chatbot_core::config::destination_is_eligible(
+                admitted_destination.required,
+                tts_level,
+            ) {
+                lease.fail();
+                services.pending_tts().cancel(&token);
+                return Err(api_error_json(
+                    StatusCode::FORBIDDEN,
+                    serde_json::json!({"error":"privacy_restricted","destination":"tts"}),
+                ));
+            }
+        }
+        TtsBinding::Guest => {}
+    }
+
+    // Synthesize with the admitted destination, not a newly selected backend.
+    let owned_policy = crate::policy::TtsPolicy::new(
+        services.tts_policy().access(),
+        admitted_destination.codec.clone(),
+        admitted_destination.provider.clone(),
+        admitted_destination.voice.clone(),
+        admitted_destination.tts_base_url.clone(),
+        admitted_destination.voice_service_base_url.clone(),
+    );
+    let result = backend::synthesize_pcm(cleaned.clone(), &owned_policy).await;
     match result {
         Ok(clip) => {
-            let codec = tts_policy.codec();
-            let audio = match encode_tts_wire_audio(&clip.pcm, clip.sample_rate, &codec) {
+            let audio = match encode_tts_wire_audio(
+                &clip.pcm,
+                clip.sample_rate,
+                &admitted_destination.codec,
+            ) {
                 Ok(audio) => audio,
                 Err(err) => {
                     lease.fail();

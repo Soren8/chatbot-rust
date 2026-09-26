@@ -55,6 +55,8 @@ llms:
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
 tts_provider: kokoro
+# Local stub: no retention, so Private-eligible for legacy voice tests.
+tts_privacy_level: private
 voice_service_host: "{voice_host}"
 voice_service_port: {voice_port}
 "#
@@ -73,6 +75,8 @@ llms:
     context_size: 4096
 tts_provider: kokoro
 tts_access: {tts_access}
+# Local stub: no retention, so Private-eligible for legacy voice tests.
+tts_privacy_level: private
 voice_service_host: "{voice_host}"
 voice_service_port: {voice_port}
 "#
@@ -89,6 +93,8 @@ llms:
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
 tts_provider: fish
+# Local stub: no retention, so Private-eligible for legacy voice tests.
+tts_privacy_level: private
 "#
 }
 
@@ -935,6 +941,7 @@ async fn tts_access_premium_allows_premium_user() {
     seed_user("premuser", "password123");
     set_user_tier("premuser", "premium");
     let (cookie, csrf) = login_session(&app, "premuser", "password123").await;
+    let key = common::derive_encryption_key_header("premuser", "password123");
 
     let tts_response = app
         .clone()
@@ -945,6 +952,7 @@ async fn tts_access_premium_allows_premium_user() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("X-CSRF-Token", &csrf)
                 .header(header::COOKIE, &cookie)
+                .header("X-Enc-Key", &key)
                 .body(Body::from(
                     serde_json::to_vec(&json!({"text": "Hello premium"})).unwrap(),
                 ))
@@ -976,6 +984,35 @@ async fn tts_access_premium_allows_premium_user() {
 
     shutdown.send(()).ok();
     handle.join().expect("join voice stub");
+}
+
+#[tokio::test]
+async fn authenticated_legacy_tts_requires_valid_user_key() {
+    let _lock = tts_test_lock();
+    let _workspace = begin_kokoro_workspace("127.0.0.1", 65535);
+    let app = build_router(resolve_static_root());
+    seed_user("legacytts", "password123");
+    let (cookie, csrf) = login_session(&app, "legacytts", "password123").await;
+    let valid_key = common::derive_encryption_key_header("legacytts", "password123");
+
+    for key in [None, Some("invalid-key"), Some(valid_key.as_str())] {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/tts")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("X-CSRF-Token", &csrf)
+            .header(header::COOKIE, &cookie);
+        if let Some(key) = key {
+            request = request.header("X-Enc-Key", key);
+        }
+        let response = app.clone().oneshot(request.body(Body::from(r#"{"text":"Legacy voice"}"#)).unwrap())
+            .await.unwrap();
+        assert_eq!(response.status(), if key == Some(valid_key.as_str()) {
+            StatusCode::OK
+        } else {
+            StatusCode::UNAUTHORIZED
+        }, "key case {key:?}");
+    }
 }
 
 #[tokio::test]

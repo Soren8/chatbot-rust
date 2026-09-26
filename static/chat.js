@@ -983,7 +983,8 @@ const TTS_CLIP_RETRY_BACKOFF_MS = ChatTtsPlayback.TTS_CLIP_RETRY_BACKOFF_MS;
 // Desktop clip pipeline (owned sentence/clip loops in static/tts-playback.js
 // using the single voice lifecycle + voice-text; explicit HTTP/audio adapters).
 var desktopTtsClip = ChatTtsPlayback.createDesktopClipPipeline({
-  isLive: function (sessionId) { return desktopTtsIsLive(sessionId); },
+  isLive: function (sessionId) { return desktopTtsIsLive(sessionId) && isLiveVoiceBinding(desktopTtsBinding); },
+  getSetId: function () { return window.APP_DATA && window.APP_DATA.loggedIn && desktopTtsBinding && desktopTtsBinding.setId; },
   sanitize: function (text) { return sanitizeForTTS(text); },
   hasPreload: function (key) { return voiceLifecycle.hasPreload(key); },
   getPreload: function (key) { return voiceLifecycle.getPreload(key); },
@@ -1016,6 +1017,7 @@ var desktopTtsClip = ChatTtsPlayback.createDesktopClipPipeline({
 // Active desktop queue handle from the owned playback unit. Set on start,
 // cleared on completion; stops dispose it before the session bumps.
 var activeDesktopTtsQueue = null;
+var desktopTtsBinding = null;
 
 function disposeActiveDesktopTtsQueue() {
   var handle = activeDesktopTtsQueue;
@@ -1105,6 +1107,7 @@ function stopCurrentDesktopTts() {
   disposeActiveDesktopTtsQueue();
   cancelDesktopTtsClipSession(sessionId);
   voiceLifecycle.stopDesktopPlayback();
+  desktopTtsBinding = null;
 }
 
 function completeDesktopTtsPlayback(button) {
@@ -1605,6 +1608,19 @@ function isLiveMemoryBinding(binding) {
     binding, historyWindow.isLiveGen(binding.setGen), currentSetId());
 }
 
+function captureVoiceBinding() {
+  return ChatConversationState.captureSetBinding(currentSetId(), historyWindow.snapshot().setGen);
+}
+
+function isLiveVoiceBinding(binding) {
+  return isLiveMemoryBinding(binding)
+    && (!(window.APP_DATA && window.APP_DATA.loggedIn) || !!binding.setId);
+}
+
+function appendVoiceSetId(form, binding) {
+  if (window.APP_DATA && window.APP_DATA.loggedIn && binding.setId) form.append('set_id', binding.setId);
+}
+
 function shouldApplyMemoryResponse(binding, data) {
   if (!binding) return false;
   return ChatConversationState.shouldApplySetResponseForSetBinding(
@@ -1702,6 +1718,7 @@ function bindMessagePlaybackSource(hostEl, site) {
   if (prev) prev.finish();
   var source = ChatPlaybackSource.createMessageSource(
     messagePlaybackSourceDeps(site.boundSeq != null ? site.boundSeq : null));
+  source.voiceBinding = captureVoiceBinding();
   source.publish({ original: site.original || '', fallbackVisible: site.visible || '' });
   if (site.finished) source.finish();
   if (hostEl) messagePlaybackSources.set(hostEl, source);
@@ -1713,6 +1730,7 @@ function retargetMessagePlaybackSource(hostEl, seq) {
   var source = hostEl ? messagePlaybackSources.get(hostEl) : null;
   if (!source) return bindMessagePlaybackSource(hostEl, { original: '', visible: '', boundSeq: seq });
   source.retarget(seq, { original: '', fallbackVisible: '' });
+  source.voiceBinding = captureVoiceBinding();
   return source;
 }
 
@@ -1989,7 +2007,7 @@ function playOneTtsUtterance(sessionId, text) {
  */
 function playFixedSentenceList(sessionId, button, sentences) {
   var handle = ChatTtsPlayback.playFixedSentenceList({
-    isLive: function (id) { return desktopTtsIsLive(id); },
+    isLive: function (id) { return desktopTtsIsLive(id) && isLiveVoiceBinding(desktopTtsBinding); },
     onComplete: function (btn) { activeDesktopTtsQueue = null; completeDesktopTtsPlayback(btn); },
     preload: function (id, text) { preloadDesktopTtsSentence(id, text); },
     playOne: function (id, text) { return playOneTtsUtterance(id, text); },
@@ -2019,8 +2037,10 @@ function playMessageBodyTts(sessionId, button, $messageElement) {
   // the queue (existing latency behavior) and never supplies progress.
   var textEl = $messageElement.find('.ai-message-text')[0];
   var source = lookupMessagePlaybackSource($messageElement[0]);
+  desktopTtsBinding = source.voiceBinding || captureVoiceBinding();
+  if (!isLiveVoiceBinding(desktopTtsBinding)) { stopCurrentDesktopTts(); return; }
   var handle = ChatTtsPlayback.playMessageBodyTts({
-    isLive: function (id) { return desktopTtsIsLive(id); },
+    isLive: function (id) { return desktopTtsIsLive(id) && isLiveVoiceBinding(desktopTtsBinding); },
     onComplete: function (btn) { activeDesktopTtsQueue = null; completeDesktopTtsPlayback(btn); },
     source: source,
     split: function (text) { return splitSentences(text); },
@@ -2087,6 +2107,8 @@ window.playTTS = function playTTS(button, options) {
       voiceSttAbortController = null;
     }
   });
+  desktopTtsBinding = lookupMessagePlaybackSource($messageElement[0]).voiceBinding || captureVoiceBinding();
+  if (!isLiveVoiceBinding(desktopTtsBinding)) { stopCurrentDesktopTts(); return; }
 
   $(button).prop('disabled', false).addClass('playing').html('<i class="bi bi-stop-fill"></i>');
   $messageElement.addClass('tts-is-playing');
@@ -3092,6 +3114,8 @@ $(document).ready(function() {
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
       var loadGen = historyWindow.beginSetLoad();
+      if (typeof window.stopVoiceMode === 'function' && window.voiceModeActive) window.stopVoiceMode();
+      if (typeof window.stopAllTtsPlayback === 'function') window.stopAllTtsPlayback();
       settleChatRequestForSetSwitch();
       savePreferences();
       function fetchSet() {
@@ -3700,6 +3724,7 @@ $(document).ready(function() {
   }
 
   let _nativeMicPcmChunks = []; // Int16Array chunks from NativeMic
+  let _nativeMicBinding = null;
   let _mediaRecorder = null;
   let _audioChunks = [];
 
@@ -3710,6 +3735,10 @@ $(document).ready(function() {
     $micBtn.on('click', function () {
       if ($micBtn.hasClass('recording')) {
         // Stop recording
+        const binding = _nativeMicBinding;
+        _nativeMicBinding = null;
+        const chunks = _nativeMicPcmChunks;
+        _nativeMicPcmChunks = [];
         $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');
 
         if (_nativeMicListener) {
@@ -3718,15 +3747,17 @@ $(document).ready(function() {
         }
 
         window.NativeMic.stop().then(async function () {
-          if (_nativeMicPcmChunks.length === 0) return;
-          const pcm16 = NativeAudio.mergePcm16Chunks(_nativeMicPcmChunks);
-          _nativeMicPcmChunks = [];
+          if (!isLiveVoiceBinding(binding) || chunks.length === 0) return;
+          const pcm16 = NativeAudio.mergePcm16Chunks(chunks);
 
           const audioPayload = await NativeAudio.encodeAudioForStt(pcm16, NativeAudio.NATIVE_MIC_SAMPLE_RATE);
+          if (!isLiveVoiceBinding(binding)) return;
           nativeLog('VAD', 'STT push-to-talk encoded format=' + audioPayload.filename + ' bytes=' + audioPayload.blob.size);
 
           fetchVoiceRetry('/stt', function () {
+            if (!isLiveVoiceBinding(binding)) throw new Error('Conversation changed');
             const retryForm = new FormData();
+            appendVoiceSetId(retryForm, binding);
             retryForm.append('audio', audioPayload.blob, audioPayload.filename);
             return { method: 'POST', headers: withCsrf({}), body: retryForm };
           })
@@ -3734,11 +3765,13 @@ $(document).ready(function() {
               return res.json();
             })
             .then(function (data) {
+              if (!isLiveVoiceBinding(binding)) return;
               const current = $('#user-input').val();
               const separator = current.trim() ? ' ' : '';
               $('#user-input').val(current + separator + (data.text || '')).focus();
             })
             .catch(function (err) {
+              if (!isLiveVoiceBinding(binding)) return;
               appendMessage(err && err.message ? err.message : String(err), 'error-message');
             });
         }).catch(function (err) {
@@ -3749,16 +3782,25 @@ $(document).ready(function() {
 
       // Start recording
       _nativeMicPcmChunks = [];
+      const recordingChunks = _nativeMicPcmChunks;
+      _nativeMicBinding = captureVoiceBinding();
+      const startBinding = _nativeMicBinding;
 
       window.NativeMic.requestPermission().then(function (result) {
         if (!result.granted) throw new Error('Microphone permission denied');
+        if (!isLiveVoiceBinding(startBinding)) return;
         _nativeMicListener = window.NativeMic.addListener('nativeMicData', function (data) {
           if (data && data.data) {
-            _nativeMicPcmChunks.push(NativeAudio.decodeNativePcmBase64(data.data));
+            recordingChunks.push(NativeAudio.decodeNativePcmBase64(data.data));
           }
         });
         return window.NativeMic.start();
       }).then(function () {
+        if (!isLiveVoiceBinding(startBinding)) {
+          if (_nativeMicListener) { _nativeMicListener.remove(); _nativeMicListener = null; }
+          window.NativeMic.stop().catch(function () {});
+          return;
+        }
         $micBtn.addClass('recording').html('&#x23F9;').attr('title', 'Stop Recording');
       }).catch(function (err) {
         appendMessage('Microphone access denied: ' + (err && err.message ? err.message : String(err)), 'error-message');
@@ -3774,23 +3816,30 @@ $(document).ready(function() {
         return;
       }
 
+      const binding = captureVoiceBinding();
       navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        if (!isLiveVoiceBinding(binding)) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
         _audioChunks = [];
         _mediaRecorder = new MediaRecorder(stream);
+        const recorder = _mediaRecorder;
+        const chunks = _audioChunks;
 
         _mediaRecorder.ondataavailable = function (e) {
-          if (e.data.size > 0) _audioChunks.push(e.data);
+          if (e.data.size > 0) chunks.push(e.data);
         };
 
         _mediaRecorder.onstop = function () {
           stream.getTracks().forEach(function (t) { t.stop(); });
-
-          $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');
-
-          const blob = new Blob(_audioChunks, { type: _mediaRecorder.mimeType || 'audio/webm' });
+          if (_mediaRecorder === recorder) {
+            $micBtn.removeClass('recording').text('\u{1F399}').attr('title', 'Voice Input');
+          }
+          if (!isLiveVoiceBinding(binding)) return;
+          const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
 
           fetchVoiceRetry('/stt', function () {
+            if (!isLiveVoiceBinding(binding)) throw new Error('Conversation changed');
             const retryForm = new FormData();
+            appendVoiceSetId(retryForm, binding);
             retryForm.append('audio', blob, 'recording.webm');
             return { method: 'POST', headers: withCsrf({}), body: retryForm };
           })
@@ -3798,11 +3847,13 @@ $(document).ready(function() {
               return res.json();
             })
             .then(function (data) {
+              if (!isLiveVoiceBinding(binding)) return;
               const current = $('#user-input').val();
               const separator = current.trim() ? ' ' : '';
               $('#user-input').val(current + separator + (data.text || '')).focus();
             })
             .catch(function (err) {
+              if (!isLiveVoiceBinding(binding)) return;
               appendMessage(err && err.message ? err.message : String(err), 'error-message');
             });
         };
@@ -3834,6 +3885,7 @@ $(document).ready(function() {
   // Native mic bridge for Voice Mode on Android
   let nativeMicBridge = null;
   let nativeMicStopPromise = null;
+  let desktopUtteranceBinding = null;
 
   const hasNativeMicVoice = window.nativeMicAvailable && isMobile && typeof vad !== 'undefined';
   if ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof vad !== 'undefined') || hasNativeMicVoice) {
@@ -3881,7 +3933,8 @@ $(document).ready(function() {
       reportThrottled: function (key, windowMs, kind, msg) { reportVoiceThrottled(key, windowMs, kind, msg); },
       isVoiceModeActive: function () { return !!window.voiceModeActive; },
       onBargeIn: function () { handleBargeIn(); },
-      onUtteranceEnd: function () { handleSpeechEnd(); },
+      onUtteranceEnd: function (binding) { handleSpeechEnd(undefined, binding); },
+      captureBinding: function () { return captureVoiceBinding(); },
       onUtteranceStartedAt: function (ts) { lastVoiceUtteranceStartedAt = ts; },
       recorder: {
         ensurePermission: function () { return ensureNativeMicPermission(); },
@@ -3903,8 +3956,8 @@ $(document).ready(function() {
       log: function (tag, msg) { nativeLog(tag, msg); },
       voiceLifecycle: voiceLifecycle,
       onBargeIn: function () { handleBargeIn(); },
-      onSpeechEnd: function (audio) { handleSpeechEnd(audio); },
-      onSpeechStart: function () { lastVoiceUtteranceStartedAt = Date.now(); },
+      onSpeechEnd: function (audio) { handleSpeechEnd(audio, desktopUtteranceBinding); desktopUtteranceBinding = null; },
+      onSpeechStart: function () { lastVoiceUtteranceStartedAt = Date.now(); desktopUtteranceBinding = captureVoiceBinding(); },
       isTtsActive: function () { return isVoiceTtsActive(); }
     };
   }
@@ -3999,6 +4052,7 @@ $(document).ready(function() {
           textEl: $messageElement.find('.ai-message-text')[0]
         };
         queueDeps.source = lookupMessagePlaybackSource($messageElement[0]);
+        queueDeps.binding = queueDeps.source.voiceBinding || captureVoiceBinding();
       },
       fetchVoiceRetry: function (url, buildOptions, attempts) { return fetchVoiceRetry(url, buildOptions, attempts); },
       // Wake-only backstop for text changes; progress comes from the source.
@@ -4050,6 +4104,8 @@ $(document).ready(function() {
       setTimeout: function (fn, ms) { return setTimeout(fn, ms); },
       clearTimeout: function (id) { clearTimeout(id); },
       isVoiceModeActive: function () { return !!window.voiceModeActive; },
+      isBindingLive: function (binding) { return isLiveVoiceBinding(binding); },
+      isAuthenticated: function () { return !!(window.APP_DATA && window.APP_DATA.loggedIn); },
       getSessionPromise: function () { return nativeVoiceTtsSessionPromise; },
       setSessionPromise: function (pr) { nativeVoiceTtsSessionPromise = pr; },
       setSessionListener: function (l) { nativeVoiceTtsSessionListener = l; },
@@ -4302,6 +4358,7 @@ $(document).ready(function() {
     disposeActiveDesktopTtsQueue();
     cancelDesktopTtsClipSession(sessionId);
     voiceLifecycle.stopAllPlayback(opts);
+    desktopTtsBinding = null;
   }
   window.stopAllTtsPlayback = stopAllTtsPlayback;
 
@@ -4457,8 +4514,11 @@ $(document).ready(function() {
 
   let pendingVoiceAmend = '';
   let voiceAmendTimer = null;
+  let pendingVoiceBinding = null;
 
-  function queueVoiceContinuation(text) {
+  function queueVoiceContinuation(text, binding) {
+    if (!isLiveVoiceBinding(binding)) return;
+    pendingVoiceBinding = binding;
     pendingVoiceAmend = joinVoiceUtterances(pendingVoiceAmend, text);
     stopVoicePlaybackOnly();
     abortChatRequestQuietly();
@@ -4470,6 +4530,9 @@ $(document).ready(function() {
     voiceAmendTimer = null;
     const extra = pendingVoiceAmend;
     pendingVoiceAmend = '';
+    const binding = pendingVoiceBinding;
+    pendingVoiceBinding = null;
+    if (!isLiveVoiceBinding(binding)) return;
     if (!extra) return;
     const $lastUser = $('#chat-content .message.user-message').last();
     if (!$lastUser.length) {
@@ -4482,7 +4545,7 @@ $(document).ready(function() {
     $('#user-input').val('');
 
     function tryRegen(attempt) {
-      if (!window.voiceModeActive && !voiceModeWanted()) return;
+      if (!isLiveVoiceBinding(binding) || (!window.voiceModeActive && !voiceModeWanted())) return;
       let $ai = $lastUser.next('.message.ai-message');
       if ($ai.length && pairIndex >= 0) {
         window.performRegeneration($ai[0], finalText, pairIndex);
@@ -4505,7 +4568,8 @@ $(document).ready(function() {
     tryRegen(0);
   }
 
-  function submitVoiceUtterance(text, timing) {
+  function submitVoiceUtterance(text, timing, binding) {
+    if (!isLiveVoiceBinding(binding)) return;
     text = (text || '').trim();
     if (!text) return;
     timing = timing || {};
@@ -4519,7 +4583,7 @@ $(document).ready(function() {
       lastSpeechEndedAt: timing.lastSpeechEndedAt,
       utteranceStartedAt: timing.utteranceStartedAt
     })) {
-      queueVoiceContinuation(text);
+      queueVoiceContinuation(text, binding);
       return;
     }
     if (generating || ttsActive) {
@@ -4530,7 +4594,8 @@ $(document).ready(function() {
     scrollToBottom();
   }
 
-  async function handleSpeechEnd(vadAudio) {
+  async function handleSpeechEnd(vadAudio, binding) {
+    binding = binding || (nativeMicBridge && nativeMicBridge.completedBinding);
     console.log('[VAD] handleSpeechEnd called, vadSttInProgress=', vadSttInProgress);
     if (vadSttInProgress) {
       // A stuck flag deadlocks voice with the button green; make it visible.
@@ -4543,6 +4608,7 @@ $(document).ready(function() {
         'handleSpeechEnd skipped: voice mode inactive');
       return;
     }
+    if (!isLiveVoiceBinding(binding)) return;
     const sessionGeneration = voiceModeSessionGeneration;
     const sttSignal = voiceSttAbortController ? voiceSttAbortController.signal : undefined;
     vadSttInProgress = true;
@@ -4579,8 +4645,11 @@ $(document).ready(function() {
         reportVoice('VOICE-ERROR', 'STT skipped: no speech captured');
         return;
       }
+      if (!isLiveVoiceBinding(binding)) return;
       const sttOut = await postVoiceSttXhr('/stt', function () {
+        if (!isLiveVoiceBinding(binding)) throw new Error('Conversation changed');
         const retryForm = new FormData();
+        appendVoiceSetId(retryForm, binding);
         retryForm.append('audio', audioPayload.blob, audioPayload.filename);
         return {
           method: 'POST',
@@ -4594,7 +4663,7 @@ $(document).ready(function() {
       reportVoice('VOICE', 'STT net: bytes=' + sttNet.bytes
         + ' upMs=' + sttNet.upMs
         + ' upKbps=' + (sttNet.upMs > 0 ? ((sttNet.bytes * 8) / sttNet.upMs).toFixed(1) : 'n/a'));
-      if (!window.voiceModeActive || sessionGeneration !== voiceModeSessionGeneration) {
+      if (!window.voiceModeActive || sessionGeneration !== voiceModeSessionGeneration || !isLiveVoiceBinding(binding)) {
         reportVoice('VOICE', 'STT response discarded: session ended mid-upload');
         return;
       }
@@ -4602,23 +4671,23 @@ $(document).ready(function() {
       const text = (data.text || '').trim();
 
       if (text && window.voiceModeActive
-          && sessionGeneration === voiceModeSessionGeneration) {
+          && sessionGeneration === voiceModeSessionGeneration && isLiveVoiceBinding(binding)) {
         reportVoice('VOICE', 'STT ok textLen=' + text.length);
         submitVoiceUtterance(text, {
           lastSpeechEndedAt: prevSpeechEndedAt,
           utteranceStartedAt: utteranceStartedAt
-        });
+        }, binding);
       } else if (!text) {
         reportVoice('VOICE', 'STT empty result (heard nothing / unintelligible)');
       }
     } catch (err) {
       const sttErr = (err && err.message ? err.message : String(err));
-      nativeLog('VAD', 'STT failed: ' + sttErr);
-      reportVoice('VOICE-ERROR', 'STT failed: ' + sttErr);
+      nativeLog('VAD', 'STT failed');
+      reportVoice('VOICE-ERROR', 'STT failed');
       // A user-initiated stop aborts the upload; that is not a failure.
       // Anything else (truncated upload, timeout, 4xx/5xx) must be visible:
       // a silent green button is the failure mode being eliminated.
-      if (!(sttSignal && sttSignal.aborted)) {
+      if (!(sttSignal && sttSignal.aborted) && isLiveVoiceBinding(binding)) {
         appendMessage('Voice input failed (' + sttErr + '). Try again.', 'error-message');
       }
     } finally {

@@ -121,10 +121,18 @@ pub async fn handle_set_privacy(request: Request<Body>) -> Result<Response<Body>
         payload.privacy_level,
         verified.key(),
     ) {
-        Ok(version) => build_json_response(
-            StatusCode::OK,
-            json!({"status":"success","set_id":id.to_string(),"version":version.get(),"privacy_level":payload.privacy_level}),
-        ),
+        Ok(version) => {
+            // Invalidate queued/cached voice tokens for this set while the
+            // exclusive permit is still held; active synthesis holds a shared
+            // permit and already forced privacy_busy above.
+            services
+                .pending_tts()
+                .invalidate_owner_set(verified.username(), id);
+            build_json_response(
+                StatusCode::OK,
+                json!({"status":"success","set_id":id.to_string(),"version":version.get(),"privacy_level":payload.privacy_level}),
+            )
+        }
         Err(HistoryError::Conflict { current_version }) => build_json_response(
             StatusCode::CONFLICT,
             json!({"error":"version_conflict","set_id":id.to_string(),"current_version":current_version.get()}),
