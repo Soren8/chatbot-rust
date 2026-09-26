@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 use axum::http::Extensions;
 
 use chatbot_core::account_service::AccountService;
+use chatbot_core::agent_connections::ConnectionService;
 use chatbot_core::config_source::ConfigSource;
 use chatbot_core::rate_limit::{self, RateLimitExceeded, RateLimiter};
 use chatbot_core::session::ChatService;
@@ -72,6 +73,7 @@ pub struct AppServices {
     limiter: Option<Arc<Mutex<RateLimiter>>>,
     chat: ChatService,
     accounts: AccountService,
+    connections: Option<ConnectionService>,
     generation: GenerationDeps,
     rate_policy: RatePolicy,
     tts_policy: TtsPolicy,
@@ -90,6 +92,7 @@ impl AppServices {
             limiter: None,
             chat: ChatService::global(),
             accounts: AccountService::global(),
+            connections: None,
             generation: GenerationDeps::global(),
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
@@ -113,6 +116,7 @@ impl AppServices {
             limiter: None,
             chat: ChatService::global(),
             accounts: AccountService::global(),
+            connections: None,
             generation: GenerationDeps::global(),
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
@@ -141,6 +145,7 @@ impl AppServices {
             limiter: Some(limiter),
             chat: ChatService::global(),
             accounts: AccountService::global(),
+            connections: None,
             generation: GenerationDeps::global(),
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
@@ -176,6 +181,17 @@ impl AppServices {
     pub fn with_account_service(mut self, accounts: AccountService) -> Self {
         self.accounts = accounts;
         self
+    }
+
+    /// Back this router with an owned connection store; compatibility contexts
+    /// have no connection store until explicitly configured.
+    pub fn with_connection_service(mut self, connections: ConnectionService) -> Self {
+        self.connections = Some(connections);
+        self
+    }
+
+    pub(crate) fn connections(&self) -> Option<&ConnectionService> {
+        self.connections.as_ref()
     }
 
     /// Back this router with explicit generation dependencies. Consumes and

@@ -2,12 +2,87 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
+
+#[path = "agent_egress.rs"]
+pub mod agent_egress;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ExternalConnectionsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub allow_public_https: bool,
+    #[serde(default)]
+    pub targets: Vec<ExternalTarget>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExternalTarget {
+    pub id: String,
+    pub base_url: String,
+    pub allowed_users: Vec<String>,
+    pub allowed_ips: Vec<IpAddr>,
+    #[serde(default)]
+    pub allow_tunneled_http: bool,
+}
+
+impl ExternalTarget {
+    pub fn canonical_base_url(&self) -> &str { &self.base_url }
+    pub fn port(&self) -> u16 {
+        agent_egress::CanonicalBase::parse(&self.base_url)
+            .expect("validated external target URL").port()
+    }
+}
+
+impl ExternalConnectionsConfig {
+    /// Validate operator policy independently of feature activation; fail closed at boot.
+    pub fn validate(mut self) -> Result<Self, &'static str> {
+        let mut eligible = HashSet::new();
+        for user in &self.allowed_users {
+            if crate::names::normalise_username(user).as_deref() != Ok(user.as_str()) || !eligible.insert(user.clone()) {
+                return Err("invalid or duplicate external_connections.allowed_users");
+            }
+        }
+        let mut ids = HashSet::new();
+        let mut urls = HashSet::new();
+        let mut reserved = HashMap::new();
+        for target in &mut self.targets {
+            let base = agent_egress::CanonicalBase::parse(&target.base_url).map_err(|_| "invalid external_connections target URL")?;
+            if target.id.trim().is_empty() || !ids.insert(target.id.clone()) || !urls.insert(base.as_str().to_owned()) {
+                return Err("duplicate or invalid external_connections target");
+            }
+            target.base_url = base.as_str().to_owned();
+            if !base.is_https() && !target.allow_tunneled_http {
+                return Err("HTTP target requires an approved encrypted tunnel");
+            }
+            if target.allowed_users.is_empty() || target.allowed_ips.is_empty() {
+                return Err("external target requires users and exact IPs");
+            }
+            let mut users = HashSet::new();
+            for user in &target.allowed_users {
+                if !eligible.contains(user) || !users.insert(user) {
+                    return Err("external target users must be unique eligible accounts");
+                }
+            }
+            for ip in &target.allowed_ips {
+                let key = (*ip, base.port());
+                if let Some(previous_users) = reserved.insert(key, users.clone()) {
+                    if previous_users != users { return Err("conflicting reserved IP/port accounts"); }
+                }
+            }
+        }
+        Ok(self)
+    }
+}
 
 /// Operator classification of a chat or outbound destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +223,7 @@ impl TtsAccess {
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    pub external_connections: ExternalConnectionsConfig,
     pub secret_key: String,
     pub host_data_dir: PathBuf,
     pub log_level: String,
@@ -244,6 +320,8 @@ pub fn reset() {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct RawConfig {
+    #[serde(default)]
+    external_connections: ExternalConnectionsConfig,
     #[serde(default)]
     llms: Vec<ProviderConfig>,
     #[serde(default = "PrivacyLevel::default_destination")]
@@ -517,6 +595,7 @@ fn load_app_config() -> AppConfig {
     );
 
     AppConfig {
+        external_connections: raw_config.external_connections.validate().unwrap_or_else(|e| panic!("{e}")),
         secret_key,
         host_data_dir,
         log_level,

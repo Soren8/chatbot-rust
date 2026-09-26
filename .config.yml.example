@@ -77,3 +77,20 @@ llms:
 # Env overrides: RATE_LIMIT_PER_USER_PER_MINUTE, RATE_LIMIT_GLOBAL_PER_MINUTE
 rate_limit_per_user_per_minute: 60
 rate_limit_global_per_minute: 600
+
+# External coding-agent connections are disabled until explicitly enabled.
+# Public HTTPS is opt-in; nonstandard ports and restricted/private addresses
+# require exact target exceptions. HTTP is only for operator-installed encrypted
+# tunnels ending on the chatbot host, never ordinary cleartext LAN traffic.
+external_connections:
+  enabled: false
+  allowed_users: []
+  allow_public_https: false
+  targets: []
+# Example operator-only tunnel (configure/verify before enabling):
+#   targets:
+#     - id: personal-sandbox
+#       base_url: http://127.0.0.1:14096
+#       allowed_users: [operator-account]
+#       allowed_ips: [127.0.0.1]
+#       allow_tunneled_http: true

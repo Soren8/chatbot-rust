@@ -105,6 +105,32 @@
                             </div>
                         </div>
                     </div>
+                    <div id="connections-settings" class="card mb-3">
+                        <div class="card-header"><h6 class="mb-0">Connections</h6></div>
+                        <div class="card-body">
+                            <p class="small">OpenCode connections are <strong>Non-private</strong>. Managing or testing one sends only its credentials and health metadata, even while viewing a Private chat. Future tasks may send chat content only from a Non-private chat.</p>
+                            <p class="small">Enter a URL reachable from the chatbot server, not from your phone or browser. Removing a connection does not revoke its remote password.</p>
+                            <div id="connections-status" role="status" aria-live="polite" class="small mb-2"></div>
+                            <button id="connections-refresh" class="btn btn-outline-secondary btn-sm mb-2" type="button">Refresh connections</button>
+                            <div id="connections-list" class="d-flex flex-column gap-2 mb-3"></div>
+                            <form id="connection-form" autocomplete="off">
+                                <h6 id="connection-form-title">Add connection</h6>
+                                <label for="connection-name" class="form-label">Name</label>
+                                <input id="connection-name" class="form-control mb-2" required maxlength="128" autocomplete="off">
+                                <label for="connection-kind" class="form-label">Kind</label>
+                                <input id="connection-kind" class="form-control mb-2" value="opencode" readonly>
+                                <label for="connection-url" class="form-label">Server-reachable URL</label>
+                                <input id="connection-url" class="form-control mb-2" type="url" required maxlength="2048" autocomplete="off" placeholder="https://agent.example.com">
+                                <label for="connection-username" class="form-label">Basic username</label>
+                                <input id="connection-username" class="form-control mb-2" required maxlength="256" autocomplete="off" value="opencode">
+                                <label for="connection-password" class="form-label">Basic password</label>
+                                <input id="connection-password" class="form-control mb-2" type="password" autocomplete="new-password">
+                                <p id="connection-password-hint" class="small">Required when adding. Never shown again.</p>
+                                <button id="connection-save" class="btn btn-outline-primary btn-sm" type="submit">Add</button>
+                                <button id="connection-cancel" class="btn btn-outline-secondary btn-sm" type="button" hidden>Cancel edit</button>
+                            </form>
+                        </div>
+                    </div>
                     {% endif %}
 
                     {% if logged_in or (available_llms | length) > 1 %}
@@ -265,6 +291,7 @@
     <script src="/static/tts-playback.js"></script>
     <script src="/static/voice-capture.js"></script>
     <script src="/static/chat.js"></script>
+    <script src="/static/agent-connections.js"></script>
 
     </body>
     </html>

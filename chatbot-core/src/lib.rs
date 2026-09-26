@@ -1,4 +1,6 @@
 pub mod account_service;
+pub mod agent_connections;
+pub mod agent_egress;
 pub mod chat;
 pub mod chat_images;
 pub mod config;
@@ -16,3 +18,5 @@ pub mod remember_store;
 pub mod session;
 pub mod session_identity;
 pub mod user_store;
+
+pub use config::ExternalConnectionsConfig;

@@ -14,6 +14,7 @@ use tower_http::services::ServeDir;
 use tracing::{error, info};
 
 mod background;
+mod agent_connections;
 pub use background::{
     spawn_session_purge_task_with_identity, spawn_session_purge_task_with_services,
 };
@@ -88,7 +89,10 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let services = services::AppServices::with_owned_stores(identity)
         .with_chat_service(chat)
-        .with_account_service(accounts);
+        .with_account_service(accounts.clone())
+        .with_connection_service(chatbot_core::agent_connections::ConnectionService::open(
+            &app_config.host_data_dir, accounts,
+        ).map_err(|err| anyhow::anyhow!("Unable to open connection storage: {err}"))?);
     background::spawn_session_purge_task_with_services(services.clone());
 
     let app = build_router_with_services(static_root, services);
@@ -358,6 +362,9 @@ pub fn build_router_with_services(
         .route("/logout", get(logout::handle_logout))
         .route("/reset_chat", post(reset_chat::handle_reset_chat))
         .route("/get_sets", get(sets::handle_get_sets))
+        .route("/agent_connections", get(agent_connections::list).post(agent_connections::create))
+        .route("/agent_connections/{id}", axum::routing::patch(agent_connections::update).delete(agent_connections::delete))
+        .route("/agent_connections/{id}/check", post(agent_connections::check))
         .route("/create_set", post(sets::handle_create_set))
         .route("/fork_set", post(sets::handle_fork_set))
         .route("/set_privacy", post(sets::handle_set_privacy))
