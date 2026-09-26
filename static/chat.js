@@ -1171,7 +1171,7 @@ function refreshPrivacyControls() {
   const ready = chatPolicyReady();
   const currentPolicy = loadedPrivacy && loadedPrivacy.setId === currentSetId();
   $('#chat-privacy-indicator').text(saved
-    ? (currentPolicy ? (loadedPrivacy.level === 'private' ? '🔒 ' : '') + privacyLabel(loadedPrivacy.level) : 'Loading chat privacy…')
+    ? (currentPolicy ? privacyLabel(loadedPrivacy.level) : 'Loading chat privacy…')
     : 'Temporary in this app — providers may retain your requests independently.');
   $('#privacy-select').prop('disabled', !ready).val(ready ? loadedPrivacy.level : '');
   $('#modelSelect option').each(function() {
