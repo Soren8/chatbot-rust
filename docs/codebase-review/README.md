@@ -1,10 +1,22 @@
 # Codebase review program
 
-Latest resume point: session 052 — phase-one follow-up completion review passed. Earlier checkpoints record their original scope and status.
+Latest resume point: session 053 — simplicity known-leads batch complete on `refactor`. Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-seven batches through session 051. **Phase one is complete for the authorized modularity scope following session 052. Phases 2–7 have not started.**
+Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 simplicity is complete for the user-authorized known-leads scope; a fresh simplicity review and phases 3–7 have not started.**
+
+## Session 053 — simplicity known-leads batch, 2026-09-26
+
+Branch `refactor` off main (`f7b008f`). User scoped phase 2 to remediate-known-leads-only (no fresh review), keep COR-003/Auto/key-export deferred unless simplicity-related (none were), targeted tests during dev with full suite at end, moderate aggressiveness. Three proven-dead deletions, no behavior change:
+
+- Deleted orphan `chatbot-core/src/legacy_sets_json/migrate.rs` (never in the module tree; `mod.rs` declares only `store`); fixed the broken `[super::migrate]` doc-link in `store.rs` to `crate::history::migration`. This is the documented MOD-004 simplicity lead.
+- Deleted dead `parse_chunk_key` (plus its `#[allow(dead_code)]`) in `history/store/keys.rs`; the sole repo-wide reference was its definition (`Uuid` import retained by `chunk_key`; live `chunk_prefix_end` untouched).
+- Removed the dead `pub mod messages` re-export shim in `providers/openai.rs`; zero users of the `openai::messages` path in source or tests, all imports resolve through `providers::messages`.
+
+Deliberately kept: `persistence.rs` compat alias (used by test-support/`live_helper_contracts`), `chat_utils::get_ip` re-export (pinned by tests), serde/schema `allow(dead_code)` fields (wire compat), `Example*` template tests (test-quality pass scope), `tt.js`/theme (referenced by templates).
+
+Verification: core lib 181/181, `provider_messages` 4/4, `generation_dispatch` 15/15, `live_helper_contracts` 16/16, all exit 0 (`temp/test-logs/simplicity-*-20260926.log`). Full suite is green except pre-existing `conversation_request_application_fences_stale_responses` (`canSubmitChat is not defined` in the JS fixture), reproduced on pristine main via stash (`temp/test-logs/main-baseline-conv-req-app-20260926.log`, exit 101); unrelated to this batch and left untouched per scope. No APK build (no Android changes).
 
 ## Session 052 — follow-up completion review, 2026-09-19
 

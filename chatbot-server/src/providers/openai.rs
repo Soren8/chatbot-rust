@@ -35,12 +35,6 @@ pub enum ToolStreamChunk {
     ToolCalls(Vec<ToolCall>),
 }
 
-pub mod messages {
-    //! Backwards-compatible re-export of the shared provider message DTO.
-    //! New code imports `crate::providers::messages` directly.
-    pub use crate::providers::messages::*;
-}
-
 mod payload {
     use serde::Serialize;
 

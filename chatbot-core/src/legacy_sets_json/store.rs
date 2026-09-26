@@ -1,7 +1,7 @@
 //! Read/write helpers for the pre-redb `sets.json` on-disk format.
 //!
 //! **Migration-only / test-seed surface.** Production handlers must not call
-//! mutating methods except through [`super::migrate`].
+//! mutating methods except through [`crate::history::migration`].
 
 use crate::config::app_config;
 use crate::fernet_crypto::{self, FernetError};
