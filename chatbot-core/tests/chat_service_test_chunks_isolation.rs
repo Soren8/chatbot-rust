@@ -63,7 +63,6 @@ impl Drop for PoisonGuard {
 fn provider_with_chunks(chunks: Option<Vec<&str>>) -> ProviderConfig {
     ProviderConfig {
         privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-        search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
         provider_name: "default".to_string(),
         provider_type: "openai".to_string(),
         tier: None,

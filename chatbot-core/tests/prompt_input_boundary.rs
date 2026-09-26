@@ -15,7 +15,6 @@ use chatbot_core::session::ChatContext;
 fn test_provider(context_size: Option<u32>) -> ProviderConfig {
     ProviderConfig {
         privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-        search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
         provider_name: "default".into(),
         provider_type: "openai".into(),
         tier: None,

@@ -164,7 +164,6 @@ llms:
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
     privacy_level: private
-    search_privacy_level: private
     search: true
 "#);
     let password="PrivacyPass!234";
@@ -318,7 +317,9 @@ async fn private_chat_can_use_private_brave_without_promoting_native_xai_search(
     env::set_var("XAI_API_KEY","test-xai-key");
     let (address,brave_path_hits,native_hits,shutdown,server)=start_xai_search_mock().await;
     let config=format!(r#"
-brave_search_privacy_level: private
+search_providers:
+  brave:
+    privacy_level: private
 llms:
   - provider_name: default
     type: xai
@@ -327,7 +328,6 @@ llms:
     api_key: "${{XAI_API_KEY}}"
     context_size: 4096
     privacy_level: private
-    search_privacy_level: non_private
     xai_search: false
 "#);
     let workspace=common::TestWorkspace::with_config(&config);
@@ -487,7 +487,9 @@ async fn standard_chat_can_search_with_standard_brave_but_private_chat_cannot_us
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let (address,model_hits,_,shutdown,server)=start_xai_search_mock().await;
     let config=format!(r#"
-brave_search_privacy_level: standard
+search_providers:
+  brave:
+    privacy_level: standard
 llms:
   - provider_name: default
     type: openai

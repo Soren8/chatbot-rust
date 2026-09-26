@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use crate::config::{app_config, PrivacyLevel, ProviderConfig};
+use crate::config::{app_config, PrivacyLevel, ProviderConfig, SearchProvidersConfig};
 
 /// Request configuration handle: global or owned.
 ///
@@ -33,21 +33,24 @@ struct OwnedRequestConfig {
 /// Explicit privacy classifications used by an independently owned router.
 #[derive(Clone, Debug)]
 pub struct DestinationPolicy {
-    providers: std::collections::HashMap<String, (PrivacyLevel, PrivacyLevel)>,
+    providers: std::collections::HashMap<String, PrivacyLevel>,
     pub brave_search: PrivacyLevel,
+    pub xai_native_search: PrivacyLevel,
     pub stt: PrivacyLevel,
     pub tts: PrivacyLevel,
 }
 
 impl DestinationPolicy {
-    pub fn from_providers(providers: &[ProviderConfig], brave_search: PrivacyLevel, stt: PrivacyLevel, tts: PrivacyLevel) -> Self {
+    pub fn from_providers(providers: &[ProviderConfig], search_providers: &SearchProvidersConfig, stt: PrivacyLevel, tts: PrivacyLevel) -> Self {
         Self {
-            providers: providers.iter().map(|provider| (provider.provider_name.clone(), (provider.privacy_level, provider.search_privacy_level))).collect(),
-            brave_search, stt, tts,
+            providers: providers.iter().map(|provider| (provider.provider_name.clone(), provider.privacy_level)).collect(),
+            brave_search: search_providers.brave.privacy_level,
+            xai_native_search: search_providers.xai_native.privacy_level,
+            stt, tts,
         }
     }
 
-    pub fn provider(&self, name: &str) -> Option<(PrivacyLevel, PrivacyLevel)> {
+    pub fn provider(&self, name: &str) -> Option<PrivacyLevel> {
         self.providers.get(name).copied()
     }
 }
@@ -88,7 +91,7 @@ impl ConfigSource {
                 let config = app_config();
                 Some(Arc::new(DestinationPolicy::from_providers(
                     &config.provider_names().iter().filter_map(|name| config.provider(name)).cloned().collect::<Vec<_>>(),
-                    config.brave_search_privacy_level, config.stt_privacy_level, config.tts_privacy_level,
+                    &config.search_providers, config.stt_privacy_level, config.tts_privacy_level,
                 )))
             }
         }

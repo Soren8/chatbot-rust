@@ -285,9 +285,9 @@ fn build_available_models_from_summaries(
                 provider_name: summary.provider_name,
                 tier: summary.tier,
                 search: summary.search,
-                privacy_level: classification.map_or(PrivacyLevel::default_destination(), |levels| levels.0),
+                privacy_level: classification.unwrap_or(PrivacyLevel::default_destination()),
                 search_privacy_level: if native_search {
-                    classification.map_or(PrivacyLevel::default_destination(), |levels| levels.1)
+                    policy.map_or(PrivacyLevel::default_destination(), |p| p.xai_native_search)
                 } else {
                     policy.map_or(PrivacyLevel::default_destination(), |p| p.brave_search)
                 },

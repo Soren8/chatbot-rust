@@ -116,8 +116,6 @@ pub const fn destination_is_eligible(task: PrivacyLevel, destination: PrivacyLev
 pub struct ProviderConfig {
     #[serde(default = "PrivacyLevel::default_destination")]
     pub privacy_level: PrivacyLevel,
-    #[serde(default = "PrivacyLevel::default_destination")]
-    pub search_privacy_level: PrivacyLevel,
     #[serde(alias = "name")]
     pub provider_name: String,
     #[serde(rename = "type")]
@@ -158,6 +156,21 @@ pub struct ProviderConfig {
     /// `x-zero-data-retention` response header. Ignored for non-XAI providers.
     #[serde(default)]
     pub xai_zdr: bool,
+}
+
+/// Privacy classification of search services, independent of model selection.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SearchProvidersConfig {
+    #[serde(default)]
+    pub brave: SearchProviderConfig,
+    #[serde(default)]
+    pub xai_native: SearchProviderConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SearchProviderConfig {
+    #[serde(default = "PrivacyLevel::default_destination")]
+    pub privacy_level: PrivacyLevel,
 }
 
 fn default_true() -> bool {
@@ -248,7 +261,7 @@ pub struct AppConfig {
     pub save_thoughts: bool,
     pub send_thoughts: bool,
     pub brave_api_key: Option<String>,
-    pub brave_search_privacy_level: PrivacyLevel,
+    pub search_providers: SearchProvidersConfig,
     pub stt_privacy_level: PrivacyLevel,
     pub tts_privacy_level: PrivacyLevel,
     /// Max requests per identity per rolling minute (`0` disables).
@@ -329,8 +342,8 @@ struct RawConfig {
     external_connections: ExternalConnectionsConfig,
     #[serde(default)]
     llms: Vec<ProviderConfig>,
-    #[serde(default = "PrivacyLevel::default_destination")]
-    brave_search_privacy_level: PrivacyLevel,
+    #[serde(default)]
+    search_providers: SearchProvidersConfig,
     #[serde(default = "PrivacyLevel::default_destination")]
     stt_privacy_level: PrivacyLevel,
     #[serde(default = "PrivacyLevel::default_destination")]
@@ -617,7 +630,7 @@ fn load_app_config() -> AppConfig {
         save_thoughts,
         send_thoughts,
         brave_api_key,
-        brave_search_privacy_level: raw_config.brave_search_privacy_level,
+        search_providers: raw_config.search_providers,
         stt_privacy_level: raw_config.stt_privacy_level,
         tts_privacy_level: raw_config.tts_privacy_level,
         rate_limit_per_user_per_minute,
@@ -903,7 +916,6 @@ pub fn fallback_provider() -> ProviderConfig {
     ProviderConfig {
         provider_name: "default".to_string(),
         privacy_level: PrivacyLevel::default_destination(),
-        search_privacy_level: PrivacyLevel::default_destination(),
         provider_type: "openai".to_string(),
         tier: Some("free".to_string()),
         model_name: "local-model".to_string(),

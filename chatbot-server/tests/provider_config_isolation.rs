@@ -1316,7 +1316,6 @@ async fn chat_send_thoughts_config_true_preserves_by_default() {
 fn test_provider_with_chunks(name: &str, chunks: &[&str]) -> ProviderConfig {
     ProviderConfig {
         privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-        search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
         provider_name: name.to_owned(),
         provider_type: "openai".to_owned(),
         tier: None,
@@ -1338,7 +1337,6 @@ fn test_provider_with_chunks(name: &str, chunks: &[&str]) -> ProviderConfig {
 fn mock_provider(base_url: &str) -> ProviderConfig {
     ProviderConfig {
         privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-        search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
         provider_name: "default".to_owned(),
         provider_type: "openai".to_owned(),
         tier: None,

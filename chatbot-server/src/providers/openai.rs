@@ -754,7 +754,6 @@ mod tests {
     fn test_provider(test_chunks: Vec<String>) -> OpenAiProvider {
         OpenAiProvider::new(&ProviderConfig {
             privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-            search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
             provider_name: "test".to_string(),
             provider_type: "openai".to_string(),
             tier: None,
@@ -979,7 +978,6 @@ mod tests {
 
         let provider = OpenAiProvider::new(&ProviderConfig {
             privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-            search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
             provider_name: "test".to_string(),
             provider_type: "openai".to_string(),
             tier: None,
@@ -1028,7 +1026,6 @@ mod tests {
     fn default_rate_limit_settings_back_off_five_times_with_30s_cap() {
         let provider = OpenAiProvider::new(&ProviderConfig {
             privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-            search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
             provider_name: "test".to_string(),
             provider_type: "openai".to_string(),
             tier: None,
@@ -1053,7 +1050,6 @@ mod tests {
     fn retry_test_provider(base_url: String) -> OpenAiProvider {
         OpenAiProvider::new(&ProviderConfig {
             privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
-            search_privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
             provider_name: "test".to_string(),
             provider_type: "openai".to_string(),
             tier: None,

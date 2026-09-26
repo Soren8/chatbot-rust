@@ -348,7 +348,6 @@ mod tests {
             model_name: "test-model".into(),
             provider: crate::config::ProviderConfig {
                 privacy_level: crate::config::PrivacyLevel::default_destination(),
-                search_privacy_level: crate::config::PrivacyLevel::default_destination(),
                 provider_name: "default".into(),
                 provider_type: "openai".into(),
                 tier: None,
