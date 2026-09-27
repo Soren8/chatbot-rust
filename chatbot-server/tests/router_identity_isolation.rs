@@ -87,15 +87,26 @@ async fn home_session(app: &axum::Router) -> (String, String) {
 
 /// Empty-message `/chat`: 400 proves the CSRF check passed (validation runs
 /// after it), 401 proves it did not. No provider is ever contacted.
-async fn post_chat_empty(app: &axum::Router, cookie: &str, csrf: &str) -> StatusCode {
+/// Authenticated callers must supply their data key: without it the
+/// per-request encryption gate answers 401 before validation runs.
+async fn post_chat_empty(
+    app: &axum::Router,
+    cookie: &str,
+    csrf: &str,
+    enc_key: Option<&str>,
+) -> StatusCode {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/chat")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, cookie)
+        .header("X-CSRF-Token", csrf);
+    if let Some(key) = enc_key {
+        builder = builder.header("X-Enc-Key", key);
+    }
     app.clone()
         .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/chat")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, cookie)
-                .header("X-CSRF-Token", csrf)
+            builder
                 .body(Body::from(r#"{"message":""}"#))
                 .unwrap(),
         )
@@ -141,7 +152,7 @@ async fn default_router_matches_global_session_store() {
     // The default router honors the global CSRF token: validation runs, so
     // the empty message fails as a 400, not a 401.
     assert_eq!(
-        post_chat_empty(&app, &cookie, &bootstrap.csrf_token).await,
+        post_chat_empty(&app, &cookie, &bootstrap.csrf_token, None).await,
         StatusCode::BAD_REQUEST,
         "default router must accept CSRF issued by the global store"
     );
@@ -182,27 +193,27 @@ async fn isolated_routers_reject_each_others_csrf_and_cookies() {
     assert_ne!(csrf_a, csrf_b, "owned stores must mint distinct CSRF tokens");
 
     assert_eq!(
-        post_chat_empty(&app_a, &cookie_a, &csrf_a).await,
+        post_chat_empty(&app_a, &cookie_a, &csrf_a, None).await,
         StatusCode::BAD_REQUEST,
         "own cookie plus own CSRF must pass the CSRF gate"
     );
     assert_eq!(
-        post_chat_empty(&app_b, &cookie_b, &csrf_b).await,
+        post_chat_empty(&app_b, &cookie_b, &csrf_b, None).await,
         StatusCode::BAD_REQUEST,
         "own cookie plus own CSRF must pass the CSRF gate"
     );
     assert_eq!(
-        post_chat_empty(&app_b, &cookie_a, &csrf_a).await,
+        post_chat_empty(&app_b, &cookie_a, &csrf_a, None).await,
         StatusCode::UNAUTHORIZED,
         "router B must reject router A's session identity"
     );
     assert_eq!(
-        post_chat_empty(&app_a, &cookie_b, &csrf_b).await,
+        post_chat_empty(&app_a, &cookie_b, &csrf_b, None).await,
         StatusCode::UNAUTHORIZED,
         "router A must reject router B's session identity"
     );
     assert_eq!(
-        post_chat_empty(&app_a, &cookie_a, "bogus-token").await,
+        post_chat_empty(&app_a, &cookie_a, "bogus-token", None).await,
         StatusCode::UNAUTHORIZED,
         "a presented but unknown CSRF token must not validate"
     );
@@ -317,15 +328,18 @@ async fn isolated_routers_reject_each_others_login_cookies() {
         "router A must recognize its own login cookie"
     );
 
-    // The login-bound CSRF token validates on the owning router only.
+    // The login-bound CSRF token validates on the owning router only. The
+    // data key travels so the per-request encryption gate does not mask the
+    // CSRF/validation signal with a 401.
     let login_csrf = csrf_from_home(own_html);
+    let enc_key = common::derive_encryption_key_header(username, password);
     assert_eq!(
-        post_chat_empty(&app_a, &login_cookie, &login_csrf).await,
+        post_chat_empty(&app_a, &login_cookie, &login_csrf, Some(&enc_key)).await,
         StatusCode::BAD_REQUEST,
         "login CSRF must validate on the owning router"
     );
     assert_eq!(
-        post_chat_empty(&app_b, &login_cookie, &login_csrf).await,
+        post_chat_empty(&app_b, &login_cookie, &login_csrf, Some(&enc_key)).await,
         StatusCode::UNAUTHORIZED,
         "router B must reject router A's login-bound CSRF"
     );
@@ -362,7 +376,7 @@ async fn isolated_routers_preserve_unknown_cookie_log_policy() {
         );
         // Unknown cookies never satisfy the CSRF gate on mutating routes.
         assert_eq!(
-            post_chat_empty(app, unknown, "bogus-token").await,
+            post_chat_empty(app, unknown, "bogus-token", None).await,
             StatusCode::UNAUTHORIZED,
             "unknown cookie must not pass the /chat CSRF gate"
         );
