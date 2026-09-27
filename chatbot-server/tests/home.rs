@@ -503,3 +503,51 @@ async fn home_route_logged_in_settings_has_system_prompt_memory_and_connections(
         "logged-in settings must keep the Connections section alongside System Prompt and Memory",
     );
 }
+
+/// Extract the declaration block for an exact CSS selector (first occurrence).
+/// `selector` must include its opening brace, e.g. `".settings-cards {"`;
+/// the returned slice is the declarations up to the closing brace.
+fn css_rule_block<'a>(css: &'a str, selector_with_brace: &str) -> &'a str {
+    let start = css.find(selector_with_brace).unwrap_or_else(|| {
+        panic!("style.css must contain selector `{selector_with_brace}`")
+    });
+    let body = &css[start + selector_with_brace.len()..];
+    let close = body.find('}').unwrap_or_else(|| {
+        panic!("selector `{selector_with_brace}` must close its block")
+    });
+    &body[..close]
+}
+
+/// Logged-in desktop regression: the md+ flex rules for `.settings-cards`
+/// must not let the System Prompt / Memory cards (or their textareas) shrink
+/// to zero height. With the Encryption + Connections siblings present the
+/// panel overflows its 100% height, and `flex: 1 1 ...` + `min-height: 0`
+/// collapsed both cards to ~14px slivers: present in the DOM, invisible in
+/// the UI. The cards keep `flex-grow` for the short-content stretch layout
+/// but must never shrink below a usable height.
+#[test]
+fn settings_cards_cannot_collapse_to_zero_on_desktop() {
+    const CSS: &str = include_str!("../../static/style.css");
+
+    let container = css_rule_block(CSS, ".settings-cards {");
+    assert!(
+        !container.contains("flex: 1 1"),
+        "settings-cards container must not shrink (flex-shrink collapses it to 0px when logged in), got: {{{container}}}",
+    );
+
+    let card = css_rule_block(CSS, ".settings-cards .card {");
+    assert!(
+        !card.contains("flex: 1 1"),
+        "settings cards must not shrink below their content when the panel overflows, got: {{{card}}}",
+    );
+    assert!(
+        !card.contains("min-height: 0"),
+        "settings cards need a usable minimum height so System Prompt / Memory stay visible, got: {{{card}}}",
+    );
+
+    let textarea = css_rule_block(CSS, ".settings-cards .card .card-body textarea {");
+    assert!(
+        !textarea.contains("min-height: 0"),
+        "settings textareas need a usable minimum height instead of collapsing to a sliver, got: {{{textarea}}}",
+    );
+}
