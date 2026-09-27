@@ -153,8 +153,23 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
             .map_err(crate::http_error::map_encryption_key_validation_err)?;
         let key = encryption_key.as_ref().expect("validated encryption key");
         let history = chat.history().map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "history unavailable"))?;
-        let set_id = crate::set_privacy_coordinator::resolve_content_set(&history, user, payload.set_id.as_deref(), payload.set_name.as_deref(), key)
-            .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+        // A missing set must follow the same saved-turn contract as other
+        // prepare failures: with a nonempty message the error is returned as
+        // a 200 assistant turn instead of a raw 400.
+        let set_id = match crate::set_privacy_coordinator::resolve_content_set(&history, user, payload.set_id.as_deref(), payload.set_name.as_deref(), key) {
+            Ok(id) => id,
+            Err(chatbot_core::history::HistoryError::NotFound) if !payload.message.trim().is_empty() => {
+                return error_as_saved_chat_turn_with_service(&chat,
+                    &session_context,
+                    payload.set_name.as_deref(),
+                    &payload.message,
+                    "invalid set name",
+                    encryption_key.as_ref(),
+                    None,
+                );
+            }
+            Err(err) => return Err(crate::set_privacy_coordinator::map_resolution_error(err)),
+        };
         let permit = services.set_privacy().content(user, set_id).await;
         let snapshot = history.load(user, set_id, key).map_err(crate::set_privacy_coordinator::map_resolution_error)?;
         Some((permit, set_id, snapshot.privacy_level))
