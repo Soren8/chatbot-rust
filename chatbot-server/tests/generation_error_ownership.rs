@@ -56,6 +56,9 @@ fn set_chunks(chunks: &[&str]) {
 }
 
 fn openai_config(base_url: &str) -> String {
+    // Test-only classification: the local loopback mock retains nothing, so
+    // it is eligible for the default-Private sets these tests create.
+    // Production enforcement is unchanged.
     format!(
         r#"
 llms:
@@ -65,6 +68,7 @@ llms:
     base_url: "{base_url}"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
+    privacy_level: "private"
 "#
     )
 }
