@@ -48,6 +48,19 @@ Branch `refactor`. All three batches implemented with characterization-first ver
 
 **Full-suite gate blocked by pre-existing main drift.** `simplicity-full2-20260926.log`: 52 targets pass, then `generation_error_ownership` fails (`chat_upstream_500...` gets 403, expects 200). The mock HTTP provider is privacy-ineligible for the default-Private set, a main-side privacy-stage/test drift predating this work; reproduced identically on pristine main `f7b008f` via worktree (`main-baseline-gen-err-20260926.log`). Repairing it is a product-contract decision (eligible test world vs enforcement), not a simplicity change, and is left for explicit scope authorization. Targets alphabetically after it remain unverified in the full run.
 
+## Session 056 — review fixes and full-suite green, 2026-09-27
+
+Branch `refactor`. Implemented the primary review's required corrections, each committed separately with targeted verification:
+
+- **Fallback coverage.** Added direct `fallback_or_restricted` tests for both outcomes (allowed yields a lazily-built stream with no network; denied yields `PrivacyRestrictedFallback`) plus a code comment documenting the two dispatch-level setup-error arms as defensive (provider construction fails only on HTTP-client setup; search errors surface at poll time, not at dispatch).
+- **Blocked eligibility.** Added `blocked-send`, `blocked-regen` and `switch-load` scenarios exercising the real gate with no loaded policy, including a switch before the new set's policy arrives; all prior assertions retained.
+- **Fixture-only wrapper.** Removed `disablePremiumModels` from production; re-anchored the playback slice on the retained `validateModelTier` assignment.
+- **Full-suite drift.** Classified controlled mock providers as `private` in `generation_error_ownership`, `prepare_policy_boundary` and the `provider_config_isolation` YAML configs (production enforcement unchanged); restored the missing-set saved-turn contract in the chat/regenerate privacy pre-checks; sent the data key in the login CSRF isolation probes so the 400/401 signal is not masked by the per-request key gate. Every drift repair was reproduced on pristine main first via worktree or stash.
+
+Final full suite `temp/test-logs/fixes-full5-20260927.log`: job `20260927T034301-3820e47af13a`, exit 0, untruncated, 121 targets ok, zero failures. No Android changes, so no APK rebuild was required.
+
+Note: `temp/test-logs/` was emptied by an external cleanup mid-session; earlier per-batch logs survive only as job IDs recorded here. Final evidence above is intact.
+
 ## Expanded phase-two scope
 
 The primary reviewer will inspect current handwritten implementation and relevant callers across Rust core/server, first-party browser code, Android, Python voice service, DNS, and build/deployment integration. Include additions since phase one, particularly privacy, external connections and server selection. Update file-level coverage at the current revision rather than inheriting modularity coverage as simplicity credit.

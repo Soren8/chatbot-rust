@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: session 055 — SIM-001/002/003 implemented on `refactor`; full-suite gate blocked by pre-existing main drift. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
+Latest resume point: session 056 — review fixes complete with a full green suite on `refactor`. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 SIM-001/002/003 are implemented with targeted verification (session 055); the final full-suite gate is blocked by pre-existing main-side privacy/test drift in `generation_error_ownership`, with later targets unverified. Phases 3–7 have not started.**
+Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 implementation (SIM-001/002/003 plus review fixes) is complete with a full green executor run on the final tree (session 056); the phase-completion review itself remains open. Phases 3–7 have not started.**
 
 ## Session 054 — primary review and expanded simplicity scope, 2026-09-26
 
