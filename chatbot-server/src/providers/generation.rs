@@ -179,6 +179,10 @@ pub async fn dispatch_stream(
 
             // Use Brave search via XAI's OpenAI-compatible /chat/completions endpoint
             // through the same generation handle so owned fakes stay scoped.
+            // Both error arms below are defensive: provider construction only
+            // fails on HTTP client setup, and search errors surface when the
+            // returned stream is polled, not here. The fallback decision
+            // itself is pinned by the helper tests below.
             let openai_provider = match generation.openai_provider(provider_config) {
                 Ok(provider) => provider,
                 Err(err) => {
@@ -263,6 +267,40 @@ mod tests {
         {
             Err(err) => err,
             Ok(_) => panic!("fail-closed without native fallback"),
+        };
+        assert!(err.downcast_ref::<PrivacyRestrictedFallback>().is_some());
+    }
+
+    fn xai_provider_for_helper() -> (ProviderConfig, GenerationDeps, GenerationProvider) {
+        let config = xai_config_without_native_search();
+        let generation =
+            GenerationDeps::new(HashMap::new(), "xai".to_owned(), false, false, None);
+        let provider = generation
+            .xai_provider(&config)
+            .expect("xai provider builds");
+        (config, generation, GenerationProvider::Xai(provider))
+    }
+
+    #[test]
+    fn fallback_helper_streams_natively_when_allowed() {
+        let (_, _, provider) = xai_provider_for_helper();
+        let GenerationProvider::Xai(xai) = provider else {
+            panic!("expected xai provider");
+        };
+        // Stream construction is lazy: no network happens here.
+        let stream = fallback_or_restricted(&xai, Vec::new(), true, true);
+        assert!(stream.is_ok(), "allowed fallback must yield a stream");
+    }
+
+    #[test]
+    fn fallback_helper_is_fail_closed_when_native_denied() {
+        let (_, _, provider) = xai_provider_for_helper();
+        let GenerationProvider::Xai(xai) = provider else {
+            panic!("expected xai provider");
+        };
+        let err = match fallback_or_restricted(&xai, Vec::new(), true, false) {
+            Err(err) => err,
+            Ok(_) => panic!("denied fallback must not yield a stream"),
         };
         assert!(err.downcast_ref::<PrivacyRestrictedFallback>().is_some());
     }
