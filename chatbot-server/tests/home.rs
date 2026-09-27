@@ -62,6 +62,22 @@ fn build_app() -> axum::Router {
     build_router(static_root)
 }
 
+fn assert_settings_has_system_prompt_and_memory(body: &str) {
+    for marker in [
+        r#"<h6 class="mb-0">System Prompt</h6>"#,
+        r#"id="user-system-prompt""#,
+        r#"id="save-system-prompt""#,
+        r#"<h6 class="mb-0">Memory</h6>"#,
+        r#"id="user-memory""#,
+        r#"id="save-memory""#,
+    ] {
+        assert!(
+            body.contains(marker),
+            "settings panel must render System Prompt and Memory sections, missing: {marker}",
+        );
+    }
+}
+
 fn extract_app_data(body: &str) -> Value {
     const MARKER: &str = "<script id=\"app-data\" type=\"application/json\">";
     let start = body.find(MARKER).expect("app-data marker present");
@@ -370,5 +386,120 @@ async fn home_route_logged_in_free_user_sees_model_picker_with_single_free_model
     assert!(
         !body.contains(r#"value="premium-model""#),
         "logged-in free user should not see premium options",
+    );
+}
+
+#[tokio::test]
+async fn home_route_guest_settings_has_system_prompt_and_memory() {
+    let _guard = test_mutex().lock().unwrap();
+    let _workspace = setup_workspace();
+    let app = build_app();
+
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .expect("GET /");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 512 * 1024)
+        .await
+        .expect("read body");
+    let body = std::str::from_utf8(&body).expect("utf8 body");
+    assert!(body.contains("data-logged-in=\"false\""));
+    assert_settings_has_system_prompt_and_memory(body);
+}
+
+#[tokio::test]
+async fn home_route_logged_in_settings_has_system_prompt_memory_and_connections() {
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+
+    let password = "Sup3rS3cret!";
+    let username = "settings-user";
+    let hashed = hash(password, DEFAULT_COST).expect("hash password");
+    let payload = json!({
+        username: {
+            "password": hashed,
+            "tier": "free"
+        }
+    });
+    write_users_json(&workspace, &payload);
+
+    let app = build_app();
+
+    let login_get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /login");
+    assert_eq!(login_get.status(), StatusCode::OK);
+    let (login_parts, login_body) = login_get.into_parts();
+    let set_cookie = login_parts
+        .headers
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .expect("session cookie");
+    let body = to_bytes(login_body, 128 * 1024)
+        .await
+        .expect("read login page");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8 body"))
+        .expect("csrf token");
+
+    let form = format!(
+        "username={}&password={}&csrf_token={}",
+        urlencoding::encode(username),
+        urlencoding::encode(password),
+        urlencoding::encode(&csrf),
+    );
+
+    let login_post = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, common::extract_cookie(&set_cookie))
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+    assert_eq!(login_post.status(), StatusCode::FOUND);
+    let login_cookie = login_post
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .expect("set-cookie after login");
+
+    let home_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header(header::COOKIE, common::extract_cookie(&login_cookie))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET / with auth");
+
+    assert_eq!(home_response.status(), StatusCode::OK);
+    let body = to_bytes(home_response.into_body(), 512 * 1024)
+        .await
+        .expect("read home body");
+    let body = std::str::from_utf8(&body).expect("utf8 body");
+    assert!(body.contains("data-logged-in=\"true\""));
+    assert_settings_has_system_prompt_and_memory(body);
+    assert!(
+        body.contains(r#"id="connections-settings""#),
+        "logged-in settings must keep the Connections section alongside System Prompt and Memory",
     );
 }
