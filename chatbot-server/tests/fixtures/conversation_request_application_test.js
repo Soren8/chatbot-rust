@@ -881,6 +881,62 @@ async function scenarioPagination() {
   assert.equal(w.historyWindow.snapshot().loadingOlder, false, 'pagination: live settlement clears');
 }
 
+async function scenarioBlockedSendWithoutPolicy() {
+  const w = makeWorld();
+  // Policy has not loaded yet: the gate must block before any fetch.
+  vm.runInContext('loadedPrivacy = null;', w.ctx);
+  w.userInput._val = 'hello A';
+  vm.runInContext('sendMessage({ message: "hello A" })', w.ctx);
+  await flush();
+  assert.equal(w.fetchCalls.length, 0, 'blocked-send: no request without a loaded policy');
+  assert(
+    w.appended.some((a) => a.className === 'error-message' && /still loading/.test(a.message)),
+    'blocked-send: explains that chat privacy is still loading'
+  );
+  assert.equal(w.chatRequests.isGenerating(), false, 'blocked-send: nothing generates');
+}
+
+async function scenarioBlockedRegenWithoutPolicy() {
+  const w = makeWorld();
+  vm.runInContext('loadedPrivacy = null;', w.ctx);
+  w.ctx.__ai = w.aiFake;
+  w.ctx.__utext = 'q';
+  w.ctx.__pair = 0;
+  vm.runInContext('performRegeneration(__ai, __utext, __pair)', w.ctx);
+  await flush();
+  assert.equal(w.fetchCalls.length, 0, 'blocked-regen: no request without a loaded policy');
+  assert(
+    w.appended.some((a) => a.className === 'error-message' && /still loading/.test(a.message)),
+    'blocked-regen: explains that chat privacy is still loading'
+  );
+  assert.equal(w.chatRequests.isGenerating(), false, 'blocked-regen: nothing generates');
+}
+
+async function scenarioBlockedSendBeforePolicyLoadAfterSwitch() {
+  const w = makeWorld();
+  w.userInput._val = 'hello A';
+  vm.runInContext('sendMessage({ message: "hello A" })', w.ctx);
+  await flush();
+  assert.equal(w.fetchCalls.length, 1, 'switch-load: A sends while its policy is loaded');
+  w.switchTo('set-B', 'B', 3);
+  // B's policy has not arrived yet: the replacement must wait for it.
+  vm.runInContext('loadedPrivacy = null;', w.ctx);
+  w.userInput._val = 'hi B';
+  vm.runInContext('sendMessage({ message: "hi B" })', w.ctx);
+  await flush();
+  assert.equal(w.fetchCalls.length, 1, 'switch-load: B replacement waits for its policy');
+  assert(
+    w.appended.some((a) => a.className === 'error-message' && /still loading/.test(a.message)),
+    'switch-load: explains that chat privacy is still loading'
+  );
+  // Policy arrives: the same draft now sends against B.
+  vm.runInContext('loadedPrivacy = ({ setId: "set-B", level: "private" });', w.ctx);
+  vm.runInContext('sendMessage({ message: "hi B" })', w.ctx);
+  await flush();
+  assert.equal(w.fetchCalls.length, 2, 'switch-load: replacement sends once the policy loads');
+  assert.equal(fetchBody(lastFetch(w)).set_id, 'set-B', 'switch-load: replacement targets B');
+}
+
 (async () => {
   const cases = [
     ['chat-switch', scenarioChatSwitch],
@@ -895,6 +951,9 @@ async function scenarioPagination() {
     ['memory-error-ui', scenarioMemoryErrorUi],
     ['pair-preread', scenarioPairPreread],
     ['pagination', scenarioPagination],
+    ['blocked-send', scenarioBlockedSendWithoutPolicy],
+    ['blocked-regen', scenarioBlockedRegenWithoutPolicy],
+    ['switch-load', scenarioBlockedSendBeforePolicyLoadAfterSwitch],
   ];
   const failures = [];
   for (const [name, fn] of cases) {
