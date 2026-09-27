@@ -1190,7 +1190,6 @@ function refreshPrivacyControls() {
   $('#mic-button').prop('disabled', !voicePathReady('stt') && !$('#mic-button').hasClass('recording'));
   $('#voice-mode-btn').prop('disabled', (!voicePathReady('stt') || !voicePathReady('tts')) && !window.voiceModeActive);
 }
-function disablePremiumModels() { refreshPrivacyControls(); }
 window.validateModelTier = function validateModelTier() {
   updateSearchToggleVisibility();
 };

@@ -90,7 +90,7 @@ const slices = [
   ['var activeDesktopTtsQueue = null;',
     'function stopCurrentDesktopTts() {'],
   ['function stopCurrentDesktopTts() {',
-    'function disablePremiumModels() {'],
+    'window.validateModelTier = function validateModelTier() {'],
   ['function clearTtsHoverHighlight() {',
     '/** Highlight the sentence under the caret. Returns the sentence record or null. */'],
   ['var messagePlaybackSources = new WeakMap();',
