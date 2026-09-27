@@ -144,11 +144,13 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
+    privacy_level: "private"
   - provider_name: "legacy"
     type: "stub"
     model_name: "stub-model"
     base_url: "https://example.test/v1"
     context_size: 4096
+    privacy_level: "private"
 "#;
 
 const SAVE_FALSE_CONFIG: &str = r#"
@@ -160,6 +162,7 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
+    privacy_level: "private"
 "#;
 
 fn openai_mock_config(base_url: &str) -> String {
