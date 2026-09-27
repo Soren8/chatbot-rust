@@ -39,6 +39,7 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
+    privacy_level: "private"
   - provider_name: "premium-model"
     type: "openai"
     model_name: "premium-test"
@@ -46,6 +47,7 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
+    privacy_level: "private"
 "#;
 
 fn test_mutex() -> &'static Mutex<()> {
