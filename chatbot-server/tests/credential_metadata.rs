@@ -93,6 +93,31 @@ fn credential_metadata_is_shared_umd_without_side_channels() {
     }
 }
 
+fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
+    let header = format!("function {fn_name}(");
+    let Some(start) = src.find(&header) else {
+        return false;
+    };
+    let body = &src[start..];
+    let Some(open) = body.find('{') else {
+        return false;
+    };
+    let mut depth = 0i32;
+    for (i, ch) in body[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return body[open..=open + i].contains(needle);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// enc-key.js wires the metadata owner with no inline policy copies while
 /// keeping store lifecycle and the unchanged EncKey surface.
 #[test]
@@ -105,10 +130,6 @@ fn enc_key_wires_metadata_owner_without_inline_copies() {
         "touchSlotRecord(record, Date.now())",
         "purgeableSlotUsernames(entries)",
         "isAccountSlotKey(key)",
-        // Behavioral wiring pin (not a helper-name pin): enc-key must reach
-        // the metadata owner object. The former `slotIdByHash` helper had no
-        // production caller and was deleted under this contract.
-        "metadataOwner()",
     ] {
         assert!(
             src.contains(marker),
@@ -141,6 +162,27 @@ fn enc_key_wires_metadata_owner_without_inline_copies() {
         !src.contains("'acct:'") && !src.contains("\"acct:\""),
         "slot prefix lives in the metadata unit"
     );
+}
+
+/// Each slot lifecycle operation must delegate to the metadata owner inside
+/// its own function body — not merely mention the owner somewhere in the
+/// file. Deleting the dead `slotIdByHash` helper keeps every pin below green.
+#[test]
+fn enc_key_slot_operations_delegate_to_metadata_owner() {
+    let src = enc_js();
+    for (operation, delegation) in [
+        ("slotKey", "metadataOwner().slotKeyFor"),
+        ("listCachedAccounts", "metadataOwner().filterCachedAccounts"),
+        ("touchSlot", "metadataOwner().touchSlotRecord"),
+        ("purgeNonRememberedSlots", "metadataOwner().purgeableSlotUsernames"),
+        // removeSlot resolves its key through the pinned `slotKey` above.
+        ("removeSlot", "slotKey(username)"),
+    ] {
+        assert!(
+            function_contains(src, operation, delegation),
+            "{operation} must delegate via {delegation}"
+        );
+    }
 }
 
 /// No new JS key flows: slot lookups still resolve to null without unwrapping

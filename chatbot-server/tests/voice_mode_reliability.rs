@@ -1053,22 +1053,31 @@ fn voice_mode_retry_honors_an_explicit_stop() {
     );
 }
 
-/// Native TTS streams PCM, but reliability comes first on spotty links:
-/// preroll before the first sample, retry a failed GET, and do not kill
+/// Native TTS queues complete clips in sentence order, with retry isolating
+/// one bad sentence: each clip accumulates decoded PCM through end-of-stream
+/// (jitter buffer), rejects stale or truncated generations, and only then
+/// hands one complete `AudioClip` to the queue. Reliability on spotty links
+/// comes from the clip GET retry and per-sentence drops, not from killing
 /// the whole session when one sentence drops.
 #[test]
-fn native_voice_tts_streams_wav_instead_of_buffering_the_clip() {
+fn native_voice_tts_queues_complete_clips_after_preroll_accumulation() {
     let tts = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
     );
+    let wav = java_method_body(tts, "private AudioClip streamWavToTrack(")
+        .expect("streaming WAV decode path");
     assert!(
-        tts.contains("streamWavToTrack")
-            && tts.contains("getInputStream")
-            && tts.contains("writePcmBlocking")
-            // The jitter buffer is the `preroll` accumulation in the stream
-            // path, not a named millisecond constant: pin the behavior.
-            && tts.contains("preroll.write(pcm)")
-            && tts.contains("playUrlToTrackOnce")
+        wav.contains("takePcm")
+            && wav.contains("preroll.write(pcm)")
+            && wav.contains("new AudioClip"),
+        "WAV path must decode, accumulate, then queue one complete clip"
+    );
+    assert!(
+        wav.contains("hasIncompleteData") && wav.contains("isGenerationActive"),
+        "stale or truncated clips must be rejected before queueing"
+    );
+    assert!(
+        tts.contains("playUrlToTrackOnce")
             && tts.contains("playbackGeneration")
             && tts.contains("isGenerationActive")
             && tts.contains("hasIncompleteData"),

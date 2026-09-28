@@ -434,9 +434,7 @@ impl HistoryService {
                 existing.iter().any(|e| e == c)
             })
         } else {
-            if name.is_empty() {
-                return Err(HistoryError::InvalidInput("empty set name"));
-            }
+            // Reached only with a non-empty trimmed name; no second check needed.
             name.to_owned()
         };
 
