@@ -1,8 +1,8 @@
 # Review coverage
 
-## Sessions 063–069 — Phase 3 abstractions column (ready for review)
+## Sessions 063–071 — Phase 3 abstractions column (ready for review)
 
-Repo-wide duplication reads in sessions 063–069 (seven inventory/review workers plus implementing workers, primary review of every diff). `P` marks partial coverage with exact scope below; whole-unit exhaustive re-audits are not claimed. Session 068 swept every remaining handwritten unit (full reads for short modules, cited-area skims for large JS/CSS/Android/deploy files); session 069 implemented ABS-005/006/007:
+Repo-wide duplication reads in sessions 063–071 (ten inventory/review workers plus implementing workers, primary review of every diff). `R` marks units where every owned file received a full abstraction read; `P` marks partial coverage with exact scope below. Session 070 closed every skim admitted in session 068 with full reads; session 071 implemented ABS-008 (client sharing + Android delegation with behavior fixture):
 
 - C02: `session.rs` mirror pairs inspected, merge skipped (control-flow risk) — no production change.
 - C04: `history/crypto.rs` AAD builders, `history/ops.rs` snapshot assembly, `history/api.rs` first-turn naming shared; other history paths untouched.
@@ -11,8 +11,9 @@ Repo-wide duplication reads in sessions 063–069 (seven inventory/review worker
 - S04: `providers/openai.rs` request setup shared; other providers/search/tools untouched.
 - W05: `session-client.js` CSRF builder, `credential-crypto.js` decode loop shared; other units untouched.
 - X01: `dns/forwarder.py` fully read; filtering + preflight shared.
-- G01: `chatbot-cuda/src/service.py` warmup inventoried, merge skipped (needs characterization test).
-- Android origin selection shared via the pre-existing entry point (session 069; `ClientLogReporter` untouched on its distinct contract). T01/T02/T04 test bodies read only as dedup contracts for changed paths (separate test-quality pass owns assertion review). Large-file skims are recorded as such in abstractions.md session 068; login-notice/TTS-retry candidates carry explicit test prerequisites.
+- G01: `chatbot-cuda/src/service.py` warmup shared behind a new failure characterization test (session 069).
+- N01: origin selection delegated to the shared store with a javac-executed behavior fixture and migrated guard assertions (session 071); `ClientLogReporter` untouched on its distinct contract. MainActivity read at origin sections only — N01 stays P.
+- W01: `chat.js` fully read 1–4902; stream-block and sink-split retains recorded. W04: both stylesheets + all templates fully read; cascade/precedence retains recorded. N02: every owned file read 1→EOF; coordinator/clip-read/button-style candidates carry explicit test prerequisites. N03: all three car files read; origin delegation tested. T01/T02/T04 test bodies read only as dedup contracts for changed paths (separate test-quality pass owns assertion review). No skim stands without a recorded full-read follow-up.
 
 ## Session 062 — simplicity coverage closure (larger-model concerns)
 
@@ -155,20 +156,20 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | P | — | — | — | — | — |
 | T03 Shared test support | `chatbot-test-support/src/*` | R | R | P | — | — | — | — |
 | S07 Server examples/protected configuration | `chatbot-server/examples/*`, `chatbot-server/.config.yml` | B | B | — | — | — | — | — |
-| W01 Browser chat UI | `static/chat.js` | R | R | P | — | — | — | — |
+| W01 Browser chat UI | `static/chat.js` | R | R | R | — | — | — | — |
 | W02 Browser identity/rendering security | `static/login.js`, `static/enc-key.js`, `static/tt.js` | R | R | P | — | — | — | — |
 | W03 Browser/native bridge/audio | `static/native-audio.js`, `static/native-bridge.js` | R | R | P | — | — | — | — |
-| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | R | R | P | — | — | — | — |
+| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | R | R | R | — | — | — | — |
 | W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js` | R | R | P | — | — | — | — |
 | N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | P | — | — | — | — |
-| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | P | — | — | — | — |
-| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | P | — | — | — | — |
+| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | R | — | — | — | — |
+| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | R | — | — | — | — |
 | T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | — | — | — | — |
 | N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | — | — | — | — |
 | X01 DNS sidecar (post-baseline) | `dns/*` | — | R | R | — | — | — | — |
 | G01 GPU voice service | `chatbot-cuda/*` | R | R | P | — | — | — | — |
-| O01 CI/automation | `.github/*`, `scripts/*` | R | R | P | — | — | — | — |
-| O02 Deployment templates | `deploy/*` | R | R | P | — | — | — | — |
+| O01 CI/automation | `.github/*`, `scripts/*` | R | R | R | — | — | — | — |
+| O02 Deployment templates | `deploy/*` | R | R | R | — | — | — | — |
 | O03 Repository development environment | `.devcontainer/*`, `.grok/*` | B | B | — | — | — | — | — |
 | D01 Review records | `docs/codebase-review/*` | B | B | — | — | — | — | — |
 | D02 Architecture/operator documentation | `docs/*` | B | B | — | — | — | — | — |

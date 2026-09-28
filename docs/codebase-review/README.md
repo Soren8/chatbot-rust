@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: sessions 063–069 — Phase 3 abstractions review (repo-wide duplication outcomes for every handwritten unit plus bounded batches ABS-001–007) ready for review on `refactor`. See [abstractions.md](abstractions.md). Earlier checkpoints record their original scope and status.
+Latest resume point: sessions 063–071 — Phase 3 abstractions review (full reads everywhere, bounded batches ABS-001–008 with behavior fixtures) ready for review on `refactor`. See [abstractions.md](abstractions.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
