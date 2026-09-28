@@ -229,4 +229,4 @@ Addresses the independent review of the session-060 batch.
 
 ### Session 061 verification
 
-Targeted (all exit 0): core lib (`create_set` dead-branch removal), `credential_metadata` (structural pins), `voice_mode_reliability` (renamed test), `js_syntax`. No Java, template, or style changes in this session, so no APK rebuild or preview is needed (the sim60 APK still covers the native tree). Final full suite `temp/test-logs/sim61-full-*.log` (job, exit 0, untruncated) follows.
+Targeted (all exit 0): core lib (`create_set` dead-branch removal), `credential_metadata` (structural pins), `voice_mode_reliability` (renamed test), `js_syntax`, `history_snapshot_boundary`. No Java, template, or style changes in this session, so no APK rebuild or preview is needed (the sim60 APK still covers the native tree). Final full suite `temp/test-logs/sim61-full-20260928.log`: job `20260928T074542-a588e7f5e061`, exit 0, untruncated, 121 suites ok / 992 passed / 0 failed (991 prior + 1 new structural delegation test), including provider configuration checks.
