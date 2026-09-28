@@ -129,12 +129,9 @@ impl HttpSessionStore {
     ) -> (String, bool) {
         if let Some(cookie_value) = extract_session_cookie(cookie_header) {
             if let Some(record) = sessions.get_mut(&cookie_value) {
-                if now.duration_since(record.last_used) <= self.timeout {
-                    record.last_used = now;
-                    return (cookie_value, false);
-                }
+                record.last_used = now;
+                return (cookie_value, false);
             }
-            sessions.remove(&cookie_value);
         }
 
         let (cookie_value, mut record) = self.new_record(now);
@@ -209,10 +206,6 @@ impl HttpSessionStore {
 
         if let Some(cookie_value) = extract_session_cookie(cookie_header) {
             if let Some(record) = sessions.get_mut(&cookie_value) {
-                if now.duration_since(record.last_used) > self.timeout {
-                    sessions.remove(&cookie_value);
-                    return Ok(false);
-                }
                 record.last_used = now;
                 return Ok(constant_time_eq(
                     record.csrf_token.as_bytes(),

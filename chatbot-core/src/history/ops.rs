@@ -201,9 +201,7 @@ fn sanitize_name_candidate(raw: &str) -> String {
 pub fn derive_chat_name_from_message(user_msg: &str) -> String {
     let stripped = crate::chat_images::strip_image_payloads(user_msg);
     let stripped = stripped.replace("[IMAGE:]", " ").replace("[IMAGE]", " ");
-    let collapsed = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
-    let words: Vec<&str> = collapsed.split_whitespace().take(6).collect();
-    let mut candidate = words.join(" ");
+    let mut candidate = stripped.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
     if candidate.chars().count() > 48 {
         candidate = candidate.chars().take(48).collect::<String>();
         if let Some(pos) = candidate.rfind(' ') {

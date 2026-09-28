@@ -3,7 +3,7 @@
 //! **On-disk format readers live permanently in [`crate::legacy_sets_json`].**
 //! This file only orchestrates import into the sealed redb store.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use dashmap::DashMap;
@@ -125,10 +125,14 @@ pub fn ensure_user_migrated(
 }
 
 fn rename_legacy_sets_json(sets_path: &Path) {
-    let bak = sets_path
-        .parent()
-        .map(|p| p.join(MIGRATED_BAK_FILENAME))
-        .unwrap_or_else(|| PathBuf::from(MIGRATED_BAK_FILENAME));
+    let Some(parent) = sets_path.parent() else {
+        warn!(
+            path = %sets_path.display(),
+            "sets.json has no parent; skipping backup rename, redb is authoritative"
+        );
+        return;
+    };
+    let bak = parent.join(MIGRATED_BAK_FILENAME);
 
     if let Err(err) = std::fs::rename(sets_path, &bak) {
         warn!(

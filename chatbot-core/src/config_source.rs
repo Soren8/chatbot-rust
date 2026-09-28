@@ -89,10 +89,17 @@ impl ConfigSource {
             Some(owned) => owned.destination_policy.clone(),
             None => {
                 let config = app_config();
-                Some(Arc::new(DestinationPolicy::from_providers(
-                    &config.provider_names().iter().filter_map(|name| config.provider(name)).cloned().collect::<Vec<_>>(),
-                    &config.search_providers, config.stt_privacy_level, config.tts_privacy_level,
-                )))
+                // Mirrors DestinationPolicy::from_providers without cloning
+                // full provider configs; only name + level are read.
+                Some(Arc::new(DestinationPolicy {
+                    providers: config.provider_names().iter().filter_map(|name| {
+                        config.provider(name).map(|provider| (provider.provider_name.clone(), provider.privacy_level))
+                    }).collect(),
+                    brave_search: config.search_providers.brave.privacy_level,
+                    xai_native_search: config.search_providers.xai_native.privacy_level,
+                    stt: config.stt_privacy_level,
+                    tts: config.tts_privacy_level,
+                }))
             }
         }
     }
