@@ -1,5 +1,9 @@
 # Review coverage
 
+## Session 057 — fresh simplicity inventory at 847e4cc
+
+Four parallel research workers plus primary caller-tracing inventoried handwritten code at `refactor@847e4cc` for the simplicity pass (redundant branches, unreachable states, needless copies, misleading wrappers, speculative helpers, obscuring indirection). This advances — but does not complete — the S column: C02 (session expiry), C01/C04 (config policy, migration, chat-name derivation), S01/S04 (generation dispatch, provider summaries), S05/S10 (TTS snapshot), W01 (eligibility state, render handler, request bindings, playback signal), W04 (tier spans inspected, no change), G01 (audio helpers), DNS forwarder, O01/O02 (workflow, compose override), N04-boundary (Android URL/switch inspected, no change). Findings and deferrals are recorded in [simplicity.md](simplicity.md) session 057; implementation (SIM-004–007) is committed with targeted verification in the same session, and the full-suite gate follows. Exclusions: `static/deps/*`, generated/vendor/binary, `node_modules/`, `target/`, `temp/`, `data/`, `.git/`.
+
 ## Session 056 — review-fix verification and full green
 
 Fix sessions verified the fallback helper directly, the blocked-eligibility scenarios, the wrapper removal and each drift repair with targeted executor runs before a final full suite (job `20260927T034301-3820e47af13a`, exit 0, untruncated). Coverage now includes the SIM-001/002/003 production paths, both repaired JS fixtures and the restored saved-turn/eligibility preconditions. The fresh repository-wide simplicity inventory from session 054 remains the outstanding item before phase-completion credit.

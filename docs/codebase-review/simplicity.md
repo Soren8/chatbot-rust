@@ -69,4 +69,45 @@ Look for redundant branches, unreachable states, unnecessary conversions/copies,
 
 Generated/vendor/binary/protected material receives boundary-only coverage with exclusions recorded. Test bodies are inspected as needed for simplification contracts; this does not complete the separate test-quality audit. Later-pass correctness/security/performance findings, including Auto protocol repair, native key export and COR-003, retain their deferrals unless directly necessary to an approved simplicity change.
 
-Use bounded batches with existing green behavioral characterization before restructuring and unchanged failing regressions for bug fixes. Workers may implement prepared batches; the primary reviewer owns initial source review and acceptance. Keep targeted executor logs during development, validate provider configuration before application commits, and obtain a full green executor run on the final implementation. Native changes require the trusted APK build; browser-visible changes require appropriate preview verification. Final primary review must account for every finding and coverage exclusion before declaring phase 2 ready for completion review.
+## Session 057 — fresh repository-wide simplicity inventory, 2026-09-28
+
+Branch `refactor@847e4cc` (clean). Four parallel research-only workers inventoried handwritten code across core, server, browser, and Android/Python/DNS/build; the primary reviewer then traced each high-confidence candidate to its callers before approval. All four batches below are implemented (SIM-004–007, commits after this section) with targeted green verification; the full-suite gate follows.
+
+### Approved for bounded implementation (primary-verified)
+
+**Core batch (SIM-004).**
+- `session_identity.rs:92-95,124-144,188-225` — `clean_expired` (retain `<= timeout`) runs under the same lock and `Instant` immediately before `ensure_record`/`validate_csrf_token`, so the second expiry branches are unreachable via the only two `ensure_record` callers (`prepare_home_context`, `session_context`) and the CSRF path. Bounded: drop the dead branches, keep purge + lookup/update. Characterization: `chatbot-core/tests/http_identity_isolation.rs`. High.
+- `config_source.rs:87-98` — global `destination_policy` clones full `ProviderConfig` values into a temp `Vec` only to read name + level in `from_providers`. `provider()` returns `Option<&ProviderConfig>` (`config.rs:277`), so the clones are avoidable. Bounded: build the map from borrowed providers without changing `from_providers` semantics or call-time live reads. Characterization: `privacy_policy.rs`. High.
+- `history/ops.rs:201-206` — `derive_chat_name_from_message` joins all whitespace-collapsed words then re-splits to take 6. Bounded: take 6 words directly from the stripped text; keep truncation/sanitization. Callers `history/api.rs:715,751`. High.
+- `history/migration.rs:127-131` — `rename_legacy_sets_json` `parent() == None` fallback is unreachable: `sets_json_path` always yields `{root}/user_sets/{user}/sets.json` (`legacy_sets_json/store.rs:125-127`). Bounded: join the backup name through the known parent. Characterization: migration idempotency tests. High.
+
+**Server batch (SIM-005).**
+- `providers/generation.rs:162` — OpenAI no-Brave arm clones `messages` for a by-value `stream_chat` with no fallback. Bounded: move the vector in that arm only; keep clones in Brave/fallback arms. Characterization: `search.rs`, `generation_dispatch.rs`. High.
+- `generation_deps.rs:196-202` — `owned_provider_summaries` collects keys from `owned.providers` then re-gets each with an impossible `None` continue (no mutation between). Bounded: iterate entries directly, keep sort order + tier filter. Characterization: `provider_config_isolation.rs`, `home.rs`. High.
+- `tts/store.rs:150-155` + `tts.rs:284-328` — `snapshot()` clones the destination on every call, but the snapshot destination is never consumed: the `Begin` arm uses `begin()`'s destination and the `Cached` arm returns before touching it. Bounded: snapshot the binding only; keep coordinator-before-map ordering and permit acquisition. Characterization: TTS/voice-privacy tests. High.
+
+**Browser batch (SIM-006).**
+- `static/chat.js:3113,3265` — `loadedPrivacy` stores `version` on save/load but no reader uses it (all readers use `setId`/`level`; CAS uses `APP_DATA.setVersion`). Bounded: stop storing the dead field. Characterization: `conversation_request_application_test.js` blocked-policy scenarios. High.
+- `static/chat.js:2696-2704` — render-markdown handler iterates `.ai-message` building two unused selections before the `set-selector` reload that does the real work. Bounded: drop the inert iteration, keep the reload. No direct coverage found; `js_syntax` parse + targeted suite. High.
+- `static/chat.js:1193-1195,2683,2715` — `validateModelTier` is a pure alias for `updateSearchToggleVisibility` (which already ends in `refreshPrivacyControls`); the name misleads (no tier check). Bounded: call the real function at both sites, remove the alias, re-anchor the playback-VM slice on the retained definition. Characterization: `desktop_playback_cancellation_vm_test.js` (slice boundary only). High.
+- `static/conversation-state.js:247-265` — after `isLiveConversationBinding`/`isLiveSetBinding` establishes `binding.setId == currentSetId`, each function compares `data.set_id` against both. Bounded: keep one comparison per function. Characterization: `conversation_state_test.js`, `conversation_request_binding_test.js`. High.
+- `static/tts-playback.js:182-183` — `playOne` reads `getAbortSignal()` then `void signal`; `fetchClip` acquires its own signal. Bounded: drop the unused read. Characterization: `desktop_playback_cancellation_test.js`. High.
+
+**Infra/Python batch (SIM-007).**
+- `chatbot-cuda/src/audio_utils.py:40-68` — `wav_bytes_to_array`, `numpy_to_pcm16`, `numpy_to_wav_bytes` have zero repo-wide callers (STT uses `webm_to_wav_bytes`; TTS PCM uses `service.py`). Bounded: delete the three helpers after confirming no external import contract. No direct helper coverage found; voice lifecycle tests cover the live paths. Medium-high.
+- `dns/forwarder.py:294-304` — `_recvn` re-sums chunk lengths twice per loop iteration. Bounded: track remaining bytes; keep short-read/empty behavior. Characterization: `dns/tests/test_forwarder.py`. High.
+- `.github/workflows/docker-build-push.yml:58-60` — `Get short SHA` step output has no consumer; `Prepare tags` recomputes the same SHA. Bounded: remove the unused step. Coverage: workflow execution. High.
+- `deploy/compose/docker-compose.dev.override.yml:6-11` — dev override restates `RUST_BUILD_PROFILE: debug`, `LOG_FORMAT: plain`, `LOG_ANSI: true` already defaulted in `docker-compose.yml:47,85-86`. Bounded: drop only the redundant keys; keep `LOG_LEVEL`/purge-interval. Coverage: compose review. High.
+
+### Investigated, no change approved
+
+- `chat.rs`/`regenerate.rs` privacy-binding + generation-eligibility duplication (two-handler shared extraction): real duplication, but touches prepare-error precedence and lease ownership across both dispatch callers; needs deeper tracing than a simplicity batch allows. Deferred with no change.
+- `chat.rs`/`regenerate.rs` stream-setup clones for finalization/guard: ownership/drop interaction unproven; deferred.
+- `agent_connections.rs` double `verify` via `credentials`: needs concurrent-revision tracing; deferred.
+- `credential-metadata.js` multi-pass filter: correct but algorithmic rewrite for marginal clarity; deferred.
+- `static/templates/chat.html:78-83` desktop/mobile tier spans: responsive-visibility duplication is intentional; single-label rework needs visual preview for marginal gain; deferred.
+- Android URL resolution + `ServerUrlSetting.executeSwitch` purge indirection + voice `start.sh`/`settings.py` dual parsing: need runtime/exception tracing and flavor APK builds; deferred (no native changes this pass, no APK required).
+- `memory_snippet`/`with_version` (no production consumers found), `session.rs` compat surface, home/login CSRF probe ordering: public/compat contract assessment incomplete; no deletion without consumer-by-consumer case.
+- COR-003, Auto protocol repair, native key export, security/performance-only items: retain existing deferrals.
+
+Exclusions: `static/deps/*` (vendored), generated/vendor/binary, `node_modules/`, `target/`, `temp/`, `data/`, `.git/` — boundary-only or uninspected as noted per worker.
