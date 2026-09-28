@@ -208,9 +208,9 @@ fn server_bridge_preserves_result_recreate_semantics() {
     }
     let resolve_wiring = window_around(MAIN_ACTIVITY, "resolveServerUrl", 200, 400);
     assert!(
-        resolve_wiring.contains("ServerUrlSetting.selected")
-            && resolve_wiring.contains("ServerUrlResolver.resolveCanonical"),
-        "origin wiring stays flavor-resource plus persisted override"
+        resolve_wiring.contains("ServerUrlSettingStore.selected(")
+            && resolve_wiring.contains("ServerUrlSettingStore.flavorDefault("),
+        "origin wiring stays flavor-resource plus persisted override via the shared store"
     );
     // Resume lock and offline entry stay in their own windows.
     let lock_wiring = window_around(MAIN_ACTIVITY, "private void checkResumeLock", 100, 800);

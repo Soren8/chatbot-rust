@@ -1318,8 +1318,12 @@ fn desktop_tts_requeues_sentences_on_transient_failures() {
         "a failed desktop sentence must be requeued, not dropped"
     );
     assert!(
-        pump.contains("MAX_TTS_SENTENCE_RETRIES"),
-        "desktop sentence requeue must be bounded like the native pump"
+        pump.contains("desktopSentenceRetryDelay("),
+        "desktop sentence requeue must go through the shared bounded retry decision like the native pump"
+    );
+    assert!(
+        playback_js.contains("MAX_TTS_SENTENCE_RETRIES"),
+        "the shared desktop retry decision must stay bounded like the native pump"
     );
     assert!(
         pump.contains("retryScheduled"),
@@ -1723,8 +1727,8 @@ fn desktop_voice_tts_queues_audio_ahead_and_prevents_mid_sentence_cutoffs() {
         .expect("owned playMessageBodyTts must contain a sentence pump");
     let pump = &body[pump_start..];
     assert!(
-        pump.contains("isVoiceModeActive()"),
-        "desktop sentence pump must distinguish voice mode to persist retries during network drops without skipping"
+        pump.contains("desktopSentenceRetryDelay(") && pump.contains("isVoiceModeActive"),
+        "desktop sentence pump must route voice-mode state into the shared retry decision to persist retries during network drops without skipping"
     );
     assert!(
         chat_js.contains("ChatTtsPlayback.playMessageBodyTts")
