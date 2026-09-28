@@ -120,7 +120,7 @@ RUN mkdir -p /app/.cargo/target /app/data
 RUN touch /app/.config.yml
 
 # Production image with Axum binary
-FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS prod
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS prod
 ARG RUST_BUILD_PROFILE=debug
 ENV RUST_BUILD_PROFILE=${RUST_BUILD_PROFILE}
 # Minimum config schema version this image requires; read by the deploy
