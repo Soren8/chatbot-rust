@@ -53,25 +53,16 @@ pub struct XaiProvider {
 
 impl XaiProvider {
     pub fn new(config: &ProviderConfig) -> Result<Self> {
-        let timeout = Duration::from_secs_f64(config.request_timeout.unwrap_or(300.0));
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .context("failed to build reqwest client")?;
-
-        Ok(Self {
-            client,
-            base_url: config.base_url.clone(),
-            api_key: config.api_key.clone(),
-            model: config.model_name.clone(),
-            xai_zdr: config.xai_zdr,
-            fake_key: None,
-        })
+        Self::with_fake_key(config, None)
     }
 
     /// Owned construction with an explicit key fallback and no env reads.
     /// Live routers keep using [`XaiProvider::new`].
     pub fn new_owned(config: &ProviderConfig, fake_key: Option<String>) -> Result<Self> {
+        Self::with_fake_key(config, Some(fake_key))
+    }
+
+    fn with_fake_key(config: &ProviderConfig, fake_key: Option<Option<String>>) -> Result<Self> {
         let timeout = Duration::from_secs_f64(config.request_timeout.unwrap_or(300.0));
         let client = Client::builder()
             .timeout(timeout)
@@ -84,7 +75,7 @@ impl XaiProvider {
             api_key: config.api_key.clone(),
             model: config.model_name.clone(),
             xai_zdr: config.xai_zdr,
-            fake_key: Some(fake_key),
+            fake_key,
         })
     }
 

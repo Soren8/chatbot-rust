@@ -14,12 +14,13 @@ use chatbot_core::{
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::chat_utils::{
-    error_as_saved_chat_turn_with_service, map_prepare_error, provider_error_parts,
-    render_finalize_outcome, StreamCompletionGuard,
+    error_as_saved_chat_turn_with_service, map_prepare_error, render_finalize_outcome,
+    StreamCompletionGuard,
 };
+use crate::chat::{forward_provider_stream, saved_provider_error_response};
 use crate::http_error::{
     api_error, api_error_json, map_body_read_err, map_json_parse_err, map_response_build_err,
     map_session_err, HttpError,
@@ -250,29 +251,12 @@ pub async fn handle_regenerate(
     ) {
         Ok(provider) => provider,
         Err(err) => {
-            let (setup_msg, _) = provider_error_parts(&err);
-            let assistant = format!("[Error] {setup_msg}");
-            warn!(
-                error = %setup_msg,
-                user_chars = payload.message.chars().count(),
-                insertion_index,
-                "saving /chat or /regenerate error as assistant turn"
-            );
-            let _ = lease.complete_regenerate_outcome(
-                context.set_name.as_str(),
-                payload.message.as_str(),
-                &assistant,
-                insertion_index,
-                encryption_key.as_ref(),
-                context.prepare_capture.clone(),
-            );
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .header("X-Accel-Buffering", "no")
-                .header(header::CACHE_CONTROL, "no-cache")
-                .body(Body::from(assistant))
-                .map_err(|err| map_response_build_err(err, "regenerate::setup_error"));
+            return saved_provider_error_response(&err, payload.message.chars().count(), insertion_index, "regenerate::setup_error", |assistant| {
+                let _ = lease.complete_regenerate_outcome(
+                    context.set_name.as_str(), payload.message.as_str(), assistant,
+                    insertion_index, encryption_key.as_ref(), context.prepare_capture.clone(),
+                );
+            });
         }
     };
 
@@ -297,7 +281,7 @@ pub async fn handle_regenerate(
 
     let messages = map_core_messages(&prepared.messages);
 
-    let mut provider_stream = match dispatch_stream(
+    let provider_stream = match dispatch_stream(
         &provider,
         &context.provider,
         messages,
@@ -313,29 +297,12 @@ pub async fn handle_regenerate(
                 return Err(api_error_json(StatusCode::FORBIDDEN, serde_json::json!({"error":"privacy_restricted","destination":"native_search"})));
             }
             error!(?err, "provider stream setup failed");
-            let (req_msg, _) = provider_error_parts(&err);
-            let assistant = format!("[Error] {req_msg}");
-            warn!(
-                error = %req_msg,
-                user_chars = user_message.chars().count(),
-                insertion_index,
-                "saving /chat or /regenerate error as assistant turn"
-            );
-            let _ = lease.complete_regenerate_outcome(
-                context.set_name.as_str(),
-                user_message.as_str(),
-                &assistant,
-                insertion_index,
-                encryption_key.as_ref(),
-                context.prepare_capture.clone(),
-            );
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .header("X-Accel-Buffering", "no")
-                .header(header::CACHE_CONTROL, "no-cache")
-                .body(Body::from(assistant))
-                .map_err(|err| map_response_build_err(err, "regenerate::setup_error"));
+            return saved_provider_error_response(&err, user_message.chars().count(), insertion_index, "regenerate::setup_error", |assistant| {
+                let _ = lease.complete_regenerate_outcome(
+                    context.set_name.as_str(), user_message.as_str(), assistant,
+                    insertion_index, encryption_key.as_ref(), context.prepare_capture.clone(),
+                );
+            });
         }
     };
 
@@ -348,7 +315,7 @@ pub async fn handle_regenerate(
         let _privacy_permit = privacy_permit;
         // The persist closure owns the lease. Dropping an unpolled stream
         // releases it without persisting.
-        let mut guard = StreamCompletionGuard::new(
+        let guard = StreamCompletionGuard::new(
             save_thoughts,
             move |final_response: &str| -> Result<Vec<String>, ()> {
                 let outcome = lease.complete_regenerate_outcome(
@@ -363,34 +330,10 @@ pub async fn handle_regenerate(
             },
         );
 
-        while let Some(item) = provider_stream.next().await {
-            match item {
-                Ok(chunk) => {
-                    guard.push_chunk(&chunk);
-                    yield Bytes::from(chunk.into_bytes());
-                }
-                Err(err) => {
-                    error!(?err, "error while reading provider stream (regenerate)");
-                    // Do not persist partial/error-tainted assistant text.
-                    guard.mark_provider_error();
-                    // Keep the on-screen message short; the full anyhow chain is
-                    // sent via the `[ConsoleError]` marker for the browser console.
-                    let (visible, detail) = provider_error_parts(&err);
-                    let msg = format!(
-                        "\n[Error] {visible}\n{open}{detail}{close}\n",
-                        open = crate::chat_utils::PROVIDER_ERROR_DETAIL_OPEN,
-                        close = crate::chat_utils::PROVIDER_ERROR_DETAIL_CLOSE,
-                    );
-                    yield Bytes::from(msg.into_bytes());
-                    guard.complete_without_persist();
-                    break;
-                }
-            }
-        }
-
-        let extras = guard.complete_success();
-        for chunk in extras {
-            yield Bytes::from(chunk.into_bytes());
+        let forwarded = forward_provider_stream(provider_stream, guard, true);
+        futures_util::pin_mut!(forwarded);
+        while let Some(chunk) = forwarded.next().await {
+            yield chunk;
         }
     };
 
