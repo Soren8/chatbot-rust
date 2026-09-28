@@ -33,8 +33,6 @@ import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
 import com.chatbot.app.util.ServerUiStyle;
-import com.chatbot.app.util.ServerUrlResolver;
-import com.chatbot.app.util.ServerUrlSetting;
 import com.chatbot.app.util.ServerUrlSettingStore;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
@@ -132,12 +130,7 @@ public class MainActivity extends BridgeActivity {
         // the flavor server_url resource unless a valid user-selected
         // override is persisted. capacitor.config.json carries no server.url
         // override, so the Bridge/Config URL is never consulted.
-        String flavorUrl = null;
-        try {
-            flavorUrl = getString(R.string.server_url);
-        } catch (Exception ignored) {}
-        String serverUrl = ServerUrlSetting.selected(
-                ServerUrlSettingStore.store(this), ServerUrlResolver.resolveCanonical(flavorUrl));
+        String serverUrl = ServerUrlSettingStore.selected(this);
         config = new CapConfig.Builder(this)
                 .setHTML5mode(base.isHTML5Mode())
                 .setServerUrl(serverUrl)
@@ -219,19 +212,13 @@ public class MainActivity extends BridgeActivity {
     }
 
     // Selected native origin for every consumer: flavor resource through the
-    // resolver plus a persisted user override owned by ServerUrlSetting.
+    // resolver plus a persisted user override owned by ServerUrlSettingStore.
     private String resolveServerUrl() {
-        String resourceUrl = null;
         try {
-            resourceUrl = getString(R.string.server_url);
-        } catch (Exception ignored) {}
-        try {
-            return ServerUrlSetting.selected(
-                    ServerUrlSettingStore.store(this),
-                    ServerUrlResolver.resolveCanonical(resourceUrl));
+            return ServerUrlSettingStore.selected(this);
         } catch (Exception e) {
             Log.w(TAG, "server selection resolve failed, using flavor resource", e);
-            return ServerUrlResolver.resolveCanonical(resourceUrl);
+            return ServerUrlSettingStore.flavorDefault(this);
         }
     }
 

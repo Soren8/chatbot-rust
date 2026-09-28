@@ -21,7 +21,6 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import com.chatbot.app.util.ServerUrlResolver;
 import com.chatbot.app.util.ServerUrlSetting;
 import com.chatbot.app.util.ServerUrlSettingStore;
 
@@ -117,20 +116,13 @@ public class NativeSecureKeyPlugin extends Plugin {
     }
 
     // Canonical native origin (selected origin: flavor resource + persisted
-    // override); the pure-value authority stays in ServerUrlResolver for the
-    // flavor default.
+    // override); the shared store owns flavor-default resolution.
     private String resolveServerUrl() {
         Context ctx = getContext();
-        String resourceUrl = null;
         try {
-            resourceUrl = ctx.getString(R.string.server_url);
-        } catch (Exception ignored) {}
-        try {
-            return ServerUrlSetting.selected(
-                    ServerUrlSettingStore.store(ctx),
-                    ServerUrlResolver.resolveCanonical(resourceUrl));
+            return ServerUrlSettingStore.selected(ctx);
         } catch (Exception e) {
-            return ServerUrlResolver.resolveCanonical(resourceUrl);
+            return ServerUrlSettingStore.flavorDefault(ctx);
         }
     }
 

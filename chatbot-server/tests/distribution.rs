@@ -12,8 +12,10 @@
 //! `android/app/build.gradle` projects the matching entry per flavor into
 //! the `server_url` resource; every native caller (MainActivity,
 //! NativeSecureKeyPlugin, ClientLogReporter, car VoiceScreen) reads only
-//! that flavor resource through `ServerUrlResolver::resolveCanonical`.
+//! that flavor resource through `ServerUrlResolver::resolveCanonical` or
+//! `ServerUrlSettingStore` (which applies the persisted override).
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -24,6 +26,9 @@ const MAIN_ACTIVITY: &str =
     include_str!("../../android/app/src/main/java/com/chatbot/app/MainActivity.java");
 const SECURE_KEY_PLUGIN: &str = include_str!(
     "../../android/app/src/main/java/com/chatbot/app/NativeSecureKey/NativeSecureKeyPlugin.java"
+);
+const SERVER_URL_SETTING_STORE: &str = include_str!(
+    "../../android/app/src/main/java/com/chatbot/app/util/ServerUrlSettingStore.java"
 );
 const CLIENT_LOG_REPORTER: &str = include_str!(
     "../../android/app/src/main/java/com/chatbot/app/util/ClientLogReporter.java"
@@ -167,11 +172,8 @@ fn all_native_consumers_read_only_the_flavor_resource() {
         ("NativeSecureKeyPlugin", SECURE_KEY_PLUGIN),
         ("ClientLogReporter", CLIENT_LOG_REPORTER),
         ("VoiceScreen", VOICE_SCREEN),
+        ("ServerUrlSettingStore", SERVER_URL_SETTING_STORE),
     ] {
-        assert!(
-            src.contains("R.string.server_url"),
-            "{name} must read the flavor server_url resource"
-        );
         assert!(
             !src.contains("getServerUrl"),
             "{name} must never read Bridge.getServerUrl()/CapConfig URL: \
@@ -183,6 +185,21 @@ fn all_native_consumers_read_only_the_flavor_resource() {
              (ServerUrlResolver keeps only the localhost last-resort fallback)"
         );
     }
+    for (name, src) in [
+        ("ClientLogReporter", CLIENT_LOG_REPORTER),
+        ("VoiceScreen", VOICE_SCREEN),
+        ("ServerUrlSettingStore", SERVER_URL_SETTING_STORE),
+    ] {
+        assert!(src.contains("R.string.server_url"), "{name} must read the flavor server_url resource");
+    }
+    assert!(
+        SERVER_URL_SETTING_STORE.contains("ServerUrlResolver.resolveCanonical(context.getString(R.string.server_url))"),
+        "shared store must resolve the flavor resource through the canonical resolver"
+    );
+    assert!(
+        SERVER_URL_SETTING_STORE.contains("ServerUrlSetting.selected(store(context), flavorDefault(context))"),
+        "shared store must select the persisted override over the flavor default"
+    );
     assert!(
         MAIN_ACTIVITY.contains("setServerUrl"),
         "MainActivity must pin the CapConfig WebView origin to the flavor resource"
@@ -192,8 +209,9 @@ fn all_native_consumers_read_only_the_flavor_resource() {
         ("NativeSecureKeyPlugin", SECURE_KEY_PLUGIN),
     ] {
         assert!(
-            src.contains("ServerUrlResolver.resolveCanonical"),
-            "{name} must resolve cookies against the canonical flavor origin"
+            src.contains("ServerUrlSettingStore.selected(")
+                && src.contains("ServerUrlSettingStore.flavorDefault("),
+            "{name} must select the validated override over the canonical flavor origin via the shared store"
         );
     }
     assert!(
@@ -278,6 +296,134 @@ fn server_setting_behavior_runs_on_shipped_java() {
         "native server setting behavior: {}",
         String::from_utf8_lossy(&run.stderr)
     );
+}
+
+/// Compile the real Android selection entry point against minimal framework
+/// doubles so the flavor/resource and persisted-override contract is exercised.
+#[test]
+fn server_setting_store_selection_runs_on_shipped_java() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let stubs = [
+        ("Context.java", r#"package android.content;
+public abstract class Context {
+    public static final int MODE_PRIVATE = 0;
+    public Context getApplicationContext() { return this; }
+    public abstract String getString(int id);
+    public abstract SharedPreferences getSharedPreferences(String name, int mode);
+}"#),
+        ("SharedPreferences.java", r#"package android.content;
+import java.util.Map;
+public interface SharedPreferences {
+    String getString(String key, String defaultValue);
+    Map<String, ?> getAll();
+    Editor edit();
+    interface Editor {
+        Editor remove(String key);
+        Editor putString(String key, String value);
+        boolean commit();
+    }
+}"#),
+        ("Handler.java", r#"package android.os;
+public class Handler {
+    public Handler(Looper looper) {}
+    public void post(Runnable action) {}
+    public void postDelayed(Runnable action, long delay) {}
+}"#),
+        ("Looper.java", r#"package android.os;
+public class Looper { public static Looper getMainLooper() { return null; } }"#),
+        ("ValueCallback.java", r#"package android.webkit;
+public interface ValueCallback<T> { void onReceiveValue(T value); }"#),
+        ("CookieManager.java", r#"package android.webkit;
+public class CookieManager {
+    public static CookieManager getInstance() { return new CookieManager(); }
+    public String getCookie(String origin) { return null; }
+    public void setCookie(String origin, String value, ValueCallback<Boolean> done) {}
+    public void removeExpiredCookie() {}
+    public void flush() {}
+}"#),
+        ("Log.java", r#"package android.util;
+public class Log {
+    public static int w(String tag, String text) { return 0; }
+    public static int w(String tag, String text, Throwable error) { return 0; }
+}"#),
+        ("CredentialCookies.java", r#"package com.chatbot.app;
+public class CredentialCookies {
+    public static String expiredCookieValue(String name) { return name; }
+}"#),
+        ("R.java", r#"package com.chatbot.app;
+public class R { public static class string { public static final int server_url = 1; } }"#),
+    ];
+    let mut sources = Vec::new();
+    for (name, source) in stubs {
+        let path = output_dir.path().join(name);
+        fs::write(&path, source).unwrap();
+        sources.push(path);
+    }
+    let fixture = output_dir.path().join("ServerUrlSettingStoreSelectionTest.java");
+    fs::write(&fixture, r#"import android.content.Context;
+import android.content.SharedPreferences;
+import com.chatbot.app.util.ServerUrlResolver;
+import com.chatbot.app.util.ServerUrlSettingStore;
+
+public class ServerUrlSettingStoreSelectionTest {
+    static class TestContext extends Context {
+        String resource, override;
+        boolean missing;
+        TestContext(String resource, String override) {
+            this.resource = resource;
+            this.override = override;
+        }
+        @Override public String getString(int id) {
+            if (missing) throw new IllegalArgumentException("missing resource");
+            return resource;
+        }
+        @Override public SharedPreferences getSharedPreferences(String name, int mode) {
+            return new SharedPreferences() {
+                @Override public String getString(String key, String fallback) { return override; }
+                @Override public java.util.Map<String, ?> getAll() { return java.util.Map.of(); }
+                @Override public Editor edit() { throw new AssertionError("selection must not write"); }
+            };
+        }
+    }
+    static void expect(String expected, String actual) {
+        if (!expected.equals(actual)) throw new AssertionError(expected + " != " + actual);
+    }
+    public static void main(String[] args) {
+        TestContext emulator = new TestContext("http://10.0.2.2:80", null);
+        TestContext physical = new TestContext("https://physical.example", null);
+        expect(emulator.resource, ServerUrlSettingStore.selected(emulator));
+        expect(physical.resource, ServerUrlSettingStore.selected(physical));
+        emulator.missing = true;
+        expect(ServerUrlResolver.FALLBACK_URL, ServerUrlSettingStore.flavorDefault(emulator));
+        expect(ServerUrlResolver.FALLBACK_URL, ServerUrlSettingStore.selected(emulator));
+        physical.override = "http://invalid.example";
+        expect(physical.resource, ServerUrlSettingStore.selected(physical));
+        physical.override = "https://chosen.example:8443/";
+        expect("https://chosen.example:8443", ServerUrlSettingStore.selected(physical));
+        expect(ServerUrlResolver.FALLBACK_URL, ServerUrlSettingStore.selected(null));
+        if (ServerUrlSettingStore.flavorDefault(null) != null) throw new AssertionError("null context default");
+    }
+}"#).unwrap();
+    let compile = Command::new("javac")
+        .args(["-encoding", "UTF-8"])
+        .arg("-d")
+        .arg(output_dir.path())
+        .args(&sources)
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlResolver.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlSetting.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlSettingStore.java"))
+        .arg(fixture)
+        .output()
+        .expect("test image must provide javac");
+    assert!(compile.status.success(), "Java compilation: {}", String::from_utf8_lossy(&compile.stderr));
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(output_dir.path())
+        .arg("ServerUrlSettingStoreSelectionTest")
+        .output()
+        .expect("run native selection behavior test");
+    assert!(run.status.success(), "native selection behavior: {}", String::from_utf8_lossy(&run.stderr));
 }
 
 fn package_json_dependencies() -> serde_json::Value {
