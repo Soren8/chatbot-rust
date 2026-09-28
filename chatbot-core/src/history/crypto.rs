@@ -156,12 +156,16 @@ pub fn build_pair_aad(user_id: &str, set_id: SetId, pair_id: PairId, generation:
 
 /// user || 0xff || set_id || 0xff || set_image_v1 || 0xff || image_id
 pub fn build_image_aad(user_id: &str, set_id: SetId, image_id: ImageId) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(user_id.len() + 16 + IMAGE_AAD_KIND.len() + 18);
+    build_media_aad(user_id, set_id, image_id, IMAGE_AAD_KIND)
+}
+
+fn build_media_aad(user_id: &str, set_id: SetId, image_id: ImageId, kind: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(user_id.len() + 16 + kind.len() + 18);
     aad.extend_from_slice(user_id.as_bytes());
     aad.push(0xff);
     aad.extend_from_slice(set_id.as_bytes());
     aad.push(0xff);
-    aad.extend_from_slice(IMAGE_AAD_KIND);
+    aad.extend_from_slice(kind);
     aad.push(0xff);
     aad.extend_from_slice(image_id.as_bytes());
     aad
@@ -169,15 +173,7 @@ pub fn build_image_aad(user_id: &str, set_id: SetId, image_id: ImageId) -> Vec<u
 
 /// user || 0xff || set_id || 0xff || set_thumb_v1 || 0xff || image_id
 pub fn build_thumb_aad(user_id: &str, set_id: SetId, image_id: ImageId) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(user_id.len() + 16 + THUMB_AAD_KIND.len() + 18);
-    aad.extend_from_slice(user_id.as_bytes());
-    aad.push(0xff);
-    aad.extend_from_slice(set_id.as_bytes());
-    aad.push(0xff);
-    aad.extend_from_slice(THUMB_AAD_KIND);
-    aad.push(0xff);
-    aad.extend_from_slice(image_id.as_bytes());
-    aad
+    build_media_aad(user_id, set_id, image_id, THUMB_AAD_KIND)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

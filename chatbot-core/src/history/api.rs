@@ -711,25 +711,15 @@ impl HistoryService {
             });
         }
         let mut next = ops::append_pair(snap_ref, user_msg, assistant_msg)?;
-        if snap_ref.history.is_empty() && ops::is_auto_placeholder_name(&snap_ref.display_name) {
-            let derived = ops::derive_chat_name_from_message(user_msg);
-            if derived != snap_ref.display_name
-                && !derived.eq_ignore_ascii_case("default")
-                && !ops::is_auto_placeholder_name(&derived)
-            {
-                let existing = self
-                    .list_sets(&user, key)?
-                    .into_iter()
-                    .filter(|s| s.set_id != snap_ref.set_id)
-                    .map(|s| s.display_name)
-                    .collect::<Vec<_>>();
-                next.display_name = if existing.iter().any(|e| e == &derived) {
-                    ops::dedup_name(&derived, |c| existing.iter().any(|e| e == c))
-                } else {
-                    derived
-                };
-            }
-        }
+        self.auto_name_first_turn(
+            &user,
+            snap_ref.history.is_empty(),
+            snap_ref.set_id,
+            &snap_ref.display_name,
+            user_msg,
+            key,
+            &mut next,
+        )?;
         let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
         self.remember(&user, &committed);
         Ok(v)
@@ -749,31 +739,52 @@ impl HistoryService {
         let mut next = ops::apply_chat_append(capture, user_msg, assistant_msg)?;
         // First message in an auto placeholder (`New Chat`) adopts a contextual
         // name in the same CAS commit — one version bump, no extra round-trip.
-        if capture.history.is_empty() && ops::is_auto_placeholder_name(&capture.display_name) {
-            let derived = ops::derive_chat_name_from_message(user_msg);
-            if derived != capture.display_name
-                && !derived.eq_ignore_ascii_case("default")
-                && !ops::is_auto_placeholder_name(&derived)
-            {
-                let existing = self
-                    .list_sets(&user, key)?
-                    .into_iter()
-                    .filter(|s| s.set_id != capture.set_id)
-                    .map(|s| s.display_name)
-                    .collect::<Vec<_>>();
-                if !existing.iter().any(|e| e == &derived) {
-                    next.display_name = derived;
-                } else {
-                    next.display_name =
-                        ops::dedup_name(&derived, |c| existing.iter().any(|e| e == c));
-                }
-            }
-        }
+        self.auto_name_first_turn(
+            &user,
+            capture.history.is_empty(),
+            capture.set_id,
+            &capture.display_name,
+            user_msg,
+            key,
+            &mut next,
+        )?;
         let (v, committed) = self
             .store
             .commit_snapshot(&user, capture.version, next, key)?;
         self.remember(&user, &committed);
         Ok(v)
+    }
+
+    fn auto_name_first_turn(
+        &self,
+        user: &str,
+        history_is_empty: bool,
+        set_id: SetId,
+        display_name: &str,
+        user_msg: &str,
+        key: &EncryptionKey,
+        next: &mut SetSnapshot,
+    ) -> Result<(), HistoryError> {
+        if history_is_empty && ops::is_auto_placeholder_name(display_name) {
+            let derived = ops::derive_chat_name_from_message(user_msg);
+            if derived != display_name
+                && !derived.eq_ignore_ascii_case("default")
+                && !ops::is_auto_placeholder_name(&derived)
+            {
+                let existing = self
+                    .list_sets(user, key)?
+                    .into_iter()
+                    .filter(|s| s.set_id != set_id)
+                    .map(|s| s.display_name)
+                    .collect::<Vec<_>>();
+                next.display_name = if existing.iter().any(|e| e == &derived) {
+                    ops::dedup_name(&derived, |c| existing.iter().any(|e| e == c))
+                } else {
+                    derived
+                };
+            }
+        }
+        Ok(())
     }
 
     /// Commit regenerate/edit from prepare capture.
@@ -1775,6 +1786,57 @@ mod tests {
             .unwrap();
         let again = svc.load("auto", created.set_id, &key).unwrap();
         assert_eq!(again.display_name, "Plan my trip to Tokyo");
+    }
+
+    #[test]
+    fn first_direct_append_deduplicates_contextual_name_in_same_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        svc.create_set("auto", "Plan my trip to Tokyo", &key).unwrap();
+        let created = svc.create_set("auto", "", &key).unwrap();
+
+        let version = svc
+            .append_pair(
+                "auto",
+                created.set_id,
+                created.version,
+                "Plan my trip to Tokyo",
+                "ok",
+                &key,
+            )
+            .unwrap();
+
+        assert_eq!(version, SetVersion(2));
+        let after = svc.load("auto", created.set_id, &key).unwrap();
+        assert_eq!(after.display_name, "Plan my trip to Tokyo 2");
+        assert_eq!(
+            after.history,
+            vec![("Plan my trip to Tokyo".into(), "ok".into())]
+        );
+    }
+
+    #[test]
+    fn first_capture_append_deduplicates_contextual_name_in_same_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        svc.create_set("auto", "Plan my trip to Tokyo", &key).unwrap();
+        let created = svc.create_set("auto", "", &key).unwrap();
+        let capture =
+            PrepareCapture::from_snapshot(&svc.load("auto", created.set_id, &key).unwrap());
+
+        let version = svc
+            .commit_chat_append("auto", &capture, "Plan my trip to Tokyo", "ok", &key)
+            .unwrap();
+
+        assert_eq!(version, SetVersion(2));
+        let after = svc.load("auto", created.set_id, &key).unwrap();
+        assert_eq!(after.display_name, "Plan my trip to Tokyo 2");
+        assert_eq!(
+            after.history,
+            vec![("Plan my trip to Tokyo".into(), "ok".into())]
+        );
     }
 
     #[test]

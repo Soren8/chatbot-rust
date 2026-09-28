@@ -2,7 +2,7 @@
 //!
 //! All durable mutations should: load → pure op → CAS commit.
 
-use super::types::{HistoryPair, PrepareCapture, SetSnapshot};
+use super::types::{HistoryPair, PairId, PrepareCapture, SetSnapshot};
 
 /// Maximum number of (user, assistant) pairs stored in one set.
 pub const MAX_HISTORY_PAIRS: usize = 2_000;
@@ -297,7 +297,15 @@ pub fn apply_regenerate(
         }
     }
 
-    Ok(SetSnapshot {
+    Ok(snapshot_from_capture(capture, history, pair_ids))
+}
+
+fn snapshot_from_capture(
+    capture: &PrepareCapture,
+    history: Vec<HistoryPair>,
+    pair_ids: Vec<PairId>,
+) -> SetSnapshot {
+    SetSnapshot {
         set_id: capture.set_id,
         version: capture.version,
         display_name: capture.display_name.clone(),
@@ -307,7 +315,7 @@ pub fn apply_regenerate(
         pair_ids,
         is_default: capture.is_default,
         privacy_level: capture.privacy_level,
-    })
+    }
 }
 
 /// Build the post-chat snapshot from an immutable prepare capture.
@@ -325,17 +333,7 @@ pub fn apply_chat_append(
     history.push((user_msg.to_owned(), assistant_msg.to_owned()));
     let mut pair_ids = capture.pair_ids.clone();
     align_pair_ids_on_append(&mut pair_ids, capture.history.len(), capture.pair_ids.len());
-    Ok(SetSnapshot {
-        set_id: capture.set_id,
-        version: capture.version,
-        display_name: capture.display_name.clone(),
-        memory: capture.memory.clone(),
-        system_prompt: capture.system_prompt.clone(),
-        history,
-        pair_ids,
-        is_default: capture.is_default,
-        privacy_level: capture.privacy_level,
-    })
+    Ok(snapshot_from_capture(capture, history, pair_ids))
 }
 
 /// Default number of most-recent pairs returned by `/load_set` when the client
