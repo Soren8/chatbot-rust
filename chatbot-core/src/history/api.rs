@@ -814,19 +814,9 @@ impl HistoryService {
         expected_user_msg: &str,
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
-        let user = normalise_user(user)?;
-        self.ensure_migrated(&user, key)?;
-        let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        let snap_version = snap.as_snapshot().version;
-        if snap_version != expected {
-            return Err(HistoryError::Conflict {
-                current_version: snap_version,
-            });
-        }
-        let next = ops::delete_pair(snap.into_snapshot(), pair_index, expected_user_msg)?;
-        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
-        self.remember(&user, &committed);
-        Ok(v)
+        self.mutate_content(user, set_id, expected, key, |snap| {
+            Ok(ops::delete_pair(snap.into_snapshot(), pair_index, expected_user_msg)?)
+        })
     }
 
     pub fn reset_history(
@@ -836,19 +826,9 @@ impl HistoryService {
         expected: SetVersion,
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
-        let user = normalise_user(user)?;
-        self.ensure_migrated(&user, key)?;
-        let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        let snap_version = snap.as_snapshot().version;
-        if snap_version != expected {
-            return Err(HistoryError::Conflict {
-                current_version: snap_version,
-            });
-        }
-        let next = ops::reset_history(snap.into_snapshot());
-        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
-        self.remember(&user, &committed);
-        Ok(v)
+        self.mutate_content(user, set_id, expected, key, |snap| {
+            Ok(ops::reset_history(snap.into_snapshot()))
+        })
     }
 
     pub fn update_memory(
@@ -859,19 +839,9 @@ impl HistoryService {
         memory: &str,
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
-        let user = normalise_user(user)?;
-        self.ensure_migrated(&user, key)?;
-        let snap = self.load_snapshot_cached(&user, set_id, key)?;
-        let snap_ref = snap.as_snapshot();
-        if snap_ref.version != expected {
-            return Err(HistoryError::Conflict {
-                current_version: snap_ref.version,
-            });
-        }
-        let next = ops::update_memory(snap_ref, memory)?;
-        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
-        self.remember(&user, &committed);
-        Ok(v)
+        self.mutate_content(user, set_id, expected, key, |snap| {
+            Ok(ops::update_memory(snap.as_snapshot(), memory)?)
+        })
     }
 
     pub fn update_system_prompt(
@@ -882,6 +852,19 @@ impl HistoryService {
         prompt: &str,
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
+        self.mutate_content(user, set_id, expected, key, |snap| {
+            Ok(ops::update_system_prompt(snap.as_snapshot(), prompt)?)
+        })
+    }
+
+    fn mutate_content(
+        &self,
+        user: &str,
+        set_id: SetId,
+        expected: SetVersion,
+        key: &EncryptionKey,
+        operation: impl FnOnce(LogicalSnapshot) -> Result<SetSnapshot, HistoryError>,
+    ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         let snap = self.load_snapshot_cached(&user, set_id, key)?;
@@ -891,7 +874,7 @@ impl HistoryService {
                 current_version: snap_ref.version,
             });
         }
-        let next = ops::update_system_prompt(snap_ref, prompt)?;
+        let next = operation(snap)?;
         let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
         self.remember(&user, &committed);
         Ok(v)

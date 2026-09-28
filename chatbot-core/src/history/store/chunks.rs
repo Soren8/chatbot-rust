@@ -145,16 +145,7 @@ impl RedbHistoryStore {
             return Ok(inner.clone());
         }
         let manifest = self.load_manifest(user_id, inner.set_id, meta.version, key)?;
-        let mut images: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
-        for entry in &manifest.pairs {
-            for image_id in &entry.image_ids {
-                if let Some(payload) =
-                    self.load_image_by_id(user_id, inner.set_id, *image_id, key)?
-                {
-                    images.insert(*image_id, (payload.mime, payload.bytes));
-                }
-            }
-        }
+        let images = self.images_for_entries(user_id, inner.set_id, &manifest.pairs, key)?;
         let mut snap = inner.clone();
         for (user, _) in &mut snap.history {
             *user = materialize_full(user, &images);
@@ -205,6 +196,24 @@ impl RedbHistoryStore {
             )?)),
             None => Ok(None),
         }
+    }
+
+    fn images_for_entries(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        entries: &[ManifestPair],
+        key: &EncryptionKey,
+    ) -> Result<HashMap<ImageId, (String, Vec<u8>)>, StoreError> {
+        let mut images = HashMap::new();
+        for entry in entries {
+            for image_id in &entry.image_ids {
+                if let Some(payload) = self.load_image_by_id(user_id, set_id, *image_id, key)? {
+                    images.insert(*image_id, (payload.mime, payload.bytes));
+                }
+            }
+        }
+        Ok(images)
     }
 
     pub fn load_thumb_by_id(
@@ -274,14 +283,7 @@ impl RedbHistoryStore {
                 .map(|(u, a)| (defer_image_payloads(u), a.clone()))
                 .collect()
         } else {
-            let mut images: HashMap<ImageId, (String, Vec<u8>)> = HashMap::new();
-            for entry in window {
-                for image_id in &entry.image_ids {
-                    if let Some(img) = self.load_image_by_id(user_id, set_id, *image_id, key)? {
-                        images.insert(*image_id, (img.mime, img.bytes));
-                    }
-                }
-            }
+            let images = self.images_for_entries(user_id, set_id, window, key)?;
             slice
                 .iter()
                 .map(|(u, a)| (materialize_full(u, &images), a.clone()))
@@ -331,12 +333,7 @@ impl RedbHistoryStore {
             .pairs
             .get(pair_index)
             .ok_or(StoreError::InvalidInput)?;
-        let mut images = HashMap::new();
-        for image_id in &entry.image_ids {
-            if let Some(img) = self.load_image_by_id(user_id, set_id, *image_id, key)? {
-                images.insert(*image_id, (img.mime, img.bytes));
-            }
-        }
+        let images = self.images_for_entries(user_id, set_id, std::slice::from_ref(entry), key)?;
         Ok((
             logical.version,
             (materialize_full(&user, &images), assistant),

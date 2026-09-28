@@ -64,16 +64,30 @@ pub fn append_pair(
     user_msg: &str,
     assistant_msg: &str,
 ) -> Result<SetSnapshot, OpsError> {
+    check_append(snapshot.history.len(), user_msg, assistant_msg)?;
+    let mut next = snapshot.clone();
+    push_pair(&mut next.history, &mut next.pair_ids, user_msg, assistant_msg);
+    Ok(next)
+}
+
+fn check_append(history_len: usize, user_msg: &str, assistant_msg: &str) -> Result<(), OpsError> {
     if user_msg.trim().is_empty() {
         return Err(OpsError::EmptyUserMessage);
     }
     check_message_sizes(user_msg, assistant_msg)?;
-    check_history_capacity(snapshot.history.len())?;
-    let mut next = snapshot.clone();
-    next.history
-        .push((user_msg.to_owned(), assistant_msg.to_owned()));
-    align_pair_ids_on_append(&mut next.pair_ids, snapshot.history.len(), snapshot.pair_ids.len());
-    Ok(next)
+    check_history_capacity(history_len)
+}
+
+fn push_pair(
+    history: &mut Vec<HistoryPair>,
+    pair_ids: &mut Vec<PairId>,
+    user_msg: &str,
+    assistant_msg: &str,
+) {
+    let history_len = history.len();
+    let pair_ids_len = pair_ids.len();
+    history.push((user_msg.to_owned(), assistant_msg.to_owned()));
+    align_pair_ids_on_append(pair_ids, history_len, pair_ids_len);
 }
 
 /// Keep `pair_ids` aligned with history on append.
@@ -324,15 +338,10 @@ pub fn apply_chat_append(
     user_msg: &str,
     assistant_msg: &str,
 ) -> Result<SetSnapshot, OpsError> {
-    if user_msg.trim().is_empty() {
-        return Err(OpsError::EmptyUserMessage);
-    }
-    check_message_sizes(user_msg, assistant_msg)?;
-    check_history_capacity(capture.history.len())?;
+    check_append(capture.history.len(), user_msg, assistant_msg)?;
     let mut history = capture.history.clone();
-    history.push((user_msg.to_owned(), assistant_msg.to_owned()));
     let mut pair_ids = capture.pair_ids.clone();
-    align_pair_ids_on_append(&mut pair_ids, capture.history.len(), capture.pair_ids.len());
+    push_pair(&mut history, &mut pair_ids, user_msg, assistant_msg);
     Ok(snapshot_from_capture(capture, history, pair_ids))
 }
 
