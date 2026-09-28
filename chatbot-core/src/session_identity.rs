@@ -9,7 +9,7 @@ use once_cell::sync::Lazy;
 use rand::Rng;
 use thiserror::Error;
 
-use crate::config;
+use crate::{config, fernet_crypto::constant_time_eq};
 
 #[derive(Debug, Clone)]
 pub struct SessionContext {
@@ -338,17 +338,6 @@ fn session_identifier(record: &HttpSessionRecord) -> String {
         Some(username) => username.to_string(),
         None => format!("{SESSION_GUEST_PREFIX}{}", record.guest_id),
     }
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (l, r) in left.iter().zip(right.iter()) {
-        diff |= l ^ r;
-    }
-    diff == 0
 }
 
 /// Production entry point: delegates to the single process-global store.

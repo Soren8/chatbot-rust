@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 
-use crate::config;
+use crate::{config, fernet_crypto::constant_time_eq};
 
 pub const DEFAULT_TIER: &str = "free";
 /// Monotonic suffix so concurrent saves never share a temp file.
@@ -525,15 +525,4 @@ impl UserStore {
         }
         result
     }
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (l, r) in left.iter().zip(right.iter()) {
-        diff |= l ^ r;
-    }
-    diff == 0
 }

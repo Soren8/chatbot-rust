@@ -296,6 +296,20 @@ pub fn user_messages_match(a: &str, b: &str) -> bool {
 /// Keep stored full-resolution attachments when the client sends a UI thumbnail
 /// (or edits only the caption). Removing an image in the incoming text is honored.
 pub fn coalesce_edit_user_message(incoming: &str, stored: &str) -> String {
+    coalesce_edit_user_message_with(incoming, stored, |inc_payload, stored_payload| {
+        if inc_payload.len() < stored_payload.len() {
+            stored_payload.to_owned()
+        } else {
+            inc_payload.to_owned()
+        }
+    })
+}
+
+fn coalesce_edit_user_message_with(
+    incoming: &str,
+    stored: &str,
+    mut replace: impl FnMut(&str, &str) -> String,
+) -> String {
     if incoming == stored {
         return incoming.to_owned();
     }
@@ -312,10 +326,8 @@ pub fn coalesce_edit_user_message(incoming: &str, stored: &str) -> String {
     }
     let mut stored_iter = stored_images.iter();
     rewrite_image_payloads(incoming, |inc_payload| match stored_iter.next() {
-        Some(stored_payload) if inc_payload.len() < stored_payload.len() => {
-            stored_payload.clone()
-        }
-        _ => inc_payload.to_owned(),
+        Some(stored_payload) => replace(inc_payload, stored_payload),
+        None => inc_payload.to_owned(),
     })
 }
 
@@ -458,30 +470,16 @@ pub fn collect_image_refs(text: &str) -> Vec<ImageId> {
 
 /// Keep stored `img:` refs when the client sends a shorter data URL (UI thumb).
 pub fn coalesce_edit_user_message_refs(incoming: &str, stored: &str) -> String {
-    if incoming == stored {
-        return incoming.to_owned();
-    }
-    if user_messages_match(incoming, stored) {
-        return stored.to_owned();
-    }
-    let incoming_images = collect_image_payloads(incoming);
-    if incoming_images.is_empty() {
-        return incoming.to_owned();
-    }
-    let stored_images = collect_image_payloads(stored);
-    if stored_images.is_empty() {
-        return incoming.to_owned();
-    }
-    let mut stored_iter = stored_images.iter();
-    rewrite_image_payloads(incoming, |inc_payload| match stored_iter.next() {
-        Some(stored_payload)
-            if parse_image_ref(stored_payload).is_some()
-                && (inc_payload.len() < stored_payload.len() || inc_payload.starts_with("data:")) =>
+    coalesce_edit_user_message_with(incoming, stored, |inc_payload, stored_payload| {
+        if parse_image_ref(stored_payload).is_some()
+            && (inc_payload.len() < stored_payload.len() || inc_payload.starts_with("data:"))
         {
-            stored_payload.clone()
+            stored_payload.to_owned()
+        } else if inc_payload.len() < stored_payload.len() {
+            stored_payload.to_owned()
+        } else {
+            inc_payload.to_owned()
         }
-        Some(stored_payload) if inc_payload.len() < stored_payload.len() => stored_payload.clone(),
-        _ => inc_payload.to_owned(),
     })
 }
 

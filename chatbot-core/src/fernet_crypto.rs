@@ -42,9 +42,27 @@ pub(crate) fn decrypt_bytes(content: &[u8], key: &[u8]) -> Result<Vec<u8>, Ferne
         .map_err(|_| FernetError::DecryptionFailed)
 }
 
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (l, r) in left.iter().zip(right.iter()) {
+        diff |= l ^ r;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn constant_time_eq_handles_equal_unequal_and_different_lengths() {
+        assert!(constant_time_eq(b"same", b"same"));
+        assert!(!constant_time_eq(b"same", b"sane"));
+        assert!(!constant_time_eq(b"same", b"sam"));
+    }
 
     const URL_SAFE_KEY: &str = "-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_s=";
     const STANDARD_KEY: &str = "+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/s=";

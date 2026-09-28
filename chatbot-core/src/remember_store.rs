@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::fernet_crypto::constant_time_eq;
+
 pub const REMEMBER_COOKIE_NAME: &str = "remember";
 pub const REMEMBER_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
 
@@ -469,17 +471,6 @@ fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
         bytes.push(u8::from_str_radix(&format!("{hi}{lo}"), 16).ok()?);
     }
     Some(bytes)
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (l, r) in left.iter().zip(right.iter()) {
-        diff |= l ^ r;
-    }
-    diff == 0
 }
 
 #[cfg(test)]
