@@ -162,23 +162,23 @@ def _is_loopback(server: str) -> bool:
         return True
 
 
+def _usable_nameservers(host_etc: str, host_run: str, host_abs: str) -> list[str]:
+    return [
+        server
+        for server in read_host_nameservers(host_etc, host_run, host_abs)
+        if not _is_loopback(server)
+    ][:MAX_UPSTREAMS]
+
+
 def load_upstreams(host_etc: str, host_run: str) -> list[str]:
     """Return usable host upstreams, resolving loopback stubs to uplinks."""
-    direct = [
-        s
-        for s in read_host_nameservers(host_etc, host_run, "/etc/resolv.conf")
-        if not _is_loopback(s)
-    ]
+    direct = _usable_nameservers(host_etc, host_run, "/etc/resolv.conf")
     if direct:
-        return direct[:MAX_UPSTREAMS]
+        return direct
     for alt in _STUB_FALLBACKS:
-        found = [
-            s
-            for s in read_host_nameservers(host_etc, host_run, alt)
-            if not _is_loopback(s)
-        ]
+        found = _usable_nameservers(host_etc, host_run, alt)
         if found:
-            return found[:MAX_UPSTREAMS]
+            return found
     return []
 
 
@@ -267,13 +267,19 @@ def _txid_ok(data: bytes, txid: bytes) -> bool:
     return len(data) >= 2 and data[:2] == txid
 
 
+def _query_txid(query: bytes, upstreams: list[str]) -> bytes | None:
+    if len(query) < 2 or not upstreams:
+        return None
+    return query[:2]
+
+
 def forward_udp(
     query: bytes, upstreams: list[str], timeout: float, port: int = 53
 ) -> bytes | None:
     """Forward one query over UDP with ordered failover."""
-    if len(query) < 2 or not upstreams:
+    txid = _query_txid(query, upstreams)
+    if txid is None:
         return None
-    txid = query[:2]
     for server in upstreams:
         try:
             # Connected socket: the kernel only delivers replies from the
@@ -310,9 +316,9 @@ def forward_tcp(
     query: bytes, upstreams: list[str], timeout: float, port: int = 53
 ) -> bytes | None:
     """Forward one query over TCP with ordered failover."""
-    if len(query) < 2 or not upstreams:
+    txid = _query_txid(query, upstreams)
+    if txid is None:
         return None
-    txid = query[:2]
     frame = struct.pack("!H", len(query)) + query
     for server in upstreams:
         try:
