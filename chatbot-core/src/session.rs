@@ -861,6 +861,34 @@ impl ChatService {
 }
 
 impl ChatService {
+    fn load_prepare_snapshot_with_prompt(
+        &self,
+        username: &str,
+        request_set_id: Option<SetId>,
+        set_name: &str,
+        prompt: Option<&str>,
+        key: &EncryptionKey,
+    ) -> Result<SetSnapshot, PrepareError> {
+        let mut snapshot = self.load_history_snapshot(username, request_set_id, set_name, key)?;
+        if let Some(prompt) = prompt {
+            if prompt != snapshot.system_prompt {
+                let new_v = self
+                    .history_for_prepare()?
+                    .update_system_prompt(
+                        username,
+                        snapshot.set_id,
+                        snapshot.version,
+                        prompt,
+                        key,
+                    )
+                    .map_err(map_history_to_prepare)?;
+                snapshot.system_prompt = prompt.to_owned();
+                snapshot.version = new_v;
+            }
+        }
+        Ok(snapshot)
+    }
+
     fn build_chat_context(
         &self,
         session: &SessionContext,
@@ -885,25 +913,14 @@ impl ChatService {
             let key = key.expect("validated encryption key");
             let username = session.username.as_deref().expect("cipher requires user");
 
-            let mut snapshot =
-                self.load_history_snapshot(username, request_set_id, set_name, key)?;
+            let snapshot = self.load_prepare_snapshot_with_prompt(
+                username,
+                request_set_id,
+                set_name,
+                request.system_prompt,
+                key,
+            )?;
             display_set_name = snapshot.display_name.clone();
-            if let Some(prompt) = request.system_prompt {
-                if prompt != snapshot.system_prompt {
-                    let new_v = self
-                        .history_for_prepare()?
-                        .update_system_prompt(
-                            username,
-                            snapshot.set_id,
-                            snapshot.version,
-                            prompt,
-                            key,
-                        )
-                        .map_err(map_history_to_prepare)?;
-                    snapshot.system_prompt = prompt.to_owned();
-                    snapshot.version = new_v;
-                }
-            }
 
             // Session mirror keeps small fields only; full history is not Fernet-sealed
             // (durable HistoryService is SoT). Avoid cloning multi-MB history into RAM here.
@@ -1291,25 +1308,14 @@ impl ChatService {
             let key = self.require_encryption_key(session.username.as_deref(), encryption_key)?;
             let key = key.expect("validated encryption key");
             let username = session.username.as_deref().expect("cipher requires user");
-            let mut snapshot =
-                self.load_history_snapshot(username, request_set_id, set_name, key)?;
+            let snapshot = self.load_prepare_snapshot_with_prompt(
+                username,
+                request_set_id,
+                set_name,
+                request.system_prompt,
+                key,
+            )?;
             display_set_name = snapshot.display_name.clone();
-            if let Some(prompt) = request.system_prompt {
-                if prompt != snapshot.system_prompt {
-                    let new_v = self
-                        .history_for_prepare()?
-                        .update_system_prompt(
-                            username,
-                            snapshot.set_id,
-                            snapshot.version,
-                            prompt,
-                            key,
-                        )
-                        .map_err(map_history_to_prepare)?;
-                    snapshot.system_prompt = prompt.to_owned();
-                    snapshot.version = new_v;
-                }
-            }
             data.memory = snapshot.memory.clone();
             data.system_prompt = snapshot.system_prompt.clone();
             data.history.clear();
@@ -2162,6 +2168,55 @@ impl ChatService {
         })
     }
 
+    fn apply_history_clear_mutation(
+        &self,
+        session: &SessionContext,
+        key: Option<&EncryptionKey>,
+        set_name: &str,
+        set_id_raw: Option<&str>,
+        expected_version: Option<SetVersion>,
+        mutate: impl FnOnce(
+            &HistoryService,
+            &str,
+            SetId,
+            SetVersion,
+            &EncryptionKey,
+        ) -> Result<SetVersion, HistoryError>,
+    ) -> Result<AppliedMutation, MutationMirrorError> {
+        let (username, key) = self.authed_parts(session, key)?;
+        let history = self.history().map_err(MutationMirrorError::History)?;
+        let set_id = if let Some(raw) = set_id_raw {
+            SetId::parse(raw).map_err(|_| MutationMirrorError::InvalidSetId)?
+        } else {
+            self.resolve_mutation_set_id_by_name(history, username, set_name, key)?
+        };
+        let expected = match expected_version {
+            Some(v) => v,
+            None => {
+                history
+                    .load(username, set_id, key)
+                    .map_err(MutationMirrorError::History)?
+                    .version
+            }
+        };
+        let version = mutate(history, username, set_id, expected, key).map_err(|err| match err {
+            HistoryError::Conflict { current_version } => MutationMirrorError::Conflict {
+                set_id,
+                current_version,
+            },
+            other => MutationMirrorError::History(other),
+        })?;
+        self.set_session_history_for_request(
+            &session.session_id,
+            Some(username),
+            Some(set_id),
+            Vec::new(),
+            Some(key),
+        )
+        .map_err(MutationMirrorError::Mirror)?;
+        Ok(AppliedMutation { set_id, version })
+    }
+
     /// Durable pair delete then session mirror (authed only).
     ///
     /// `set_id_raw` must already filter empty strings (delete/reset callers do);
@@ -2177,49 +2232,23 @@ impl ChatService {
         pair_index: usize,
         user_message_trimmed: &str,
     ) -> Result<AppliedMutation, MutationMirrorError> {
-        let (username, key) = self.authed_parts(session, key)?;
-        let history = self.history().map_err(MutationMirrorError::History)?;
-        let set_id = if let Some(raw) = set_id_raw {
-            SetId::parse(raw).map_err(|_| MutationMirrorError::InvalidSetId)?
-        } else {
-            self.resolve_mutation_set_id_by_name(history, username, set_name, key)?
-        };
-        let expected = match expected_version {
-            Some(v) => v,
-            None => {
-                history
-                    .load(username, set_id, key)
-                    .map_err(MutationMirrorError::History)?
-                    .version
-            }
-        };
-        let version = history
-            .delete_pair(
-                username,
-                set_id,
-                expected,
-                pair_index,
-                user_message_trimmed,
-                key,
-            )
-            .map_err(|err| match err {
-                HistoryError::Conflict { current_version } => {
-                    MutationMirrorError::Conflict {
-                        set_id,
-                        current_version,
-                    }
-                }
-                other => MutationMirrorError::History(other),
-            })?;
-        self.set_session_history_for_request(
-            &session.session_id,
-            Some(username),
-            Some(set_id),
-            Vec::new(),
-            Some(key),
+        self.apply_history_clear_mutation(
+            session,
+            key,
+            set_name,
+            set_id_raw,
+            expected_version,
+            |history, username, set_id, expected, key| {
+                history.delete_pair(
+                    username,
+                    set_id,
+                    expected,
+                    pair_index,
+                    user_message_trimmed,
+                    key,
+                )
+            },
         )
-        .map_err(MutationMirrorError::Mirror)?;
-        Ok(AppliedMutation { set_id, version })
     }
 
     /// Durable history reset then session mirror (authed only).
@@ -2231,42 +2260,16 @@ impl ChatService {
         set_id_raw: Option<&str>,
         expected_version: Option<SetVersion>,
     ) -> Result<AppliedMutation, MutationMirrorError> {
-        let (username, key) = self.authed_parts(session, key)?;
-        let history = self.history().map_err(MutationMirrorError::History)?;
-        let set_id = if let Some(raw) = set_id_raw {
-            SetId::parse(raw).map_err(|_| MutationMirrorError::InvalidSetId)?
-        } else {
-            self.resolve_mutation_set_id_by_name(history, username, set_name, key)?
-        };
-        let expected = match expected_version {
-            Some(v) => v,
-            None => {
-                history
-                    .load(username, set_id, key)
-                    .map_err(MutationMirrorError::History)?
-                    .version
-            }
-        };
-        let version = history
-            .reset_history(username, set_id, expected, key)
-            .map_err(|err| match err {
-                HistoryError::Conflict { current_version } => {
-                    MutationMirrorError::Conflict {
-                        set_id,
-                        current_version,
-                    }
-                }
-                other => MutationMirrorError::History(other),
-            })?;
-        self.set_session_history_for_request(
-            &session.session_id,
-            Some(username),
-            Some(set_id),
-            Vec::new(),
-            Some(key),
+        self.apply_history_clear_mutation(
+            session,
+            key,
+            set_name,
+            set_id_raw,
+            expected_version,
+            |history, username, set_id, expected, key| {
+                history.reset_history(username, set_id, expected, key)
+            },
         )
-        .map_err(MutationMirrorError::Mirror)?;
-        Ok(AppliedMutation { set_id, version })
     }
 
     /// Durable page load then session mirror (authed only).
