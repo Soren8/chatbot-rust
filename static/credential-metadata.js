@@ -76,11 +76,11 @@
     var visible = [];
     for (var i = 0; i < entries.length; i++) {
       var entry = entries[i];
-      if (!entry || typeof entry.key !== 'string' || !entry.key.startsWith(SLOT_PREFIX) || !entry.value) {
+      if (!entry || !isAccountSlotKey(entry.key) || !entry.value) {
         continue;
       }
       var mapped = {
-        username: entry.key.slice(SLOT_PREFIX.length),
+        username: accountNameFromSlotKey(entry.key),
         remembered: entry.value.remembered !== false,
         updatedAt: entry.value.updatedAt || 0
       };

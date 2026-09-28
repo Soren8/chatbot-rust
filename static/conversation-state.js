@@ -219,10 +219,8 @@
   }
 
   function isLiveConversationBinding(binding, isSeqLive, isGenLive, currentSetId) {
-    if (!binding) return false;
     if (!isSeqLive) return false;
-    if (!isGenLive) return false;
-    return normalizeSetId(currentSetId) === normalizeSetId(binding.setId);
+    return isLiveSetBinding(binding, isGenLive, currentSetId);
   }
 
   function captureSetBinding(setId, setGen) {
@@ -244,8 +242,8 @@
     return snap;
   }
 
-  function shouldApplySetResponseForBinding(binding, data, isSeqLive, isGenLive, currentSetId) {
-    if (!isLiveConversationBinding(binding, isSeqLive, isGenLive, currentSetId)) return false;
+  function isLiveSetResponse(binding, data, isGenLive, currentSetId) {
+    if (!isLiveSetBinding(binding, isGenLive, currentSetId)) return false;
     if (!data) return false;
     if (data.set_id != null && data.set_id !== '') {
       if (normalizeSetId(data.set_id) !== normalizeSetId(currentSetId)) return false;
@@ -253,13 +251,13 @@
     return true;
   }
 
+  function shouldApplySetResponseForBinding(binding, data, isSeqLive, isGenLive, currentSetId) {
+    if (!isSeqLive) return false;
+    return isLiveSetResponse(binding, data, isGenLive, currentSetId);
+  }
+
   function shouldApplySetResponseForSetBinding(binding, data, isGenLive, currentSetId) {
-    if (!isLiveSetBinding(binding, isGenLive, currentSetId)) return false;
-    if (!data) return false;
-    if (data.set_id != null && data.set_id !== '') {
-      if (normalizeSetId(data.set_id) !== normalizeSetId(currentSetId)) return false;
-    }
-    return true;
+    return isLiveSetResponse(binding, data, isGenLive, currentSetId);
   }
 
   function createChatRequestTracker(createController) {
