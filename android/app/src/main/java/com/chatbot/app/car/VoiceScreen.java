@@ -30,7 +30,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.ByteBuffer;
@@ -545,14 +544,11 @@ public class VoiceScreen extends Screen {
         return Math.sqrt(sum / (double) n);
     }
 
-    private static void writeShortsLE(OutputStream out, short[] samples, int n) {
+    private static void writeShortsLE(ByteArrayOutputStream out, short[] samples, int n) {
         ByteBuffer bb = ByteBuffer.allocate(n * 2).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < n; i++) bb.putShort(samples[i]);
-        try {
-            out.write(bb.array());
-        } catch (IOException e) {
-            // shouldn't happen for ByteArrayOutputStream
-        }
+        byte[] bytes = bb.array();
+        out.write(bytes, 0, bytes.length);
     }
 
     private static byte[] wrapPcmAsWav(byte[] pcm, int sampleRate, int channels) {

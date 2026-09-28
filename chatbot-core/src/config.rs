@@ -553,7 +553,8 @@ fn load_app_config() -> AppConfig {
 
     let session_timeout = raw_config.session_timeout.unwrap_or(3600);
     let csrf = if let Ok(env_csrf) = env::var("CSRF") {
-        env_csrf.to_lowercase() == "on" || env_csrf.to_lowercase() == "true"
+        let lowered = env_csrf.to_lowercase();
+        lowered == "on" || lowered == "true"
     } else {
         raw_config.csrf.unwrap_or(true)
     };

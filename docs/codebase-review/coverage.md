@@ -1,5 +1,13 @@
 # Review coverage
 
+## Session 062 — simplicity coverage closure (larger-model concerns)
+
+Two parallel subagents closed the larger-model review gaps; primary implemented the bounded candidates and verified the tree:
+
+- C01: `config.rs:1–1715` read in full (production configuration, ExternalConnections, schema, resolution/order, validation, substitution, file loading, globals; inline tests read for evidence) plus `logging.rs` (previously completed). One bounded candidate implemented: CSRF env lowercase computed once (`config.rs:555–557`). Retained with rationale: fail-closed ExternalConnections validation, wire-compatible schema/defaults, ordering-sensitive provider resolution, concurrent-safe globals, fail-closed YAML/TTS/secret checks, distinct substitution/loading behaviors. C01 S advances P → R.
+- N03: all three `car/*` files read in full for simplicity (`ChatbotCarAppService.java` 34 lines, `VoiceSession.java` 20, `VoiceScreen.java` 619). Bounded candidates implemented: unused imports removed (`ChatbotCarAppService.java:3`, `VoiceSession.java:3,7,10`, `VoiceScreen.java:33`), `writeShortsLE` narrowed from `OutputStream` to `ByteArrayOutputStream` with the impossible `IOException` catch deleted (`VoiceScreen.java:548–556`). Retained with rationale: distinct lifecycle/template stages, distinct capture/turn executors, defensive `escapeJson` null case. Protocol/session/CSRF/transport repair remains explicitly deferred per user decision and does not gate simplicity. N03 S advances P → R.
+- With C01/N03 closed, every owned handwritten unit now carries a focused simplicity read; remaining `P` cells (T01/T02/T04) are test-body scope owned by the separate test-quality pass per the ledger rules. Later-pass findings (COR-003, Auto protocol, key export, security/performance) keep their deferrals.
+
 ## Session 057 — fresh simplicity inventory at 847e4cc
 
 Four parallel research workers plus primary caller-tracing inventoried handwritten code at `refactor@847e4cc` for the simplicity pass (redundant branches, unreachable states, needless copies, misleading wrappers, speculative helpers, obscuring indirection). This advances — but does not complete — the S column: C02 (session expiry), C01/C04 (config policy, migration, chat-name derivation), S01/S04 (generation dispatch, provider summaries), S05/S10 (TTS snapshot), W01 (eligibility state, render handler, request bindings, playback signal), W04 (tier spans inspected, no change), G01 (audio helpers), DNS forwarder, O01/O02 (workflow, compose override), N04-boundary (Android URL/switch inspected, no change). Findings, dispositions, and deferred-item resolutions are recorded in [simplicity.md](simplicity.md) sessions 057–058; implementations (SIM-004–007 plus session-058 corrections) are committed with targeted verification in the same sessions, and each carries its full-suite gate. The S column advanced per finding at that time; whole-pass completion was not claimed then — see session 059 below for the completed ledger. Exclusions: `static/deps/*`, generated/vendor/binary, `node_modules/`, `target/`, `temp/`, `data/`, `.git/`.
@@ -8,11 +16,11 @@ Four parallel research workers plus primary caller-tracing inventoried handwritt
 
 The S column above is now filled per unit at the current revision. `R` marks units where every owned handwritten file received a focused simplicity read in sessions 054–059 (session 057's four workers plus primary caller-tracing, session 058's deferred-item tracing, session 059's four remainder workers plus primary reads of `voice-events.js`, `playback-source.js`, `stream-decoder.js`, and `voice-text.js`). `P` marks partial coverage with exact scope:
 
-- C01: `logging.rs` fully read (clean), `config.rs` privacy defaults inspected only; schema-parsing branches untouched.
+- C01: closed in session 062 — `config.rs:1–1715` fully read plus `logging.rs`; CSRF lowercase computed once; fail-closed validation, wire-compat schema, ordering-sensitive resolution, and distinct substitution/loading behaviors retained with rationale.
 - C02: session orchestration fully read in session 061 (entry/locks/expiry, constructors, seams/validators, both context builders, both prepare internals, finalize family + lease, mirrors, mutations, delegates, compat shims, seal/unseal); one candidate implemented (`fresh_entry`).
 - C04: commit/load/lifecycle paths fully read in session 061 (`change_policy`, `commit_snapshot`, `commit_chunked`, api commit/delete/reset/load/list, `tables.rs` codec, `crypto.rs` seal/open shape, `cache.rs`); `types.rs` newtype accessors inspected structurally. Read-consistency behavior remains COR-003's scope.
 - T01/T02/T04: test bodies read only as simplification contracts for changed production paths (separate test-quality audit owns assertion review).
-- N03: Auto structure reviewed (`VoiceSession` simplified); protocol behavior belongs to its deferred repair, not this pass.
+- N03: closed in session 062 — all three `car/*` files read for simplicity; unused imports removed, `writeShortsLE` narrowed to `ByteArrayOutputStream`; protocol repair remains deferred per user decision and does not gate simplicity.
 
 `B` marks boundary-only units (vendored, protected config, packaging, dev environment, docs, root files) with exclusions recorded in [simplicity.md](simplicity.md). New row W05 closes the "unmatched new paths" gap: the browser units extracted during sessions 032–041 and the privacy stage were never added to this ledger; all are simplicity-reviewed as of sessions 055–059 (`stream-decoder.js` retained on protocol sensitivity under MOD-010; `voice-text.js` retained on load-bearing rule order). Later-pass findings (COR-003, Auto protocol, key export, security/performance) keep their deferrals and do not gate S-column completion: this pass covers redundant branches, unreachable states, needless copies, misleading wrappers, speculative helpers, and obscuring indirection only.
 
@@ -108,7 +116,7 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | V01 Third-party browser dependencies | `static/deps/*` | B | B | — | — | — | — | — |
 | R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | R | R | — | — | — | — | — |
-| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | P | — | — | — | — | — |
+| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | R | — | — | — | — | — |
 | C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | R | — | — | — | — | — |
 | C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | — | — | — | — | — |
 | C04 Durable history | `chatbot-core/src/history/*` | R | R | — | — | — | — | — |
@@ -140,7 +148,7 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js` | R | R | — | — | — | — | — |
 | N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | — | — | — | — | — |
 | N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | — | — | — | — | — |
-| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | P | — | — | — | — | — |
+| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | — | — | — | — | — |
 | T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | — | — | — | — |
 | N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | — | — | — | — |
 | X01 DNS sidecar (post-baseline) | `dns/*` | — | R | — | — | — | — | — |

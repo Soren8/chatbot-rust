@@ -220,7 +220,7 @@ Addresses the independent review of the session-060 batch.
 - `session.rs`: entry/locks/expiry, constructors, key/tier seams, both context builders, both prepare internals (per-failure lock semantics differ — retained), finalize family + lease (canonical-then-compat layering — retained), mirrors, all five `apply_*` mutations (uniform durable-then-mirror contract — retained), delegates, compat shims, seal/unseal. One candidate implemented beyond `fresh_entry`: none — the create_set dead empty-name check in `history/api.rs` (else arm unreachable by construction) removed.
 - `history/api.rs` loads/lifecycle (`list_sets`, `load`, `find_by_display_name`, `create_set`, `ensure_default_set`, `rename_set`, `delete_set`, `change_privacy_level`, `append_pair`, update paths): uniform preambles with divergent duties — retained.
 - `history/store/chunks.rs` `commit_chunked`, `tables.rs` codec (full read, round-trip tested), `crypto.rs` seal/open shape (per-type AAD binding must stay explicit), `cache.rs` (full read; touch-on-read repetition retains lock-lifetime clarity), `types.rs` newtype accessors (structural inspection).
-- C02/C04 ledger cells advanced to R with the scope above; C01 stays P (`logging.rs` fully read, `config.rs` privacy defaults only).
+- C02/C04 ledger cells advanced to R with the scope above; C01 stayed P at that point (`logging.rs` fully read, `config.rs` privacy defaults only) — closed in session 062 below.
 
 ### Behavioral test migrations (user-approved)
 
@@ -230,3 +230,25 @@ Addresses the independent review of the session-060 batch.
 ### Session 061 verification
 
 Targeted (all exit 0): core lib (`create_set` dead-branch removal), `credential_metadata` (structural pins), `voice_mode_reliability` (renamed test), `js_syntax`, `history_snapshot_boundary`. No Java, template, or style changes in this session, so no APK rebuild or preview is needed (the sim60 APK still covers the native tree). Final full suite `temp/test-logs/sim61-full-20260928.log`: job `20260928T074542-a588e7f5e061`, exit 0, untruncated, 121 suites ok / 992 passed / 0 failed (991 prior + 1 new structural delegation test), including provider configuration checks.
+
+## Session 062 — larger-model concern closure, 2026-09-28
+
+Addresses the larger-model review of the session-061 batch (C01 partial, N03 partial, closure record open). Two parallel subagents performed the scoped simplicity reads; primary implemented the bounded candidates.
+
+### C01 configuration/logging (subagent review, primary implementation)
+
+- `config.rs:1–1715` read in full (ExternalConnections, schema/defaults, resolution/order, globals, validation helpers, substitution/screening, file loading, inline tests for evidence); `logging.rs` previously completed.
+- Implemented (SIM-012): CSRF env value lowercased once (`config.rs:555–557`).
+- Retained: fail-closed ExternalConnections canonicalization/eligibility/IP-port reservations/tunnel checks; wire-compatible schema aliases/deserializers and chat/destination privacy defaults; ordering-sensitive provider resolution; concurrent-safe global handles; fail-closed YAML/TTS/secret validation; distinct substitution precedence/recursion and loading failure semantics; inline tests as evidence only.
+- C01 S advances P → R.
+
+### N03 Android Auto (subagent review, primary implementation)
+
+- All three `car/*` files read in full for simplicity (`ChatbotCarAppService.java` 34 lines, `VoiceSession.java` 20, `VoiceScreen.java` 619).
+- Implemented (SIM-012): removed unused imports (`ChatbotCarAppService.java:3`, `VoiceSession.java:3,7,10`, `VoiceScreen.java:33`); narrowed `writeShortsLE` from `OutputStream` to `ByteArrayOutputStream` and deleted the impossible `IOException` catch (`VoiceScreen.java:548–556`).
+- Retained: distinct release-and-return lifecycle stages, distinct template/status duties, defensive `escapeJson` null case, separate capture/turn executors and playback state, dual `Log`/`FileLogger` sinks.
+- Protocol/session/CSRF/transport repair remains explicitly deferred per user decision; it does not gate simplicity. N03 S advances P → R.
+
+### Session 062 verification
+
+Targeted (all exit 0): core lib 182/182 (CSRF simplification) job `20260928T080519-8fb26c8a042b` (`temp/test-logs/sim62-core-lib.log`); `js_syntax` 11/11 job `20260928T080605-eadaebe1a26d` (`temp/test-logs/sim62-js-syntax.log`). Physical APK rebuilt for the Java narrowing — job `20260928T080346-6397cd35a892`, exit 0, artifact `temp/sim62-physical-debug.apk` (12,540,142 bytes, SHA256 `816ddd860a58113ffdf1a580f179696275fe075c42de470c3fb42115752e9274`). Final full suite `temp/test-logs/sim62-full-20260928.log`: job `20260928T080643-0e0c1b195846`, exit 0, untruncated, 121 suites ok / 992 passed / 0 failed (plus 63 embedded Python passed), including provider configuration checks.

@@ -1,6 +1,5 @@
 package com.chatbot.app.car;
 
-import android.content.Intent;
 import android.util.Log;
 
 import androidx.car.app.CarAppService;
