@@ -54,30 +54,26 @@ async function deriveKeyForLogin(password, saltB64) {
   return deriveKeyWebCrypto(password, saltB64);
 }
 
-function showLoginNotice(message) {
+function showLoginAlert(message, alertClass, previousClass) {
   const $notice = $('#login-notice');
   if ($notice.length) {
     $notice
       .text(message)
-      .removeClass('d-none alert-danger')
-      .addClass('alert-warning');
+      .removeClass('d-none ' + previousClass)
+      .addClass(alertClass);
   } else {
     console.info(message);
   }
 }
 
+function showLoginNotice(message) {
+  showLoginAlert(message, 'alert-warning', 'alert-danger');
+}
+
 /// Show a login failure inline as a red alert. Failures must stay on the page
 /// rather than navigating to a bare error page.
 function showLoginError(message) {
-  const $notice = $('#login-notice');
-  if ($notice.length) {
-    $notice
-      .text(message)
-      .removeClass('d-none alert-warning')
-      .addClass('alert-danger');
-  } else {
-    console.info(message);
-  }
+  showLoginAlert(message, 'alert-danger', 'alert-warning');
 }
 
 /// Submit the login form via fetch so a failed attempt renders as an inline

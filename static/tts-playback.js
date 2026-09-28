@@ -64,6 +64,14 @@
   const MAX_TTS_CLIP_ATTEMPTS = 2;
   const TTS_CLIP_RETRY_BACKOFF_MS = 400;
 
+  function desktopSentenceRetryDelay(retries, isVoiceModeActive, isLive) {
+    if (!(retries < MAX_TTS_SENTENCE_RETRIES || (isVoiceModeActive() && isLive()))) return null;
+    retries += 1;
+    return isVoiceModeActive()
+      ? Math.min(400 * retries, 3000)
+      : 400 * retries;
+  }
+
   function createDesktopClipPipeline(deps) {
     deps = deps || {};
     var isLive = deps.isLive;
@@ -374,12 +382,10 @@
       playOne(sessionId, next).then(function (ok) {
         if (cancelled || !isLive(sessionId)) return;
         if (!ok) {
-          if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (isVoiceModeActive() && isLive(sessionId))) {
+          var delay = desktopSentenceRetryDelay(sentenceRetries, isVoiceModeActive, function () { return isLive(sessionId); });
+          if (delay !== null) {
             sentenceRetries += 1;
             queue.unshift(next);
-            var delay = isVoiceModeActive()
-              ? Math.min(400 * sentenceRetries, 3000)
-              : 400 * sentenceRetries;
             retryTimer = setTimeoutFn(function () {
               retryTimer = null;
               if (cancelled || !isLive(sessionId)) return;
@@ -551,13 +557,11 @@
           return;
         }
         if (!ok) {
-          if (sentenceRetries < MAX_TTS_SENTENCE_RETRIES || (isVoiceModeActive() && isLive(sessionId))) {
+          var delay = desktopSentenceRetryDelay(sentenceRetries, isVoiceModeActive, function () { return isLive(sessionId); });
+          if (delay !== null) {
             sentenceRetries += 1;
             queue.unshift(next);
             retryScheduled = true;
-            var delay = isVoiceModeActive()
-              ? Math.min(400 * sentenceRetries, 3000)
-              : 400 * sentenceRetries;
             retryTimer = setTimeoutFn(function () {
               retryTimer = null;
               retryScheduled = false;
