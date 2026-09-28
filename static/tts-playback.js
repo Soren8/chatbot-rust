@@ -179,8 +179,6 @@
       var cacheKey = sessionId + ':' + cleaned;
       var cached = getPreload(cacheKey);
 
-      var signal = getAbortSignal();
-      void signal;
       var getClipPromise = cached
         ? Promise.resolve(cached)
         : fetchClip(sessionId, text);

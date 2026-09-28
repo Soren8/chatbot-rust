@@ -1190,10 +1190,6 @@ function refreshPrivacyControls() {
   $('#mic-button').prop('disabled', !voicePathReady('stt') && !$('#mic-button').hasClass('recording'));
   $('#voice-mode-btn').prop('disabled', (!voicePathReady('stt') || !voicePathReady('tts')) && !window.voiceModeActive);
 }
-window.validateModelTier = function validateModelTier() {
-  updateSearchToggleVisibility();
-};
-
 function updateSearchToggleVisibility() {
     const $selected = $('#modelSelect option:checked');
     const $searchToggle = $('#web-search-toggle');
@@ -2678,9 +2674,9 @@ $(document).ready(function() {
     reader.readAsDataURL(file);
   });
 
-  // Validate model tier on selection change (replacing inline onchange)
+  // Sync search-toggle visibility on selection change (replacing inline onchange)
   $('#modelSelect').on('change', function() {
-      validateModelTier();
+      updateSearchToggleVisibility();
       savePreferences();
   });
 
@@ -2692,16 +2688,6 @@ $(document).ready(function() {
   $('#check-render-markdown').on('change', function() {
     window.APP_DATA.renderMarkdown = $(this).is(':checked');
     savePreferences();
-    // Re-render all AI messages
-    $('.ai-message').each(function() {
-      const $msgText = $(this).find('.ai-message-text');
-      const $thinkingContent = $(this).find('.thinking-content');
-      
-      // We need the original text. We don't store it explicitly in the DOM for AI messages 
-      // currently in a clean way without parsing thinking tags again.
-      // For now, let's just trigger a reload of the current set to re-render everything
-      // as that's the most reliable way without adding more data attributes.
-    });
     $('#set-selector').trigger('change');
   });
 
@@ -2712,7 +2698,7 @@ $(document).ready(function() {
           $modelSelect.append($('<option>').val(window.APP_DATA.lastModel).text(window.APP_DATA.lastModel + ' — Unavailable'));
       }
       $modelSelect.val(window.APP_DATA.lastModel);
-      validateModelTier();
+      updateSearchToggleVisibility();
   }
 
   function savePreferences() {
@@ -3110,7 +3096,7 @@ $(document).ready(function() {
         }
         if (response.ok && data.status === 'success' && data.set_id === binding.setId && data.privacy_level === requested) {
           noteSetVersionFromResponse(data);
-          loadedPrivacy = { setId: binding.setId, level: data.privacy_level, version: Number(data.version) };
+          loadedPrivacy = { setId: binding.setId, level: data.privacy_level };
           if (typeof window.stopVoiceMode === 'function' && window.voiceModeActive) window.stopVoiceMode();
           if (typeof window.stopAllTtsPlayback === 'function') window.stopAllTtsPlayback();
           $('#privacy-status').text('Chat privacy saved.');
@@ -3262,7 +3248,7 @@ $(document).ready(function() {
           }
           noteSetVersionFromRead(data);
           if (PRIVACY_LEVELS.includes(data.privacy_level)) {
-            loadedPrivacy = { setId: setId, level: data.privacy_level, version: Number(data.version) };
+            loadedPrivacy = { setId: setId, level: data.privacy_level };
           } else {
             $('#privacy-status').text('Chat privacy is unavailable. Refresh before sending.');
           }

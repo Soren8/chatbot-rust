@@ -249,7 +249,6 @@
     if (!data) return false;
     if (data.set_id != null && data.set_id !== '') {
       if (normalizeSetId(data.set_id) !== normalizeSetId(currentSetId)) return false;
-      if (binding && normalizeSetId(data.set_id) !== normalizeSetId(binding.setId)) return false;
     }
     return true;
   }
@@ -259,7 +258,6 @@
     if (!data) return false;
     if (data.set_id != null && data.set_id !== '') {
       if (normalizeSetId(data.set_id) !== normalizeSetId(currentSetId)) return false;
-      if (binding && normalizeSetId(data.set_id) !== normalizeSetId(binding.setId)) return false;
     }
     return true;
   }
