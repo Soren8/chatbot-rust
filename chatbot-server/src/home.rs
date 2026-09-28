@@ -359,6 +359,24 @@ fn build_response(
     bootstrap: session::HomeBootstrap,
     restored_cookies: Vec<String>,
 ) -> Result<Response<Body>, HttpError> {
+    // The rendered page carries the username and a per-session CSRF token
+    // and must reflect the live session state (the Capacitor WebView runs
+    // with LOAD_DEFAULT and would otherwise serve a stale guest page after
+    // a server restart, skipping session auto-restore entirely).
+    let builder = page_response_builder(&bootstrap.set_cookie, &restored_cookies, |_| {
+        warn!("discarding invalid Set-Cookie header from session manager");
+    });
+
+    builder
+        .body(Body::from(body))
+        .map_err(|err| map_response_build_err(err, "home::get::response"))
+}
+
+pub(crate) fn page_response_builder(
+    set_cookie: &str,
+    restored_cookies: &[String],
+    on_invalid_session_cookie: impl FnOnce(axum::http::header::InvalidHeaderValue),
+) -> axum::http::response::Builder {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -366,34 +384,25 @@ fn build_response(
             HeaderValue::from_static("text/html; charset=utf-8"),
         )
         .header("Content-Security-Policy", SECURITY_CSP)
-        // The rendered page carries the username and a per-session CSRF token
-        // and must reflect the live session state (the Capacitor WebView runs
-        // with LOAD_DEFAULT and would otherwise serve a stale guest page after
-        // a server restart, skipping session auto-restore entirely).
-        .header(header::CACHE_CONTROL, "no-store");
-
-    builder = builder
+        .header(header::CACHE_CONTROL, "no-store")
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
         .header("X-Frame-Options", "DENY");
 
-    for set_cookie in restored_cookies {
-        if let Ok(value) = HeaderValue::from_str(&set_cookie) {
+    for restored_cookie in restored_cookies {
+        if let Ok(value) = HeaderValue::from_str(restored_cookie) {
             builder = builder.header(header::SET_COOKIE, value);
         } else {
             warn!("discarding invalid remember Set-Cookie header");
         }
     }
 
-    if let Ok(value) = HeaderValue::from_str(&bootstrap.set_cookie) {
-        builder = builder.header(header::SET_COOKIE, value);
-    } else {
-        warn!("discarding invalid Set-Cookie header from session manager");
+    match HeaderValue::from_str(set_cookie) {
+        Ok(value) => builder = builder.header(header::SET_COOKIE, value),
+        Err(err) => on_invalid_session_cookie(err),
     }
 
     builder
-        .body(Body::from(body))
-        .map_err(|err| map_response_build_err(err, "home::get::response"))
 }
 
 #[cfg(test)]

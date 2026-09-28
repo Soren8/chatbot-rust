@@ -82,15 +82,7 @@ impl DataRequestContext {
         cookie_header: Option<&str>,
         session_error_context: &'static str,
     ) -> Result<Self, HttpError> {
-        let encryption_key =
-            crate::enc_key_cookies::extract_enc_key_with_identity(identity, headers);
-        let session = identity
-            .session_context(cookie_header)
-            .map_err(|err| map_session_err(err, session_error_context))?;
-        Ok(Self {
-            session,
-            encryption_key,
-        })
+        Self::resolve_with_fallback(identity, headers, cookie_header, session_error_context, false)
     }
 
     /// Resolve for `GET /history_image/...`, which also accepts the
@@ -102,9 +94,22 @@ impl DataRequestContext {
         cookie_header: Option<&str>,
         session_error_context: &'static str,
     ) -> Result<Self, HttpError> {
-        let encryption_key =
-            crate::enc_key_cookies::extract_enc_key_with_identity(identity, headers)
-                .or_else(|| extract_hist_enc_cookie(cookie_header));
+        Self::resolve_with_fallback(identity, headers, cookie_header, session_error_context, true)
+    }
+
+    fn resolve_with_fallback(
+        identity: &RequestIdentity,
+        headers: &HeaderMap,
+        cookie_header: Option<&str>,
+        session_error_context: &'static str,
+        history_image: bool,
+    ) -> Result<Self, HttpError> {
+        let encryption_key = crate::enc_key_cookies::extract_enc_key_with_identity(identity, headers);
+        let encryption_key = if history_image {
+            encryption_key.or_else(|| extract_hist_enc_cookie(cookie_header))
+        } else {
+            encryption_key
+        };
         let session = identity
             .session_context(cookie_header)
             .map_err(|err| map_session_err(err, session_error_context))?;

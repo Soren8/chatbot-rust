@@ -10,7 +10,7 @@ use minijinja::{context, AutoEscape, Environment};
 use serde_urlencoded::from_bytes;
 use tracing::warn;
 
-use crate::home::SECURITY_CSP;
+use crate::home::page_response_builder;
 use crate::http_error::{
     api_error, log_and_api_error, map_body_read_err, map_form_parse_err, map_response_build_err,
     map_session_err, map_user_store_err, HttpError,
@@ -134,29 +134,9 @@ fn build_signup_response(
     body: String,
     set_cookie: String,
 ) -> Result<Response<Body>, HttpError> {
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/html; charset=utf-8"),
-        )
-        .header("Content-Security-Policy", SECURITY_CSP)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header("X-Content-Type-Options", "nosniff")
-        .header("Referrer-Policy", "no-referrer")
-        .header("X-Frame-Options", "DENY");
-
-    match HeaderValue::from_str(&set_cookie) {
-        Ok(value) => {
-            builder = builder.header(header::SET_COOKIE, value);
-        }
-        Err(err) => {
-            warn!(
-                ?err,
-                "discarding invalid Set-Cookie header from session manager"
-            );
-        }
-    }
+    let builder = page_response_builder(&set_cookie, &[], |err| {
+        warn!(?err, "discarding invalid Set-Cookie header from session manager");
+    });
 
     builder
         .body(Body::from(body))

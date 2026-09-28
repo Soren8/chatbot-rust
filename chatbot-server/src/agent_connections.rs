@@ -118,6 +118,12 @@ fn context(services: &AppServices, headers: &axum::http::HeaderMap, cookie: Opti
     DataRequestContext::resolve(services.identity(), headers, cookie, "agent_connections::session")
 }
 
+fn mutation_context(services: &AppServices, headers: &axum::http::HeaderMap) -> Result<DataRequestContext, HttpError> {
+    let cookie = extract_cookie(headers);
+    csrf(services, headers, cookie.as_deref())?;
+    context(services, headers, cookie.as_deref())
+}
+
 fn map_connection(err: ConnectionError) -> HttpError {
     match err {
         ConnectionError::InvalidInput => api_error(StatusCode::BAD_REQUEST, "invalid_connection_input"),
@@ -182,9 +188,7 @@ pub async fn list(request: Request<Body>) -> Result<Response<Body>, HttpError> {
 pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
-    let cookie = extract_cookie(&parts.headers);
-    csrf(&services, &parts.headers, cookie.as_deref())?;
-    let data = context(&services, &parts.headers, cookie.as_deref())?;
+    let data = mutation_context(&services, &parts.headers)?;
     let (verified, connections, policy) = authorized(&services, &data)?;
     let input: CreateInput = parse(body).await?;
     if input.kind != "opencode" { return Err(api_error(StatusCode::BAD_REQUEST, "invalid_connection_kind")); }
@@ -198,9 +202,7 @@ pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError>
 pub async fn update(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
-    let cookie = extract_cookie(&parts.headers);
-    csrf(&services, &parts.headers, cookie.as_deref())?;
-    let data = context(&services, &parts.headers, cookie.as_deref())?;
+    let data = mutation_context(&services, &parts.headers)?;
     let (verified, connections, policy) = authorized(&services, &data)?;
     let id = parse_id(&parts.uri)?;
     let input: PatchInput = parse(body).await?;
@@ -223,9 +225,7 @@ pub async fn update(request: Request<Body>) -> Result<Response<Body>, HttpError>
 pub async fn delete(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
-    let cookie = extract_cookie(&parts.headers);
-    csrf(&services, &parts.headers, cookie.as_deref())?;
-    let data = context(&services, &parts.headers, cookie.as_deref())?;
+    let data = mutation_context(&services, &parts.headers)?;
     let (verified, connections, _) = authorized(&services, &data)?;
     let id = parse_id(&parts.uri)?;
     let input: DeleteInput = parse(body).await?;
@@ -237,9 +237,7 @@ pub async fn delete(request: Request<Body>) -> Result<Response<Body>, HttpError>
 pub async fn check(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
-    let cookie = extract_cookie(&parts.headers);
-    csrf(&services, &parts.headers, cookie.as_deref())?;
-    let data = context(&services, &parts.headers, cookie.as_deref())?;
+    let data = mutation_context(&services, &parts.headers)?;
     let (verified, connections, policy) = authorized(&services, &data)?;
     let id = parts.uri.path().strip_prefix("/agent_connections/")
         .and_then(|rest| rest.strip_suffix("/check"))
