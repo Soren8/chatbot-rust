@@ -73,6 +73,12 @@ Generated/vendor/binary/protected material receives boundary-only coverage with 
 
 Branch `refactor@847e4cc` (clean). Four parallel research-only workers inventoried handwritten code across core, server, browser, and Android/Python/DNS/build; the primary reviewer then traced each high-confidence candidate to its callers before approval. All four batches below are implemented (SIM-004–007, commits after this section) with targeted green verification; the full-suite gate follows.
 
+### Session 057 verification
+
+Targeted (all exit 0): `js_syntax` 11/11; `conversation_request_application` 1/1; `conversation_request_binding` 1/1; `conversation_state` 11/11; `desktop_playback_cancellation` 5/5; `desktop_playback_cancellation_vm` 7/7; `generation_dispatch` 15/15; `search` 5/5; `privacy_policy` 8/8; `provider_config_isolation` 23/23; `voice_privacy` 9/9; `tts` 15/15; `voice_service_lifecycle` 1/1; core lib 182/182; `home` 8/8; `generation_error_ownership` 4/4; `router_identity_isolation` 6/6; `static_assets` 15/15; `set_privacy` 1/1; DNS `unittest discover` 31/31.
+
+Final full suite `temp/test-logs/sim57-full-20260928.log`: job `20260928T054654-a257a7ed62e5`, exit 0, untruncated, 121 suites ok / 991 passed / 0 failed, including provider configuration checks. Primary review corrections applied before the run: migration rename keeps a graceful no-parent path (no new panic), dev-override keeps its trailing newline, the model-select comment names the visibility sync, and `config_source` notes the `from_providers` mirror. No Android changes (no APK rebuild); no browser-visible or template changes (no preview verification needed beyond the JS suites).
+
 ### Approved for bounded implementation (primary-verified)
 
 **Core batch (SIM-004).**
