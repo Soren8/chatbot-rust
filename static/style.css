@@ -1,14 +1,29 @@
+/* Active input toggles share one light-blue highlight. */
+#chat-area .input-group #web-search-toggle.btn-primary {
+    --bs-btn-color: #0a0a0a;
+    --bs-btn-bg: #5c9cf5;
+    --bs-btn-border-color: #5c9cf5;
+    --bs-btn-hover-color: #0a0a0a;
+    --bs-btn-hover-bg: #5c9cf5;
+    --bs-btn-hover-border-color: #5c9cf5;
+    --bs-btn-active-color: #0a0a0a;
+    --bs-btn-active-bg: #5c9cf5;
+    --bs-btn-active-border-color: #5c9cf5;
+    --bs-btn-disabled-bg: #5c9cf5;
+    --bs-btn-disabled-border-color: #5c9cf5;
+}
+
 /* Voice mode button active state */
-#voice-mode-btn.active {
-    color: #4bb543;
-    border-color: #4bb543;
+#chat-area .input-group #voice-mode-btn.active {
+    color: #5c9cf5;
+    border-color: #5c9cf5;
     animation: pulse-recording 1.5s ease-in-out infinite;
 }
 
 /* Mic recording animation */
-#mic-button.recording {
-    color: #e06a6a;
-    border-color: #e06a6a;
+#chat-area .input-group #mic-button.recording {
+    color: #5c9cf5;
+    border-color: #5c9cf5;
     animation: pulse-recording 1.5s ease-in-out infinite;
 }
 

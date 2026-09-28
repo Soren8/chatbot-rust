@@ -434,14 +434,26 @@ a {
   background: var(--oc-danger);
 }
 
-#voice-mode-btn.active {
-  color: var(--oc-success);
-  border-color: var(--oc-success);
+/* Active input toggles share one light-blue highlight. Web search inherits
+   the orange btn-primary otherwise, so it needs an explicit override. */
+#chat-area .input-group #web-search-toggle.btn-primary {
+  --bs-btn-color: #0a0a0a;
+  --bs-btn-bg: var(--oc-blue);
+  --bs-btn-border-color: var(--oc-blue);
+  --bs-btn-hover-color: #0a0a0a;
+  --bs-btn-hover-bg: var(--oc-blue);
+  --bs-btn-hover-border-color: var(--oc-blue);
+  --bs-btn-active-color: #0a0a0a;
+  --bs-btn-active-bg: var(--oc-blue);
+  --bs-btn-active-border-color: var(--oc-blue);
+  --bs-btn-disabled-bg: var(--oc-blue);
+  --bs-btn-disabled-border-color: var(--oc-blue);
 }
 
-#mic-button.recording {
-  color: var(--oc-danger);
-  border-color: var(--oc-danger);
+#chat-area .input-group #voice-mode-btn.active,
+#chat-area .input-group #mic-button.recording {
+  color: var(--oc-blue);
+  border-color: var(--oc-blue);
 }
 
 .code-block-container {
