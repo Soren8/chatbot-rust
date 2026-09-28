@@ -10,20 +10,19 @@ use axum::{
 use bytes::Bytes;
 use chatbot_core::{
     chat,
-    session::{self, ChatRequestData},
+    session::ChatRequestData,
 };
 use futures_util::StreamExt;
 use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::chat_utils::{
-    error_as_saved_chat_turn_with_service, provider_error_parts, render_finalize_outcome,
-    StreamCompletionGuard,
+    error_as_saved_chat_turn_with_service, map_prepare_error, provider_error_parts,
+    render_finalize_outcome, StreamCompletionGuard,
 };
 use crate::http_error::{
-    api_error, api_error_json, map_body_read_err, map_json_parse_err, map_prepare_history_err,
-    map_prepare_policy_err, map_prepare_validation_err, map_response_build_err, map_session_err,
-    map_session_operation_err, HttpError,
+    api_error, api_error_json, map_body_read_err, map_json_parse_err, map_response_build_err,
+    map_session_err, HttpError,
 };
 use crate::providers::generation::{
     build_provider_with_generation, dispatch_stream, map_core_messages,
@@ -222,54 +221,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     }
 
     if let Some(err) = prepare.error {
-        match err {
-            session::PrepareError::Validation(validation) => {
-                if !payload.message.trim().is_empty() {
-                    return error_as_saved_chat_turn_with_service(&chat,
-                        &session_context,
-                        payload.set_name.as_deref(),
-                        &payload.message,
-                        validation.message(),
-                        encryption_key.as_ref(),
-                        None,
-                    );
-                }
-                return Err(map_prepare_validation_err(&validation));
-            }
-            session::PrepareError::Policy(policy) => {
-                return Err(map_prepare_policy_err(&policy));
-            }
-            session::PrepareError::History(history) => {
-                if !payload.message.trim().is_empty() {
-                    if let Some(msg) = history.saved_error_message() {
-                        return error_as_saved_chat_turn_with_service(&chat,
-                            &session_context,
-                            payload.set_name.as_deref(),
-                            &payload.message,
-                            msg,
-                            encryption_key.as_ref(),
-                            None,
-                        );
-                    }
-                }
-                return Err(map_prepare_history_err(&history));
-            }
-            session::PrepareError::Session(op) => {
-                if op == session::SessionOperationError::AuthenticatedBootstrapMisuse
-                    && !payload.message.trim().is_empty()
-                {
-                    return error_as_saved_chat_turn_with_service(&chat,
-                        &session_context,
-                        payload.set_name.as_deref(),
-                        &payload.message,
-                        op.message(),
-                        encryption_key.as_ref(),
-                        None,
-                    );
-                }
-                return Err(map_session_operation_err(&op));
-            }
-        }
+        return map_prepare_error(
+            err,
+            &chat,
+            &session_context,
+            payload.set_name.as_deref(),
+            &payload.message,
+            encryption_key.as_ref(),
+        );
     }
 
     let context = prepare.context.ok_or_else(|| {

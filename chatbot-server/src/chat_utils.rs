@@ -12,7 +12,10 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 
-use crate::http_error::{map_response_build_err, HttpError};
+use crate::http_error::{
+    map_prepare_history_err, map_prepare_policy_err, map_prepare_validation_err,
+    map_response_build_err, map_session_operation_err, HttpError,
+};
 use tracing::warn;
 
 /// Appended to a root cause that does not already name the backend, so the
@@ -219,6 +222,41 @@ pub fn error_as_saved_chat_turn_with_service(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from(assistant))
         .map_err(|err| map_response_build_err(err, "chat_utils::error_as_saved_chat_turn"))
+}
+
+/// Render a prepare failure, saving a nonempty user message only for eligible errors.
+pub fn map_prepare_error(
+    err: session::PrepareError,
+    chat: &ChatService,
+    session: &session::SessionContext,
+    set_name: Option<&str>,
+    user_message: &str,
+    encryption_key: Option<&EncryptionKey>,
+) -> Result<Response<Body>, HttpError> {
+    let saved_message = match &err {
+        session::PrepareError::Validation(validation) => Some(validation.message()),
+        session::PrepareError::Policy(_) => None,
+        session::PrepareError::History(history) => history.saved_error_message(),
+        session::PrepareError::Session(op)
+            if *op == session::SessionOperationError::AuthenticatedBootstrapMisuse =>
+        {
+            Some(op.message())
+        }
+        session::PrepareError::Session(_) => None,
+    };
+    if !user_message.trim().is_empty() {
+        if let Some(message) = saved_message {
+            return error_as_saved_chat_turn_with_service(
+                chat, session, set_name, user_message, message, encryption_key, None,
+            );
+        }
+    }
+    Err(match err {
+        session::PrepareError::Validation(validation) => map_prepare_validation_err(&validation),
+        session::PrepareError::Policy(policy) => map_prepare_policy_err(&policy),
+        session::PrepareError::History(history) => map_prepare_history_err(&history),
+        session::PrepareError::Session(op) => map_session_operation_err(&op),
+    })
 }
 
 /// Persist a /chat or /regenerate failure as a real history pair and return it

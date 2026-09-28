@@ -72,6 +72,25 @@ struct DeleteMessageRequest {
     expected_version: Option<u64>,
 }
 
+fn map_mutation_mirror_error(err: MutationMirrorError) -> Result<Response<Body>, HttpError> {
+    match err {
+        MutationMirrorError::Key(err) => Err(map_encryption_key_validation_err(err)),
+        MutationMirrorError::InvalidSetId => {
+            Err(api_error(StatusCode::BAD_REQUEST, "invalid set_id"))
+        }
+        MutationMirrorError::SetNotFound => Err(api_error(StatusCode::BAD_REQUEST, "set not found")),
+        MutationMirrorError::Conflict {
+            set_id,
+            current_version,
+        } => build_json_response(
+            StatusCode::CONFLICT,
+            crate::chat_utils::version_conflict_json(set_id, current_version),
+        ),
+        MutationMirrorError::History(err) => Err(history_error_to_http(err)),
+        MutationMirrorError::Mirror(err) => Err(map_session_operation_err(&err)),
+    }
+}
+
 pub async fn handle_update_memory(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
@@ -137,24 +156,7 @@ pub async fn handle_update_memory(
                     "set_id": applied.set_id.to_string(),
                 }),
             ),
-            Err(MutationMirrorError::Key(err)) => {
-                Err(map_encryption_key_validation_err(err))
-            }
-            Err(MutationMirrorError::InvalidSetId) => {
-                Err(api_error(StatusCode::BAD_REQUEST, "invalid set_id"))
-            }
-            Err(MutationMirrorError::SetNotFound) => {
-                Err(api_error(StatusCode::BAD_REQUEST, "set not found"))
-            }
-            Err(MutationMirrorError::Conflict {
-                set_id,
-                current_version,
-            }) => build_json_response(
-                StatusCode::CONFLICT,
-                crate::chat_utils::version_conflict_json(set_id, current_version),
-            ),
-            Err(MutationMirrorError::History(err)) => Err(history_error_to_http(err)),
-            Err(MutationMirrorError::Mirror(err)) => Err(map_session_operation_err(&err)),
+            Err(err) => map_mutation_mirror_error(err),
         }
     } else {
         chat.update_session_memory(&data_context.session().session_id, &memory_text);
@@ -240,24 +242,7 @@ pub async fn handle_update_system_prompt(
                     "set_id": applied.set_id.to_string(),
                 }),
             ),
-            Err(MutationMirrorError::Key(err)) => {
-                Err(map_encryption_key_validation_err(err))
-            }
-            Err(MutationMirrorError::InvalidSetId) => {
-                Err(api_error(StatusCode::BAD_REQUEST, "invalid set_id"))
-            }
-            Err(MutationMirrorError::SetNotFound) => {
-                Err(api_error(StatusCode::BAD_REQUEST, "set not found"))
-            }
-            Err(MutationMirrorError::Conflict {
-                set_id,
-                current_version,
-            }) => build_json_response(
-                StatusCode::CONFLICT,
-                crate::chat_utils::version_conflict_json(set_id, current_version),
-            ),
-            Err(MutationMirrorError::History(err)) => Err(history_error_to_http(err)),
-            Err(MutationMirrorError::Mirror(err)) => Err(map_session_operation_err(&err)),
+            Err(err) => map_mutation_mirror_error(err),
         }
     } else {
         chat.update_session_system_prompt(&data_context.session().session_id, &system_prompt);
