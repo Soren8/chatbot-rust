@@ -1,4 +1,5 @@
-/* Active input toggles share one light-blue highlight. */
+/* Active input toggles share one filled light-blue background highlight with
+   a dark glyph. */
 #chat-area .input-group #web-search-toggle.btn-primary {
     --bs-btn-color: #0a0a0a;
     --bs-btn-bg: #5c9cf5;
@@ -14,17 +15,23 @@
 }
 
 /* Voice mode button active state */
-#chat-area .input-group #voice-mode-btn.active {
-    color: #5c9cf5;
+#chat-area .input-group #voice-mode-btn.active,
+#chat-area .input-group #mic-button.recording,
+#chat-area .input-group #voice-mode-btn.active:hover,
+#chat-area .input-group #mic-button.recording:hover,
+#chat-area .input-group #voice-mode-btn.active:focus,
+#chat-area .input-group #mic-button.recording:focus {
+    color: #0a0a0a;
+    background: #5c9cf5;
     border-color: #5c9cf5;
     animation: pulse-recording 1.5s ease-in-out infinite;
 }
 
-/* Mic recording animation */
-#chat-area .input-group #mic-button.recording {
-    color: #5c9cf5;
-    border-color: #5c9cf5;
-    animation: pulse-recording 1.5s ease-in-out infinite;
+/* Account tier is minor muted text, not a pill: no background, inherits the
+   surrounding navbar-text tone. */
+.account-tier {
+    color: inherit;
+    background: none;
 }
 
 @keyframes pulse-recording {

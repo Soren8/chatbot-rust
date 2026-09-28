@@ -538,19 +538,23 @@ fn navbar_account_dropdown_is_on_top_in_z_order() {
     );
 }
 
-/// UI accent policy: the account tier badge must not use a distracting green
-/// highlight, and the Web Search / STT / Voice Mode active states must share
-/// one light-blue highlight.
+/// UI accent policy: account tier is minor muted text (no pill), and the Web
+/// Search / STT / Voice Mode active states share one filled light-blue
+/// background highlight (dark glyph), not mixed background-vs-glyph tints.
 #[test]
 fn input_toggles_share_single_light_blue_active_state() {
     let html = include_str!("../../static/templates/chat.html");
     assert!(
         !html.contains("}success"),
-        "Premium badge must not render a green success highlight"
+        "Premium tier must not render a green success highlight"
     );
     assert!(
-        html.contains("bg-secondary"),
-        "account tier badge should fall back to muted bg-secondary"
+        !html.contains("badge"),
+        "account tier is minor text and must not use a badge pill"
+    );
+    assert!(
+        html.contains("account-tier"),
+        "account tier text needs a plain hook without badge background"
     );
 
     let theme = include_str!("../../static/opencode-theme.css");
@@ -559,22 +563,28 @@ fn input_toggles_share_single_light_blue_active_state() {
         "web search active state needs an explicit override (it inherits orange btn-primary otherwise)"
     );
     assert!(
-        theme.contains("var(--oc-blue)"),
-        "active toggle highlight should use theme light blue var(--oc-blue)"
-    );
-    for needle in ["#voice-mode-btn.active", "#mic-button.recording"] {
-        assert!(
-            theme.contains(needle),
-            "theme must define {needle} active highlight"
-        );
-    }
-    assert!(
         theme.contains("#chat-area .input-group #voice-mode-btn.active")
             && theme.contains("#chat-area .input-group #mic-button.recording"),
         "active voice highlights must out-specify the input-group button rules"
     );
+    let pos = theme
+        .find("#chat-area .input-group #voice-mode-btn.active")
+        .expect("voice active rule");
+    let window = &theme[pos..(pos + 900).min(theme.len())];
     assert!(
-        !theme.contains("#voice-mode-btn.active {\n  color: var(--oc-success)"),
+        window.contains("#mic-button.recording"),
+        "voice mode and mic recording must share one highlight rule"
+    );
+    assert!(
+        window.contains("background: var(--oc-blue)"),
+        "voice/mic active must fill the background like web search, not just tint the glyph"
+    );
+    assert!(
+        window.contains("color: #0a0a0a"),
+        "active toggles use a dark glyph on the light-blue fill"
+    );
+    assert!(
+        !window.contains("var(--oc-success)"),
         "voice mode active must not use green success highlight"
     );
     assert!(
@@ -583,18 +593,28 @@ fn input_toggles_share_single_light_blue_active_state() {
     );
 
     let style = include_str!("../../static/style.css");
-    for needle in ["#voice-mode-btn.active", "#mic-button.recording"] {
-        assert!(
-            style.contains(needle),
-            "style.css must define {needle} active highlight"
-        );
-    }
+    let pos = style
+        .find("#chat-area .input-group #voice-mode-btn.active")
+        .expect("base voice active rule");
+    let window = &style[pos..(pos + 900).min(style.len())];
     assert!(
-        !style.contains("#voice-mode-btn.active {\n    color: #4bb543"),
+        window.contains("#mic-button.recording"),
+        "base voice mode and mic recording must share one highlight rule"
+    );
+    assert!(
+        window.contains("background: #5c9cf5"),
+        "base voice/mic active must fill the background like web search"
+    );
+    assert!(
+        window.contains("color: #0a0a0a"),
+        "base active toggles use a dark glyph on the light-blue fill"
+    );
+    assert!(
+        !window.contains("#4bb543"),
         "voice mode active must not use green highlight in base stylesheet"
     );
     assert!(
-        !style.contains("#mic-button.recording {\n    color: #e06a6a"),
+        !window.contains("#e06a6a"),
         "mic recording must not use red highlight in base stylesheet"
     );
 }

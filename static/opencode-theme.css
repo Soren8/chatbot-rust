@@ -434,8 +434,10 @@ a {
   background: var(--oc-danger);
 }
 
-/* Active input toggles share one light-blue highlight. Web search inherits
-   the orange btn-primary otherwise, so it needs an explicit override. */
+/* Active input toggles share one filled light-blue background highlight with
+   a dark glyph. Web search inherits the orange btn-primary otherwise, so it
+   needs an explicit override; voice/mic keep their .active/.recording hooks
+   but fill the background the same way instead of tinting the glyph. */
 #chat-area .input-group #web-search-toggle.btn-primary {
   --bs-btn-color: #0a0a0a;
   --bs-btn-bg: var(--oc-blue);
@@ -451,9 +453,21 @@ a {
 }
 
 #chat-area .input-group #voice-mode-btn.active,
-#chat-area .input-group #mic-button.recording {
-  color: var(--oc-blue);
+#chat-area .input-group #mic-button.recording,
+#chat-area .input-group #voice-mode-btn.active:hover,
+#chat-area .input-group #mic-button.recording:hover,
+#chat-area .input-group #voice-mode-btn.active:focus,
+#chat-area .input-group #mic-button.recording:focus {
+  color: #0a0a0a;
+  background: var(--oc-blue);
   border-color: var(--oc-blue);
+}
+
+/* Account tier is minor muted text, not a pill: no background, inherits the
+   surrounding navbar-text tone. */
+.account-tier {
+  color: inherit;
+  background: none;
 }
 
 .code-block-container {
