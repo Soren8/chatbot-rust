@@ -293,14 +293,16 @@ def forward_udp(
 
 def _recvn(conn: socket.socket, count: int) -> bytes:
     chunks = []
-    while sum(len(part) for part in chunks) < count:
+    received = 0
+    while received < count:
         try:
-            part = conn.recv(count - sum(len(p) for p in chunks))
+            part = conn.recv(count - received)
         except OSError:
             return b""
         if not part:
             return b""
         chunks.append(part)
+        received += len(part)
     return b"".join(chunks)
 
 

@@ -1,4 +1,3 @@
-import io
 import os
 import tempfile
 
@@ -35,34 +34,3 @@ def webm_to_wav_bytes(audio_bytes: bytes, target_sr: int = 16000) -> bytes:
         os.unlink(tmp_in_path)
         if os.path.exists(tmp_out_path):
             os.unlink(tmp_out_path)
-
-
-def wav_bytes_to_array(wav_bytes: bytes, target_sr: int = 16000):
-    """Read WAV bytes into a float32 numpy array, resampling to target_sr if needed."""
-    import soundfile as sf
-
-    buf = io.BytesIO(wav_bytes)
-    audio, sr = sf.read(buf, dtype="float32", always_2d=False)
-    if sr != target_sr:
-        import librosa
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
-    return audio, target_sr
-
-
-def numpy_to_pcm16(audio) -> bytes:
-    """Convert float32 numpy waveform [-1, 1] to raw 16-bit little-endian PCM bytes."""
-    import numpy as np
-
-    clipped = np.clip(audio, -1.0, 1.0)
-    pcm = (clipped * 32767).astype(np.int16)
-    return pcm.tobytes()
-
-
-def numpy_to_wav_bytes(audio, sample_rate: int) -> bytes:
-    """Encode a float32 numpy waveform to WAV bytes."""
-    import soundfile as sf
-
-    buf = io.BytesIO()
-    sf.write(buf, audio, sample_rate, format="WAV", subtype="PCM_16")
-    buf.seek(0)
-    return buf.read()

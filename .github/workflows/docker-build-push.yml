@@ -55,10 +55,6 @@ jobs:
         id: cfgver
         run: echo "CONFIG_VERSION=$(cat .config-version)" >> "$GITHUB_OUTPUT"
 
-      - name: Get short SHA
-        id: vars
-        run: echo "SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
-
       - name: Prepare tags
         id: tags
         run: |
