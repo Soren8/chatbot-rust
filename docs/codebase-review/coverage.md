@@ -8,9 +8,9 @@ Four parallel research workers plus primary caller-tracing inventoried handwritt
 
 The S column above is now filled per unit at the current revision. `R` marks units where every owned handwritten file received a focused simplicity read in sessions 054–059 (session 057's four workers plus primary caller-tracing, session 058's deferred-item tracing, session 059's four remainder workers plus primary reads of `voice-events.js`, `playback-source.js`, `stream-decoder.js`, and `voice-text.js`). `P` marks partial coverage with exact scope:
 
-- C01: `config.rs` privacy defaults inspected, no candidate; `logging.rs` (stable init wiring) not simplicity-read.
-- C02: `session.rs` compatibility delegates reviewed; orchestration internals untouched by this pass.
-- C04: migration/store-keys/cache/ops reviewed; commit-path internals untouched (read-consistency is COR-003's scope).
+- C01: `logging.rs` fully read (clean), `config.rs` privacy defaults inspected only; schema-parsing branches untouched.
+- C02: session orchestration fully read in session 061 (entry/locks/expiry, constructors, seams/validators, both context builders, both prepare internals, finalize family + lease, mirrors, mutations, delegates, compat shims, seal/unseal); one candidate implemented (`fresh_entry`).
+- C04: commit/load/lifecycle paths fully read in session 061 (`change_policy`, `commit_snapshot`, `commit_chunked`, api commit/delete/reset/load/list, `tables.rs` codec, `crypto.rs` seal/open shape, `cache.rs`); `types.rs` newtype accessors inspected structurally. Read-consistency behavior remains COR-003's scope.
 - T01/T02/T04: test bodies read only as simplification contracts for changed production paths (separate test-quality audit owns assertion review).
 - N03: Auto structure reviewed (`VoiceSession` simplified); protocol behavior belongs to its deferred repair, not this pass.
 
@@ -109,9 +109,9 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | V01 Third-party browser dependencies | `static/deps/*` | B | B | — | — | — | — | — |
 | R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | R | R | — | — | — | — | — |
 | C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | P | — | — | — | — | — |
-| C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | P | — | — | — | — | — |
+| C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | R | — | — | — | — | — |
 | C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | — | — | — | — | — |
-| C04 Durable history | `chatbot-core/src/history/*` | R | P | — | — | — | — | — |
+| C04 Durable history | `chatbot-core/src/history/*` | R | R | — | — | — | — | — |
 | C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | R | — | — | — | — | — |
 | C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | — | — | — | — | — |
 | C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | R | — | — | — | — | — |

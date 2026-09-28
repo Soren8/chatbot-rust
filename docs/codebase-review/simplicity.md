@@ -210,3 +210,23 @@ With explicit user approval to migrate assertions while preserving behavioral co
 ### Session 060 verification
 
 Targeted (all exit 0): core lib 182/182 (`fresh_entry`, ops import split), `credential_metadata` 5/5 (migrated pin), `voice_mode_reliability` (migrated pin), `js_syntax` 11/11. Physical APK rebuilt for the Java constant removal — job `20260928T072542-6a097738656f`, exit 0, artifact `temp/sim60-physical-debug.apk` (12,540,142 bytes, SHA256 `489d0dfa00435b1fb58f0f6e14a8236519a65e549ef5d0cd7a157c4a4fd96513`). Final full suite `temp/test-logs/sim60-full-20260928.log`: job `20260928T072718-d6bf8dfbf87f`, exit 0, untruncated, 121 suites ok / 991 passed / 0 failed, including provider configuration checks.
+
+## Session 061 — closure completion round, 2026-09-28
+
+Addresses the independent review of the session-060 batch.
+
+### Remaining production paths read (primary)
+
+- `session.rs`: entry/locks/expiry, constructors, key/tier seams, both context builders, both prepare internals (per-failure lock semantics differ — retained), finalize family + lease (canonical-then-compat layering — retained), mirrors, all five `apply_*` mutations (uniform durable-then-mirror contract — retained), delegates, compat shims, seal/unseal. One candidate implemented beyond `fresh_entry`: none — the create_set dead empty-name check in `history/api.rs` (else arm unreachable by construction) removed.
+- `history/api.rs` loads/lifecycle (`list_sets`, `load`, `find_by_display_name`, `create_set`, `ensure_default_set`, `rename_set`, `delete_set`, `change_privacy_level`, `append_pair`, update paths): uniform preambles with divergent duties — retained.
+- `history/store/chunks.rs` `commit_chunked`, `tables.rs` codec (full read, round-trip tested), `crypto.rs` seal/open shape (per-type AAD binding must stay explicit), `cache.rs` (full read; touch-on-read repetition retains lock-lifetime clarity), `types.rs` newtype accessors (structural inspection).
+- C02/C04 ledger cells advanced to R with the scope above; C01 stays P (`logging.rs` fully read, `config.rs` privacy defaults only).
+
+### Behavioral test migrations (user-approved)
+
+- `credential_metadata.rs`: the whole-file `"metadataOwner()"` placeholder replaced by per-operation delegation assertions (`slotKey`, `listCachedAccounts`, `touchSlot`, `purgeNonRememberedSlots` bodies must reach the owner; `removeSlot` through pinned `slotKey`) via a brace-matching `function_contains` helper. Deleting `slotIdByHash` keeps every pin green.
+- `voice_mode_reliability.rs`: `native_voice_tts_streams_wav_instead_of_buffering_the_clip` renamed to `native_voice_tts_queues_complete_clips_after_preroll_accumulation` with a corrected docstring — the implementation accumulates decoded PCM through end-of-stream and returns one complete `AudioClip`; "streams instead of buffering" was inaccurate (a tension the modularity record already noted at `modularity.md:283`). Assertions are now method-body structural: `streamWavToTrack` must decode (`takePcm`), accumulate (`preroll.write(pcm)`), return complete (`new AudioClip`), and reject (`hasIncompleteData`, `isGenerationActive`); the whole-file streaming/anti-buffering markers stay.
+
+### Session 061 verification
+
+Targeted (all exit 0): core lib (`create_set` dead-branch removal), `credential_metadata` (structural pins), `voice_mode_reliability` (renamed test), `js_syntax`. No Java, template, or style changes in this session, so no APK rebuild or preview is needed (the sim60 APK still covers the native tree). Final full suite `temp/test-logs/sim61-full-*.log` (job, exit 0, untruncated) follows.
