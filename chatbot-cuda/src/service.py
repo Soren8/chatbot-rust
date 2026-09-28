@@ -187,17 +187,21 @@ class InferenceService:
             )
         logger.info("STT model loaded.")
 
+    def _warmup_kokoro(self) -> None:
+        # Warmup: triggers JIT compilation and phonemizer init before first real request.
+        try:
+            for _, _, _ in self._kokoro_pipeline(
+                "Hello, this is a warmup sentence.", voice="af_heart"
+            ):
+                break
+        except Exception as exc:
+            logger.warning("Kokoro warmup failed (non-fatal): %s", exc)
+
     def load_kokoro(self) -> None:
         if self._kokoro_factory is not None:
             # CPU test seam: fake pipeline replaces KPipeline/JIT/phonemizer.
             self._kokoro_pipeline = self._kokoro_factory(self.settings.device)
-            try:
-                for _, _, _ in self._kokoro_pipeline(
-                    "Hello, this is a warmup sentence.", voice="af_heart"
-                ):
-                    break
-            except Exception as exc:
-                logger.warning("Kokoro warmup failed (non-fatal): %s", exc)
+            self._warmup_kokoro()
             self._kokoro_loaded = True
             logger.info("Kokoro TTS loaded.")
             return
@@ -208,16 +212,7 @@ class InferenceService:
 
         logger.info("Loading Kokoro TTS pipeline on %s", self.settings.device)
         self._kokoro_pipeline = KPipeline(lang_code="a", device=self.settings.device)
-
-        # Warmup: triggers JIT compilation and phonemizer init before first real request.
-        try:
-            for _, _, _ in self._kokoro_pipeline(
-                "Hello, this is a warmup sentence.", voice="af_heart"
-            ):
-                break
-        except Exception as exc:
-            logger.warning("Kokoro warmup failed (non-fatal): %s", exc)
-
+        self._warmup_kokoro()
         self._kokoro_loaded = True
         if torch.cuda.is_available():
             logger.info(

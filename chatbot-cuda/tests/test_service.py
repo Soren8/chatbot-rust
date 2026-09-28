@@ -85,6 +85,27 @@ class TestModelChoice(unittest.TestCase):
 
 
 class TestStartupFailure(unittest.TestCase):
+    def test_kokoro_warmup_iteration_failure_warns_but_loads(self):
+        pipeline = FakeKokoroPipeline([], fail=RuntimeError("warmup boom"))
+        service = InferenceService(
+            _settings("kokoro"),
+            kokoro_factory=lambda device: pipeline,
+            stt_factory=lambda model_id: FakeSttModel("hi"),
+            pcm_converter=lambda audio: b"x",
+        )
+
+        with self.assertLogs("src.service", level="WARNING") as logs:
+            service.load_kokoro()
+
+        self.assertTrue(service.kokoro_loaded)
+        self.assertEqual(
+            pipeline.calls, [("Hello, this is a warmup sentence.", "af_heart")]
+        )
+        self.assertEqual(
+            logs.output,
+            ["WARNING:src.service:Kokoro warmup failed (non-fatal): warmup boom"],
+        )
+
     def test_kokoro_factory_failure_propagates_and_stays_unloaded(self):
         service = InferenceService(
             _settings("kokoro"),
