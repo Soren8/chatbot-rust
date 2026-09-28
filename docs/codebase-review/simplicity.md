@@ -176,3 +176,13 @@ Four parallel research workers covered every S-column unit the earlier sessions 
 - `main.py:74` health: no change — the inventory claim was inaccurate on inspection: `readiness()` snapshot fields (`kokoro_loaded`, `stt_loaded`) ARE reported; only `status` is a fixed liveness `"ok"`. That is a contract, not a discarded value.
 - Eligibility vs prepare-error split: only the identical 403 mapping was shared; per-route saved-turn/mapper precedence and divergent lease ownership stay per route (see session-058 section).
 - Android unification (origin resolution): retained on the enumerated edge-semantic differences; APK/device verification is recorded as the cost of future change, not the retention reason.
+
+### Session 059 verification
+
+Targeted runs (all exit 0, tee'd in `temp/test-logs/sim59-targeted-20260928.log`): core lib 182/182, `agent_connection_service`, `live_helper_contracts`, `prompt_input_boundary`, `login`, `remember_login`, `sets`, `sets_auth`, `memory`, `memory_limit`, `reset_chat`, `rate_limit`, `tts`, `tts_backend_boundary`, `tts_sentence_boundaries`, `voice_privacy`, `voice_service_lifecycle`, `finalize_stream_boundary`, `enc_key_auth`, `credential_metadata` 5/5, `chat_renderer_boundary`, `voice_capture_boundary`, `native_vad_speech_like`, `native_audio_wav`, `voice_mode_reliability`, `voice_text_boundary`, `voice_events`, `stream_decoder`, `static_assets`, `home`, `set_privacy`, `privacy_policy`, `generation_dispatch`, `generation_lease_boundary`, `generation_error_ownership`, `prepare_policy_boundary`, `conversation_request_application`, `js_syntax`, `agent_connections`.
+
+Development caught and fixed before the gate: the first targeted run failed to compile — the `history_pair_json` tail block also consumed the removed params and one deeper-indented `history_error_to_tuple` call site survived the bulk rename — plus an unused-import warning from the `with_version` removal; all repaired and re-verified. The `slotIdByHash` deletion tripped its contract pin and was restored with a pin comment instead of editing the test. No existing tests were modified in this session.
+
+Native: physical-flavor debug APK rebuilt for the two Java removals — job `20260928T065654-5851dc7bf798`, exit 0, artifact `temp/sim59-physical-debug.apk` (12,540,322 bytes, SHA256 `310302c491ca6a615f65ce677b75c30f19fbc6990f17ecbca66255648b2d5ea8`). Template change is browser-invisible (a permanently hidden, unreferenced button), covered by `static_assets` + `home`; no preview needed.
+
+Final full suite `temp/test-logs/sim59-full-20260928.log`: job `20260928T065831-b1c27ea1d36c`, exit 0, untruncated, 121 suites ok / 991 passed / 0 failed, including provider configuration checks.

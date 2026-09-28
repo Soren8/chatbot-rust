@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: session 058 — review-driven corrections to the session-057 batches (compose pins, single-owner policy construction, branchless migration rename, three further simplifications) with targeted verification; final full-suite gate pending. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
+Latest resume point: session 059 — completion coverage pass (SIM-009) with per-unit S ledger, review-driven corrections, full green suite plus rebuilt physical APK on `refactor`. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
