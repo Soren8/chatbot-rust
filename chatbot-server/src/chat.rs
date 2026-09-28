@@ -350,11 +350,6 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     let messages = map_core_messages(&prepared.messages);
 
-    let set_name = context.set_name.clone();
-    let prepare_capture = context.prepare_capture.clone();
-    let user_message = payload.message.clone();
-    let encryption_key_for_finalize = encryption_key.clone();
-
     let mut provider_stream = match dispatch_stream(
         &provider,
         &context.provider,
@@ -375,16 +370,16 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
             let assistant = format!("[Error] {req_msg}");
             warn!(
                 error = %req_msg,
-                user_chars = user_message.chars().count(),
+                user_chars = payload.message.chars().count(),
                 insertion_index = None::<usize>,
                 "saving /chat or /regenerate error as assistant turn"
             );
             let _ = lease.complete_chat_outcome(
-                set_name.as_str(),
-                user_message.as_str(),
+                context.set_name.as_str(),
+                payload.message.as_str(),
                 &assistant,
                 encryption_key.as_ref(),
-                prepare_capture.clone(),
+                context.prepare_capture.clone(),
             );
             return Response::builder()
                 .status(StatusCode::OK)
@@ -396,10 +391,10 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         }
     };
 
-    let set_name_for_guard = set_name.clone();
-    let user_message_for_guard = user_message.clone();
-    let enc_for_guard = encryption_key_for_finalize.clone();
-    let capture_for_guard = prepare_capture.clone();
+    let set_name_for_guard = context.set_name.clone();
+    let user_message_for_guard = payload.message.clone();
+    let enc_for_guard = encryption_key.clone();
+    let capture_for_guard = context.prepare_capture.clone();
 
     let stream = stream! {
         let _privacy_permit = privacy_permit;

@@ -276,6 +276,13 @@ impl ConnectionService {
 
     pub fn credentials(&self, user: &str, key: &EncryptionKey, id: Uuid) -> Result<(u64, ConnectionCredentials), ConnectionError> {
         let owner = self.verify(user, key)?;
+        self.credentials_for_owner(&owner, key, id)
+    }
+
+    /// Shared record lookup for an already-verified owner. `verify` is
+    /// idempotent (`normalise_username` is trim + validate), so callers that
+    /// already hold the owner must not re-verify the same key.
+    fn credentials_for_owner(&self, owner: &str, key: &EncryptionKey, id: Uuid) -> Result<(u64, ConnectionCredentials), ConnectionError> {
         let tx = self.0.db.begin_read().map_err(storage)?;
         let table = tx.open_table(RECORDS).map_err(storage)?;
         let value = table.get(id.as_bytes().as_slice()).map_err(storage)?.ok_or(ConnectionError::NotFound)?;
@@ -337,7 +344,7 @@ impl ConnectionService {
     /// A caller must perform policy validation before checking; this observation grants no authorization.
     pub fn record_check(&self, user: &str, key: &EncryptionKey, id: Uuid, expected_revision: u64, status: String, version: Option<String>) -> Result<LastCheck, ConnectionError> {
         let owner = self.verify(user, key)?;
-        let (revision, _) = self.credentials(&owner, key, id)?;
+        let (revision, _) = self.credentials_for_owner(&owner, key, id)?;
         if revision != expected_revision { return Err(ConnectionError::Conflict { current_revision: revision }); }
         if status.len() > 64 || version.as_ref().is_some_and(|v| v.len() > 128) {
             return Err(ConnectionError::InvalidInput);
@@ -351,7 +358,7 @@ impl ConnectionService {
 
     pub fn last_check(&self, user: &str, key: &EncryptionKey, id: Uuid) -> Result<Option<LastCheck>, ConnectionError> {
         let owner = self.verify(user, key)?;
-        let (revision, _) = self.credentials(&owner, key, id)?;
+        let (revision, _) = self.credentials_for_owner(&owner, key, id)?;
         Ok(self.0.checks.lock().unwrap_or_else(|e| e.into_inner()).get(&(owner, id, revision)).cloned())
     }
 }

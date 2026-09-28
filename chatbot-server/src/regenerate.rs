@@ -346,10 +346,6 @@ pub async fn handle_regenerate(
 
     let messages = map_core_messages(&prepared.messages);
 
-    let set_name = context.set_name.clone();
-    let prepare_capture = context.prepare_capture.clone();
-    let encryption_key_for_finalize = encryption_key.clone();
-
     let mut provider_stream = match dispatch_stream(
         &provider,
         &context.provider,
@@ -375,12 +371,12 @@ pub async fn handle_regenerate(
                 "saving /chat or /regenerate error as assistant turn"
             );
             let _ = lease.complete_regenerate_outcome(
-                set_name.as_str(),
+                context.set_name.as_str(),
                 user_message.as_str(),
                 &assistant,
                 insertion_index,
                 encryption_key.as_ref(),
-                prepare_capture.clone(),
+                context.prepare_capture.clone(),
             );
             return Response::builder()
                 .status(StatusCode::OK)
@@ -392,10 +388,10 @@ pub async fn handle_regenerate(
         }
     };
 
-    let set_name_for_guard = set_name.clone();
+    let set_name_for_guard = context.set_name.clone();
     let user_message_for_guard = user_message.clone();
-    let enc_for_guard = encryption_key_for_finalize.clone();
-    let capture_for_guard = prepare_capture.clone();
+    let enc_for_guard = encryption_key.clone();
+    let capture_for_guard = context.prepare_capture.clone();
 
     let stream = stream! {
         let _privacy_permit = privacy_permit;

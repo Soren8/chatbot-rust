@@ -73,22 +73,19 @@
     if (!entries || !entries.length) {
       return [];
     }
-    var mapped = [];
+    var visible = [];
     for (var i = 0; i < entries.length; i++) {
       var entry = entries[i];
       if (!entry || typeof entry.key !== 'string' || !entry.key.startsWith(SLOT_PREFIX) || !entry.value) {
         continue;
       }
-      mapped.push({
+      var mapped = {
         username: entry.key.slice(SLOT_PREFIX.length),
         remembered: entry.value.remembered !== false,
         updatedAt: entry.value.updatedAt || 0
-      });
-    }
-    var visible = [];
-    for (var j = 0; j < mapped.length; j++) {
-      if (isSlotEntryVisible(mapped[j], now)) {
-        visible.push(mapped[j]);
+      };
+      if (isSlotEntryVisible(mapped, now)) {
+        visible.push(mapped);
       }
     }
     visible.sort(function (a, b) { return b.updatedAt - a.updatedAt; });

@@ -17,7 +17,7 @@ pub use api::{HistoryError, HistoryService};
 pub use ops::{
     append_pair, apply_chat_append, apply_regenerate, branch_name_for, dedup_name,
     delete_pair, derive_chat_name_from_message, is_auto_placeholder_name, page_history, rename,
-    reset_history, update_memory, update_system_prompt, with_version, HistoryPage, OpsError,
+    reset_history, update_memory, update_system_prompt, HistoryPage, OpsError,
     AUTO_NEW_CHAT_PREFIX, DEFAULT_HISTORY_PAGE_SIZE, MAX_AUTO_NAME_CHARS, MAX_HISTORY_PAGE_SIZE,
 };
 pub use types::{

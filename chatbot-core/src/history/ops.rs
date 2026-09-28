@@ -338,12 +338,6 @@ pub fn apply_chat_append(
     })
 }
 
-/// Stamp a new version after a successful pure op (store layer also does this).
-pub fn with_version(mut snapshot: SetSnapshot, version: SetVersion) -> SetSnapshot {
-    snapshot.version = version;
-    snapshot
-}
-
 /// Default number of most-recent pairs returned by `/load_set` when the client
 /// asks for a page (not applied unless `limit` is present).
 pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 40;
