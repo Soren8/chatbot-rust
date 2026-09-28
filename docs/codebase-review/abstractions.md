@@ -2,9 +2,9 @@
 
 Scope (user-authorized): fresh repository-wide inventory, moderate bounded fixes with zero behavior change. Deferred items (COR-003, Auto protocol repair, legacy key export) stay out unless the duplication itself is in the touched code. Each batch carries targeted verification plus a final full green suite.
 
-## Phase 3 closure (sessions 063–072) — ready for review
+## Phase 3 closure (sessions 063–073) — ready for review
 
-Full reads now cover every handwritten unit (sessions 068 + 070 + 072 below give per-file line ranges; no skim stands without a recorded follow-up). The A column uses R where every owned file received a full abstraction read, P with exact scope elsewhere; R does not mean issue-free.
+Full reads now cover every handwritten unit (sessions 068 + 070 + 072 + 073 below give per-file line ranges; no skim stands without a recorded follow-up). The A column uses R where every owned file received a full abstraction read, P with exact scope elsewhere; R does not mean issue-free. S01 stays P: handler finalizer bodies past the visible windows and chat's context-resolution completion were not verified — recorded below rather than claimed.
 
 Implemented (all zero-behavior-change, targeted-green): ABS-001 DNS filtering + preflight; ABS-002 prepare-error + mutation-error mappers; ABS-003 media AAD + snapshot assembly + first-turn naming (2 new assertions); ABS-004 OpenAI setup + CSRF builder + base64 decoder; ABS-005 image-edit skeleton + constant-time-eq centralization (1 new direct test); ABS-006 page-response builder + agent guard prefixes + request-context fallback sharing; ABS-007 Kokoro warmup sharing (1 new characterization test); ABS-008 login-notice setter + desktop retry-decision sharing (1 new Node characterization target) and Android origin delegation with a javac-executed behavior fixture plus migrated guard assertions.
 
@@ -121,6 +121,15 @@ Five read-only workers reviewed every section the ledger still showed as untouch
 - S01/S04: `forward_provider_stream` shared loop (regenerate keeps its `(regenerate)` error log via flag; both keep owned finalizers); `saved_provider_error_response` shared construction (chat persists via append with `None` index, regenerate via replace at its captured index); xAI `with_fake_key` preserving live-env vs explicit-key timing. Verified: lease 8/8, dispatch 15/15, finalize 5/5, error-ownership 4/4, isolation 23/23. S03 (sets/preferences/reset fully read, retains recorded) advances to R; S01/S04 stay P with the extended scope below.
 - W05: `conversation-state.js` shares the binding predicate (sequence check + public APIs intact); `credential-metadata.js` listing reuses the slot-key helpers (value check + defaults intact). Existing harnesses covered both (binding 1/1, state 11/11, metadata 6/6, `js_syntax` 11/11) — no new tests needed. W05 A advances to R.
 - N01 (all files fully read): retains recorded with cross-file dispositions (credential-clearing preserves session vs switch purges it; biometric resume vs credential unlock; log caps on opposite sides of the trust boundary). N01 A advances to R.
+
+## Session 073 — reconciliation round (read-only, no new batches), 2026-09-28
+
+Three read-only workers closed the exact remainders named in the review; no production code changed in this session. New candidates are recorded as backlog with prerequisites — not implemented, per the review's own guidance that coverage (not more refactors) closes the gate.
+
+- S01 remainder (`chat_utils.rs` full; handler windows partial): error-response/stream/guard/finalizer sharing already done. New narrow candidates all lack verified covering tests in scope and stay unimplemented: `error_as_saved_chat_turn_with_service:218–225` response-builder block, request-field struct (`chat.rs:33–52` vs `regenerate.rs:33–54`), common request prelude (`chat.rs:118–150` vs `regenerate.rs:56–95`). Unseen: finalizer bodies past `chat.rs:370` / `regenerate.rs:350`, chat context-resolution completion past line 150 — S01 stays P with this exact scope.
+- S04 (`brave.rs` full read): DTOs, client constructors, request/error/rendering, and key-entry points all retained (owned-vs-live ordering, distinct behaviors). S04 A advances to R.
+- W02/W03 (`enc-key.js:1–547`, `native-audio.js:1–837`, `tt.js`, `native-bridge.js` confirmed full reads): new backlog candidates, each needing focused coverage first — native `clearKey` blocks (`enc-key.js:291–302`, `481–491`), encoder frame-feeding (`native-audio.js:342–400` vs `558–628`), success-log assembly (`:689–697`). tt.js policies and bridge fallbacks confirmed as intentional boundaries. W02/W03 A advance to R.
+- G01/R01 (all owned files fully read): new backlog candidates with existing covering tests noted but deliberately not batched — ticker loop (`background.rs:6–61`), 500-tuple builders (`http_error.rs:70–86,127–156,166–196`, preserving the conflict-body `"message"` difference at `:137–143` vs `:227–234`), route validation/headers (`main.py:90–138`), join loop (`service.py:358–385`), admission cleanup (`service.py:402–445`). Retains: settings/audio-utils/lifespan/readiness duties, startup/router/middleware boundaries, fixture roles. G01/R01 A advance to R.
 
 ## Session 064 — ABS-001 implementation, 2026-09-28
 
