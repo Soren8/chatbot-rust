@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: session 056 — review fixes complete with a full green suite on `refactor`. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
+Latest resume point: session 058 — review-driven corrections to the session-057 batches (compose pins, single-owner policy construction, branchless migration rename, three further simplifications) with targeted verification; final full-suite gate pending. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 implementation (SIM-001/002/003 plus review fixes) is complete with a full green executor run on the final tree (session 056); the phase-completion review itself remains open. Phases 3–7 have not started.**
+Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 has completed batches SIM-001 through SIM-007 plus review fixes, each with a full green executor run on its final tree (sessions 056–057); the repository-wide simplicity coverage and the phase-completion review itself remain open. Phases 3–7 have not started.**
 
 ## Session 054 — primary review and expanded simplicity scope, 2026-09-26
 

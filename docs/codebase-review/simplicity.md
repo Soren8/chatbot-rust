@@ -105,15 +105,38 @@ Final full suite `temp/test-logs/sim57-full-20260928.log`: job `20260928T054654-
 - `.github/workflows/docker-build-push.yml:58-60` — `Get short SHA` step output has no consumer; `Prepare tags` recomputes the same SHA. Bounded: remove the unused step. Coverage: workflow execution. High.
 - `deploy/compose/docker-compose.dev.override.yml:6-11` — dev override restates `RUST_BUILD_PROFILE: debug`, `LOG_FORMAT: plain`, `LOG_ANSI: true` already defaulted in `docker-compose.yml:47,85-86`. Bounded: drop only the redundant keys; keep `LOG_LEVEL`/purge-interval. Coverage: compose review. High.
 
-### Investigated, no change approved
+### Deferred candidates resolved (session 058)
 
-- `chat.rs`/`regenerate.rs` privacy-binding + generation-eligibility duplication (two-handler shared extraction): real duplication, but touches prepare-error precedence and lease ownership across both dispatch callers; needs deeper tracing than a simplicity batch allows. Deferred with no change.
-- `chat.rs`/`regenerate.rs` stream-setup clones for finalization/guard: ownership/drop interaction unproven; deferred.
-- `agent_connections.rs` double `verify` via `credentials`: needs concurrent-revision tracing; deferred.
-- `credential-metadata.js` multi-pass filter: correct but algorithmic rewrite for marginal clarity; deferred.
-- `static/templates/chat.html:78-83` desktop/mobile tier spans: responsive-visibility duplication is intentional; single-label rework needs visual preview for marginal gain; deferred.
-- Android URL resolution + `ServerUrlSetting.executeSwitch` purge indirection + voice `start.sh`/`settings.py` dual parsing: need runtime/exception tracing and flavor APK builds; deferred (no native changes this pass, no APK required).
-- `memory_snippet`/`with_version` (no production consumers found), `session.rs` compat surface, home/login CSRF probe ordering: public/compat contract assessment incomplete; no deletion without consumer-by-consumer case.
+Each item below was traced to its callers and resolved into bounded work (implemented) or retention with evidence. No open "needs tracing" items remain from the session-057 inventory.
+
+**Implemented in session 058.**
+- `agent_connections.rs:277-360` — `record_check`/`last_check` verified the key, then `credentials()` verified the same key again (`verify` is idempotent: `names::normalise_username` is trim + regex-validate, `names.rs:28-37`; no await intervenes). Added private `credentials_for_owner` holding the table lookup; `credentials` verifies then delegates; both check paths verify once. Characterization: `agent_connection_service.rs`, server `agent_connections.rs`.
+- `chat.rs:351-402` / `regenerate.rs:349-398` — finalize inputs were cloned before dispatch and cloned again for the completion guard; the setup-error arm is the only other consumer. The error arm now borrows `context`/`payload` directly (matching the pre-existing direct borrows at `chat.rs:325,329` / `regenerate.rs:311,316`); guard clones are unchanged. Characterization: `generation_lease_boundary.rs`, `generation_error_ownership.rs`, `finalize_stream_boundary.rs`.
+- `credential-metadata.js:71-99` — `filterCachedAccounts` mapped, filtered, then extracted usernames in three passes. Single pass mapping + filtering before the retained sort/extract. Characterization: `credential_metadata_test.js`.
+- `history/ops.rs:341-345` — removed zero-caller `with_version` (repo-wide grep: definition + re-export only; its documented purpose "store layer also does this" is covered) and its `history/mod.rs` re-export.
+
+**Retained with evidence.**
+- `chat.rs:216-300` / `regenerate.rs:199-283` prepare-error mapping + eligibility: the arms encode per-route error→HTTP precedence phase one keeps explicit per route; exactly two call sites; downstream lease ownership diverges (`complete_chat_outcome` vs `complete_regenerate_outcome` + `insertion_index`). A shared helper needs a new error enum plus per-site mapping — more indirection than the ~85 duplicated lines save.
+- `chat.rs:151-176` / `regenerate.rs:150-175` privacy binding: identical today, but the saved-turn early-return shape (`Response` vs `HttpError`) forces a callback or error-enum parameter on any shared helper; retained per the same two-caller rule.
+- `chat.html:78-83` tier spans: `ms-auto` (desktop) vs `ms-2` (mobile) margins differ per breakpoint; one element needs custom CSS to reproduce both, a visual change requiring preview for zero functional gain.
+- Android origin resolution (`MainActivity.java:223-236`, `NativeSecureKeyPlugin.java:122-135`, `VoiceScreen.java:88-99`, `ClientLogReporter.java:48-93`): the four sites differ semantically — `resolveCanonical` vs `normalizeResource`, `Exception` vs `Throwable` vs `RuntimeException` catches, `FALLBACK_URL` vs `null` returns (the reporter's null keeps its init gate disabled), per-request vs cached timing. Unifying through `store.selected()` changes those edge behaviors; native changes additionally require flavor APK builds unavailable to this pass.
+- `ServerUrlSetting.executeSwitch` purge indirection: the Android async path (`ServerUrlSettingStore.java:155+`) reuses the pure policy ordering covered by `ServerSettingBehaviorTest`; collapsing the boundary untests that mapping.
+- `chatbot-cuda/start.sh:10-29` vs `settings.py`: the shell parse runs before uvicorn exists — it sets `CUDA_VISIBLE_DEVICES` for CUDA init and decides model prefetch — while `settings.py` resolves inside the FastAPI lifespan; failure policies differ (shell defaults and proceeds, lifespan propagates). Phase separation, not duplication.
+- `memory_snippet` (`chat.rs:222` consumer): retained — the session-057 "no consumer" note was wrong, verified by grep.
+- `session.rs` compat delegates + home/login CSRF probes: dual constructors (`build_router` lazy-global vs `build_router_with_services`) are the explicitly retained migration path (`design.md` composition notes); probe routes have distinct session-issuance side effects covered by `router_identity_isolation.rs`.
 - COR-003, Auto protocol repair, native key export, security/performance-only items: retain existing deferrals.
 
 Exclusions: `static/deps/*` (vendored), generated/vendor/binary, `node_modules/`, `target/`, `temp/`, `data/`, `.git/` — boundary-only or uninspected as noted per worker.
+
+## Session 058 — review-driven corrections, 2026-09-28
+
+Addresses the four findings from the independent review of the session-057 batches; no new inventory workers, primary-traced only.
+
+- **Dev compose pins restored.** The SIM-007 override cleanup changed behavior under non-default environments (`${VAR:-default}` falls through to exported values). `docker-compose.dev.override.yml` again pins `RUST_BUILD_PROFILE: debug`, `LOG_FORMAT: plain`, `LOG_ANSI: "true"` with comments stating the pinning intent. Merged-config equivalence is verified by a YAML merge check with hostile environment values (below).
+- **Branchless migration rename.** `rename_legacy_sets_json` now uses `sets_path.with_file_name(MIGRATED_BAK_FILENAME)` — no parent lookup, no fallback, no new panic path; rename failure keeps the existing warn-and-continue.
+- **Single-owner policy construction.** `DestinationPolicy::from_providers` delegates to a private `from_name_levels` iterator constructor; the global `ConfigSource::destination_policy` path builds through the same owner with borrowed providers (no full-config clones, no mapping drift).
+- **Deferred items resolved** as recorded in the section above (three further simplifications implemented, `with_version` deleted, remainder retained with caller evidence).
+
+### Session 058 verification
+
+Targeted (all exit 0): core lib (covers `with_version` removal, `credentials_for_owner`, policy refactor, migration rename); `agent_connections` + `agent_connection_service`; `generation_lease_boundary`, `generation_error_ownership`, `finalize_stream_boundary` (stream-clone rework); `credential_metadata` + `js_syntax` (single-pass filter); compose merge check with `RUST_BUILD_PROFILE=release`, `LOG_FORMAT=json`, `LOG_ANSI=false` asserting dev pins win. Final full suite `temp/test-logs/sim58-full-*.log` (job, exit 0, untruncated) follows. No Android changes (no APK); no template/visual changes (no preview).
