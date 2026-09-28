@@ -2,7 +2,7 @@
 //!
 //! All durable mutations should: load → pure op → CAS commit.
 
-use super::types::{HistoryPair, PrepareCapture, SetSnapshot, SetVersion};
+use super::types::{HistoryPair, PrepareCapture, SetSnapshot};
 
 /// Maximum number of (user, assistant) pairs stored in one set.
 pub const MAX_HISTORY_PAIRS: usize = 2_000;
@@ -392,7 +392,7 @@ pub fn page_history(total: usize, limit: Option<usize>, before: Option<usize>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::types::SetId;
+    use crate::history::types::{SetId, SetVersion};
 
     fn sample() -> SetSnapshot {
         let mut s = SetSnapshot::empty(SetId::new(), "default", "You are helpful.", true);

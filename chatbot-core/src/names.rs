@@ -56,9 +56,9 @@ fn normalise_set_name_inner(set_name: &str, allow_default: bool) -> Result<Strin
         trimmed.to_string()
     };
 
+    // `SET_NAME_RE` admits only letters, digits, space, `_`, `-`: the
+    // dotfiles below cannot match it, so no explicit checks are needed.
     if (!allow_default && candidate == DEFAULT_SET_NAME)
-        || candidate == "."
-        || candidate == ".."
         || !SET_NAME_RE.is_match(&candidate)
     {
         return Err(SetNameError::Invalid);

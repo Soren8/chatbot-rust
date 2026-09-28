@@ -98,7 +98,7 @@ pub(super) async fn synthesize_pcm(
     // The endpoint is resolved fresh on each call.
     let tts_base_url = policy.tts_base_url();
     // We use the non-streaming endpoint to get the full bytes so we can apply a fade
-    let response = match post_backend("/api/tts", &backend_request, tts_base_url).await {
+    let response = match post_backend(&backend_request, tts_base_url).await {
         Ok(response) => response,
         Err(err) => {
             error!(?err, "failed to reach TTS backend for /tts_stream");
@@ -258,12 +258,11 @@ async fn handle_kokoro_tts(
 }
 
 async fn post_backend(
-    path: &str,
     payload: &BackendRequest,
     tts_base_url: String,
 ) -> Result<reqwest::Response, HttpError> {
     let base = tts_base_url.trim_end_matches('/');
-    let url = format!("{base}{path}");
+    let url = format!("{base}/api/tts");
 
     HTTP_CLIENT
         .post(url)

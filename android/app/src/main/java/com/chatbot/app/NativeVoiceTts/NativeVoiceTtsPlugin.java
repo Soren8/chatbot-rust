@@ -861,14 +861,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
         notifyListeners("playbackState", ret);
     }
 
-    private void notifyError(String message, long generation) {
-        JSObject ret = new JSObject();
-        ret.put("type", "error");
-        ret.put("message", message);
-        ret.put("generation", generation);
-        notifyListeners("playbackState", ret);
-    }
-
     @Override
     protected void handleOnDestroy() {
         if (instance == this) {

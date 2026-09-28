@@ -12,7 +12,6 @@ services:
       LOG_FORMAT: json
       LOG_ANSI: "false"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      SESSION_PURGE_INTERVAL_SECS: ${SESSION_PURGE_INTERVAL_SECS:-300}
     depends_on:
       voice-service:
         condition: service_healthy

@@ -181,20 +181,24 @@ pub fn prepare_prompt_messages(
         .floor()
         .max(0.0) as usize;
 
-    let history_processed: Vec<(String, String)> = if input.send_thoughts {
-        input.history.to_vec()
+    // Strip think tags only when the model must not see them; otherwise
+    // borrow the caller's history slice directly with no copy.
+    let stripped_history: Vec<(String, String)>;
+    let history_view: &[(String, String)] = if input.send_thoughts {
+        input.history
     } else {
-        input
+        stripped_history = input
             .history
             .iter()
             .map(|(u, a)| (u.clone(), strip_think_tags(a)))
-            .collect()
+            .collect();
+        &stripped_history
     };
 
     // Full-res image slots: newest content first (new turn, then history newest→oldest).
     let mut full_slots = MAX_FULL_RES_IMAGES;
     reserve_full_image_slots(new_user_message, &mut full_slots);
-    let history_images = prepare_history_images(&history_processed, &mut full_slots);
+    let history_images = prepare_history_images(history_view, &mut full_slots);
 
     let truncated_history = truncate_history(&history_images, history_budget);
 

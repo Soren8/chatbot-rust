@@ -113,11 +113,7 @@
 
       var body = doc.createElement('span');
       body.className = 'user-message-body';
-      var lines = String(text == null ? '' : text).split('\n');
-      for (var i = 0; i < lines.length; i++) {
-        if (i > 0) body.appendChild(doc.createElement('br'));
-        body.appendChild(doc.createTextNode(lines[i]));
-      }
+      appendPlainTextWithBreaks(body, text);
       span.appendChild(body);
 
       var safeSrc = sanitizeDataImageSrc(imageSrc) || sanitizeLightboxSrc(imageSrc);

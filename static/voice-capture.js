@@ -79,7 +79,7 @@ NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtter
     this.nonSpeechLikeCount = 0;
     if (this.speechAboveCount >= host.nativeAudio.SPEECH_START_FRAMES) {
       host.log('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
-      this._beginUtterance(skipPreRoll);
+      this._beginUtterance();
       return true;
     }
   } else if (rms > host.nativeAudio.SPEECH_RMS_THRESHOLD) {
@@ -191,7 +191,7 @@ NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16) {
 };
 
 /** Start recording. Barge-in is _maybeBargeIn, not here. */
-NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance(skipPreRoll) {
+NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance() {
   var host = this._host;
   if (this.inSpeech) return;
   this.inSpeech = true;

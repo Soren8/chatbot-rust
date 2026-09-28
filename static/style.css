@@ -327,19 +327,6 @@
     max-width: 90%;
 }
 
-/* Tier badge styling */
-.tier-badge {
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 0.9em;
-}
-.tier-badge.premium {
-    background-color: #2c5e50;
-}
-.tier-badge.free {
-    background-color: #4a4a4a;
-}
-
 /* Center the navbar brand while keeping left/right controls visible */
 .navbar-brand-center {
     position: absolute;

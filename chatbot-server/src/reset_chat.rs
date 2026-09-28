@@ -3,10 +3,11 @@ use axum::{
     body::Body,
     http::{header, Request, Response, StatusCode},
 };
-use chatbot_core::history::{self, HistoryError, SetVersion};
+use chatbot_core::history::{self, SetVersion};
 use chatbot_core::session::MutationMirrorError;
 use serde::Deserialize;
 use serde_json::json;
+use crate::chat_utils::history_error_to_http;
 use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_session_err, map_session_operation_err, HttpError,
@@ -149,8 +150,4 @@ fn build_json_response(
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(payload.to_string()))
         .map_err(|err| map_response_build_err(err, "reset_chat::post::response"))
-}
-
-fn history_error_to_http(err: HistoryError) -> HttpError {
-    crate::chat_utils::history_error_to_http(err)
 }

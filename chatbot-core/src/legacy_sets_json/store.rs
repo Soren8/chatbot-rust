@@ -175,7 +175,7 @@ impl LegacySetsStore {
 
         let mut is_plaintext = false;
         let contents = match encryption.as_ref() {
-            Some(mode @ EncryptionMode::Fernet(_)) => match self.decrypt(&bytes, mode.borrow()) {
+            Some(mode @ EncryptionMode::Fernet(_)) => match self.decrypt(&bytes, *mode) {
                 Ok(decrypted) => decrypted,
                 Err(PersistenceError::DecryptionFailed) => {
                     let lossy = String::from_utf8_lossy(&bytes);
@@ -247,7 +247,7 @@ impl LegacySetsStore {
 
         let file_encryption = if encrypted {
             encryption
-                .map(|m| m.borrow())
+                .copied()
                 .ok_or(PersistenceError::MissingEncryptionKey)?
         } else {
             EncryptionMode::Plaintext
@@ -256,7 +256,7 @@ impl LegacySetsStore {
         let memory = if memory_path.exists() {
             let bytes = fs::read(&memory_path)?;
             migrated_files.push(memory_path);
-            self.decrypt(&bytes, file_encryption.borrow())?
+            self.decrypt(&bytes, file_encryption)?
         } else {
             String::new()
         };
@@ -264,7 +264,7 @@ impl LegacySetsStore {
         let prompt = if prompt_path.exists() {
             let bytes = fs::read(&prompt_path)?;
             migrated_files.push(prompt_path);
-            self.decrypt(&bytes, file_encryption.borrow())?
+            self.decrypt(&bytes, file_encryption)?
         } else {
             self.default_system_prompt.clone()
         };
@@ -272,7 +272,7 @@ impl LegacySetsStore {
         let history = if history_path.exists() {
             let bytes = fs::read(&history_path)?;
             migrated_files.push(history_path);
-            let decrypted = self.decrypt(&bytes, file_encryption.borrow())?;
+            let decrypted = self.decrypt(&bytes, file_encryption)?;
             LegacySetsStore::parse_history(&decrypted)?
         } else {
             Vec::new()
@@ -571,18 +571,5 @@ impl LegacySetsStore {
             }
         }
         Ok(pairs)
-    }
-}
-
-trait BorrowMode<'a> {
-    fn borrow(&'a self) -> EncryptionMode<'a>;
-}
-
-impl<'a> BorrowMode<'a> for EncryptionMode<'a> {
-    fn borrow(&'a self) -> EncryptionMode<'a> {
-        match self {
-            EncryptionMode::Plaintext => EncryptionMode::Plaintext,
-            EncryptionMode::Fernet(key) => EncryptionMode::Fernet(key),
-        }
     }
 }

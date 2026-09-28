@@ -321,22 +321,27 @@
     return (samples ? samples.length : 0) * 2;
   }
 
+  /** Shared sample-to-float32 conversion for the WebCodecs encoders. */
+  function toFloat32Samples(samples) {
+    if (samples instanceof Float32Array) {
+      return samples;
+    }
+    if (samples instanceof Int16Array) {
+      const f32 = new Float32Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        f32[i] = samples[i] < 0 ? samples[i] / 32768 : samples[i] / 32767;
+      }
+      return f32;
+    }
+    return new Float32Array(samples);
+  }
+
   /**
    * Encode PCM audio samples using WebCodecs AudioEncoder into ADTS AAC.
    */
   function encodeAacAdts(samples, sampleRate, aacConfig) {
     return new Promise(function (resolve, reject) {
-      let f32;
-      if (samples instanceof Float32Array) {
-        f32 = samples;
-      } else if (samples instanceof Int16Array) {
-        f32 = new Float32Array(samples.length);
-        for (let i = 0; i < samples.length; i++) {
-          f32[i] = samples[i] < 0 ? samples[i] / 32768 : samples[i] / 32767;
-        }
-      } else {
-        f32 = new Float32Array(samples);
-      }
+      const f32 = toFloat32Samples(samples);
 
       const chunks = [];
       const encoder = new AudioEncoder({
@@ -552,17 +557,7 @@
    */
   function encodeOpusOgg(samples, sampleRate, opusConfig) {
     return new Promise(function (resolve, reject) {
-      let f32;
-      if (samples instanceof Float32Array) {
-        f32 = samples;
-      } else if (samples instanceof Int16Array) {
-        f32 = new Float32Array(samples.length);
-        for (let i = 0; i < samples.length; i++) {
-          f32[i] = samples[i] < 0 ? samples[i] / 32768 : samples[i] / 32767;
-        }
-      } else {
-        f32 = new Float32Array(samples);
-      }
+      const f32 = toFloat32Samples(samples);
 
       const packets = [];
       const encoder = new AudioEncoder({

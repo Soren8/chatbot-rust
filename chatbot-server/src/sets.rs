@@ -10,6 +10,7 @@ use chatbot_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use crate::chat_utils::history_error_to_http;
 use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
@@ -660,7 +661,7 @@ pub async fn handle_history_pair(
     }
 
     let guest_history = chat.session_history(&data_context.session().session_id);
-    history_pair_json(&guest_history, pair_index, payload.image_index, None, None)
+    history_pair_json(&guest_history, pair_index, payload.image_index)
 }
 
 /// GET a stored attachment as a real image so the browser/WebView HTTP cache
@@ -755,8 +756,6 @@ fn history_pair_json(
     history: &[(String, String)],
     pair_index: usize,
     image_index: Option<usize>,
-    set_id: Option<String>,
-    version: Option<u64>,
 ) -> Result<Response<Body>, HttpError> {
     if pair_index >= history.len() {
         return build_json_response(
@@ -776,8 +775,8 @@ fn history_pair_json(
         return build_json_response(
             StatusCode::OK,
             json!({
-                "set_id": set_id,
-                "version": version,
+                "set_id": null,
+                "version": null,
                 "pair_index": pair_index,
                 "image_src": image_src,
             }),
@@ -786,8 +785,8 @@ fn history_pair_json(
     build_json_response(
         StatusCode::OK,
         json!({
-            "set_id": set_id,
-            "version": version,
+            "set_id": null,
+            "version": null,
             "pair_index": pair_index,
             "user": user,
             "assistant": assistant,
@@ -941,10 +940,6 @@ fn validate_csrf(
     }
 
     Ok(())
-}
-
-fn history_error_to_http(err: HistoryError) -> HttpError {
-    crate::chat_utils::history_error_to_http(err)
 }
 
 fn build_json_response(

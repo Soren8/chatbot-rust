@@ -123,18 +123,15 @@ pub async fn handle_login_post(
         return invalid_credentials();
     }
 
-    let encryption_key = if let Some(key) = storage_key {
-        if key.is_empty() {
+    // An absent or empty storage key means the same thing: derive it from
+    // the password. Only a non-empty supplied key is used as-is.
+    let encryption_key = match storage_key {
+        Some(key) if !key.is_empty() => key.as_bytes().to_vec(),
+        _ => {
             store
                 .derive_encryption_key(&username, password)
                 .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?
-        } else {
-            key.as_bytes().to_vec()
         }
-    } else {
-        store
-            .derive_encryption_key(&username, password)
-            .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?
     };
 
     store

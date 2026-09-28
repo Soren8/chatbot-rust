@@ -43,8 +43,7 @@ fn client_key(request: &Request<Body>, services: &AppServices) -> String {
 }
 
 pub async fn middleware(request: Request<Body>, next: Next) -> Response {
-    let path = request.uri().path().to_owned();
-    if !path_is_limited(&path) {
+    if !path_is_limited(request.uri().path()) {
         return next.run(request).await;
     }
 

@@ -6,6 +6,7 @@ use chatbot_core::history::{self, HistoryError, SetVersion};
 use chatbot_core::session::MutationMirrorError;
 use serde::Deserialize;
 use serde_json::json;
+use crate::chat_utils::history_error_to_http;
 use crate::http_error::{
     api_error, map_body_read_err, map_encryption_key_validation_err, map_json_parse_err,
     map_response_build_err, map_serialization_err, map_session_err, map_session_operation_err,
@@ -152,7 +153,7 @@ pub async fn handle_update_memory(
                 StatusCode::CONFLICT,
                 crate::chat_utils::version_conflict_json(set_id, current_version),
             ),
-            Err(MutationMirrorError::History(err)) => Err(history_error_to_tuple(err)),
+            Err(MutationMirrorError::History(err)) => Err(history_error_to_http(err)),
             Err(MutationMirrorError::Mirror(err)) => Err(map_session_operation_err(&err)),
         }
     } else {
@@ -255,7 +256,7 @@ pub async fn handle_update_system_prompt(
                 StatusCode::CONFLICT,
                 crate::chat_utils::version_conflict_json(set_id, current_version),
             ),
-            Err(MutationMirrorError::History(err)) => Err(history_error_to_tuple(err)),
+            Err(MutationMirrorError::History(err)) => Err(history_error_to_http(err)),
             Err(MutationMirrorError::Mirror(err)) => Err(map_session_operation_err(&err)),
         }
     } else {
@@ -389,7 +390,7 @@ pub async fn handle_delete_message(
                 );
             }
             Err(MutationMirrorError::History(err)) => {
-                return Err(history_error_to_tuple(err));
+                return Err(history_error_to_http(err));
             }
             Err(MutationMirrorError::Mirror(err)) => {
                 return Err(map_session_operation_err(&err));
@@ -438,10 +439,6 @@ fn validate_csrf(
     }
 
     Ok(())
-}
-
-fn history_error_to_tuple(err: HistoryError) -> HttpError {
-    crate::chat_utils::history_error_to_http(err)
 }
 
 fn map_name_err(err: chatbot_core::history::SetNameError) -> HttpError {

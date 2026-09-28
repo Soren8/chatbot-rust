@@ -507,10 +507,9 @@ pub(super) fn sanitize_text(input: &str) -> String {
     // suffixes, and dotted numbers like 12.6 ("twelve point six")
     let expanded = expand_speech_numbers(&with_abbreviations);
 
-    // Collapse multiple spaces into one
-    let collapsed = expanded.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    let result = collapsed.trim().to_string();
+    // Collapse multiple spaces into one. `split_whitespace` already drops
+    // leading/trailing runs, so the join needs no further trim.
+    let result = expanded.split_whitespace().collect::<Vec<_>>().join(" ");
     debug!(result_preview = ?result.get(..100.min(result.len())), "sanitize_text: final result");
     if !result.chars().any(|c| c.is_alphanumeric()) {
         return String::new();
