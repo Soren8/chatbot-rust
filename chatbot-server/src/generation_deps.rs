@@ -193,13 +193,10 @@ impl GenerationDeps {
         user_tier: &str,
     ) -> Option<Vec<ProviderSummary>> {
         let owned = self.owned.as_ref()?;
-        let mut names: Vec<&String> = owned.providers.keys().collect();
-        names.sort();
+        let mut entries: Vec<_> = owned.providers.iter().collect();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
         let mut out = Vec::new();
-        for name in names {
-            let Some(provider) = owned.providers.get(name) else {
-                continue;
-            };
+        for (_, provider) in entries {
             let tier = provider
                 .tier
                 .clone()

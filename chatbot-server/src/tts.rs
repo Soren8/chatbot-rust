@@ -282,7 +282,7 @@ pub async fn handle_tts_stream(
     // Snapshot the binding without holding the token-map lock across await,
     // then acquire the set permit before arbitrating generation.
     let snapshot = services.pending_tts().snapshot(&token);
-    let Some((binding, captured)) = snapshot else {
+    let Some(binding) = snapshot else {
         debug!("invalid or expired TTS token");
         return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
     };
@@ -296,17 +296,18 @@ pub async fn handle_tts_stream(
         TtsBinding::LegacyPrivate { .. } | TtsBinding::Guest => None,
     };
 
-    let (cleaned, cached_audio, lease, admitted_binding, admitted_destination) =
+    let (cleaned, lease, admitted_binding, admitted_destination) =
         match services.pending_tts().begin(&token) {
             BeginOutcome::Cached(audio) => {
-                (String::new(), Some(audio), None, binding, captured)
+                // Cached clips involve no new upstream send.
+                return build_tts_audio_response(audio);
             }
             BeginOutcome::Begin {
                 text,
                 binding,
                 destination,
                 lease,
-            } => (text, None, Some(lease), binding, destination),
+            } => (text, lease, binding, destination),
             BeginOutcome::Busy => {
                 return Err(api_error(
                     StatusCode::TOO_MANY_REQUESTS,
@@ -321,13 +322,6 @@ pub async fn handle_tts_stream(
                 return Err(api_error(StatusCode::NOT_FOUND, "Invalid or expired token"));
             }
         };
-
-    if let Some(audio) = cached_audio {
-        // Cached clips involve no new upstream send.
-        return build_tts_audio_response(audio);
-    }
-
-    let lease = lease.expect("begin without cached audio yields a generation lease");
 
     // Revalidate the captured destination against current config and policy.
     // A mode change invalidates queued tokens, so a surviving token must

@@ -144,14 +144,13 @@ impl PendingTtsStore {
         )
     }
 
-    /// Snapshot a token's binding and destination without arbitrating
-    /// generation. Callers acquire the set permit after this snapshot and
-    /// then call [`begin`](Self::begin), which re-checks existence.
-    pub(crate) fn snapshot(&self, token: &str) -> Option<(TtsBinding, TtsDestination)> {
+    /// Snapshot a token's binding without arbitrating generation. Callers
+    /// acquire the set permit after this snapshot and then call
+    /// [`begin`](Self::begin), which re-checks existence.
+    pub(crate) fn snapshot(&self, token: &str) -> Option<TtsBinding> {
         let mut map = self.map.write().expect("tts lock");
         prune_pending_tts(&mut map);
-        map.get(token)
-            .map(|pending| (pending.binding.clone(), pending.destination.clone()))
+        map.get(token).map(|pending| pending.binding.clone())
     }
 
     /// Remove all pending/cached tokens bound to one owned set. Called while

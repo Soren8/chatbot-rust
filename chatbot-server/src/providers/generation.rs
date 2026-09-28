@@ -159,7 +159,7 @@ pub async fn dispatch_stream(
                     }
                 }
             } else {
-                openai_provider.stream_chat(messages.clone())
+                openai_provider.stream_chat(messages)
             }
         }
         GenerationProvider::Xai(xai_provider) => {
