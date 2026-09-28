@@ -1,10 +1,10 @@
 # Codebase review program
 
-Latest resume point: sessions 063–067 — Phase 3 abstractions review (fresh repo-wide duplication inventory plus bounded batches ABS-001–004) ready for review on `refactor`. See [abstractions.md](abstractions.md). Earlier checkpoints record their original scope and status.
+Latest resume point: sessions 063–069 — Phase 3 abstractions review (repo-wide duplication outcomes for every handwritten unit plus bounded batches ABS-001–007) ready for review on `refactor`. See [abstractions.md](abstractions.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
-Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 has completed batches SIM-001 through SIM-012 plus review fixes, each with a full green executor run on its final tree (sessions 056–057, 060–062); the repository-wide simplicity coverage is now closed per the session-062 ledger (C01/N03 advanced to R), and this record awaits the larger-model phase-completion re-review verdict. Phase 3 has completed its fresh duplication inventory plus bounded batches ABS-001 through ABS-004 with targeted green gates (sessions 063–067); the final full-suite gate and this record's phase-3 verdict are pending. Phases 4–7 have not started.**
+Current remediation count: forty-seven batches through session 051, plus the session-053 simplicity batch below. **Phase one is complete for the authorized modularity scope following session 052. Phase 2 is complete per the larger-model phase-completion verdict on `refactor@40ac92f` (batches SIM-001 through SIM-012 plus review fixes, repository-wide simplicity coverage closed). Phase 3 has recorded repo-wide duplication outcomes for every handwritten unit plus bounded batches ABS-001 through ABS-007 with targeted green gates (sessions 063–069); the final full-suite gate on the closing tree is recorded in [abstractions.md](abstractions.md), and this record awaits the larger-model phase-3 verdict. Phases 4–7 have not started.**
 
 ## Session 054 — primary review and expanded simplicity scope, 2026-09-26
 

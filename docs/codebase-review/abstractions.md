@@ -2,15 +2,15 @@
 
 Scope (user-authorized): fresh repository-wide inventory, moderate bounded fixes with zero behavior change. Deferred items (COR-003, Auto protocol repair, legacy key export) stay out unless the duplication itself is in the touched code. Each batch carries targeted verification plus a final full green suite.
 
-## Phase 3 closure (sessions 063–067) — ready for review
+## Phase 3 closure (sessions 063–069) — ready for review
 
-Focused duplication reads covered: `dns/forwarder.py` (full), prepare-error/mutation-error mappings (`chat.rs`, `regenerate.rs`, `memory.rs`, `chat_utils.rs` ranges + surroundings), history AAD/assembly/naming (`history/crypto.rs`, `history/ops.rs`, `history/api.rs` cited paths), `session.rs` mirror pairs (inspected, skipped), OpenAI setup (`providers/openai.rs` cited paths), `static/session-client.js` + `static/credential-crypto.js` (cited helpers), `chatbot-cuda/src/service.py` warmup (inventoried, skipped), Android origin/callers (inventoried, skipped for lack of Java unit coverage). Whole-unit exhaustive re-audits are not claimed; untouched units keep their prior state.
+Repo-wide outcomes are now recorded for every handwritten unit (session 068 sweep below; full-file reads for short modules, cited-area skims for large JS/CSS/Android/deploy files as noted). Whole-unit exhaustive re-audits are not claimed; the A column uses P with exact scope, R only for the single-file X01 unit.
 
-Implemented (all zero-behavior-change, targeted-green): ABS-001 DNS filtering + preflight; ABS-002 prepare-error + mutation-error mappers; ABS-003 media AAD + snapshot assembly + first-turn naming (with 2 new assertions); ABS-004 OpenAI setup + CSRF builder + base64 decoder.
+Implemented (all zero-behavior-change, targeted-green): ABS-001 DNS filtering + preflight; ABS-002 prepare-error + mutation-error mappers; ABS-003 media AAD + snapshot assembly + first-turn naming (with 2 new assertions); ABS-004 OpenAI setup + CSRF builder + base64 decoder; ABS-005 image-edit skeleton + constant-time-eq centralization (with 1 new direct test); ABS-006 page-response builder + agent guard prefixes + request-context fallback sharing; ABS-007 Kokoro warmup sharing (with 1 new characterization test). Android origin sharing was implemented, then reverted when the full suite showed the distribution guard mandates per-consumer reads — recorded as the source-backed rationale, not a deferral for lack of trying.
 
-Final full suite `temp/test-logs/abs004-full-20260928.log`: job `20260928T195247-760a5809b85d`, exit 0, untruncated, 121 suites ok / 994 passed / 0 failed (992 prior + 2 new naming assertions), including provider configuration checks. No Java changes (no APK rebuild); JS/DNS changes need a host webserver rebuild/restart and DNS sidecar rebuild to deploy.
+Final full suite `temp/test-logs/abs005-full-20260928.log`: job `20260928T213643-6f06cb3da874`, exit 0, untruncated, 121 suites ok / 995 passed / 0 failed (plus 64 nested Python), including provider configuration checks. JS/DNS/CUDA changes need host rebuilds to deploy; no production Java changes (no APK rebuild needed).
 
-Explicitly deferred with rationale (not forced into bounded batches): `session.rs` mirror-pair merge (needs control-flow changes around post-durable/mismatch handling), Kokoro warmup merge (needs new characterization test), Android origin-selection dedup (needs Java unit coverage first), COR-003/Auto protocol/key export (owning passes). Final full-suite evidence below.
+Explicitly deferred with source-backed rationale: `session.rs` mirror-pair merge (post-durable/mismatch control-flow risk); secure-flag choice sharing (per-caller config-read timing); login-notice setter and TTS retry-decision merges (need client characterization tests first); `ClientLogReporter` origin handling (distinct logging/null-on-error contract, untouched); cross-runtime mirrors — voice-text vs TTS text, cookie transport, PCM rate (separate stages/runtimes, interop characterization before any abstraction); COR-003/Auto protocol/key export (owning passes).
 
 ## Session 063 — fresh duplication inventory, 2026-09-28
 
@@ -73,6 +73,32 @@ Delegated to a worker with exclusive ownership of `providers/openai.rs`, `static
 - `credential-crypto.js`: `decodeSaltB64` delegates to `decodeBase64` — identical `atobImpl` validation, decode loop, and byte output; the named wrapper stays as the salt-specific API.
 - Skipped with rationale: Kokoro warmup extraction needs a warmup-failure characterization test in a read-only test file — deferred rather than forced.
 - Verification (all exit 0): openai lib filter 12/12 job `20260928T194830-5dd32cff52d5`, `provider_messages` 4/4, `provider_config_isolation` 23/23, `session_client` 10/10, `credential_crypto` 4/4, `js_syntax` 11/11, cuda `test_service.py` 16/16 direct. Full workspace suite plus closure record here at phase close.
+
+## Session 068 — remaining-units sweep, 2026-09-28
+
+Three parallel read-only workers covered every unit untouched by sessions 063–067; primary synthesized. Honest depth notes inline.
+
+### Core remainder (full source reads incl. inline tests)
+- CANDIDATE (implemented in ABS-005): `constant_time_eq` clones (`user_store.rs:530–539`, `remember_store.rs:474–483`, `session_identity.rs:343–352`) → centralized in `fernet_crypto.rs` with a new direct test; image-edit skeleton (`chat_images.rs:298–320`, `460–486`) → shared helper keeping both replacement rules.
+- RETAINED: fail-closed config/external-target validation; logging adapter; zeroizing key type; persistence/legacy export boundaries; prompt budgeting + image-slot order; rate-limit queues; names rules; Fernet helper; store composition timing; agent record/CAS duties; egress gates. `legacy_sets_json/store.rs` setters look clone-like but lack direct setter coverage — no forced dedup. Cross-component: image-tag scanning also in `providers/message_utils.rs:11–43` with different trim/output — not a bounded fix.
+- Deferred: secure-flag choice sharing (per-caller config-read timing differs).
+
+### Server remainder (full reads of owned production files + test-support)
+- CANDIDATE (implemented in ABS-006): page-response assembly (`home.rs:357–396`, `login.rs:634–667`, `signup.rs:133–164`) → `home::page_response_builder`; agent guard prefixes (`agent_connections.rs:182–188,198–204,223–229,237–243`, list path kept) → `mutation_context`; `request_context.rs:79–94` + `:99–115` → `resolve_with_fallback` preserving key-first order.
+- RETAINED: STT vs TTS permit lifetimes; TTS token/codec/text/backend/store orderings; probes; log redaction; limiter identity; privacy coordinator; policy live-vs-owned timing; generation live projection order; constructor field combinations; store dispatch + CSRF ordering; cookie builder order; JSON-arm status/text/counter differences; startup/router composition; ticker-loop owners; provider constructors and search branches (distinct fallback rules); message parser; module decls; tool definition; fixture roles. Cross-component: STT/TTS bound-set auth and generation-vs-Brave dispatch noted, not merged.
+
+### Browser/native/ops remainder (full reads: short JS units, templates, CI scripts, Helm values; skims: large JS/CSS/Android/deploy files at cited areas)
+- CANDIDATE: `login.js:57–81` notice setter and `tts-playback.js:374–388` + `:547–567` retry decision — both need client characterization tests first; deferred, not implemented.
+- RETAINED: renderer adapters, IndexedDB ops, crypto-boundary adapters, Trusted Types policies, VAD/codec constants, bridge fallbacks, fencing checks, lifecycle ownership, load-bearing voice-text order, event gate, message source, MOD-010 decoder boundary, capture gates, text/HTML sink split, slot policy, connection side effects, script order, forms, stylesheet layering; Android mic/TTS/credential-codec/audio-policy/stream/queue/route/session/service/hooks/notification/coordinator/receiver/keep-awake units; settings plugin/activity; resolver/validation/style/logger utilities; compose overrides, Helm chart, workflows, scripts (distinct triggers/permissions/resources).
+- Cross-component dispositions (retain, characterize interop first): voice-text rules vs `tts/text.rs`; cookie transport Java vs `enc_key_cookies.rs`; 16-kHz assumptions JS vs `NativeMicPlugin.java:65`.
+
+## Session 069 — ABS-005/006/007 implementation, 2026-09-28
+
+Workers with exclusive file ownership implemented; primary reviewed every diff branch-by-branch and re-ran the CUDA gate.
+
+- ABS-005: `chat_images.rs` shares `coalesce_edit_user_message_with` (both replacement rules kept; `None` arm preserved); `constant_time_eq` centralized in `fernet_crypto.rs` (byte-identical body, new direct test) with all three callers migrated. Verified: baseline lib 182→184 (naming tests), new helper test 1/1 pre-migration, final lib 185/185 job `20260928T202532-e16281f48f9c`, `account_store_inputs` 5/5.
+- ABS-006: `request_context.rs` shares `resolve_with_fallback(history_image)` (key-before-session, fallback only for image); `agent_connections.rs` shares `mutation_context` (list path untouched); `home.rs` owns `page_response_builder` (headers, remember-cookie loop + warn, session-cookie match + injected warn) with login/signup delegating (`&[]` restored). Verified: context boundaries 14/14 + 18/18, agent 13/13, home 8/8, login 8/8, signup 2/2.
+- ABS-007: `_warmup_kokoro` shared by both load branches (sentence/voice/break/warning identical; setup + VRAM logging stay put) behind a new warmup-failure characterization test (17/17 direct, primary re-run; `voice_service_lifecycle` 1 Rust / 64 Python green job `20260928T201806-f008437ab9e9`). Android origin delegation REVERTED: the migration compiled and was behavior-equivalent by source analysis, but the full suite proved it out of scope — existing guard `distribution::all_native_consumers_read_only_the_flavor_resource` mandates per-consumer `R.string.server_url` reads plus direct `resolveCanonical` calls (flavor-precedence architecture, MOD-017), and the new JUnit test is not executable in this gate. Per-consumer reads stay; the guard test is the source-backed rationale.
 
 ## Session 064 — ABS-001 implementation, 2026-09-28
 

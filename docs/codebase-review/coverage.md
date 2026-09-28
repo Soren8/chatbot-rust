@@ -1,8 +1,8 @@
 # Review coverage
 
-## Sessions 063–067 — Phase 3 abstractions column (ready for review)
+## Sessions 063–069 — Phase 3 abstractions column (ready for review)
 
-Focused duplication reads in sessions 063–067 (four inventory workers plus implementing workers, primary review of every diff). `P` marks partial coverage with exact scope below; whole-unit exhaustive re-audits are not claimed:
+Repo-wide duplication reads in sessions 063–069 (seven inventory/review workers plus implementing workers, primary review of every diff). `P` marks partial coverage with exact scope below; whole-unit exhaustive re-audits are not claimed. Session 068 swept every remaining handwritten unit (full reads for short modules, cited-area skims for large JS/CSS/Android/deploy files); session 069 implemented ABS-005/006/007:
 
 - C02: `session.rs` mirror pairs inspected, merge skipped (control-flow risk) — no production change.
 - C04: `history/crypto.rs` AAD builders, `history/ops.rs` snapshot assembly, `history/api.rs` first-turn naming shared; other history paths untouched.
@@ -12,7 +12,7 @@ Focused duplication reads in sessions 063–067 (four inventory workers plus imp
 - W05: `session-client.js` CSRF builder, `credential-crypto.js` decode loop shared; other units untouched.
 - X01: `dns/forwarder.py` fully read; filtering + preflight shared.
 - G01: `chatbot-cuda/src/service.py` warmup inventoried, merge skipped (needs characterization test).
-- Android origin-selection dedup inventoried, skipped (needs Java unit coverage). Test bodies read only as dedup contracts for changed paths (separate test-quality pass owns assertion review).
+- Android origin selection shared via the pre-existing entry point (session 069; `ClientLogReporter` untouched on its distinct contract). T01/T02/T04 test bodies read only as dedup contracts for changed paths (separate test-quality pass owns assertion review). Large-file skims are recorded as such in abstractions.md session 068; login-notice/TTS-retry candidates carry explicit test prerequisites.
 
 ## Session 062 — simplicity coverage closure (larger-model concerns)
 
@@ -129,46 +129,46 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | Unit | Owned paths, in matching order | M | S | A | Sec | Perf | T | D |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | V01 Third-party browser dependencies | `static/deps/*` | B | B | — | — | — | — | — |
-| R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | R | R | — | — | — | — | — |
-| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | R | — | — | — | — | — |
+| R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | R | R | P | — | — | — | — |
+| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | R | P | — | — | — | — |
 | C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | R | P | — | — | — | — |
-| C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | — | — | — | — | — |
+| C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | P | — | — | — | — |
 | C04 Durable history | `chatbot-core/src/history/*` | R | R | P | — | — | — | — |
-| C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | R | — | — | — | — | — |
-| C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | — | — | — | — | — |
-| C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | R | — | — | — | — | — |
-| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | R | — | — | — | — | — |
-| C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | — | — | — | — | — |
-| P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | R | — | — | — | — | — |
+| C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | R | P | — | — | — | — |
+| C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | P | — | — | — | — |
+| C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | R | P | — | — | — | — |
+| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | R | P | — | — | — | — |
+| C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | P | — | — | — | — |
+| P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | R | P | — | — | — | — |
 | T01 Core integration tests | `chatbot-core/tests/*` | R | P | — | — | — | — | — |
 | S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | R | P | — | — | — | — |
-| S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | R | — | — | — | — | — |
+| S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | R | P | — | — | — | — |
 | S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | R | R | P | — | — | — | — |
 | S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | R | P | — | — | — | — |
-| S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | R | — | — | — | — | — |
-| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | R | — | — | — | — | — |
-| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | — | — | — | — | — |
-| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | R | — | — | — | — | — |
-| S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | R | — | — | — | — | — |
-| S11 Server privacy/agent coordination (post-baseline) | `chatbot-server/src/set_privacy_coordinator.rs`, `chatbot-server/src/agent_connections.rs` | — | R | — | — | — | — | — |
-| S12 Server composition/policy adapters (post-baseline) | `chatbot-server/src/policy.rs`, `chatbot-server/src/generation_deps.rs`, `chatbot-server/src/services.rs`, `chatbot-server/src/identity.rs`, `chatbot-server/src/enc_key_cookies.rs`, `chatbot-server/src/request_context.rs` | — | R | — | — | — | — | — |
+| S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | R | P | — | — | — | — |
+| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | R | P | — | — | — | — |
+| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | P | — | — | — | — |
+| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | R | P | — | — | — | — |
+| S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | R | P | — | — | — | — |
+| S11 Server privacy/agent coordination (post-baseline) | `chatbot-server/src/set_privacy_coordinator.rs`, `chatbot-server/src/agent_connections.rs` | — | R | P | — | — | — | — |
+| S12 Server composition/policy adapters (post-baseline) | `chatbot-server/src/policy.rs`, `chatbot-server/src/generation_deps.rs`, `chatbot-server/src/services.rs`, `chatbot-server/src/identity.rs`, `chatbot-server/src/enc_key_cookies.rs`, `chatbot-server/src/request_context.rs` | — | R | P | — | — | — | — |
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | P | — | — | — | — | — |
-| T03 Shared test support | `chatbot-test-support/src/*` | R | R | — | — | — | — | — |
+| T03 Shared test support | `chatbot-test-support/src/*` | R | R | P | — | — | — | — |
 | S07 Server examples/protected configuration | `chatbot-server/examples/*`, `chatbot-server/.config.yml` | B | B | — | — | — | — | — |
-| W01 Browser chat UI | `static/chat.js` | R | R | — | — | — | — | — |
-| W02 Browser identity/rendering security | `static/login.js`, `static/enc-key.js`, `static/tt.js` | R | R | — | — | — | — | — |
-| W03 Browser/native bridge/audio | `static/native-audio.js`, `static/native-bridge.js` | R | R | — | — | — | — | — |
-| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | R | R | — | — | — | — | — |
+| W01 Browser chat UI | `static/chat.js` | R | R | P | — | — | — | — |
+| W02 Browser identity/rendering security | `static/login.js`, `static/enc-key.js`, `static/tt.js` | R | R | P | — | — | — | — |
+| W03 Browser/native bridge/audio | `static/native-audio.js`, `static/native-bridge.js` | R | R | P | — | — | — | — |
+| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | R | R | P | — | — | — | — |
 | W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js` | R | R | P | — | — | — | — |
-| N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | — | — | — | — | — |
-| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | — | — | — | — | — |
-| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | — | — | — | — | — |
+| N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | P | — | — | — | — |
+| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | P | — | — | — | — |
+| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | P | — | — | — | — |
 | T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | — | — | — | — |
 | N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | — | — | — | — |
 | X01 DNS sidecar (post-baseline) | `dns/*` | — | R | R | — | — | — | — |
 | G01 GPU voice service | `chatbot-cuda/*` | R | R | P | — | — | — | — |
-| O01 CI/automation | `.github/*`, `scripts/*` | R | R | — | — | — | — | — |
-| O02 Deployment templates | `deploy/*` | R | R | — | — | — | — | — |
+| O01 CI/automation | `.github/*`, `scripts/*` | R | R | P | — | — | — | — |
+| O02 Deployment templates | `deploy/*` | R | R | P | — | — | — | — |
 | O03 Repository development environment | `.devcontainer/*`, `.grok/*` | B | B | — | — | — | — | — |
 | D01 Review records | `docs/codebase-review/*` | B | B | — | — | — | — | — |
 | D02 Architecture/operator documentation | `docs/*` | B | B | — | — | — | — | — |
