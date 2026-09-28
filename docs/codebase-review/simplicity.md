@@ -209,4 +209,4 @@ With explicit user approval to migrate assertions while preserving behavioral co
 
 ### Session 060 verification
 
-Targeted (all exit 0): core lib 182/182 (`fresh_entry`, ops import split), `credential_metadata` 5/5 (migrated pin), `voice_mode_reliability` (migrated pin), `js_syntax` 11/11. Physical APK rebuilt for the Java constant removal (job, exit 0 — see gate line). Final full suite `temp/test-logs/sim60-full-*.log` (job, exit 0, untruncated) follows.
+Targeted (all exit 0): core lib 182/182 (`fresh_entry`, ops import split), `credential_metadata` 5/5 (migrated pin), `voice_mode_reliability` (migrated pin), `js_syntax` 11/11. Physical APK rebuilt for the Java constant removal — job `20260928T072542-6a097738656f`, exit 0, artifact `temp/sim60-physical-debug.apk` (12,540,142 bytes, SHA256 `489d0dfa00435b1fb58f0f6e14a8236519a65e549ef5d0cd7a157c4a4fd96513`). Final full suite `temp/test-logs/sim60-full-20260928.log`: job `20260928T072718-d6bf8dfbf87f`, exit 0, untruncated, 121 suites ok / 991 passed / 0 failed, including provider configuration checks.

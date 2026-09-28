@@ -1,6 +1,6 @@
 # Codebase review program
 
-Latest resume point: session 059 — completion coverage pass (SIM-009) with per-unit S ledger, review-driven corrections, full green suite plus rebuilt physical APK on `refactor`. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
+Latest resume point: session 060 — review-driven closure round (unreviewed areas read, inventory reconciled, test pins migrated with approval, SIM-010) with full green suite plus rebuilt physical APK on `refactor`. See [simplicity.md](simplicity.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
 
