@@ -105,7 +105,10 @@ fn enc_key_wires_metadata_owner_without_inline_copies() {
         "touchSlotRecord(record, Date.now())",
         "purgeableSlotUsernames(entries)",
         "isAccountSlotKey(key)",
-        "SLOT_PREFIX + String(hash",
+        // Behavioral wiring pin (not a helper-name pin): enc-key must reach
+        // the metadata owner object. The former `slotIdByHash` helper had no
+        // production caller and was deleted under this contract.
+        "metadataOwner()",
     ] {
         assert!(
             src.contains(marker),

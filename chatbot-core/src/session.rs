@@ -353,6 +353,15 @@ impl ChatSessionStore {
         &STORE
     }
 
+    /// Fresh unlocked entry for `session_id`, seeded with this store's
+    /// default prompt. Guest IDs get no cipher requirement; authenticated
+    /// IDs do. Shared by plain creation and lock acquisition so the
+    /// guest/authenticated split cannot drift between the two paths.
+    fn fresh_entry(&self, session_id: &str) -> Arc<SessionEntry> {
+        let requires_cipher = !session_id.starts_with(SESSION_GUEST_PREFIX);
+        Arc::new(SessionEntry::new(&self.default_prompt, requires_cipher))
+    }
+
     fn clean_expired(&self) {
         let now = Instant::now();
         let timeout = self.timeout;
@@ -390,8 +399,7 @@ impl ChatSessionStore {
             return Arc::clone(&existing);
         }
 
-        let requires_cipher = !session_id.starts_with(SESSION_GUEST_PREFIX);
-        let entry = Arc::new(SessionEntry::new(&self.default_prompt, requires_cipher));
+        let entry = self.fresh_entry(session_id);
         match self.entries.entry(session_id.to_string()) {
             dashmap::mapref::entry::Entry::Occupied(existing) => Arc::clone(&existing.get()),
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
@@ -483,8 +491,7 @@ impl ChatSessionStore {
                 }
             }
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                let requires_cipher = !session_id.starts_with(SESSION_GUEST_PREFIX);
-                let entry = Arc::new(SessionEntry::new(&self.default_prompt, requires_cipher));
+                let entry = self.fresh_entry(session_id);
                 // Fresh entries start unlocked; claim the lock while the shard
                 // guard is still held so a concurrent purge observes locked.
                 // The CAS runs unconditionally: debug_assert compiles out in

@@ -1065,7 +1065,9 @@ fn native_voice_tts_streams_wav_instead_of_buffering_the_clip() {
         tts.contains("streamWavToTrack")
             && tts.contains("getInputStream")
             && tts.contains("writePcmBlocking")
-            && tts.contains("PREROLL_MS")
+            // The jitter buffer is the `preroll` accumulation in the stream
+            // path, not a named millisecond constant: pin the behavior.
+            && tts.contains("preroll.write(pcm)")
             && tts.contains("playUrlToTrackOnce")
             && tts.contains("playbackGeneration")
             && tts.contains("isGenerationActive")

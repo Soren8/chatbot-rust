@@ -184,13 +184,6 @@
     return metadataOwner().slotKeyFor(username, currentUsername());
   }
 
-  // Pinned by `enc_key_wires_metadata_owner_without_inline_copies`
-  // (`credential_metadata.rs`): the sanctioned hashed-slot wiring. It has no
-  // production caller today; removing it requires updating that contract test.
-  async function slotIdByHash(hash) {
-    return metadataOwner().SLOT_PREFIX + String(hash || '').toLowerCase();
-  }
-
   async function removeLegacySlots() {
     await idbDelete(LEGACY_WRAPPED_KEY_ID);
     await idbDelete(LEGACY_MODE_KEY);

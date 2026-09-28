@@ -53,8 +53,6 @@ public class NativeVoiceTtsPlugin extends Plugin {
     private static final int DEFAULT_SAMPLE_RATE = 24000;
     private static final int QUEUE_POLL_MS = 100;
     private static final int MAX_WAV_BYTES = 8 * 1024 * 1024;
-    /** Jitter buffer before the first sample. Reliability over first-byte latency. */
-    private static final int PREROLL_MS = 400;
     /** Backoff before each clip GET retry: a blipping link fails back-to-back attempts. */
     private static final int CLIP_RETRY_BACKOFF_MS = 700;
     /** Bound clip GET attempts (initial + retries) so one bad sentence skips instead of head-blocking the queue. Parity with JS MAX_TTS_SENTENCE_RETRIES. */
