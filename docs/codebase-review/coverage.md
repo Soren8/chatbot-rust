@@ -116,6 +116,8 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | — | — | — | — | — |
 | C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | R | — | — | — | — | — |
 | C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | R | — | — | — | — | — |
+| C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | — | — | — | — | — |
+| P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | R | — | — | — | — | — |
 | T01 Core integration tests | `chatbot-core/tests/*` | R | P | — | — | — | — | — |
 | S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | R | — | — | — | — | — |
 | S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | R | — | — | — | — | — |
@@ -126,19 +128,22 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | — | — | — | — | — |
 | S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | R | — | — | — | — | — |
 | S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | R | — | — | — | — | — |
+| S11 Server privacy/agent coordination (post-baseline) | `chatbot-server/src/set_privacy_coordinator.rs`, `chatbot-server/src/agent_connections.rs` | — | R | — | — | — | — | — |
+| S12 Server composition/policy adapters (post-baseline) | `chatbot-server/src/policy.rs`, `chatbot-server/src/generation_deps.rs`, `chatbot-server/src/services.rs`, `chatbot-server/src/identity.rs`, `chatbot-server/src/enc_key_cookies.rs`, `chatbot-server/src/request_context.rs` | — | R | — | — | — | — | — |
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | P | — | — | — | — | — |
 | T03 Shared test support | `chatbot-test-support/src/*` | R | R | — | — | — | — | — |
 | S07 Server examples/protected configuration | `chatbot-server/examples/*`, `chatbot-server/.config.yml` | B | B | — | — | — | — | — |
 | W01 Browser chat UI | `static/chat.js` | R | R | — | — | — | — | — |
 | W02 Browser identity/rendering security | `static/login.js`, `static/enc-key.js`, `static/tt.js` | R | R | — | — | — | — | — |
 | W03 Browser/native bridge/audio | `static/native-audio.js`, `static/native-bridge.js` | R | R | — | — | — | — | — |
-| W04 Templates/styles | `static/templates/*`, `static/style.css` | R | R | — | — | — | — | — |
+| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | R | R | — | — | — | — | — |
 | W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js` | R | R | — | — | — | — | — |
 | N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | — | — | — | — | — |
 | N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | — | — | — | — | — |
 | N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | P | — | — | — | — | — |
 | T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | — | — | — | — |
 | N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | — | — | — | — |
+| X01 DNS sidecar (post-baseline) | `dns/*` | — | R | — | — | — | — | — |
 | G01 GPU voice service | `chatbot-cuda/*` | R | R | — | — | — | — | — |
 | O01 CI/automation | `.github/*`, `scripts/*` | R | R | — | — | — | — | — |
 | O02 Deployment templates | `deploy/*` | R | R | — | — | — | — | — |

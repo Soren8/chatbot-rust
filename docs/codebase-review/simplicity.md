@@ -157,7 +157,7 @@ Four parallel research workers covered every S-column unit the earlier sessions 
 - `tts/text.rs` — dropped `trim().to_string()` after a whitespace join (no surrounding whitespace possible). In-file tests + `tts.rs`.
 - `tts/backend.rs` — `post_backend` takes the fixed `/api/tts` endpoint (sole caller verified) instead of a misleading path parameter.
 - `set_privacy_coordinator.rs` — shared `check_destination_eligibility` for the identical 403 model/search mapping in `/chat` and `/regenerate`; prepare-error arms, binding, leases, and finalizers stay per route. Characterization: `set_privacy.rs`, `privacy_policy.rs`, `generation_dispatch.rs`, `generation_error_ownership.rs`.
-- `enc-key.js` `slotIdByHash` — retained test-pinned (see retention section below; deletion fails `credential_metadata.rs:108`).
+- `enc-key.js` `slotIdByHash` — deleted; the contract pin migrated to a behavioral `metadataOwner()` marker (see retention section).
 - `voice-capture.js` — dropped the unread `skipPreRoll` parameter from `_beginUtterance` (single caller; flag stays in `_maybeStartUtterance` logging). Body-content test pins unaffected (brace-matched bodies). Characterization: `voice_capture_boundary.rs`, `voice_mode_reliability.rs`.
 - `chat-renderer.js` — `buildUserMessageSpan` delegates its newline loop to the identical `appendPlainTextWithBreaks` (hoisted declaration, same scope). Characterization: `chat_renderer_test.js`.
 - `native-audio.js` — shared `toFloat32Samples` for the byte-identical conversion prologues of `encodeAacAdts`/`encodeOpusOgg`; framing and timing untouched. Characterization: `native_audio_wav`, `voice_mode_reliability.rs`.
@@ -170,8 +170,8 @@ Four parallel research workers covered every S-column unit the earlier sessions 
 ### Retained with evidence (session-059 coverage)
 
 - `login.js:277` bridge fallback: retained as stale-cache compat — with no cache-busting mechanism per project policy, an older cached `native-bridge.js` (no `openServerSettings`) can serve a new `login.js`. Three lines; removing it trades robustness for nothing.
-- `enc-key.js:187` `slotIdByHash`: retained — zero production callers, but `enc_key_wires_metadata_owner_without_inline_copies` (`credential_metadata.rs:108`) pins its exact text as the sanctioned hashed-slot wiring (verified: deleting it fails that test, restored unchanged). Removal requires a contract-test change, deferred per policy.
-- `PREROLL_MS` (`NativeVoiceTtsPlugin.java:57`): retained — `voice_mode_reliability.rs` pins its name; removal requires a test change, deferred per policy.
+- `enc-key.js` `slotIdByHash` — deleted under migrated contract: with explicit user approval, the `credential_metadata.rs:108` spelling pin became a behavioral `metadataOwner()` wiring pin (the helper had zero production callers; the remaining markers still prove owner wiring with no inline copies).
+- `PREROLL_MS` (`NativeVoiceTtsPlugin.java:57`) — deleted under migrated contract: with explicit user approval, the reliability pin became `preroll.write(pcm)`, pinning the actual jitter-buffer accumulation in the stream path (the 400ms constant itself was never read); neighboring streaming/anti-buffering markers unchanged.
 - `onAudioRouteChanged` (`VoiceModeSessionCoordinator.java:374`): retained — called by `VoiceModeSessionCoordinatorTest.java`; a test-covered public surface, not dead code.
 - `main.py:74` health: no change — the inventory claim was inaccurate on inspection: `readiness()` snapshot fields (`kokoro_loaded`, `stt_loaded`) ARE reported; only `status` is a fixed liveness `"ok"`. That is a contract, not a discarded value.
 - Eligibility vs prepare-error split: only the identical 403 mapping was shared; per-route saved-turn/mapper precedence and divergent lease ownership stay per route (see session-058 section).
@@ -186,3 +186,27 @@ Development caught and fixed before the gate: the first targeted run failed to c
 Native: physical-flavor debug APK rebuilt for the two Java removals — job `20260928T065654-5851dc7bf798`, exit 0, artifact `temp/sim59-physical-debug.apk` (12,540,322 bytes, SHA256 `310302c491ca6a615f65ce677b75c30f19fbc6990f17ecbca66255648b2d5ea8`). Template change is browser-invisible (a permanently hidden, unreferenced button), covered by `static_assets` + `home`; no preview needed.
 
 Final full suite `temp/test-logs/sim59-full-20260928.log`: job `20260928T065831-b1c27ea1d36c`, exit 0, untruncated, 121 suites ok / 991 passed / 0 failed, including provider configuration checks.
+
+## Session 060 — review-driven closure round, 2026-09-28
+
+Addresses the independent review of the session-059 batch: the explicitly unreviewed areas, the inventory gaps, and the test-pinned dead code.
+
+### Unreviewed areas read (primary)
+
+- `logging.rs` (85 lines, full read): clean — env parsers and JSON/plain layers differ; no redundancy.
+- `account_service.rs` (94 lines, full read): clean — thin owned/global composition root.
+- `session.rs` orchestration: entry/acquire/expiry/generation-lock paths (277–512) plus service seams (690–754) read. One candidate implemented: `entry()` and `acquire_locked_entry()` duplicated the guest/authenticated `requires_cipher` split — now shared via `fresh_entry()`, so the split cannot drift between creation and lock acquisition. `history_for_prepare`/`history_for_commit` retained: 3-line mappers differing only in error type; merging needs a generic error parameter for no gain.
+- History commit paths (`store/mod.rs` `change_policy`/`commit_snapshot`, `api.rs` `commit_chat_append`/`commit_regenerate`/`delete_pair`/`reset_history`): read. Retained — the double version check in `change_policy` is deliberate optimistic-concurrency recheck inside the write txn (COR-003-adjacent, behavior out of scope); `commit_snapshot` branches carry distinct durability semantics with documented invariants; the api commit methods share only a 4-line service preamble whose extraction would need closures over divergent middles.
+- `voice-events.js`, `playback-source.js`, `stream-decoder.js`, `voice-text.js` (full primary reads): clean except as noted — `stream-decoder`'s twin flush-end functions handle different tag sets in protocol-sensitive code under the MOD-010 boundary; `voice-text` rule order is load-bearing with per-rule rationale.
+
+### Inventory reconciliation
+
+Mechanically checked all 481 tracked files against the ledger patterns: every file is owned under the ledger's nested-`*` convention. Added rows C09 (core account/session services), P01 (core agent connectivity), S11 (server privacy/agent coordination), S12 (server composition/policy adapters), X01 (DNS sidecar), W05 (browser state/voice/playback units); extended W04 to `opencode-theme.css`. `M=—` on post-baseline rows is recorded as "added after the baseline inventory; creation reviewed in the owning sessions", not an unexplained blank.
+
+### Test-pinned dead code (user-approved migrations)
+
+With explicit user approval to migrate assertions while preserving behavioral coverage: `slotIdByHash` deleted (pin migrated to behavioral `metadataOwner()` wiring); `PREROLL_MS` deleted (pin migrated to the actual `preroll.write(pcm)` accumulation; the constant was never read). `onAudioRouteChanged` stays with no approval needed — a Java fixture calls it, so it is a test-covered surface, not dead code.
+
+### Session 060 verification
+
+Targeted (all exit 0): core lib 182/182 (`fresh_entry`, ops import split), `credential_metadata` 5/5 (migrated pin), `voice_mode_reliability` (migrated pin), `js_syntax` 11/11. Physical APK rebuilt for the Java constant removal (job, exit 0 — see gate line). Final full suite `temp/test-logs/sim60-full-*.log` (job, exit 0, untruncated) follows.
