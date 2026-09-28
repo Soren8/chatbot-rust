@@ -280,22 +280,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     }
     let mut allow_native_search_fallback = true;
     if let Some((_, _, level)) = privacy_binding.as_ref() {
-        let policy = services.config_source().destination_policy();
-        let model_level = policy.as_ref().and_then(|p| p.provider(&selected_model)).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate);
-        if !chatbot_core::config::destination_is_eligible(*level, model_level) {
-            return Err(api_error_json(StatusCode::FORBIDDEN, serde_json::json!({"error":"privacy_restricted","destination":"model"})));
-        }
-        if payload.web_search.unwrap_or(false) {
-            let native = provider_type == "xai" && provider_config.xai_search;
-            let search_level = if native { policy.as_ref().map(|p| p.xai_native_search).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate) } else { policy.as_ref().map(|p| p.brave_search).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate) };
-            if !chatbot_core::config::destination_is_eligible(*level, search_level) {
-                return Err(api_error_json(StatusCode::FORBIDDEN, serde_json::json!({"error":"privacy_restricted","destination":if native {"native_search"} else {"brave_search"}})));
-            }
-            if provider_type == "xai" && !native {
-                let native_level = policy.as_ref().map(|p| p.xai_native_search).unwrap_or(chatbot_core::config::PrivacyLevel::NonPrivate);
-                allow_native_search_fallback = chatbot_core::config::destination_is_eligible(*level, native_level);
-            }
-        }
+        allow_native_search_fallback = crate::set_privacy_coordinator::check_destination_eligibility(
+            *level,
+            services.config_source().destination_policy().as_deref(),
+            &selected_model,
+            provider_type.as_str(),
+            provider_config.xai_search,
+            payload.web_search.unwrap_or(false),
+        )?;
     }
     let privacy_permit = privacy_binding.map(|(permit, _, _)| permit);
     // The lease settles this generation.

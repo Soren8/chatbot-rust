@@ -279,9 +279,11 @@ impl ConnectionService {
         self.credentials_for_owner(&owner, key, id)
     }
 
-    /// Shared record lookup for an already-verified owner. `verify` is
-    /// idempotent (`normalise_username` is trim + validate), so callers that
-    /// already hold the owner must not re-verify the same key.
+    /// Shared record lookup for an already-verified owner. Each operation
+    /// verifies once and reuses the owner within that operation (snapshot
+    /// semantics): re-verifying would repeat account-store and key-verifier
+    /// reads whose results can change under concurrency, so a second check
+    /// could neither be redundant nor authoritative.
     fn credentials_for_owner(&self, owner: &str, key: &EncryptionKey, id: Uuid) -> Result<(u64, ConnectionCredentials), ConnectionError> {
         let tx = self.0.db.begin_read().map_err(storage)?;
         let table = tx.open_table(RECORDS).map_err(storage)?;
