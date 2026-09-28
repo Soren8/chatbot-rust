@@ -4,6 +4,15 @@
 
 services:
   webserver:
+    build:
+      args:
+        # Pinned (not a default): dev must stay a debug build even when the
+        # environment exports RUST_BUILD_PROFILE=release for other targets.
+        RUST_BUILD_PROFILE: debug
     environment:
+      # Pinned (not defaults): dev forces human-readable logs even when the
+      # environment exports production-style LOG_FORMAT/LOG_ANSI values.
+      LOG_FORMAT: plain
+      LOG_ANSI: "true"
       LOG_LEVEL: ${LOG_LEVEL:-debug}
       SESSION_PURGE_INTERVAL_SECS: ${SESSION_PURGE_INTERVAL_SECS:-60}

@@ -125,14 +125,9 @@ pub fn ensure_user_migrated(
 }
 
 fn rename_legacy_sets_json(sets_path: &Path) {
-    let Some(parent) = sets_path.parent() else {
-        warn!(
-            path = %sets_path.display(),
-            "sets.json has no parent; skipping backup rename, redb is authoritative"
-        );
-        return;
-    };
-    let bak = parent.join(MIGRATED_BAK_FILENAME);
+    // Sibling backup path with no branching: `with_file_name` swaps the
+    // final component in place, so no parent lookup or fallback is needed.
+    let bak = sets_path.with_file_name(MIGRATED_BAK_FILENAME);
 
     if let Err(err) = std::fs::rename(sets_path, &bak) {
         warn!(

@@ -42,8 +42,22 @@ pub struct DestinationPolicy {
 
 impl DestinationPolicy {
     pub fn from_providers(providers: &[ProviderConfig], search_providers: &SearchProvidersConfig, stt: PrivacyLevel, tts: PrivacyLevel) -> Self {
+        Self::from_name_levels(
+            providers.iter().map(|provider| (provider.provider_name.clone(), provider.privacy_level)),
+            search_providers, stt, tts,
+        )
+    }
+
+    /// Single construction owner for borrowed name/level pairs, so the
+    /// owned-slice and live-config paths cannot drift.
+    fn from_name_levels(
+        providers: impl IntoIterator<Item = (String, PrivacyLevel)>,
+        search_providers: &SearchProvidersConfig,
+        stt: PrivacyLevel,
+        tts: PrivacyLevel,
+    ) -> Self {
         Self {
-            providers: providers.iter().map(|provider| (provider.provider_name.clone(), provider.privacy_level)).collect(),
+            providers: providers.into_iter().collect(),
             brave_search: search_providers.brave.privacy_level,
             xai_native_search: search_providers.xai_native.privacy_level,
             stt, tts,
@@ -89,17 +103,14 @@ impl ConfigSource {
             Some(owned) => owned.destination_policy.clone(),
             None => {
                 let config = app_config();
-                // Mirrors DestinationPolicy::from_providers without cloning
-                // full provider configs; only name + level are read.
-                Some(Arc::new(DestinationPolicy {
-                    providers: config.provider_names().iter().filter_map(|name| {
+                // Borrowed live providers: no full-config clones, and the
+                // mapping stays owned by `from_name_levels`.
+                Some(Arc::new(DestinationPolicy::from_name_levels(
+                    config.provider_names().iter().filter_map(|name| {
                         config.provider(name).map(|provider| (provider.provider_name.clone(), provider.privacy_level))
-                    }).collect(),
-                    brave_search: config.search_providers.brave.privacy_level,
-                    xai_native_search: config.search_providers.xai_native.privacy_level,
-                    stt: config.stt_privacy_level,
-                    tts: config.tts_privacy_level,
-                }))
+                    }),
+                    &config.search_providers, config.stt_privacy_level, config.tts_privacy_level,
+                )))
             }
         }
     }
