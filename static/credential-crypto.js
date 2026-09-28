@@ -68,15 +68,7 @@
 
   // Salt bytes for PBKDF2 from the server-provided base64 salt.
   function decodeSaltB64(saltB64, atobImpl) {
-    if (typeof atobImpl !== 'function') {
-      throw new Error('ChatCredentialCrypto requires atobImpl');
-    }
-    var saltStr = atobImpl(saltB64);
-    var salt = new Uint8Array(saltStr.length);
-    for (var i = 0; i < saltStr.length; i += 1) {
-      salt[i] = saltStr.charCodeAt(i);
-    }
-    return salt;
+    return decodeBase64(saltB64, atobImpl);
   }
 
   // PBKDF2 derivation parameters (deriveBits shape, minus salt bytes).

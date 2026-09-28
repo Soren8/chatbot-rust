@@ -176,6 +176,38 @@ impl OpenAiProvider {
         }
     }
 
+    fn request_setup(
+        &self,
+        messages: Vec<ChatMessagePayload>,
+        tools: Option<Vec<Value>>,
+    ) -> (String, String, ChatCompletionRequest) {
+        let api_key = self
+            .api_key
+            .as_deref()
+            .unwrap_or("no-key-required")
+            .to_string();
+        let provider = if self.allowed_providers.is_empty() {
+            None
+        } else {
+            Some(ProviderRoutingOptions {
+                order: self.allowed_providers.clone(),
+                allow_fallbacks: false,
+            })
+        };
+        let tool_choice = tools.as_ref().map(|_| "auto".to_string());
+        let payload = ChatCompletionRequest {
+            model: self.model.clone(),
+            messages,
+            stream: true,
+            temperature: 0.7,
+            provider,
+            tools,
+            tool_choice,
+        };
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        (api_key, url, payload)
+    }
+
     pub fn stream_chat(
         &self,
         messages: Vec<ChatMessagePayload>,
@@ -213,32 +245,7 @@ impl OpenAiProvider {
             || self.model.contains("apriel-1.6-15b-thinker")
             || self.model.contains("glm-4");
         
-        let api_key = self
-            .api_key
-            .as_deref()
-            .unwrap_or("no-key-required")
-            .to_string();
-
-        let provider = if self.allowed_providers.is_empty() {
-            None
-        } else {
-            Some(ProviderRoutingOptions {
-                order: self.allowed_providers.clone(),
-                allow_fallbacks: false,
-            })
-        };
-
-        let payload = ChatCompletionRequest {
-            model: self.model.clone(),
-            messages,
-            stream: true,
-            temperature: 0.7,
-            provider,
-            tools: None,
-            tool_choice: None,
-        };
-
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (api_key, url, payload) = self.request_setup(messages, None);
         let client = self.client.clone();
         let rate_limit_retries = self.rate_limit_retries;
         let rate_limit_max_wait = self.rate_limit_max_wait;
@@ -350,32 +357,7 @@ impl OpenAiProvider {
             return Ok(Box::pin(stream));
         }
 
-        let api_key = self
-            .api_key
-            .as_deref()
-            .unwrap_or("no-key-required")
-            .to_string();
-
-        let provider = if self.allowed_providers.is_empty() {
-            None
-        } else {
-            Some(ProviderRoutingOptions {
-                order: self.allowed_providers.clone(),
-                allow_fallbacks: false,
-            })
-        };
-
-        let payload = ChatCompletionRequest {
-            model: self.model.clone(),
-            messages,
-            stream: true,
-            temperature: 0.7,
-            provider,
-            tools: Some(tools.to_vec()),
-            tool_choice: Some("auto".to_string()),
-        };
-
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (api_key, url, payload) = self.request_setup(messages, Some(tools.to_vec()));
 
         let client = self.client.clone();
         let rate_limit_retries = self.rate_limit_retries;

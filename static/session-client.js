@@ -366,12 +366,7 @@
     }
 
     async function withCsrfAsync(headers) {
-      var result = headers ? Object.assign({}, headers) : {};
-      var token = getCsrfToken();
-      if (token) {
-        result['X-CSRF-Token'] = token;
-      }
-      return result;
+      return withCsrf(headers);
     }
 
     async function response401Message(response) {

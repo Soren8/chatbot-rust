@@ -2,6 +2,16 @@
 
 Scope (user-authorized): fresh repository-wide inventory, moderate bounded fixes with zero behavior change. Deferred items (COR-003, Auto protocol repair, legacy key export) stay out unless the duplication itself is in the touched code. Each batch carries targeted verification plus a final full green suite.
 
+## Phase 3 closure (sessions 063–067) — ready for review
+
+Focused duplication reads covered: `dns/forwarder.py` (full), prepare-error/mutation-error mappings (`chat.rs`, `regenerate.rs`, `memory.rs`, `chat_utils.rs` ranges + surroundings), history AAD/assembly/naming (`history/crypto.rs`, `history/ops.rs`, `history/api.rs` cited paths), `session.rs` mirror pairs (inspected, skipped), OpenAI setup (`providers/openai.rs` cited paths), `static/session-client.js` + `static/credential-crypto.js` (cited helpers), `chatbot-cuda/src/service.py` warmup (inventoried, skipped), Android origin/callers (inventoried, skipped for lack of Java unit coverage). Whole-unit exhaustive re-audits are not claimed; untouched units keep their prior state.
+
+Implemented (all zero-behavior-change, targeted-green): ABS-001 DNS filtering + preflight; ABS-002 prepare-error + mutation-error mappers; ABS-003 media AAD + snapshot assembly + first-turn naming (with 2 new assertions); ABS-004 OpenAI setup + CSRF builder + base64 decoder.
+
+Final full suite `temp/test-logs/abs004-full-20260928.log`: job `20260928T195247-760a5809b85d`, exit 0, untruncated, 121 suites ok / 994 passed / 0 failed (992 prior + 2 new naming assertions), including provider configuration checks. No Java changes (no APK rebuild); JS/DNS changes need a host webserver rebuild/restart and DNS sidecar rebuild to deploy.
+
+Explicitly deferred with rationale (not forced into bounded batches): `session.rs` mirror-pair merge (needs control-flow changes around post-durable/mismatch handling), Kokoro warmup merge (needs new characterization test), Android origin-selection dedup (needs Java unit coverage first), COR-003/Auto protocol/key export (owning passes). Final full-suite evidence below.
+
 ## Session 063 — fresh duplication inventory, 2026-09-28
 
 Four parallel subagents inventoried exclusive partitions at `refactor@f4ca399`; primary synthesized. No edits in this session.
@@ -35,6 +45,34 @@ Four parallel subagents inventoried exclusive partitions at `refactor@f4ca399`; 
 - ABS-001: DNS forwarder dedup (filtering + preflight) — one file, test-covered, smallest blast radius.
 - ABS-002 (planned): server error-mapper sharing (prepare-error + mutation-error mappers).
 - Later: media AAD, capture assembly, OpenAI setup, JS builders — each with prerequisite assertions where noted.
+
+## Session 065 — ABS-002 implementation, 2026-09-28
+
+Delegated to a worker with exclusive ownership of `chat.rs`, `regenerate.rs`, `memory.rs`, `chat_utils.rs`; primary reviewed the branch-by-branch parity and accepted.
+
+- Extracted `map_prepare_error` into `chat_utils.rs`: computes the eligible saved-turn message per variant (Validation always, History via `saved_error_message()`, Session only for `AuthenticatedBootstrapMisuse`, Policy never), saves the nonempty-message turn when eligible, otherwise maps to the original per-variant HTTP error. Both handlers call it with their own chat/session/payload/key — preparation, completion, success, and guest paths untouched.
+- Extracted `map_mutation_mirror_error` in `memory.rs`: the six-arm `MutationMirrorError` mapping moved verbatim into one helper shared by the memory and system-prompt updaters.
+- Verification (all exit 0): `provider_config_isolation` 23/23 job `20260928T193315-cb11c7c82348`; `memory` job `20260928T193436-97743165f4e3`; `chat` job `20260928T193521-961207d1bcfe`; `regenerate` job `20260928T193536-2a0fa2b1a3ad`. Full workspace suite plus record here at batch close.
+
+## Session 066 — ABS-003 implementation, 2026-09-28
+
+Delegated to a worker with exclusive ownership of `history/api.rs`, `history/crypto.rs`, `history/ops.rs` (+ `session.rs` inspected, untouched); primary reviewed the diff and accepted.
+
+- `crypto.rs`: `build_image_aad`/`build_thumb_aad` now delegate to private `build_media_aad(user, set, image, kind)` — byte-identical AAD, capacity unchanged.
+- `ops.rs`: `apply_regenerate`/`apply_chat_append` share only final `snapshot_from_capture` assembly; index/capacity logic untouched.
+- `api.rs`: both first-turn append paths share `auto_name_first_turn` (placeholder check, derivation, exclusions, existing-name lookup, dedup) with each path's CAS/commit ordering preserved; the two pre-existing spelling variants (dedup-if-exists vs if/else) were semantically identical. Two new naming-outcome assertions (direct + capture paths, dedup case) added first per refactoring rules.
+- Skipped with rationale: `session.rs` memory/prompt mirror pairs — sharing durable-write/mirror paths needs broader control-flow changes around post-durable failures and mismatch handling; deferred rather than forced.
+- Verification (all exit 0): baseline lib 182/182 job `20260928T193712-1f710e0ea76c`, snapshot 7/7, mirror 10/10; final lib 184/184 (2 new) job `20260928T194058-c06e901a38e8`, snapshot 7/7, mirror 10/10. Full workspace suite plus record here at batch close.
+
+## Session 067 — ABS-004 implementation, 2026-09-28
+
+Delegated to a worker with exclusive ownership of `providers/openai.rs`, `static/session-client.js`, `static/credential-crypto.js` (`chatbot-cuda/src/service.py` inspected, untouched); primary verified the equivalence and accepted.
+
+- `openai.rs`: both stream paths share `request_setup(messages, tools)` — key selection, routing options, payload defaults, URL construction; `tools=None→(None,None)`, `Some→(Some(vec),Some("auto"))` exactly as before; tool fields/stream types stay distinct per path.
+- `session-client.js`: `withCsrfAsync` delegates to the sync `withCsrf` (copy-on-write via `Object.assign`, token attach); async wrapping preserves the Promise return. `chat.js:315–321` already delegates to this owner — no cross-file clone remains.
+- `credential-crypto.js`: `decodeSaltB64` delegates to `decodeBase64` — identical `atobImpl` validation, decode loop, and byte output; the named wrapper stays as the salt-specific API.
+- Skipped with rationale: Kokoro warmup extraction needs a warmup-failure characterization test in a read-only test file — deferred rather than forced.
+- Verification (all exit 0): openai lib filter 12/12 job `20260928T194830-5dd32cff52d5`, `provider_messages` 4/4, `provider_config_isolation` 23/23, `session_client` 10/10, `credential_crypto` 4/4, `js_syntax` 11/11, cuda `test_service.py` 16/16 direct. Full workspace suite plus closure record here at phase close.
 
 ## Session 064 — ABS-001 implementation, 2026-09-28
 
