@@ -296,6 +296,9 @@ mod filename_log_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn caller_filename_never_appears_in_info_logs_for_allowed_or_denied_uploads() {
+        let _capture = crate::test_instrumentation::LOG_CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let logs = Logs(Arc::new(Mutex::new(Vec::new())));
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -306,7 +309,8 @@ mod filename_log_tests {
         // Thread-local installs do not rebuild tracing's global callsite-interest
         // cache: if another test fired these callsites first with no subscriber,
         // their interest stays `never` and our events are silently dropped.
-        // Rebuild here so capture does not depend on cross-test ordering.
+        // Rebuild here (while holding the capture lock, so no concurrent
+        // subscriber install can re-poison the cache mid-test).
         tracing::callsite::rebuild_interest_cache();
         let config = ConfigSource::new(false, 3600, "prompt".to_owned(), "http://127.0.0.1:1".to_owned());
         let identity = RequestIdentity::with_store(Arc::new(HttpSessionStore::new(3600)))
