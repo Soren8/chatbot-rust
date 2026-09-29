@@ -18,9 +18,12 @@ docker compose build webserver
 
 ```bash
 helm install chatbot deploy/helm/chatbot \
-  --set webserver.secretEnv.SECRET_KEY='your-secret' \
+  --set webserver.secretEnv.SECRET_KEY.name=chatbot-secrets \
+  --set webserver.secretEnv.SECRET_KEY.key=SECRET_KEY \
   --set webserver.image.tag=your-tag
 ```
+
+Create `chatbot-secrets` separately (for example via Sealed Secrets or External Secrets) before installing. `webserver.secretEnv` accepts only `{name, key}` references to existing Kubernetes Secrets; unset entries are omitted and nonempty literal values fail template rendering. Do not pass secret values via Helm `--set` or values files.
 
 ## Host networking (default)
 

@@ -38,8 +38,17 @@ spec:
             {{- end }}
             {{- range $key, $value := .Values.webserver.secretEnv }}
             {{- if $value }}
+            {{- if not (kindIs "map" $value) }}
+            {{- fail (printf "webserver.secretEnv.%s must be a Secret reference {name, key}, not a literal" $key) }}
+            {{- end }}
+            {{- if or (not $value.name) (not $value.key) }}
+            {{- fail (printf "webserver.secretEnv.%s requires nonempty name and key" $key) }}
+            {{- end }}
             - name: {{ $key }}
-              value: {{ $value | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $value.name | quote }}
+                  key: {{ $value.key | quote }}
             {{- end }}
             {{- end }}
           livenessProbe:

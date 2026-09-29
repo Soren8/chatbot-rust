@@ -19,12 +19,10 @@ webserver:
     HOST_DATA_DIR: /app/data
     CHATBOT_STATIC_ROOT: /app/static
   secretEnv:
-    # Populate via --set or a sealed-secrets / external-secrets integration.
-    SECRET_KEY: ""
-    OPENAI_API_KEY: ""
-    OPENROUTER_API_KEY: ""
-    XAI_API_KEY: ""
-    BRAVE_API_KEY: ""
+    # Set each variable to {name: kubernetes-secret-name, key: secret-data-key}.
+    # Unset entries are omitted; nonempty plaintext values fail rendering.
+    # SECRET_KEY: {name: chatbot-secrets, key: SECRET_KEY}
+    # OPENAI_API_KEY: {name: chatbot-secrets, key: OPENAI_API_KEY}
   persistence:
     enabled: true
     size: 10Gi
