@@ -326,11 +326,11 @@ async fn live_rate_budgets_apply_without_router_rebuild_and_global_shape() {
 
     assert_eq!(
         post_client_logs(&app, client).await.status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app, client).await.status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
 
     let limited = post_client_logs(&app, client).await;
@@ -364,7 +364,7 @@ async fn live_rate_budgets_apply_without_router_rebuild_and_global_shape() {
     chatbot_core::config::reset();
     assert_eq!(
         post_client_logs(&app, client).await.status(),
-        StatusCode::NO_CONTENT,
+        StatusCode::UNAUTHORIZED,
         "disabled budgets must apply without a rebuild"
     );
 
@@ -377,13 +377,13 @@ async fn live_rate_budgets_apply_without_router_rebuild_and_global_shape() {
         post_client_logs(&app, "session=policy-live-global-1")
             .await
             .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app, "session=policy-live-global-2")
             .await
             .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     let limited = post_client_logs(&app, "session=policy-live-global-3").await;
     assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -627,7 +627,7 @@ async fn owned_rate_budgets_override_live_config_per_router() {
     let client = "session=policy-owned-rate-a";
     assert_eq!(
         post_client_logs(&app_enforced, client).await.status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app_enforced, client).await.status(),
@@ -637,14 +637,14 @@ async fn owned_rate_budgets_override_live_config_per_router() {
 
     assert_eq!(
         post_client_logs(&app_bypass, client).await.status(),
-        StatusCode::NO_CONTENT,
+        StatusCode::UNAUTHORIZED,
         "same key on the sibling starts from its own empty window"
     );
     assert_eq!(
         post_client_logs(&app_bypass, "session=policy-owned-rate-b")
             .await
             .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
 
     env::set_var("RATE_LIMIT_PER_USER_PER_MINUTE", "1");
@@ -654,13 +654,13 @@ async fn owned_rate_budgets_override_live_config_per_router() {
         post_client_logs(&app_bypass, "session=policy-owned-rate-c")
             .await
             .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app_bypass, "session=policy-owned-rate-c")
             .await
             .status(),
-        StatusCode::NO_CONTENT,
+        StatusCode::UNAUTHORIZED,
         "owned-disabled must keep bypassing enabled live config"
     );
 

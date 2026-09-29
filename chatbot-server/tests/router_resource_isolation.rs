@@ -370,8 +370,8 @@ async fn owned_routers_keep_per_client_rate_counters_independent() {
     let client = "session=mod003-per-client-isolation";
     let other_client = "session=mod003-per-client-other";
 
-    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::NO_CONTENT);
-    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::NO_CONTENT);
+    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::UNAUTHORIZED);
     assert_eq!(
         post_client_logs(&app_a, client).await,
         StatusCode::TOO_MANY_REQUESTS,
@@ -379,8 +379,8 @@ async fn owned_routers_keep_per_client_rate_counters_independent() {
     );
 
     // Same client key on the sibling starts from an empty window.
-    assert_eq!(post_client_logs(&app_b, client).await, StatusCode::NO_CONTENT);
-    assert_eq!(post_client_logs(&app_b, client).await, StatusCode::NO_CONTENT);
+    assert_eq!(post_client_logs(&app_b, client).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(post_client_logs(&app_b, client).await, StatusCode::UNAUTHORIZED);
     assert_eq!(
         post_client_logs(&app_b, client).await,
         StatusCode::TOO_MANY_REQUESTS,
@@ -390,7 +390,7 @@ async fn owned_routers_keep_per_client_rate_counters_independent() {
     // A different client on A is unaffected by the first client's budget.
     assert_eq!(
         post_client_logs(&app_a, other_client).await,
-        StatusCode::NO_CONTENT,
+        StatusCode::UNAUTHORIZED,
         "per-client windows must isolate keys within a router"
     );
 
@@ -412,11 +412,11 @@ async fn owned_routers_keep_global_rate_counters_independent() {
 
     assert_eq!(
         post_client_logs(&app_a, "session=mod003-global-a1").await,
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app_a, "session=mod003-global-a2").await,
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app_a, "session=mod003-global-a3").await,
@@ -427,11 +427,11 @@ async fn owned_routers_keep_global_rate_counters_independent() {
     // The sibling's global window starts empty despite A's exhaustion.
     assert_eq!(
         post_client_logs(&app_b, "session=mod003-global-b1").await,
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app_b, "session=mod003-global-b2").await,
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app_b, "session=mod003-global-b3").await,
@@ -459,8 +459,8 @@ async fn compat_identity_routers_still_share_global_rate_counters() {
     let app_b = compat_router();
     let client = "session=mod003-compat-shared-client";
 
-    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::NO_CONTENT);
-    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::NO_CONTENT);
+    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(post_client_logs(&app_a, client).await, StatusCode::UNAUTHORIZED);
 
     assert_eq!(
         post_client_logs(&app_b, client).await,
