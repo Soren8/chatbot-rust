@@ -119,14 +119,112 @@ fn native_cached_login_fails_closed_without_authentication_gate() {
 }
 
 #[test]
-fn native_unlock_gate_decision_runs_on_shipped_java() {
+fn native_unlock_control_flow_runs_on_shipped_java() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let output_dir = tempfile::tempdir().unwrap();
+    let fixtures = root.join("chatbot-server/tests/fixtures/unlock");
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(&fixtures).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "java") {
+            sources.push(path);
+        }
+    }
+    assert!(!sources.is_empty());
+    let stubs = [
+        ("Context.java", r#"package android.content;
+public abstract class Context {
+ public static final int MODE_PRIVATE=0;
+ public Context getApplicationContext(){return this;}
+ public abstract String getString(int id);
+ public abstract SharedPreferences getSharedPreferences(String name,int mode);
+}"#),
+        ("SharedPreferences.java", r#"package android.content;
+import java.util.Map;
+public interface SharedPreferences {
+ String getString(String key,String fallback); Map<String,?> getAll(); Editor edit();
+ interface Editor { Editor putString(String key,String value); Editor remove(String key); Editor clear(); void apply(); boolean commit(); }
+}"#),
+        ("Handler.java", r#"package android.os;
+public class Handler { public Handler(Looper l){} public void post(Runnable r){r.run();} public void postDelayed(Runnable r,long d){} }"#),
+        ("Looper.java", r#"package android.os; public class Looper { public static Looper getMainLooper(){return null;} }"#),
+        ("Build.java", r#"package android.os; public class Build { public static class VERSION {public static int SDK_INT=30;} public static class VERSION_CODES {public static final int Q=29,R=30;} }"#),
+        ("Base64.java", r#"package android.util;
+public class Base64 {public static final int DEFAULT=0,NO_WRAP=2; public static String encodeToString(byte[] b,int flags){return java.util.Base64.getEncoder().encodeToString(b);} public static byte[] decode(String s,int flags){return java.util.Base64.getDecoder().decode(s);} }"#),
+        ("Log.java", r#"package android.util; public class Log {public static int i(String t,String m){return 0;} public static int w(String t,String m){return 0;} public static int w(String t,String m,Throwable e){return 0;} public static int e(String t,String m,Throwable e){return 0;} }"#),
+        ("ValueCallback.java", r#"package android.webkit; public interface ValueCallback<T>{void onReceiveValue(T value);}"#),
+        ("CookieManager.java", r#"package android.webkit;
+import java.util.*;
+public class CookieManager {
+ private static final CookieManager INSTANCE=new CookieManager();
+ public final Map<String,String> jar=new LinkedHashMap<>(); public final List<String> injected=new ArrayList<>(); public int flushes;
+ public static CookieManager getInstance(){return INSTANCE;}
+ public String getCookie(String url){return String.join("; ",jar.entrySet().stream().map(e->e.getKey()+"="+e.getValue()).toList());}
+ public void setCookie(String url,String cookie){setCookie(url,cookie,null);}
+ public void setCookie(String url,String cookie,ValueCallback<Boolean> cb){injected.add(url+" "+cookie);String[] pair=cookie.split(";",2)[0].split("=",2); if(cookie.contains("Max-Age=0"))jar.remove(pair[0]);else jar.put(pair[0],pair[1]);if(cb!=null)cb.onReceiveValue(true);}
+ public void removeExpiredCookie(){} public void flush(){flushes++;}
+}"#),
+        ("R.java", r#"package com.chatbot.app; public class R {public static class string {public static final int server_url=1;} }"#),
+        ("FragmentActivity.java", r#"package androidx.fragment.app; public class FragmentActivity {public void runOnUiThread(Runnable r){r.run();}}"#),
+        ("BiometricManager.java", r#"package androidx.biometric;
+import android.content.Context;
+public class BiometricManager {public static final int BIOMETRIC_SUCCESS=0; public static int status=0; public static int checks;
+ public static class Authenticators {public static final int BIOMETRIC_STRONG=1,BIOMETRIC_WEAK=2,DEVICE_CREDENTIAL=4;}
+ public static BiometricManager from(Context c){return new BiometricManager();} public int canAuthenticate(int a){checks++;return status;}
+}"#),
+        ("BiometricPrompt.java", r#"package androidx.biometric;
+import androidx.fragment.app.FragmentActivity; import java.util.concurrent.Executor;
+public class BiometricPrompt {public static int mode=0, prompts=0;
+ public static class AuthenticationResult {} public static class AuthenticationCallback {
+  public void onAuthenticationSucceeded(AuthenticationResult r){} public void onAuthenticationError(int code,CharSequence message){} public void onAuthenticationFailed(){}
+ }
+ public static class PromptInfo { public static class Builder {public Builder setTitle(String s){return this;} public Builder setSubtitle(String s){return this;} public Builder setAllowedAuthenticators(int i){return this;} public Builder setDeviceCredentialAllowed(boolean b){return this;} public PromptInfo build(){return new PromptInfo();}} }
+ private final AuthenticationCallback callback;
+ public BiometricPrompt(FragmentActivity a,Executor e,AuthenticationCallback callback){this.callback=callback;}
+ public void authenticate(PromptInfo p){prompts++;if(mode==0)callback.onAuthenticationSucceeded(new AuthenticationResult());else {if(mode==2)callback.onAuthenticationFailed();callback.onAuthenticationError(5,"cancelled");}}
+}"#),
+        ("ContextCompat.java", r#"package androidx.core.content; import android.content.Context; import java.util.concurrent.Executor; public class ContextCompat {public static Executor getMainExecutor(Context c){return Runnable::run;}}"#),
+        ("Plugin.java", r#"package com.getcapacitor; import android.content.Context; import androidx.fragment.app.FragmentActivity; public class Plugin { public Context context; public FragmentActivity activity; public Context getContext(){return context;} public FragmentActivity getActivity(){return activity;} }"#),
+        ("PluginCall.java", r#"package com.getcapacitor; import java.util.*;
+public class PluginCall {public final Map<String,String> args=new HashMap<>();public JSObject result;public String error;public int resolutions,rejections;public boolean keepAlive;
+ public String getString(String key){return args.get(key);}public void setKeepAlive(boolean v){keepAlive=v;}
+ public void resolve(JSObject o){resolutions++;result=o;} public void reject(String s){rejections++;error=s;}public void reject(String s,Throwable t){reject(s);}
+}"#),
+        ("JSObject.java", r#"package com.getcapacitor; public class JSObject extends java.util.LinkedHashMap<String,Object>{}"#),
+        ("PluginMethod.java", r#"package com.getcapacitor; public @interface PluginMethod {}"#),
+        ("CapacitorPlugin.java", r#"package com.getcapacitor.annotation; public @interface CapacitorPlugin {String name();}"#),
+        ("KeyProperties.java", r#"package android.security.keystore; public class KeyProperties {public static final String KEY_ALGORITHM_AES="AES",BLOCK_MODE_GCM="GCM",ENCRYPTION_PADDING_NONE="NoPadding";public static final int PURPOSE_ENCRYPT=1,PURPOSE_DECRYPT=2;}"#),
+        ("KeyGenParameterSpec.java", r#"package android.security.keystore; public class KeyGenParameterSpec implements java.security.spec.AlgorithmParameterSpec {public final String alias;public boolean auth;private KeyGenParameterSpec(String a,boolean b){alias=a;auth=b;}
+ public static class Builder {private final String alias;private boolean auth;public Builder(String a,int p){alias=a;}public Builder setBlockModes(String... s){return this;}public Builder setEncryptionPaddings(String... s){return this;}public Builder setUserAuthenticationRequired(boolean b){auth=b;return this;}public Builder setUserAuthenticationValidityDurationSeconds(int s){return this;}public KeyGenParameterSpec build(){return new KeyGenParameterSpec(alias,auth);}}
+}"#),
+        ("JSONObject.java", r#"package org.json;
+import java.util.*;
+// JVM-only flat string-map stand-in: org.json itself is not exercised by this harness.
+public class JSONObject {private final Map<String,String> values=new LinkedHashMap<>();public JSONObject(){}
+ public JSONObject(String json){int i=0;String s=json.trim();if(!s.startsWith("{")||!s.endsWith("}"))throw new IllegalArgumentException("JSON object");i=1;while(i<s.length()-1){while(i<s.length()-1&&(Character.isWhitespace(s.charAt(i))||s.charAt(i)==','))i++;if(i>=s.length()-1)break;StringBuilder k=new StringBuilder(),v=new StringBuilder();i=string(s,i,k);while(Character.isWhitespace(s.charAt(i)))i++;if(s.charAt(i++)!=':')throw new IllegalArgumentException();while(Character.isWhitespace(s.charAt(i)))i++;i=string(s,i,v);values.put(k.toString(),v.toString());}}
+ private static int string(String s,int i,StringBuilder out){if(s.charAt(i++)!='\"')throw new IllegalArgumentException();while(i<s.length()){char c=s.charAt(i++);if(c=='\"')return i;if(c=='\\'){c=s.charAt(i++);if(c=='u'){c=(char)Integer.parseInt(s.substring(i,i+4),16);i+=4;}else if(c=='n')c='\n';else if(c=='r')c='\r';else if(c=='t')c='\t';}out.append(c);}throw new IllegalArgumentException();}
+ public JSONObject put(String k,Object v){values.put(k,v==null?"":v.toString());return this;}public String optString(String k,String fallback){return values.getOrDefault(k,fallback);}
+ private static String quote(String s){StringBuilder b=new StringBuilder("\"");for(char c:s.toCharArray()){if(c=='\"'||c=='\\')b.append('\\');if(c=='\n'){b.append("\\n");continue;}b.append(c);}return b.append('\"').toString();}
+ public String toString(){StringJoiner j=new StringJoiner(",","{","}");values.forEach((k,v)->j.add(quote(k)+":"+quote(v)));return j.toString();}
+}"#),
+    ];
+    for (name, source) in stubs {
+        let path = output_dir.path().join(name);
+        fs::write(&path, source).unwrap();
+        sources.push(path);
+    }
     let compile = Command::new("javac")
         .args(["-encoding", "UTF-8"])
         .arg("-d")
         .arg(output_dir.path())
+        .args(&sources)
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlResolver.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlSetting.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlSettingStore.java"))
         .arg(root.join("android/app/src/main/java/com/chatbot/app/util/NativeUnlockGate.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/NativeSecureKey/NativeSecureKeyPlugin.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/NativeSecureKey/CredentialCookies.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/NativeSecureKey/SealedCredentialPayload.java"))
         .arg(root.join("chatbot-server/tests/fixtures/NativeUnlockGateTest.java"))
         .output()
         .expect("test image must provide javac");
@@ -136,8 +234,9 @@ fn native_unlock_gate_decision_runs_on_shipped_java() {
         .arg(output_dir.path())
         .arg("NativeUnlockGateTest")
         .output()
-        .expect("run native unlock gate behavior test");
-    assert!(run.status.success(), "native unlock gate behavior: {}", String::from_utf8_lossy(&run.stderr));
+        .expect("run native unlock behavior test");
+    assert!(run.status.success(), "native unlock behavior: {}\n{}", String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout));
+    print!("{}", String::from_utf8_lossy(&run.stdout));
 }
 
 #[test]
