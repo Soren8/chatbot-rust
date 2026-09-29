@@ -12,7 +12,7 @@ Per-set privacy policy separates encrypted application storage from eligibility 
 
 ## Privacy Modes
 
-Saved sets currently support **Private** and **Non-private**; **Standard** is the proposed intermediate outbound-privacy level, not a selectable mode yet. The three-level policy is `private` (local or verified no-retention processing), `standard` (reputable third parties with limited/anonymized retention), and `non_private` (everything else). New and legacy sets default to `private`; unclassified destinations default to `non_private`. All saved modes retain application history encrypted under the user's key. Eligibility follows `private < standard < non_private`: a chat may use a destination at its level or a stricter level, independently of tier/access restrictions. Mode changes govern future transmissions, not content previously sent.
+Saved sets currently support selectable **Private**, **Standard** and **Non-private** outbound-privacy levels. The three-level policy is `private` (local or verified no-retention processing), `standard` (operator-classified reputable third parties with limited/anonymized retention), and `non_private` (everything else). New and legacy sets default to `private`; unclassified destinations default to `non_private`. All saved modes retain application history encrypted under the user's key. Eligibility follows `private < standard < non_private`: a chat may use a destination at its level or a stricter level, independently of tier/access restrictions. Mode changes govern future transmissions, not content previously sent.
 
 ### 1. Private Mode [Current Default for Saved Sets]
 *   **Best for:** Sensitive personal data, intellectual property, private matters.
@@ -21,13 +21,13 @@ Saved sets currently support **Private** and **Non-private**; **Standard** is th
 *   **OAuth Implication:** OAuth users must set a separate "Storage Password" to use this mode.
 *   **Provider Access:** Only operator-classified Private destinations with local or verified no-retention processing are eligible for model inference, search and voice. A local address, `store: false` or `xai_zdr: true` alone does not establish Private eligibility; the classification must cover the configured service and downstream processing. The server handles plaintext during active requests.
 
-### 2. Standard Mode [Planned; not selectable]
+### 2. Standard Mode [Implemented; selectable]
 *   **Storage:** Same per-request user-key encryption and lack of server-key recovery as Private.
 *   **Provider Access:** Private and Standard destinations are eligible. Standard includes qualified ZDR LLM endpoints, xAI search on ZDR teams (upstream retention is undocumented), and Brave standard search (90-day retention) or enterprise ZDR, when the operator verifies the full route; none qualify as Private solely on those terms.
 
 ### 3. Non-private Mode [Implemented]
 *   **Storage:** Same per-request user-key encryption and lack of server-key recovery as Private.
-*   **Provider Access:** Under the three-level policy, Private, Standard and Non-private destinations are eligible, subject to tier and other access policy. Unclassified destinations default to Non-private. Currently only Private and Non-private classifications are implemented.
+*   **Provider Access:** Under the three-level policy, Private, Standard and Non-private destinations are eligible, subject to tier and other access policy. Unclassified destinations default to Non-private. Destinations are classified by the operator.
 
 ### 4. Recoverable Mode (Server-Managed) [Planned; not selectable]
 *   **Best for:** General tasks, coding assistance, OAuth users.
@@ -58,7 +58,7 @@ Saved sets currently support **Private** and **Non-private**; **Standard** is th
 | Feature | Password Auth (Current) | OAuth (Planned) |
 | :--- | :--- | :--- |
 | **Default saved-set mode** | **Private** (using login-derived key) | Not implemented |
-| **Private / Non-private sets; planned Standard** | All use the same user-key encrypted storage | Not implemented |
+| **Private / Standard / Non-private sets** | All use the same user-key encrypted storage | Not implemented |
 | **Recoverable chats / account recovery** | Not implemented; lost data key cannot be recovered | Not implemented |
 
 ## Per-Request Encryption Key Model
@@ -145,7 +145,7 @@ A compromised origin (XSS that runs) can still read decrypted chat in the DOM. C
 
 ## Current Architecture Status
 
-Saved chats currently have selectable **Private / Non-private** modes with per-request keying; **Standard** is not implemented. Neither Recoverable/server-key storage nor selectable Ephemeral chats exist. Coding-agent execution is not implemented. See [the staged plan](privacy-and-agent-connections-plan.md) for the intended scope beyond Stages A1–A5.
+Saved chats currently have selectable **Private / Standard / Non-private** modes with per-request keying. Neither Recoverable/server-key storage nor selectable Ephemeral chats exist. Coding-agent execution is not implemented. See [the staged plan](privacy-and-agent-connections-plan.md) for the intended scope beyond Stages A1–A5.
 
 1.  **Authenticated Users:**
     *   Durable chat sets live in **redb** as AEAD (AES-256-GCM + HKDF) ciphertext via `HistoryService` (see [design-history-store.md](design-history-store.md)). Display names and the authoritative versioned `SETS_POLICY` mode are encrypted; legacy sets without a policy row read as Private, and newly created sets write Private. Forks inherit source mode. Listing projects mode without decrypting history; regular history edits cannot change it.
@@ -156,9 +156,9 @@ Saved chats currently have selectable **Private / Non-private** modes with per-r
     *   **CRITICAL LIMITATION:** There is **NO Account Recovery**. Losing a password means permanent data loss.
     *   OAuth is not yet implemented.
     *   `POST /set_privacy` requires authentication, CSRF, the user key, an owned set and an expected set version. It atomically advances policy and version with CAS (`409 version_conflict` for a stale version). A shared in-process set-level coordinator holds content permits through outbound work and rejects mode changes during active work with `409 privacy_busy`; this is not a cross-process coordination guarantee.
-    *   Operator-configured model, model-native search, Brave search, STT and TTS privacy classifications default to Non-private. Currently Private content can reach only destinations classified Private; Non-private content may reach either. The planned Standard level permits Private or Standard destinations, while Non-private permits all three, subject to tier and voice access rules. Chat/regenerate deny an incompatible model or requested search before transmission with `403 privacy_restricted`, including checks for fallback destinations. Classification is an operator assertion about the full route, not proof of upstream deletion.
+    *   Operator-configured model, model-native search, Brave search, STT and TTS privacy classifications default to Non-private. Private content can reach only destinations classified Private; Standard permits Private or Standard destinations, while Non-private permits all three, subject to tier and voice access rules. Chat/regenerate deny an incompatible model or requested search before transmission with `403 privacy_restricted`, including checks for fallback destinations. Classification is an operator assertion about the full route, not proof of upstream deletion.
     *   Voice requests bind an owned `set_id` to the initiating conversation. Authenticated old clients without one use an immutable Private context with a valid key, never the active set; disallowed voice destinations are denied. Guests without `set_id` retain guest access rules with **no Private guarantee**; guests with `set_id` and authenticated requests with invalid/foreign IDs are rejected. TTS authorizes at token admission and again at delayed synthesis, retaining the bound destination without retaining the data key; a successful set-mode change invalidates queued/cached tokens for that set, while active synthesis blocks the change.
-    *   The shared UI indicates 🔒 Private or Non-private, deliberately confirms a switch to Non-private, and gates saved-set send/search/voice until policy loads. It gates incompatible destinations without silently changing the selected model. Guest UI calls history “Temporary in this app” and distinguishes provider retention.
+    *   The shared UI indicates 🔒 Private, Standard or Non-private, deliberately confirms transitions to Standard and Non-private from stricter levels, and gates saved-set send/search/voice until policy loads. It gates incompatible destinations without silently changing the selected model. Guest UI calls history “Temporary in this app” and distinguishes provider retention.
 
 2.  **Anonymous Users:**
     *   Guests have RAM-only application history (no redb or `X-Enc-Key` requirement), not selectable Ephemeral mode or an upstream-retention guarantee.

@@ -1126,7 +1126,7 @@ function desktopTtsIsLive(sessionId) {
 let loadedPrivacy = null;
 let privacyChanging = false;
 const PRIVACY_LEVELS = ['private', 'standard', 'non_private'];
-const SELECTABLE_PRIVACY_LEVELS = ['private', 'non_private'];
+const SELECTABLE_PRIVACY_LEVELS = ['private', 'standard', 'non_private'];
 function privacyEligible(destination, chatLevel) {
   const required = PRIVACY_LEVELS.indexOf(chatLevel);
   const classified = PRIVACY_LEVELS.indexOf(destination);
@@ -3069,8 +3069,12 @@ $(document).ready(function() {
       const requested = this.value;
       this.value = loadedPrivacy ? loadedPrivacy.level : '';
       if (!chatPolicyReady() || !SELECTABLE_PRIVACY_LEVELS.includes(requested) || requested === loadedPrivacy.level) return;
-      if (PRIVACY_LEVELS.indexOf(requested) > PRIVACY_LEVELS.indexOf(loadedPrivacy.level)
-          && !confirm('Non-private services may retain data or train on it. Earlier transmissions cannot be undone. Allow this chat to use them?')) return;
+      if (PRIVACY_LEVELS.indexOf(requested) > PRIVACY_LEVELS.indexOf(loadedPrivacy.level)) {
+        const warning = requested === 'standard'
+          ? 'Standard services may have limited or anonymized retention. Earlier transmissions cannot be undone. Allow this chat to use them?'
+          : 'Non-private services may retain data or train on it. Earlier transmissions cannot be undone. Allow this chat to use them?';
+        if (!confirm(warning)) return;
+      }
       const binding = captureVoiceBinding();
       const expectedVersion = window.APP_DATA.setVersion;
       if (expectedVersion == null || !binding.setId) return;
