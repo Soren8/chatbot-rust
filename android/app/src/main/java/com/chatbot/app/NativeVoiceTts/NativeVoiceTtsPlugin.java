@@ -205,7 +205,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                             writePcmToTrack(clip.sampleRate, clip.pcm, generation);
                         }
                     } catch (ExecutionException e) {
-                        Log.e(TAG, "clip failed; continuing queue", e.getCause());
+                        Log.e(TAG, "clip failed; continuing queue");
                     } finally {
                         queue.complete(pending);
                         if (isGenerationActive(generation)) {
@@ -227,7 +227,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 Thread.currentThread().interrupt();
                 return;
             } catch (Exception e) {
-                Log.e(TAG, "playback loop error; continuing", e);
+                Log.e(TAG, "playback loop error; continuing");
                 ClientLogReporter.report("VOICE-ERROR", "voice: tts playback loop error, continuing");
                 releaseAudioTrack(generation);
             }
@@ -257,7 +257,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 return playUrlToTrackOnce(urlStr, generation);
             } catch (IOException e) {
                 last = e;
-                Log.e(TAG, "playUrlToTrack attempt " + attempt + " failed", e);
+                Log.e(TAG, "playUrlToTrack attempt " + attempt + " failed");
             }
         }
         if (last != null) {

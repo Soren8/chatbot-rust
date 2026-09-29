@@ -545,9 +545,24 @@ mod tests {
 
     #[test]
     fn sanitize_text_and_number_expansion_do_not_log_private_speech() {
-        let _capture = crate::test_instrumentation::LOG_CAPTURE_LOCK
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        const TEST_NAME: &str = "tts::text::tests::sanitize_text_and_number_expansion_do_not_log_private_speech";
+        const CHILD_ENV: &str = "CHATBOT_TTS_LOG_CAPTURE_CHILD";
+
+        // Other sanitizer tests can first-register these tracing callsites with
+        // no subscriber. Isolate capture from that process-wide interest cache.
+        if std::env::var(CHILD_ENV).as_deref() != Ok(TEST_NAME) {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, TEST_NAME)
+                .output()
+                .expect("run isolated speech-log regression");
+            let stdout = String::from_utf8_lossy(&child.stdout);
+            let stderr = String::from_utf8_lossy(&child.stderr);
+            assert!(child.status.success(), "speech-log regression failed:\n{stdout}\n{stderr}");
+            assert!(stdout.contains("1 passed; 0 failed"), "isolated regression did not run:\n{stdout}\n{stderr}");
+            return;
+        }
+
         let logs = Logs(Arc::new(Mutex::new(Vec::new())));
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)
@@ -555,12 +570,6 @@ mod tests {
             .with_writer(logs.clone())
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
-        // Thread-local installs do not rebuild tracing's global callsite-interest
-        // cache: if another test fired these callsites first with no subscriber,
-        // their interest stays `never` and our events are silently dropped.
-        // Rebuild here (while holding the capture lock, so no concurrent
-        // subscriber install can re-poison the cache mid-test).
-        tracing::callsite::rebuild_interest_cache();
         let prompt = "SEC006_PRIVATE_SPEECH_PROMPT_9241";
         let url = "https://private-speech.example/SEC006_PRIVATE_URL_7318";
         let number = "847291";
@@ -576,7 +585,13 @@ mod tests {
         for sentinel in [prompt, url, number] {
             assert!(!output.contains(sentinel), "speech content appeared in tracing logs: {sentinel}");
         }
-        for stage in ["sanitize_text: starting", "sanitize_text: URL matches before stripping"] {
+        for stage in [
+            "sanitize_text: starting",
+            "sanitize_text: URL matches before stripping",
+            "sanitize_text: after URL removal",
+            "expand_speech_numbers: result",
+            "sanitize_text: final result",
+        ] {
             assert!(output.contains(stage), "missing speech pipeline stage: {stage}");
         }
     }

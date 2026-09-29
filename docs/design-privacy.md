@@ -105,6 +105,8 @@ Browsers grant secure context (required for Web Crypto key derivation) for https
 
 For LAN/browser development with full Private Mode support, use Tailscale Serve (or equivalent) to terminate TLS on your node with publicly-trusted certs, or access via http://localhost. See the development notes in README.md.
 
+The native resume-lock overlay requires successful biometric/device-credential authentication for both Unlock and Switch Account. Unavailable, cancelled or failed authentication leaves the overlay locked and does not navigate; account switching begins only after success. Native TTS download/retry/queue diagnostics omit bearer URLs and throwable text that could contain those URLs, retaining status codes, attempt numbers and fixed failure descriptions.
+
 Enrollment flow: login derives the key client-side (or on the server if Web Crypto is unavailable) → server stores the key verifier and sets HttpOnly `enc_key` and, when remember is checked, `enc_key-{username}` → IndexedDB records the username for the login dropdown. Data requests send the cookies; tests may send `X-Enc-Key`.
 
 ### Transport requirements

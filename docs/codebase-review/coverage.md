@@ -1,5 +1,9 @@
 # Review coverage
 
+## Session 084 — Phase 4 completion accepted
+
+The primary completion review accepts the Sec coverage and explicit boundary/test-body exclusions recorded below; the sessions-075–083 pending-verdict heading is historical. Additional closing reads covered the remember/forget chain, session-083 lock/logging changes, native overlay listeners and biometric callbacks, native TTS retry/worker exception logging, and the closing regression bodies. Both newly found native gaps were fixed with behavioral reds and a passing full suite/APK gate. See [security.md, session 084](security.md#session-084--primary-completion-review-2026-09-29). Existing backlog candidates and other-phase deferrals are retained; completion does not convert read coverage into proof of absence or claim a full assertion-quality audit.
+
 ## Sessions 075–083 — Phase 4 Sec column (review verdict pending)
 
 Sec `R` now covers every application unit except T01/T02/T04 (security-regression bodies only; assertion-level review is test-quality scope) and boundary units (V01/S07/N04/O03/D01/D02/R00, exclusions as stated).

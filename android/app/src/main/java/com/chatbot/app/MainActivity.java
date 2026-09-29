@@ -451,12 +451,12 @@ public class MainActivity extends BridgeActivity {
 
         Button switchBtn = new Button(this);
         switchBtn.setText("Switch Account");
-        switchBtn.setOnClickListener(v -> {
+        switchBtn.setOnClickListener(v -> promptResumeUnlock(() -> {
             unlockApp();
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().loadUrl(resolveServerUrl() + "/login");
             }
-        });
+        }));
         layout.addView(switchBtn);
 
         lockOverlay.addView(layout);
@@ -464,6 +464,10 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void promptResumeUnlock() {
+        promptResumeUnlock(this::unlockApp);
+    }
+
+    private void promptResumeUnlock(Runnable onSuccess) {
         BiometricManager biometricManager = BiometricManager.from(this);
         int authenticators;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -487,7 +491,7 @@ public class MainActivity extends BridgeActivity {
                 new BiometricPrompt.AuthenticationCallback() {
                     @Override
                     public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
-                        unlockApp();
+                        onSuccess.run();
                     }
 
                     @Override

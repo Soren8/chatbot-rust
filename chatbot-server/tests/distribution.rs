@@ -68,6 +68,48 @@ const EMULATOR_URL: &str = "http://10.0.2.2:80";
 /// Canonical physical origin: Tailscale Serve https (secure context for WebCodecs).
 const PHYSICAL_URL: &str = "https://desktop-1.tailfc0df0.ts.net";
 
+fn java_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    source.split_once(start).unwrap_or_else(|| panic!("missing Java section start: {start}"))
+        .1.split_once(end).unwrap_or_else(|| panic!("missing Java section end: {end}"))
+        .0
+}
+
+fn run_extracted_java(class_name: &str, fixture: &str, source_section: &str, extra_source: Option<&str>) {
+    let output_dir = tempfile::tempdir().unwrap();
+    let source = fixture.replace("/* SHIPPED_METHODS */", source_section);
+    let path = output_dir.path().join(format!("{class_name}.java"));
+    fs::write(&path, source).unwrap();
+    let mut compile = Command::new("javac");
+    compile.args(["-encoding", "UTF-8"]).arg("-d").arg(output_dir.path()).arg(&path);
+    if let Some(extra_source) = extra_source {
+        compile.arg(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(extra_source));
+    }
+    let compile = compile.output().expect("javac available");
+    assert!(compile.status.success(), "{class_name} compile: {}", String::from_utf8_lossy(&compile.stderr));
+    let run = Command::new("java").arg("-cp").arg(output_dir.path()).arg(class_name)
+        .output().expect("java available");
+    assert!(run.status.success(), "{class_name} behavior: {}\n{}",
+        String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout));
+    print!("{}", String::from_utf8_lossy(&run.stdout));
+}
+
+#[test]
+fn locked_switch_and_unlock_require_successful_shipped_biometric_callback() {
+    let section = java_section(MAIN_ACTIVITY, "private void ensureLockOverlay() {",
+        "private void updateWindowSecurity(boolean hasFocus) {");
+    run_extracted_java("Phase4ResumeLockTest", include_str!("fixtures/Phase4ResumeLockTest.java"),
+        &format!("private void ensureLockOverlay() {{{section}"),
+        Some("android/app/src/main/java/com/chatbot/app/util/NativeUnlockGate.java"));
+}
+
+#[test]
+fn native_tts_url_failures_do_not_log_throwable_content() {
+    let section = java_section(NATIVE_TTS, "private void workerLoop(",
+        "private AudioClip playUrlToTrackOnce(");
+    run_extracted_java("Phase4TtsLogTest", include_str!("fixtures/Phase4TtsLogTest.java"),
+        &format!("private void workerLoop({section}"), None);
+}
+
 #[test]
 fn native_cached_key_is_not_exposed_to_page_js() {
     assert!(
@@ -145,8 +187,9 @@ fn resume_lock_unavailable_cannot_dismiss_overlay() {
         "unavailable authentication must log and leave retry available");
     assert!(MAIN_ACTIVITY.contains("unlockBtn.setOnClickListener(v -> promptResumeUnlock())"),
         "Unlock button must retry");
-    assert!(prompt.contains("public void onAuthenticationSucceeded(") &&
-        prompt.contains("unlockApp();"), "only successful authentication dismisses the lock");
+    assert!(prompt.contains("promptResumeUnlock(this::unlockApp)")
+        && prompt.contains("public void onAuthenticationSucceeded(")
+        && prompt.contains("onSuccess.run();"), "normal Unlock must dismiss only through successful authentication");
     let failure = prompt.split("public void onAuthenticationError(").nth(1).unwrap();
     assert!(!failure.split("public void onAuthenticationFailed(").next().unwrap().contains("unlockApp()"),
         "cancel must retain the lock");

@@ -1,5 +1,9 @@
 # Codebase review program
 
+## Session 084 — current completion status, 2026-09-29
+
+**Phase 4 is complete for the agreed repository-wide security/privacy review and bounded fixes**, following the primary completion review and native follow-up corrections. This supersedes the Phase-4-pending status in the earlier records below. Final full suite: `20260929T043340-482ba1a11f9d`, 1,033 Rust tests plus 64 Python tests passed; matching-snapshot physical-debug APK: `20260929T044047-c48de723468d`, 72 tasks successful. The log-capture race, locked-screen account-switch bypass and native TTS throwable logging are resolved with retained/strengthened regressions. Evidence, accepted deferrals and device/topology limits are recorded in [security.md, session 084](security.md#session-084--primary-completion-review-2026-09-29). Phases 1–4 are complete for their authorized scopes; phases 5–7 have not started.
+
 Latest resume point: Phase 3 complete following the primary completion review at `fb65803`, reaffirmed at `be18093`. Batches ABS-001–012 and the completed S01 review are recorded in [abstractions.md](abstractions.md). Earlier checkpoints record their original scope and status.
 
 ## Overall phase status and review gate
