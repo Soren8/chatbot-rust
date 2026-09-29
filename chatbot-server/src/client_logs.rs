@@ -89,12 +89,11 @@ pub async fn handle_client_logs(request: Request<Body>) -> Result<Response<Body>
     // the page's CSRF token, so a live session cookie is accepted as
     // authorization when no CSRF header is presented; a presented CSRF token
     // must still validate. Rate limiting applies (route is in LIMITED_PATHS).
-    // The throttling identity also accepts presented-but-unknown cookies.
     let authorized = match csrf_token {
         Some(token) => identity
             .validate_csrf_token(cookie_header.as_deref(), Some(token))
             .map_err(|err| map_session_err(err, "client_logs::csrf"))?,
-        None => identity.rate_limit_identity(cookie_header.as_deref()).is_some(),
+        None => identity.has_live_session(cookie_header.as_deref()),
     };
     if !authorized {
         return Err(api_error(
@@ -114,6 +113,7 @@ pub async fn handle_client_logs(request: Request<Body>) -> Result<Response<Body>
         .source
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "client".to_string());
+    let source = sanitize_client_log_line(&source);
 
     // The client is expected to sanitize before upload; this is defense in
     // depth so credentials/PII never reach the host log even from a careless

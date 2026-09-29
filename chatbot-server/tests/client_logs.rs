@@ -8,7 +8,40 @@ use axum::{
 };
 use chatbot_server::{build_router, client_logs, resolve_static_root};
 use chatbot_test_support::TestWorkspace;
+use chatbot_core::session_identity::HttpSessionStore;
+use chatbot_server::{build_router_with_identity, identity::RequestIdentity};
+use std::{io::Write, sync::{Arc, Mutex}};
 use tower::ServiceExt;
+
+static WORKSPACE_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Clone)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl Write for LogCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = LogCapture;
+    fn make_writer(&'a self) -> Self::Writer { self.clone() }
+}
+
+async fn post_logs(app: &axum::Router, cookie: &str, csrf: Option<&str>, body: &str) -> StatusCode {
+    let mut request = Request::builder().method(Method::POST).uri("/client_logs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, cookie);
+    if let Some(csrf) = csrf {
+        request = request.header("x-csrf-token", csrf);
+    }
+    app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await.expect("POST /client_logs").status()
+}
 
 fn test_config() -> String {
     r#"
@@ -105,6 +138,7 @@ async fn session_cookie_from_home(
 
 #[tokio::test]
 async fn client_logs_accept_live_session_cookie_without_csrf() {
+    let _lock = WORKSPACE_LOCK.lock().unwrap();
     common::init_tracing();
     let _workspace = TestWorkspace::with_config(&test_config());
     let app = build_router(resolve_static_root());
@@ -135,6 +169,7 @@ async fn client_logs_accept_live_session_cookie_without_csrf() {
 
 #[tokio::test]
 async fn client_logs_reject_unknown_sessions() {
+    let _lock = WORKSPACE_LOCK.lock().unwrap();
     common::init_tracing();
     let _workspace = TestWorkspace::with_config(&test_config());
     let app = build_router(resolve_static_root());
@@ -156,4 +191,41 @@ async fn client_logs_reject_unknown_sessions() {
         StatusCode::UNAUTHORIZED,
         "no session cookie -> reject; do not accept anonymous log spam"
     );
+}
+
+#[tokio::test]
+async fn client_logs_require_live_session_without_csrf_and_reject_bad_csrf() {
+    let _lock = WORKSPACE_LOCK.lock().unwrap();
+    let _workspace = TestWorkspace::with_config(&test_config());
+    let store = Arc::new(HttpSessionStore::new(3600));
+    let app = build_router_with_identity(resolve_static_root(), RequestIdentity::with_store_and_csrf(store.clone(), true));
+    let guest = session_cookie_from_home(&app).await;
+    let body = r#"{"lines":["test"]}"#;
+
+    assert_eq!(post_logs(&app, "session=unknown-session-cookie", None, body).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(post_logs(&app, &guest, None, body).await, StatusCode::NO_CONTENT);
+    assert_eq!(post_logs(&app, &guest, Some("invalid-csrf"), body).await, StatusCode::UNAUTHORIZED);
+    let authenticated = store.finalize_login(Some(&guest), "log_user", true).unwrap();
+    let authenticated_cookie = common::extract_cookie(&authenticated.set_cookie);
+    assert_eq!(post_logs(&app, &guest, None, body).await, StatusCode::UNAUTHORIZED, "rotated session is no longer live");
+    assert_eq!(post_logs(&app, &authenticated_cookie, None, body).await, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn client_logs_do_not_emit_secrets_in_source_field() {
+    let _lock = WORKSPACE_LOCK.lock().unwrap();
+    let _workspace = TestWorkspace::with_config(&test_config());
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN)
+        .with_ansi(false).with_writer(LogCapture(captured.clone())).finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let app = build_router_with_identity(resolve_static_root(), RequestIdentity::with_store_and_csrf(Arc::new(HttpSessionStore::new(3600)), true));
+    let cookie = session_cookie_from_home(&app).await;
+    let secret = "enc-key=private-password-derived-key";
+    let body = serde_json::json!({"source": format!("android {secret}"), "lines": ["report"]}).to_string();
+
+    assert_eq!(post_logs(&app, &cookie, None, &body).await, StatusCode::NO_CONTENT);
+    let emitted = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    assert!(emitted.contains("client log"), "expected a captured warning: {emitted}");
+    assert!(!emitted.contains("private-password-derived-key"), "source secret reached warning fields: {emitted}");
 }

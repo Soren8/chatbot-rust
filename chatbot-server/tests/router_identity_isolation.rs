@@ -356,13 +356,12 @@ async fn isolated_routers_preserve_unknown_cookie_log_policy() {
     let unknown = "session=router-identity-unknown-cookie";
 
     for app in [&app_a, &app_b] {
-        // SEC-002 policy preserved per router: a presented-but-unknown
-        // cookie still authorizes log ingestion without a CSRF header, and
-        // the absence of any cookie still rejects.
+        // Each router rejects unknown and missing cookies without a CSRF
+        // header; a presented CSRF token still has to validate.
         assert_eq!(
             post_client_logs(app, Some(unknown), None).await,
-            StatusCode::NO_CONTENT,
-            "unknown cookie must authorize client_logs without CSRF"
+            StatusCode::UNAUTHORIZED,
+            "unknown cookie must not authorize client_logs without CSRF"
         );
         assert_eq!(
             post_client_logs(app, None, None).await,
@@ -399,15 +398,16 @@ async fn isolated_router_keeps_rate_limit_unknown_cookie_fallback() {
     let app = isolated_router();
     let unknown = "session=router-identity-ratelimit-cookie";
 
-    // The unknown cookie maps to a stable per-cookie budget without creating
-    // a session: the first two ingestions pass, the third is rate limited.
+    // Middleware still maps an unknown cookie to a stable per-cookie budget
+    // without creating a session: authorization rejects the first two
+    // requests, then the third is rate limited before reaching the handler.
     assert_eq!(
         post_client_logs(&app, Some(unknown), None).await,
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app, Some(unknown), None).await,
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         post_client_logs(&app, Some(unknown), None).await,
