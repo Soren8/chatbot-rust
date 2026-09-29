@@ -457,7 +457,7 @@ async fn remember_previous_generation_rejected_without_revoking() {
 }
 
 #[tokio::test]
-async fn remember_two_generations_old_replay_revokes_family() {
+async fn remember_two_generations_old_replay_rejected_without_revocation() {
     common::init_tracing();
     let _guard = test_mutex().lock().unwrap();
     let _workspace = setup_workspace();
@@ -480,7 +480,7 @@ async fn remember_two_generations_old_replay_revokes_family() {
     let cookies = set_cookie_values(response.headers());
     let third_token = find_cookie_pair(&cookies, "remember").expect("rotated token");
 
-    // Two generations stale: treated as theft, the family is revoked.
+    // Two generations stale: rejected without revoking the current secret.
     let (csrf, cookie_header) = fresh_restore_session(&app, &first_token).await;
     let replay = post_remember_login(&app, &cookie_header, &csrf, true).await;
     assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
@@ -489,8 +489,8 @@ async fn remember_two_generations_old_replay_revokes_family() {
     let after_revoke = post_remember_login(&app, &cookie_header, &csrf, true).await;
     assert_eq!(
         after_revoke.status(),
-        StatusCode::UNAUTHORIZED,
-        "family revocation must invalidate the rotated token too"
+        StatusCode::OK,
+        "a stale replay must not invalidate the rotated token"
     );
 }
 
@@ -660,7 +660,7 @@ async fn home_auto_restore_twice_does_not_self_revoke_per_account_cookie() {
     assert_eq!(
         stale.status(),
         StatusCode::UNAUTHORIZED,
-        "two-generation-old token must still revoke the family"
+        "two-generation-old token must be rejected"
     );
 
     let (csrf, cookie_header) = fresh_restore_session(&app, &second_account).await;
@@ -669,7 +669,7 @@ async fn home_auto_restore_twice_does_not_self_revoke_per_account_cookie() {
     assert_eq!(
         after_revoke.status(),
         StatusCode::UNAUTHORIZED,
-        "theft detection must still invalidate the family after a two-generation replay"
+        "older token must remain invalid after a two-generation replay"
     );
 }
 
@@ -1566,3 +1566,97 @@ async fn forget_expired_or_revoked_account_clears_cookies_without_affecting_othe
     );
 }
 
+#[tokio::test]
+async fn rotated_out_account_cookie_can_forget_its_family() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+    let username = "rotation_forget";
+    seed_user(username, "Sup3rS3cret!");
+    let app = build_app();
+    let (_session, previous) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+    let (csrf, guest_with_token) = fresh_restore_session(&app, &previous).await;
+    let rotated = post_remember_login(&app, &guest_with_token, &csrf, true).await;
+    assert_eq!(rotated.status(), StatusCode::OK);
+    let current = find_cookie_pair(&set_cookie_values(rotated.headers()), "remember")
+        .expect("rotation cookie");
+    assert_ne!(current, previous);
+
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let previous_account = previous.replacen("remember=", &format!("remember-{username}="), 1);
+    let forget = app.clone().oneshot(Request::builder()
+        .method(Method::POST).uri("/login/forget")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, format!("{guest}; {current}; {previous_account}"))
+        .body(Body::from(format!("csrf_token={csrf}&username={username}"))).unwrap())
+        .await.expect("POST /login/forget");
+    assert_eq!(forget.status(), StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_slice(&to_bytes(forget.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(payload["revoked"], true);
+    assert_eq!(remember_family_count(&workspace), 0);
+    let (csrf, cookies) = fresh_restore_session(&app, &current).await;
+    assert_eq!(post_remember_login(&app, &cookies, &csrf, true).await.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn forged_family_cookie_cannot_forget_victim_family() {
+    use base64::Engine;
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+    let username = "forged_forget";
+    seed_user(username, "Sup3rS3cret!");
+    let app = build_app();
+    let (_session, valid) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+    let mut bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(valid.strip_prefix("remember=").unwrap()).unwrap();
+    bytes[16] ^= 1;
+    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let forget = app.clone().oneshot(Request::builder()
+        .method(Method::POST).uri("/login/forget")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, format!("{guest}; remember-{username}={forged}"))
+        .body(Body::from(format!("csrf_token={csrf}&username={username}"))).unwrap())
+        .await.expect("POST /login/forget");
+    assert_eq!(forget.status(), StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_slice(&to_bytes(forget.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(payload["revoked"], false);
+    assert_eq!(remember_family_count(&workspace), 1);
+    let (csrf, cookies) = fresh_restore_session(&app, &valid).await;
+    assert_eq!(post_remember_login(&app, &cookies, &csrf, true).await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn forged_family_cookie_on_home_cannot_delete_victim_family() {
+    use base64::Engine;
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+    let username = "forged_home";
+    seed_user(username, "Sup3rS3cret!");
+    let app = build_app();
+    let (_session, valid) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+    let mut bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(valid.strip_prefix("remember=").unwrap()).unwrap();
+    bytes[16] ^= 1;
+    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let family_hex: String = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(valid.strip_prefix("remember=").unwrap()).unwrap()[..16]
+        .iter().map(|byte| format!("{byte:02x}")).collect();
+    let family_file = workspace.path().join("remember_tokens").join(format!("{family_hex}.json"));
+    assert!(family_file.exists(), "issued family file must exist");
+
+    let home = app.clone().oneshot(Request::builder().uri("/")
+        .header(header::COOKIE, format!("remember={forged}"))
+        .body(Body::empty()).unwrap()).await.expect("GET / with forged remember cookie");
+    assert_eq!(home.status(), StatusCode::OK);
+    let body = to_bytes(home.into_body(), 128 * 1024).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("\"loggedIn\": false"));
+    assert!(family_file.exists(), "invalid bearer must not remove the family file");
+    let (csrf, cookies) = fresh_restore_session(&app, &valid).await;
+    assert_eq!(post_remember_login(&app, &cookies, &csrf, true).await.status(), StatusCode::OK);
+}

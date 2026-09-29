@@ -9,8 +9,9 @@
 //! Token format: `base64url(family_id(16B) || secret(32B))`. The server stores
 //! only `sha256(secret)` per family in `data/remember_tokens/{family_hex}.json`,
 //! so nothing reusable survives a disk leak. Every successful use rotates the
-//! secret; presenting a rotated-out secret is treated as theft and revokes the
-//! whole family (including the currently valid token).
+//! secret; a mismatched secret fails closed without deleting the family:
+//! unauthenticated deletion with only a known family ID would permit DoS.
+//! Theft of a current secret is indistinguishable from valid bearer use.
 
 use std::{
     env, fs,
@@ -51,7 +52,7 @@ struct RememberRecord {
     secret_hash: String,
     /// hex(sha256(previous secret)) — one-generation grace so concurrent tabs
     /// presenting the pre-rotation token are rejected without revoking the
-    /// family. Only tokens two or more generations stale revoke.
+    /// family. Older tokens are also rejected without revocation.
     #[serde(default)]
     prev_secret_hash: Option<String>,
     created: u64,
@@ -143,7 +144,8 @@ impl RememberStore {
         Some(record.username)
     }
 
-    /// Revoke the presented family only when it belongs to `username`.
+    /// Revoke the presented family only when it belongs to `username` and the
+    /// bearer secret is current or one generation previous.
     pub fn revoke_if_username(&self, token: Option<&str>, username: &str) -> bool {
         let _guard = store_lock();
         let Some((family, secret)) = parse_token(token) else {
@@ -153,15 +155,20 @@ impl RememberStore {
         let Some(record) = self.read_record(&family_hex) else {
             return false;
         };
-        if unix_now() >= record.expires || record.username != username || !secret_matches(&record, &secret) {
+        let presented = Sha256::digest(&secret);
+        let previous_matches = record.prev_secret_hash.as_deref()
+            .and_then(hex_to_bytes)
+            .is_some_and(|previous| constant_time_eq(presented.as_slice(), &previous));
+        if unix_now() >= record.expires || record.username != username
+            || !(secret_matches(&record, &secret) || previous_matches) {
             return false;
         }
         fs::remove_file(self.family_path(&family_hex)).is_ok()
     }
 
     /// Validate a presented token. On success the secret is rotated (same
-    /// family) and the replacement token returned. A stale secret revokes the
-    /// entire family. Expired or unknown tokens are rejected.
+    /// family) and the replacement token returned. Mismatched, expired or
+    /// unknown tokens are rejected without secret-mismatch revocation.
     pub fn resume(&self, token: Option<&str>) -> Result<ResumeOutcome, RememberError> {
         let _guard = store_lock();
         let Some((family, secret)) = parse_token(token) else {
@@ -186,19 +193,7 @@ impl RememberStore {
         };
         let presented = Sha256::digest(&secret);
         let matches_current = constant_time_eq(presented.as_slice(), &stored);
-        let matches_previous = record
-            .prev_secret_hash
-            .as_deref()
-            .and_then(hex_to_bytes)
-            .map(|prev| constant_time_eq(presented.as_slice(), &prev))
-            .unwrap_or(false);
         if !matches_current {
-            if !matches_previous {
-                // Replay of an out-of-rotation secret: assume theft, revoke
-                // the family. The previous generation gets a grace pass so
-                // concurrent tabs don't kill each other's token.
-                let _ = fs::remove_file(&path);
-            }
             return Ok(ResumeOutcome::Invalid);
         }
 
@@ -563,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn two_generations_old_replay_revokes_family() {
+    fn two_generations_old_replay_rejected_without_revocation() {
         with_temp_store(|store, _| {
             let first = store.issue("alice").expect("issue");
             let second = match store.resume(Some(&first)).expect("resume") {
@@ -574,14 +569,14 @@ mod tests {
                 ResumeOutcome::Authenticated { replacement_token, .. } => replacement_token,
                 ResumeOutcome::Invalid => panic!("valid token rejected"),
             };
-            // Two generations stale: treated as theft, family revoked.
+            // Two generations stale: rejected without invalidating the current token.
             assert!(matches!(
                 store.resume(Some(&first)).expect("resume"),
                 ResumeOutcome::Invalid
             ));
             assert!(matches!(
                 store.resume(Some(&third)).expect("resume"),
-                ResumeOutcome::Invalid
+                ResumeOutcome::Authenticated { .. }
             ));
         });
     }

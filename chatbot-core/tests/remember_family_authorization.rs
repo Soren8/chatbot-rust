@@ -86,3 +86,19 @@ fn forged_family_cookie_cannot_revoke_during_password_login_opt_out() {
         ResumeOutcome::Authenticated { .. }
     ));
 }
+
+#[test]
+fn previous_generation_can_revoke_its_own_family_but_not_another_username() {
+    let root = tempfile::tempdir().unwrap();
+    let accounts = AccountService::with_root_and_secret(root.path().to_path_buf(), "test-secret");
+    let store = accounts.remember().unwrap();
+    let previous = store.issue("alice").unwrap();
+    let current = match store.resume(Some(&previous)).unwrap() {
+        ResumeOutcome::Authenticated { replacement_token, .. } => replacement_token,
+        ResumeOutcome::Invalid => panic!("issued token must resume"),
+    };
+
+    assert!(!store.revoke_if_username(Some(&previous), "bob"));
+    assert!(store.revoke_if_username(Some(&previous), "alice"));
+    assert!(matches!(store.resume(Some(&current)).unwrap(), ResumeOutcome::Invalid));
+}
