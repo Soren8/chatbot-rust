@@ -66,6 +66,54 @@ const EMULATOR_URL: &str = "http://10.0.2.2:80";
 const PHYSICAL_URL: &str = "https://desktop-1.tailfc0df0.ts.net";
 
 #[test]
+fn native_cached_key_is_not_exposed_to_page_js() {
+    assert!(
+        !SECURE_KEY_PLUGIN.contains("public void getKey(PluginCall"),
+        "NativeSecureKey must not export getKey through the Capacitor bridge"
+    );
+    assert!(
+        !SECURE_KEY_PLUGIN.contains("result.put(\"key\", cached)")
+            && !SECURE_KEY_PLUGIN.contains("result.put(\"key\", key)"),
+        "cached or unwrapped keys must not be returned to page JS"
+    );
+    let unlock = SECURE_KEY_PLUGIN
+        .split("public void unlockCachedLogin(PluginCall call)")
+        .nth(1)
+        .expect("cached login must still be supported")
+        .split("@PluginMethod")
+        .next()
+        .unwrap();
+    assert!(
+        unlock.contains("CredentialCookies.injectCookieValue") && unlock.contains("cm.flush()"),
+        "cached login must still inject credentials into the cookie jar"
+    );
+    assert!(
+        !unlock.contains("result.put(\"key\""),
+        "cached login must not return the unwrapped key to page JS"
+    );
+}
+
+#[test]
+fn native_cached_login_fails_closed_without_authentication_gate() {
+    let unlock = SECURE_KEY_PLUGIN
+        .split("public void unlockCachedLogin(PluginCall call)")
+        .nth(1)
+        .expect("cached login must still be supported")
+        .split("@PluginMethod")
+        .next()
+        .unwrap();
+    assert!(
+        unlock.contains("if (!canPromptForBiometric()) {")
+            && unlock.contains("call.reject(\"biometric or device credential unlock unavailable\")"),
+        "cached login must reject rather than decrypt without a prompt"
+    );
+    assert!(
+        !SECURE_KEY_PLUGIN.contains("generateWrapKey(false)"),
+        "wrapping key creation must not fall back to a non-auth-bound key"
+    );
+}
+
+#[test]
 fn capacitor_config_defines_both_server_urls_without_ambiguous_override() {
     let config: serde_json::Value =
         serde_json::from_str(CAPACITOR_CONFIG).expect("root capacitor.config.json must parse as JSON");

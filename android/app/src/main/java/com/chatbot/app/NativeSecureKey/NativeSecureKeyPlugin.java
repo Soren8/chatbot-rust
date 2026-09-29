@@ -53,13 +53,7 @@ public class NativeSecureKeyPlugin extends Plugin {
     private static final int PBKDF2_ITERATIONS = 100_000;
     private static final int PBKDF2_KEY_BITS = 256;
 
-    /**
-     * Keys returned by getKey for this app-process lifetime, keyed by account.
-     * Lets one biometric unlock cover a whole login flow (keyauth call plus
-     * the chat page that follows) and keeps password logins prompt-free,
-     * since storeKey primes the cache. Cleared on clearKey / process death and
-     * whenever the server selection changes.
-     */
+    /** Pending cookie-sealing fallback for a just-stored account key. */
     private static final Map<String, String> unlockedKeys = new ConcurrentHashMap<>();
 
     private static String accountSlot(String account) {
@@ -198,99 +192,6 @@ public class NativeSecureKeyPlugin extends Plugin {
         }
     }
 
-    /**
-     * Read the wrapped data-key slot for an account: origin-scoped slot
-     * first; legacy untagged slot only while the selected origin is still the
-     * flavor default (pre-feature installs migrated in place).
-     */
-    private String[] readIvData(SharedPreferences prefs, String account) {
-        String ivB64 = prefs.getString(originPrefKey(PREF_IV, account), null);
-        String dataB64 = prefs.getString(originPrefKey(PREF_DATA, account), null);
-        if (ivB64 == null || dataB64 == null) {
-            if (legacySlotAllowed()) {
-                ivB64 = prefs.getString(prefKey(PREF_IV, account), null);
-                dataB64 = prefs.getString(prefKey(PREF_DATA, account), null);
-            }
-        }
-        return new String[]{ivB64, dataB64};
-    }
-
-    @PluginMethod
-    public void getKey(PluginCall call) {
-        String account = call.getString("account");
-        if (account != null && !account.isEmpty()) {
-            String cached = unlockedKeys.get(account);
-            if (cached != null) {
-                JSObject result = new JSObject();
-                result.put("key", cached);
-                call.resolve(result);
-                return;
-            }
-        }
-        // Origin captured before the async decrypt: a pending biometric
-        // unlock from the old server never hands key material to the
-        // after-switch page.
-        final String originAtSubmit = resolveServerUrl();
-        SharedPreferences prefs = prefs();
-        String[] ivData = readIvData(prefs, account);
-        String ivB64 = ivData[0];
-        String dataB64 = ivData[1];
-        if (ivB64 == null || dataB64 == null) {
-            call.resolve(new JSObject());
-            return;
-        }
-        call.setKeepAlive(true);
-        FragmentActivity activity = getActivity();
-        if (activity == null) {
-            call.reject("activity unavailable");
-            return;
-        }
-        activity.runOnUiThread(() -> {
-            try {
-                Runnable decryptAndResolve = () -> {
-                    try {
-                        if (!resolveServerUrl().equals(originAtSubmit)) {
-                            Log.w(TAG, "server changed during key unlock; aborting injection");
-                            call.setKeepAlive(false);
-                            call.reject("server changed during unlock");
-                            return;
-                        }
-                        removeLegacyKeyIfPresent();
-                        migrateFromV2IfNeeded();
-                        SecretKey secretKey = getOrCreateKey();
-                        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-                        byte[] iv = Base64.decode(ivB64, Base64.NO_WRAP);
-                        cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(128, iv));
-                        byte[] decrypted = cipher.doFinal(Base64.decode(dataB64, Base64.NO_WRAP));
-                        String key = new String(decrypted, StandardCharsets.UTF_8);
-                        if (account != null && !account.isEmpty()) {
-                            unlockedKeys.put(account, key);
-                        }
-                        Log.i(TAG, "unlocked encryption key (account=" + account + ", prompted=true)");
-                        JSObject result = new JSObject();
-                        result.put("key", key);
-                        call.setKeepAlive(false);
-                        call.resolve(result);
-                    } catch (Exception e) {
-                        Log.e(TAG, "failed to read key", e);
-                        call.setKeepAlive(false);
-                        call.reject("failed to read key", e);
-                    }
-                };
-                if (!canPromptForBiometric()) {
-                    Log.i(TAG, "biometric unlock unavailable; using keystore-only decrypt");
-                    decryptAndResolve.run();
-                    return;
-                }
-                promptForUnlock(activity, () -> decryptAndResolve.run(), call);
-            } catch (Exception e) {
-                Log.e(TAG, "failed to prepare key read", e);
-                call.setKeepAlive(false);
-                call.reject("failed to read key", e);
-            }
-        });
-    }
-
     @PluginMethod
     public void sealCachedCredentials(PluginCall call) {
         String account = call.getString("account");
@@ -304,8 +205,7 @@ public class NativeSecureKeyPlugin extends Plugin {
             String serverUrl = resolveServerUrl();
             CookieManager cm = CookieManager.getInstance();
             String cookieHeader = cm.getCookie(serverUrl);
-            // Sealed-cookie storage owns per-account cookie parsing; the
-            // legacy key API (storeKey/getKey/unlockedKeys) is untouched.
+            // Sealed-cookie storage owns per-account cookie parsing.
             CredentialCookies.ParsedCredentials parsed =
                     CredentialCookies.parseSealedCookieHeader(cookieHeader, account);
             String rememberVal = parsed.remember;
@@ -428,8 +328,8 @@ public class NativeSecureKeyPlugin extends Plugin {
             };
 
             if (!canPromptForBiometric()) {
-                Log.i(TAG, "biometric prompt unavailable; performing keystore-only unlock");
-                decryptAndInject.run();
+                call.setKeepAlive(false);
+                call.reject("biometric or device credential unlock unavailable");
                 return;
             }
             promptForUnlock(activity, () -> decryptAndInject.run(), call);
@@ -678,18 +578,7 @@ public class NativeSecureKeyPlugin extends Plugin {
         KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
         keyStore.load(null);
         if (!keyStore.containsAlias(KEY_ALIAS)) {
-            try {
-                generateWrapKey(true);
-            } catch (Exception e) {
-                Log.w(TAG, "auth-bound keystore key unavailable; using software-gated key", e);
-                try {
-                    if (keyStore.containsAlias(KEY_ALIAS)) {
-                        keyStore.deleteEntry(KEY_ALIAS);
-                    }
-                } catch (Exception ignored) {
-                }
-                generateWrapKey(false);
-            }
+            generateWrapKey(true);
         }
         return ((SecretKey) keyStore.getKey(KEY_ALIAS, null));
     }

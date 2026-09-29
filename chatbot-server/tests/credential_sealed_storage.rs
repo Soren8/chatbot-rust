@@ -10,9 +10,8 @@
 //! order; absent values via `optString` to `""`) and is verified via source
 //! pins, since plain `javac` lacks the Android `org.json` class. The plugin
 //! keeps the platform boundary (jar access, keystore wrap/unwrap,
-//! biometric prompts), the legacy `storeKey` / `getKey` / `unlockedKeys`
-//! API, PBKDF2 derivation, keystore migration and origin resolution
-//! unchanged. No custom JSON anywhere.
+//! biometric prompts), `storeKey`, PBKDF2 derivation, keystore migration
+//! and origin resolution. No custom JSON anywhere.
 
 use std::path::Path;
 use std::process::Command;
@@ -141,10 +140,10 @@ fn sealed_storage_helpers_own_exact_boundaries() {
 }
 
 /// The plugin delegates sealed storage to the helpers while keeping the
-/// legacy key API, keystore migration, PBKDF2, biometric boundary and
+/// key storage, keystore migration, PBKDF2, biometric boundary and
 /// origin resolution in place.
 #[test]
-fn plugin_delegates_sealed_storage_keeping_legacy_api() {
+fn plugin_delegates_sealed_storage_keeping_key_storage() {
     let src = plugin_src();
     for marker in ["CredentialCookies", "SealedCredentialPayload"] {
         assert!(
@@ -169,9 +168,7 @@ fn plugin_delegates_sealed_storage_keeping_legacy_api() {
         "single JSON ownership lives in the payload helper, not the plugin"
     );
     for legacy in [
-        "unlockedKeys",
         "storeKey",
-        "getKey",
         "deriveKeyFromPassword",
         "PBKDF2_ITERATIONS",
         "removeLegacyKeyIfPresent",
@@ -180,9 +177,18 @@ fn plugin_delegates_sealed_storage_keeping_legacy_api() {
     ] {
         assert!(
             src.contains(legacy),
-            "legacy key API / migration / derivation must stay in the plugin; missing: {legacy}"
+            "key storage / migration / derivation must stay in the plugin; missing: {legacy}"
         );
     }
+    assert!(
+        !src.contains("public void getKey(PluginCall"),
+        "Capacitor plugin must not export getKey"
+    );
+    assert!(
+        !src.contains("result.put(\"key\", cached)")
+            && !src.contains("result.put(\"key\", key)"),
+        "cached and unwrapped keys must not be returned to page JS"
+    );
     for boundary in [
         "promptForUnlock",
         "canPromptForBiometric",
