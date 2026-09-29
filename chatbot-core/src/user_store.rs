@@ -315,10 +315,15 @@ impl UserStore {
             return Ok(());
         }
 
-        let record = KeyVerifierRecord {
-            verifier: expected.to_vec(),
-        };
-        fs::write(self.key_verifier_path(&normalised), serde_json::to_string(&record)?)?;
+        let record = KeyVerifierRecord { verifier: expected.to_vec() };
+        let path = self.key_verifier_path(&normalised);
+        if !publish_once(&path, serde_json::to_string(&record)?.as_bytes())? {
+            let enrolled = self.load_key_verifier_record(&normalised)?
+                .ok_or_else(|| UserStoreError::Crypto("Missing key verifier".into()))?;
+            if !constant_time_eq(&enrolled.verifier, &expected) {
+                return Err(UserStoreError::Crypto("Encryption key mismatch".into()));
+            }
+        }
         Ok(())
     }
 
@@ -386,14 +391,14 @@ impl UserStore {
     fn get_or_create_salt(&self, normalised_username: &str) -> Result<[u8; SALT_LEN], UserStoreError> {
         let salt_path = self.salts_dir.join(format!("{normalised_username}_salt"));
         let mut salt = [0u8; SALT_LEN];
-        if salt_path.exists() {
-            let mut file = File::open(&salt_path)?;
-            file.read_exact(&mut salt)?;
-        } else {
+        if !salt_path.exists() {
             rand::rng().fill_bytes(&mut salt);
-            let mut file = File::create(&salt_path)?;
-            file.write_all(&salt)?;
+            if publish_once(&salt_path, &salt)? {
+                return Ok(salt);
+            }
         }
+        let mut file = File::open(&salt_path)?;
+        file.read_exact(&mut salt)?;
         Ok(salt)
     }
 
@@ -525,4 +530,26 @@ impl UserStore {
         }
         result
     }
+}
+
+// Publish a complete file without replacing a concurrently enrolled value.
+// The temp file and destination share a directory/filesystem for atomic hard-link creation.
+fn publish_once(path: &Path, contents: &[u8]) -> Result<bool, UserStoreError> {
+    let temp = path.with_extension(format!(
+        "tmp.{}-{}",
+        std::process::id(),
+        SAVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| -> Result<bool, UserStoreError> {
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        match fs::hard_link(&temp, path) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(err) => Err(err.into()),
+        }
+    })();
+    let _ = fs::remove_file(&temp);
+    result
 }

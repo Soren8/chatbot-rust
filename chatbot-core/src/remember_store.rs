@@ -117,10 +117,13 @@ impl RememberStore {
         presented: Option<&str>,
     ) -> Result<String, RememberError> {
         let _guard = store_lock();
-        if let Some((family, _)) = parse_token(presented) {
+        if let Some((family, secret)) = parse_token(presented) {
             let family_hex = to_hex(&family);
             if let Some(record) = self.read_record(&family_hex) {
-                if unix_now() < record.expires && record.username == username {
+                if unix_now() < record.expires
+                    && record.username == username
+                    && secret_matches(&record, &secret)
+                {
                     return self.rotate_family_locked(&family, &record);
                 }
             }
@@ -129,12 +132,12 @@ impl RememberStore {
     }
 
     /// Username bound to this family, if the file exists and is unexpired.
-    /// Does not rotate or check the secret (used by forget).
+    /// Does not rotate; checks the bearer secret before reporting ownership.
     pub fn peek_username(&self, token: Option<&str>) -> Option<String> {
         let _guard = store_lock();
-        let (family, _) = parse_token(token)?;
+        let (family, secret) = parse_token(token)?;
         let record = self.read_record(&to_hex(&family))?;
-        if unix_now() >= record.expires {
+        if unix_now() >= record.expires || !secret_matches(&record, &secret) {
             return None;
         }
         Some(record.username)
@@ -143,14 +146,14 @@ impl RememberStore {
     /// Revoke the presented family only when it belongs to `username`.
     pub fn revoke_if_username(&self, token: Option<&str>, username: &str) -> bool {
         let _guard = store_lock();
-        let Some((family, _)) = parse_token(token) else {
+        let Some((family, secret)) = parse_token(token) else {
             return false;
         };
         let family_hex = to_hex(&family);
         let Some(record) = self.read_record(&family_hex) else {
             return false;
         };
-        if record.username != username {
+        if unix_now() >= record.expires || record.username != username || !secret_matches(&record, &secret) {
             return false;
         }
         fs::remove_file(self.family_path(&family_hex)).is_ok()
@@ -206,11 +209,16 @@ impl RememberStore {
         })
     }
 
-    /// Revoke the token family presented in `token` (logout).
+    /// Revoke the token family presented in `token` when the secret is current.
     pub fn revoke(&self, token: Option<&str>) {
         let _guard = store_lock();
-        if let Some((family, _)) = parse_token(token) {
-            let _ = fs::remove_file(self.family_path(&to_hex(&family)));
+        if let Some((family, secret)) = parse_token(token) {
+            let family_hex = to_hex(&family);
+            if self.read_record(&family_hex).is_some_and(|record| {
+                unix_now() < record.expires && secret_matches(&record, &secret)
+            }) {
+                let _ = fs::remove_file(self.family_path(&family_hex));
+            }
         }
     }
 
@@ -364,6 +372,13 @@ fn parse_token(token: Option<&str>) -> Option<(Vec<u8>, Vec<u8>)> {
         return None;
     }
     Some((bytes[..FAMILY_BYTES].to_vec(), bytes[FAMILY_BYTES..].to_vec()))
+}
+
+fn secret_matches(record: &RememberRecord, secret: &[u8]) -> bool {
+    let Some(stored) = hex_to_bytes(&record.secret_hash) else {
+        return false;
+    };
+    constant_time_eq(Sha256::digest(secret).as_slice(), &stored)
 }
 
 /// Last-used remember cookie name (`remember=`). Per-account cookies are
