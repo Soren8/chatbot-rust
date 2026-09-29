@@ -2,9 +2,9 @@
 
 Scope (user-authorized): fresh repository-wide inventory, moderate bounded fixes with zero behavior change. Deferred items (COR-003, Auto protocol repair, legacy key export) stay out unless the duplication itself is in the touched code. Each batch carries targeted verification plus a final full green suite.
 
-## Phase 3 closure (sessions 063–073) — ready for review
+## Phase 3 closure (sessions 063–074) — ready for review
 
-Full reads now cover every handwritten unit (sessions 068 + 070 + 072 + 073 below give per-file line ranges; no skim stands without a recorded follow-up). The A column uses R where every owned file received a full abstraction read, P with exact scope elsewhere; R does not mean issue-free. S01 stays P: handler finalizer bodies past the visible windows and chat's context-resolution completion were not verified — recorded below rather than claimed.
+Full reads now cover every handwritten unit (sessions 068 + 070 + 072 + 074 below give per-file line ranges; no skim stands without a recorded follow-up). The A column uses R where every owned file received a full abstraction read; S01 alone stays P with the exact unseen windows named below. R does not mean issue-free.
 
 Implemented (all zero-behavior-change, targeted-green): ABS-001 DNS filtering + preflight; ABS-002 prepare-error + mutation-error mappers; ABS-003 media AAD + snapshot assembly + first-turn naming (2 new assertions); ABS-004 OpenAI setup + CSRF builder + base64 decoder; ABS-005 image-edit skeleton + constant-time-eq centralization (1 new direct test); ABS-006 page-response builder + agent guard prefixes + request-context fallback sharing; ABS-007 Kokoro warmup sharing (1 new characterization test); ABS-008 login-notice setter + desktop retry-decision sharing (1 new Node characterization target) and Android origin delegation with a javac-executed behavior fixture plus migrated guard assertions.
 
@@ -130,6 +130,16 @@ Three read-only workers closed the exact remainders named in the review; no prod
 - S04 (`brave.rs` full read): DTOs, client constructors, request/error/rendering, and key-entry points all retained (owned-vs-live ordering, distinct behaviors). S04 A advances to R.
 - W02/W03 (`enc-key.js:1–547`, `native-audio.js:1–837`, `tt.js`, `native-bridge.js` confirmed full reads): new backlog candidates, each needing focused coverage first — native `clearKey` blocks (`enc-key.js:291–302`, `481–491`), encoder frame-feeding (`native-audio.js:342–400` vs `558–628`), success-log assembly (`:689–697`). tt.js policies and bridge fallbacks confirmed as intentional boundaries. W02/W03 A advance to R.
 - G01/R01 (all owned files fully read): new backlog candidates with existing covering tests noted but deliberately not batched — ticker loop (`background.rs:6–61`), 500-tuple builders (`http_error.rs:70–86,127–156,166–196`, preserving the conflict-body `"message"` difference at `:137–143` vs `:227–234`), route validation/headers (`main.py:90–138`), join loop (`service.py:358–385`), admission cleanup (`service.py:402–445`). Retains: settings/audio-utils/lifespan/readiness duties, startup/router/middleware boundaries, fixture roles. G01/R01 A advance to R.
+
+## Session 074 — ledger-reconciliation reads (read-only, no new batches), 2026-09-28
+
+A strict audit showed grouped retains lacked per-file depth for 17 P units. Four read-only workers read every named file 1→EOF; no production code changed. New candidates are backlog with prerequisites, deliberately unbatched — coverage, not more refactors, closes this gate.
+
+- C01/C05/C07/C08 (`config.rs:1–1716`, `logging.rs:1–85`, `rate_limit.rs:1–189`, `names.rs:1–131`, `fernet_crypto.rs:1–119`, `persistence.rs:1–9`, `legacy_sets_json/mod.rs:1–22`, `store.rs:1–575`): retains recorded per section (fail-closed validation, adapter roles, scope/order-sensitive queues, distinct regexes, compatibility surfaces). Backlog: TTS validator check (`config.rs:723–740`, needs a codec-validation test), legacy setters (`store.rs:452–531`, needs characterization tests). Delegation dispositions confirmed (names/Fernet). Units advance to R.
+- C03/C06/C09/P01 (all ten files 1→EOF): retains per section (derivation timing, store lifecycles, wire codecs, representation-specific transforms, composition boundaries, gate separations). Prior decisions confirmed (equality centralization, image skeleton, secure-flag deferral). No new candidate met the bar. Units advance to R.
+- S02/S05/S06/S08/S09/S10 (all owned sections fully read): retains per file (rotation/cookie scopes, permit lifetimes and admission-vs-dispatch locking, probe duties, redaction, middleware ordering, substitution order, provider formats, token lifecycle). Backlog: home guest-defaults ctor (`home.rs:218–269`), token selection (`login.rs:167–176,386–400`), cents conversion (`tts/text.rs:287–302`) — each with covering tests named, unbatched by scope discipline. Units advance to R.
+- S11/S12/T03 (all owned sections fully read): retains per file (lock lifecycle, ownership-before-validation order, read-timing boundaries, coupled promotion timing, fixture roles). Backlog: home-model projection (`generation_deps.rs:191–215,300–323`), constructor defaults (`services.rs:88–155`), cookie decoder (`request_context.rs:193–204` vs `enc_key_cookies.rs:56–71`) — prerequisites stated. Units advance to R.
+- S01 stays P: `chat_utils.rs` fully read (error-parts/guard/renderer/saved-turn/mapper/conflict helpers retained; response-builder block `218–225` unbatched for lack of verified response tests); handler finalizer bodies past `chat.rs:370` / `regenerate.rs:350` and chat context-resolution completion past line 150 remain unseen. Exact scope, not a claim.
 
 ## Session 064 — ABS-001 implementation, 2026-09-28
 
