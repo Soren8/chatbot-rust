@@ -1263,8 +1263,12 @@ async fn http_5xx_responses_log_error_level_with_request_context() {
     assert!(text.contains("status=502"), "log must carry the status: {text}");
     assert!(text.contains("method=GET"), "log must carry the method: {text}");
     assert!(
-        text.contains(&format!("path=/tts_stream/{token}")),
-        "log must carry the request path: {text}"
+        text.contains("path=/tts_stream/[REDACTED]"),
+        "log must carry the redacted request path: {text}"
+    );
+    assert!(
+        !text.contains(&token),
+        "log must not carry the bearer token: {text}"
     );
     assert_eq!(
         text.matches("5xx response returned to client").count(),
