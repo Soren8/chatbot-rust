@@ -1,12 +1,12 @@
 # Review coverage
 
-## Sessions 063–074 — Phase 3 abstractions column (ready for review)
+## Sessions 063–074 — Phase 3 abstractions column (complete)
 
-Repo-wide duplication reads in sessions 063–074 (twenty-two inventory/review workers plus implementing workers, primary review of every diff). `R` marks units where every owned file received a full abstraction read; S01 alone stays `P` with exact scope below. Session 070 closed every skim admitted in session 068 with full reads; session 071 implemented ABS-008 (client sharing + Android delegation with behavior fixture); session 072 reviewed every section the ledger still showed as untouched (C02, C04, S01/S03/S04, W05, N01) and implemented ABS-009–012; sessions 073–074 gave every remaining P file a 1→EOF read with per-file dispositions (C01/C03/C05–C09/P01/S02/S04–S06/S08–S12/T03/W02/W03/G01/R01), recording new candidates as backlog:
+Repo-wide duplication reads in sessions 063–074 (twenty-two inventory/review workers plus implementing workers, primary review of every diff). `R` marks units where every owned file received a full abstraction read. The primary completion review closed S01 at `fb65803` and reaffirmed Phase 3 completion at `be18093`; the remaining S01 P entry was stale. Session 070 closed every skim admitted in session 068 with full reads; session 071 implemented ABS-008 (client sharing + Android delegation with behavior fixture); session 072 reviewed every section the ledger still showed as untouched (C02, C04, S01/S03/S04, W05, N01) and implemented ABS-009–012; sessions 073–074 gave every remaining P file a 1→EOF read with per-file dispositions (C01/C03/C05–C09/P01/S02/S04–S06/S08–S12/T03/W02/W03/G01/R01), recording new candidates as backlog:
 
 - C02: `session.rs:1–3555` fully read; context snapshot/prompt and delete/reset sequences shared; mirror pairs retained on control-flow risk.
 - C04: every `history/` module reviewed; content-mutation pipelines, append step, and image-map helper shared; layouts/transactions/newtypes retained with reasons.
-- S01: prepare-error mapping, stream loop, and setup-error responses shared; guards and finalizer tops per-handler. Stays P: finalizer bodies past `chat.rs:370` / `regenerate.rs:350` and chat context-resolution completion past line 150 unverified; `chat_utils.rs` fully read (new narrow candidates lack verified covering tests).
+- S01: primary completion read of `chat.rs:1–426`, `regenerate.rs:1–355`, and `chat_utils.rs:1–341`, including the previously omitted context-resolution, finalizer, and response-construction sections. Shared forwarding preserves guard ownership; append/replace completion, captured user text, insertion index, and privacy-permit lifetime remain route-specific. No blocking defect or necessary further extraction; A advances to R.
 - S03: `memory.rs` mapping shared; sets/preferences/reset fully read, retains recorded.
 - S04: `providers/openai.rs` setup and `providers/xai.rs` constructor shared; `brave.rs` fully read, retains recorded.
 - W02/W03: `enc-key.js`, `tt.js`, `native-audio.js`, `native-bridge.js` fully read; new candidates (clearKey blocks, encoder feeding, log assembly) carry explicit coverage prerequisites.
@@ -144,7 +144,7 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | R | — | — | — | — |
 | P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | R | R | — | — | — | — |
 | T01 Core integration tests | `chatbot-core/tests/*` | R | P | — | — | — | — | — |
-| S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | R | P | — | — | — | — |
+| S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | R | R | — | — | — | — |
 | S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | R | R | — | — | — | — |
 | S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | R | R | R | — | — | — | — |
 | S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | R | R | — | — | — | — |
