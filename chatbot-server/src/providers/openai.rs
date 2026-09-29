@@ -594,18 +594,10 @@ fn extract_sse_payloads(
             let value: Value =
                 serde_json::from_str(data).context("failed to decode LLM stream chunk")?;
 
-            // In-band error events (e.g. OpenRouter mid-stream failures) carry no
-            // "choices"; without this check the stream would end silently and look
-            // like a successful empty response. The provider's own message is the
-            // cause; `provider_error_parts` names the backend for the UI.
-            if let Some(err_val) = value.get("error").filter(|v| !v.is_null()) {
-                let message = err_val
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .filter(|m| !m.trim().is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| err_val.to_string());
-                return Err(anyhow::anyhow!(message));
+            // In-band errors arrive with successful HTTP status; do not put the
+            // untrusted provider payload in an error that reaches logs or clients.
+            if value.get("error").is_some_and(|v| !v.is_null()) {
+                return Err(anyhow::anyhow!("HTTP 200 OK: upstream stream error"));
             }
 
             let model_response = value.get("model").and_then(Value::as_str).unwrap_or("");
@@ -884,10 +876,7 @@ mod tests {
                 outcome.chunks
             ),
         };
-        assert!(
-            err.to_string().contains("Provider is overloaded"),
-            "error must include the provider's error payload, got: {err:#}"
-        );
+        assert_eq!(err.to_string(), "HTTP 200 OK: upstream stream error");
     }
 
     #[test]

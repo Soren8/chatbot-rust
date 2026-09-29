@@ -90,6 +90,40 @@ async fn sec006_upstream_content_never_enters_logs() {
 }
 
 #[tokio::test]
+async fn sec012_in_band_sse_error_does_not_echo_private_content() {
+    let _lock = TEST_LOCK.lock().unwrap();
+    let logs = Logs(Arc::new(Mutex::new(Vec::new())));
+    let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false).with_writer(logs.clone()).finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let prompt = "SEC012_PRIVATE_PROMPT_4729";
+    let secret = "SEC012_PRIVATE_KEY_6943";
+    let body = format!("data: {}\n\n", json!({"error": {"message": format!("upstream echoed {prompt} and {secret}"), "code": 502}}));
+
+    for search in [false, true] {
+        if search {
+            std::env::set_var("BRAVE_API_KEY", "fake-brave-key");
+        }
+        let (base, task) = upstream("/v1/chat/completions", StatusCode::OK, body.clone()).await;
+        let answer = chat(&base, "openai", prompt, search).await;
+        task.abort();
+        if search {
+            std::env::remove_var("BRAVE_API_KEY");
+        }
+
+        assert!(answer.contains("Error"), "in-band SSE error must terminate as error (search={search}): {answer}");
+        for sentinel in [prompt, secret] {
+            assert!(!answer.contains(sentinel), "client stream leaked {sentinel} (search={search}): {answer}");
+        }
+    }
+
+    let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    for sentinel in [prompt, secret] {
+        assert!(!output.contains(sentinel), "logs contain {sentinel}");
+    }
+}
+
+#[tokio::test]
 async fn sec006_search_query_never_enters_logs() {
     let _lock = TEST_LOCK.lock().unwrap();
     let logs = Logs(Arc::new(Mutex::new(Vec::new())));
