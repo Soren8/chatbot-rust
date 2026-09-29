@@ -24,6 +24,9 @@ const RESOLVER: &str = include_str!(
 );
 const MAIN_ACTIVITY: &str =
     include_str!("../../android/app/src/main/java/com/chatbot/app/MainActivity.java");
+const NATIVE_TTS: &str = include_str!(
+    "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
+);
 const SECURE_KEY_PLUGIN: &str = include_str!(
     "../../android/app/src/main/java/com/chatbot/app/NativeSecureKey/NativeSecureKeyPlugin.java"
 );
@@ -116,6 +119,84 @@ fn native_cached_login_fails_closed_without_authentication_gate() {
             && SECURE_KEY_PLUGIN.contains("biometricManager.canAuthenticate(authenticators), BiometricManager.BIOMETRIC_SUCCESS"),
         "platform availability result must pass through the executed pure decision"
     );
+}
+
+#[test]
+fn resume_lock_unavailable_cannot_dismiss_overlay() {
+    let prompt = MAIN_ACTIVITY
+        .split("private void promptResumeUnlock() {")
+        .nth(1)
+        .expect("resume unlock entry point")
+        .split("private void unlockApp() {")
+        .next()
+        .unwrap();
+    assert!(
+        prompt.contains("NativeUnlockGate.canPrompt(")
+            && prompt.contains("biometricManager.canAuthenticate(authenticators), BiometricManager.BIOMETRIC_SUCCESS"),
+        "resume availability must use the executed fail-closed decision"
+    );
+    let unavailable = prompt.split("if (!NativeUnlockGate.canPrompt(").nth(1)
+        .expect("resume availability guard")
+        .split("Executor executor =")
+        .next()
+        .unwrap();
+    assert!(!unavailable.contains("unlockApp()"), "unavailable authentication must retain the lock overlay");
+    assert!(unavailable.contains("Log.w(") && unavailable.contains("return;"),
+        "unavailable authentication must log and leave retry available");
+    assert!(MAIN_ACTIVITY.contains("unlockBtn.setOnClickListener(v -> promptResumeUnlock())"),
+        "Unlock button must retry");
+    assert!(prompt.contains("public void onAuthenticationSucceeded(") &&
+        prompt.contains("unlockApp();"), "only successful authentication dismisses the lock");
+    let failure = prompt.split("public void onAuthenticationError(").nth(1).unwrap();
+    assert!(!failure.split("public void onAuthenticationFailed(").next().unwrap().contains("unlockApp()"),
+        "cancel must retain the lock");
+    assert!(!failure.split("public void onAuthenticationFailed(").nth(1).unwrap().contains("unlockApp()"),
+        "failed authentication must retain the lock");
+}
+
+#[test]
+fn resume_lock_gate_runs_with_platform_statuses() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let stub = output_dir.path().join("BiometricManager.java");
+    fs::write(&stub, r#"package androidx.biometric;
+public class BiometricManager {
+    public static final int BIOMETRIC_SUCCESS = 0, BIOMETRIC_ERROR_NO_HARDWARE = 12;
+    public static int status;
+    public int canAuthenticate(int authenticators) { return status; }
+}"#).unwrap();
+    let compile = Command::new("javac")
+        .args(["-encoding", "UTF-8"])
+        .arg("-d").arg(output_dir.path())
+        .arg(&stub)
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/NativeUnlockGate.java"))
+        .arg(root.join("chatbot-server/tests/fixtures/ResumeUnlockGateTest.java"))
+        .output().expect("test image must provide javac");
+    assert!(compile.status.success(), "Java compilation: {}", String::from_utf8_lossy(&compile.stderr));
+    let run = Command::new("java")
+        .arg("-cp").arg(output_dir.path()).arg("ResumeUnlockGateTest")
+        .output().expect("run resume unlock gate fixture");
+    assert!(run.status.success(), "resume lock behavior: {}", String::from_utf8_lossy(&run.stderr));
+    print!("{}", String::from_utf8_lossy(&run.stdout));
+}
+
+#[test]
+fn native_tts_response_logs_never_contain_playback_url() {
+    let request = NATIVE_TTS.split("private AudioClip playUrlToTrackOnce(").nth(1)
+        .expect("native TTS downloader")
+        .split("private AudioClip streamWavToTrack(").next().unwrap();
+    for (line_number, line) in request.lines().enumerate() {
+        if line.contains("Log.d(") || line.contains("Log.e(") {
+            for sensitive in ["urlStr", "+ url", "+ token", "tts_stream/"] {
+                assert!(!line.contains(sensitive),
+                    "NativeVoiceTts downloader line {} leaks bearer URL ({sensitive}): {line}", line_number + 1);
+            }
+        }
+    }
+    assert!(request.contains("Log.d(TAG, \"GET code=\" + code)"),
+        "successful response diagnostic must retain only status code");
+    assert!(request.contains("Log.e(TAG, \"GET non-retryable code=\" + code)"),
+        "non-retryable diagnostic must retain only status code");
 }
 
 #[test]

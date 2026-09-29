@@ -32,6 +32,7 @@ import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
+import com.chatbot.app.util.NativeUnlockGate;
 import com.chatbot.app.util.ServerUiStyle;
 import com.chatbot.app.util.ServerUrlSettingStore;
 import com.getcapacitor.BridgeActivity;
@@ -474,8 +475,9 @@ public class MainActivity extends BridgeActivity {
         } else {
             authenticators = BiometricManager.Authenticators.BIOMETRIC_WEAK;
         }
-        if (biometricManager.canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
-            unlockApp();
+        if (!NativeUnlockGate.canPrompt(
+                biometricManager.canAuthenticate(authenticators), BiometricManager.BIOMETRIC_SUCCESS)) {
+            Log.w(TAG, "resume unlock unavailable; session remains locked (tap Unlock to retry)");
             return;
         }
         Executor executor = ContextCompat.getMainExecutor(this);

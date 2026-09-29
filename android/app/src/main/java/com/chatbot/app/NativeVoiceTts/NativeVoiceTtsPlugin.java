@@ -288,9 +288,9 @@ public class NativeVoiceTtsPlugin extends Plugin {
                 conn.setRequestProperty("Cookie", cookie);
             }
             int code = conn.getResponseCode();
-            Log.d(TAG, "GET " + urlStr + " code=" + code);
+            Log.d(TAG, "GET code=" + code);
             if (code == 404 || code == 401 || code == 403) {
-                Log.e(TAG, "GET " + urlStr + " non-retryable code=" + code);
+                Log.e(TAG, "GET non-retryable code=" + code);
                 ClientLogReporter.report("VOICE-ERROR", "voice: tts clip non-retryable code=" + code);
                 return null;
             }
