@@ -1,8 +1,8 @@
 # Review coverage
 
-## Sessions 075–081 — Phase 4 Sec column (implementation recorded, review verdict pending)
+## Sessions 075–082 — Phase 4 Sec column (implementation recorded, review verdict pending)
 
-The Sec column above is filled per unit at `main@8045092`. `R` marks units where every owned file received a focused security read in sessions 075–081 (C07 `rate_limit.rs`; S11 both coordination files; T03 the support lib; W02 all three browser files; W03 both bridge/audio files). `P` marks partial coverage with exact per-file scope in [security.md](security.md) sessions 075–081 plus the session-081 reconciliation reports (retained in worker returns, not committed as separate records): every other application unit has finding/fix evidence or focused security reads on part of its files, with the unread remainder named. `B` keeps its boundary-only meaning (V01, S07, N04, O03, D01, D02, R00) with the stated exclusions. `R` is read coverage, not proof of absence; device/GPU/topology proofs are recorded as accepted limits, not findings. New unbatched backlog candidates (each with test prerequisites): raw-400 log sentinel (R01), caller-controlled STT filename sentinel (S05), hostile-Markdown sink test (W05), MainActivity resume-lock failure-result test (N01), voice-service exception-echo test (G01), `webserver.env` literal policy + publisher provenance (O02). Corrected in session 081: resume() no longer revokes on secret mismatch (fail-closed) and revoke_if_username() accepts the previous-generation secret — the session-075 C03 replay-policy note is superseded. T01/T02/T04 `P` covers security-regression test bodies only, not assertion-level review of every fixture (test-quality pass scope).
+The Sec column above is filled per unit at `main@883e419`. `R` marks units where every owned file received a focused security read in sessions 075–082: all of R01/C01–C09/P01 (core), S01–S06/S08–S12 (server), W01–W05 (browser), N01–N03 (native), X01, G01, O01–O02, T03. Round-3 closure reads verified complete 1→EOF accounting including inline tests (e.g. C04 all twelve history modules; N02 every mic/TTS/audio file; G01 service + all six voice test files; O02 every chart/compose file). `P` marks T01/T02/T04 only, covering security-regression test bodies, not assertion-level review of every fixture (test-quality pass scope). `B` keeps its boundary-only meaning (V01, S07, N04, O03, D01, D02, R00) with the stated exclusions. `R` is read coverage, not proof of absence; device/GPU/topology proofs are recorded as accepted limits, not findings. Per-file ranges, retain/defer dispositions and backlog candidates with prerequisites live in [security.md](security.md) sessions 075–082 (session-081/082 reconciliation detail retained in worker returns). Backlog candidates (unbatched, each with prerequisites): raw-400 log sentinel + TTS-token 5xx path log (R01), substituted-env panic value (C01), legacy list-cache key check (C04), malformed image-tag outbound shape (C06), patch-credential lifetimes (P01), STT filename sentinel (S05), image `Cache-Control` contract (S03), backend URL credential sentinel + token-collision test (S09/S10), duplicate-cookie parser test (S12), W01 exception-sentinel-to-client_logs + hostile-Markdown sinks (W05 carry-over), MainActivity resume-lock + switch-concurrency tests (N01), native enqueue origin restriction (N02), car transport adapter + host allowlist (N03), log-sink sentinel (T04), `webserver.env` literal policy + publisher provenance (O02/O01), voice exception-echo + workload bounds (G01). Corrected in session 081: resume() no longer revokes on secret mismatch (fail-closed) and revoke_if_username() accepts the previous-generation secret — the session-075 C03 replay-policy note is superseded. Closed in session 082: the S04 in-band-error log candidate is covered by SEC-012 (the logged error is now generic at construction).
 
 ## Sessions 063–074 — Phase 3 abstractions column (complete)
 
@@ -136,24 +136,24 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | Unit | Owned paths, in matching order | M | S | A | Sec | Perf | T | D |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | V01 Third-party browser dependencies | `static/deps/*` | B | B | — | B | — | — | — |
-| R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | R | R | R | P | — | — | — |
-| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | R | R | P | — | — | — |
-| C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | R | R | P | — | — | — |
-| C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | R | P | — | — | — |
-| C04 Durable history | `chatbot-core/src/history/*` | R | R | R | P | — | — | — |
-| C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | R | R | P | — | — | — |
-| C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | R | P | — | — | — |
+| R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | R | R | R | R | — | — | — |
+| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | R | R | R | — | — | — |
+| C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | R | R | R | — | — | — |
+| C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | R | R | — | — | — |
+| C04 Durable history | `chatbot-core/src/history/*` | R | R | R | R | — | — | — |
+| C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | R | R | R | — | — | — |
+| C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | R | R | — | — | — |
 | C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | R | R | R | — | — | — |
-| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | R | R | P | — | — | — |
-| C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | R | P | — | — | — |
-| P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | R | R | P | — | — | — |
+| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | R | R | R | — | — | — |
+| C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | R | R | — | — | — |
+| P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | R | R | R | — | — | — |
 | T01 Core integration tests | `chatbot-core/tests/*` | R | P | — | P | — | — | — |
 | S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | R | R | P | — | — | — |
 | S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | R | R | P | — | — | — |
 | S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | R | R | R | P | — | — | — |
-| S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | R | R | P | — | — | — |
+| S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | R | R | R | — | — | — |
 | S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | R | R | P | — | — | — |
-| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | R | R | P | — | — | — |
+| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | R | R | R | — | — | — |
 | S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | R | P | — | — | — |
 | S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | R | R | P | — | — | — |
 | S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | R | R | P | — | — | — |
@@ -172,8 +172,8 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | R | P | — | — | — |
 | T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | P | — | — | — |
 | N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | B | — | — | — |
-| X01 DNS sidecar (post-baseline) | `dns/*` | — | R | R | P | — | — | — |
-| G01 GPU voice service | `chatbot-cuda/*` | R | R | R | P | — | — | — |
+| X01 DNS sidecar (post-baseline) | `dns/*` | — | R | R | R | — | — | — |
+| G01 GPU voice service | `chatbot-cuda/*` | R | R | R | R | — | — | — |
 | O01 CI/automation | `.github/*`, `scripts/*` | R | R | R | P | — | — | — |
 | O02 Deployment templates | `deploy/*` | R | R | R | P | — | — | — |
 | O03 Repository development environment | `.devcontainer/*`, `.grok/*` | B | B | — | B | — | — | — |
