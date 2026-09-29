@@ -144,6 +144,23 @@ impl RememberStore {
         Some(record.username)
     }
 
+    /// Ownership check for forget's generic-cookie fallback only. Unlike
+    /// `peek_username` (used to select login and key cookies), this accepts
+    /// the same previous generation that `revoke_if_username` can revoke.
+    pub fn peek_username_for_forget(&self, token: Option<&str>) -> Option<String> {
+        let _guard = store_lock();
+        let (family, secret) = parse_token(token)?;
+        let record = self.read_record(&to_hex(&family))?;
+        let presented = Sha256::digest(&secret);
+        let previous_matches = record.prev_secret_hash.as_deref()
+            .and_then(hex_to_bytes)
+            .is_some_and(|previous| constant_time_eq(presented.as_slice(), &previous));
+        if unix_now() >= record.expires || !(secret_matches(&record, &secret) || previous_matches) {
+            return None;
+        }
+        Some(record.username)
+    }
+
     /// Revoke the presented family only when it belongs to `username` and the
     /// bearer secret is current or one generation previous.
     pub fn revoke_if_username(&self, token: Option<&str>, username: &str) -> bool {

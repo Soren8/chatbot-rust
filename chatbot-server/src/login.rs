@@ -559,7 +559,7 @@ pub async fn handle_login_forget_post(
             ));
         }
     };
-    let last_belongs = store.peek_username(last.as_deref()).as_deref() == Some(username.as_str())
+    let last_belongs = store.peek_username_for_forget(last.as_deref()).as_deref() == Some(username.as_str())
         || (account.is_some() && account == last);
     let presented = account.or_else(|| if last_belongs { last.clone() } else { None });
     let revoked = store.revoke_if_username(presented.as_deref(), &username);

@@ -1660,3 +1660,71 @@ async fn forged_family_cookie_on_home_cannot_delete_victim_family() {
     let (csrf, cookies) = fresh_restore_session(&app, &valid).await;
     assert_eq!(post_remember_login(&app, &cookies, &csrf, true).await.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn rotated_out_generic_cookie_alone_can_forget_its_family() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+    let username = "generic_rotation_forget";
+    seed_user(username, "Sup3rS3cret!");
+    let app = build_app();
+    let (_session, previous) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+
+    let (csrf, guest_with_token) = fresh_restore_session(&app, &previous).await;
+    let rotated = post_remember_login(&app, &guest_with_token, &csrf, true).await;
+    assert_eq!(rotated.status(), StatusCode::OK);
+    let current = find_cookie_pair(&set_cookie_values(rotated.headers()), "remember")
+        .expect("replacement generic cookie");
+    assert_ne!(current, previous);
+
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let forget = app.clone().oneshot(Request::builder()
+        .method(Method::POST).uri("/login/forget")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, format!("{guest}; {previous}"))
+        .body(Body::from(format!("csrf_token={csrf}&username={username}"))).unwrap())
+        .await.expect("POST /login/forget with previous generic cookie only");
+    assert_eq!(forget.status(), StatusCode::OK);
+    let clear_cookies = set_cookie_values(forget.headers());
+    for name in ["remember", "enc_key", &format!("remember-{username}"), &format!("enc_key-{username}")] {
+        assert!(clear_cookies.iter().any(|cookie| cookie.starts_with(&format!("{name}=")) && cookie.contains("Max-Age=0")), "forget must clear {name}: {clear_cookies:?}");
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&to_bytes(forget.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(payload["revoked"], true);
+    assert_eq!(remember_family_count(&workspace), 0);
+    let (csrf, cookies) = fresh_restore_session(&app, &current).await;
+    assert_eq!(post_remember_login(&app, &cookies, &csrf, true).await.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn forged_generic_cookie_cannot_forget_victim_family() {
+    use base64::Engine;
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+    let workspace = setup_workspace();
+    let username = "forged_generic_forget";
+    seed_user(username, "Sup3rS3cret!");
+    let app = build_app();
+    let (_session, valid) = login_with_remember(&app, username, "Sup3rS3cret!").await;
+    let mut bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(valid.strip_prefix("remember=").unwrap()).unwrap();
+    bytes[16] ^= 1;
+    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+
+    let (csrf, cookies) = get_login_page(&app, None).await;
+    let guest = find_cookie_pair(&cookies, "session").expect("guest session");
+    let forget = app.clone().oneshot(Request::builder()
+        .method(Method::POST).uri("/login/forget")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, format!("{guest}; remember={forged}"))
+        .body(Body::from(format!("csrf_token={csrf}&username={username}"))).unwrap())
+        .await.expect("POST /login/forget with forged generic cookie");
+    assert_eq!(forget.status(), StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_slice(&to_bytes(forget.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(payload["revoked"], false);
+    assert_eq!(remember_family_count(&workspace), 1);
+    let (csrf, cookies) = fresh_restore_session(&app, &valid).await;
+    assert_eq!(post_remember_login(&app, &cookies, &csrf, true).await.status(), StatusCode::OK);
+}
