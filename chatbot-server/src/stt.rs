@@ -303,6 +303,11 @@ mod filename_log_tests {
             .with_writer(logs.clone())
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
+        // Thread-local installs do not rebuild tracing's global callsite-interest
+        // cache: if another test fired these callsites first with no subscriber,
+        // their interest stays `never` and our events are silently dropped.
+        // Rebuild here so capture does not depend on cross-test ordering.
+        tracing::callsite::rebuild_interest_cache();
         let config = ConfigSource::new(false, 3600, "prompt".to_owned(), "http://127.0.0.1:1".to_owned());
         let identity = RequestIdentity::with_store(Arc::new(HttpSessionStore::new(3600)))
             .with_config_source(config.clone());

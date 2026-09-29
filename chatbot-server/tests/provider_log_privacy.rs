@@ -62,6 +62,9 @@ async fn sec006_upstream_content_never_enters_logs() {
     let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG)
         .with_ansi(false).with_writer(logs.clone()).finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Thread-local installs do not rebuild tracing's global callsite-interest
+    // cache; rebuild here so capture does not depend on cross-test ordering.
+    tracing::callsite::rebuild_interest_cache();
     let prompt = "SEC006_PRIVATE_PROMPT_4729";
     let delta = "SEC006_PRIVATE_CHUNK_8351";
     let secret = "SEC006_PRIVATE_KEY_6943";
@@ -96,6 +99,9 @@ async fn sec012_in_band_sse_error_does_not_echo_private_content() {
     let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG)
         .with_ansi(false).with_writer(logs.clone()).finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Thread-local installs do not rebuild tracing's global callsite-interest
+    // cache; rebuild here so capture does not depend on cross-test ordering.
+    tracing::callsite::rebuild_interest_cache();
     let prompt = "SEC012_PRIVATE_PROMPT_4729";
     let secret = "SEC012_PRIVATE_KEY_6943";
     let body = format!("data: {}\n\n", json!({"error": {"message": format!("upstream echoed {prompt} and {secret}"), "code": 502}}));
@@ -130,6 +136,9 @@ async fn sec006_search_query_never_enters_logs() {
     let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG)
         .with_ansi(false).with_writer(logs.clone()).finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Thread-local installs do not rebuild tracing's global callsite-interest
+    // cache; rebuild here so capture does not depend on cross-test ordering.
+    tracing::callsite::rebuild_interest_cache();
     let query = "SEC006_PRIVATE_SEARCH_QUERY_1607";
     std::env::set_var("BRAVE_API_KEY", "fake-brave-key");
     std::env::set_var("CHATBOT_TEST_OPENAI_TOOL_CALL_QUERY", query);

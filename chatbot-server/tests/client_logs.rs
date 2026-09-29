@@ -237,6 +237,9 @@ async fn client_logs_do_not_emit_secrets_in_source_field() {
     let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN)
         .with_ansi(false).with_writer(LogCapture(captured.clone())).finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Thread-local installs do not rebuild tracing's global callsite-interest
+    // cache; rebuild here so capture does not depend on cross-test ordering.
+    tracing::callsite::rebuild_interest_cache();
     let app = build_router_with_identity(resolve_static_root(), RequestIdentity::with_store_and_csrf(Arc::new(HttpSessionStore::new(3600)), true));
     let cookie = session_cookie_from_home(&app).await;
     let secret = "enc-key=private-password-derived-key";

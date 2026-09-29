@@ -552,6 +552,11 @@ mod tests {
             .with_writer(logs.clone())
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
+        // Thread-local installs do not rebuild tracing's global callsite-interest
+        // cache: if another test fired these callsites first with no subscriber,
+        // their interest stays `never` and our events are silently dropped.
+        // Rebuild here so capture does not depend on cross-test ordering.
+        tracing::callsite::rebuild_interest_cache();
         let prompt = "SEC006_PRIVATE_SPEECH_PROMPT_9241";
         let url = "https://private-speech.example/SEC006_PRIVATE_URL_7318";
         let number = "847291";
