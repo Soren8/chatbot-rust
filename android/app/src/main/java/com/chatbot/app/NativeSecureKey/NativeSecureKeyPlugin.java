@@ -23,6 +23,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 import com.chatbot.app.util.ServerUrlSetting;
 import com.chatbot.app.util.ServerUrlSettingStore;
+import com.chatbot.app.util.NativeUnlockGate;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -486,7 +487,8 @@ public class NativeSecureKeyPlugin extends Plugin {
         } else {
             authenticators = BiometricManager.Authenticators.BIOMETRIC_WEAK;
         }
-        return biometricManager.canAuthenticate(authenticators) == BiometricManager.BIOMETRIC_SUCCESS;
+        return NativeUnlockGate.canPrompt(
+                biometricManager.canAuthenticate(authenticators), BiometricManager.BIOMETRIC_SUCCESS);
     }
 
     private SharedPreferences prefs() {

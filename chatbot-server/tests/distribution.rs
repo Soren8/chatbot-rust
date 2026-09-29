@@ -111,6 +111,33 @@ fn native_cached_login_fails_closed_without_authentication_gate() {
         !SECURE_KEY_PLUGIN.contains("generateWrapKey(false)"),
         "wrapping key creation must not fall back to a non-auth-bound key"
     );
+    assert!(
+        SECURE_KEY_PLUGIN.contains("NativeUnlockGate.canPrompt(")
+            && SECURE_KEY_PLUGIN.contains("biometricManager.canAuthenticate(authenticators), BiometricManager.BIOMETRIC_SUCCESS"),
+        "platform availability result must pass through the executed pure decision"
+    );
+}
+
+#[test]
+fn native_unlock_gate_decision_runs_on_shipped_java() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let compile = Command::new("javac")
+        .args(["-encoding", "UTF-8"])
+        .arg("-d")
+        .arg(output_dir.path())
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/NativeUnlockGate.java"))
+        .arg(root.join("chatbot-server/tests/fixtures/NativeUnlockGateTest.java"))
+        .output()
+        .expect("test image must provide javac");
+    assert!(compile.status.success(), "Java compilation: {}", String::from_utf8_lossy(&compile.stderr));
+    let run = Command::new("java")
+        .arg("-cp")
+        .arg(output_dir.path())
+        .arg("NativeUnlockGateTest")
+        .output()
+        .expect("run native unlock gate behavior test");
+    assert!(run.status.success(), "native unlock gate behavior: {}", String::from_utf8_lossy(&run.stderr));
 }
 
 #[test]
@@ -397,7 +424,7 @@ public interface SharedPreferences {
         ("Handler.java", r#"package android.os;
 public class Handler {
     public Handler(Looper looper) {}
-    public void post(Runnable action) {}
+    public void post(Runnable action) { action.run(); }
     public void postDelayed(Runnable action, long delay) {}
 }"#),
         ("Looper.java", r#"package android.os;
@@ -406,20 +433,24 @@ public class Looper { public static Looper getMainLooper() { return null; } }"#)
 public interface ValueCallback<T> { void onReceiveValue(T value); }"#),
         ("CookieManager.java", r#"package android.webkit;
 public class CookieManager {
-    public static CookieManager getInstance() { return new CookieManager(); }
-    public String getCookie(String origin) { return null; }
-    public void setCookie(String origin, String value, ValueCallback<Boolean> done) {}
+    private static final CookieManager INSTANCE = new CookieManager();
+    public String header;
+    public final java.util.List<String> expired = new java.util.ArrayList<>();
+    public boolean acknowledge = true;
+    public int flushes;
+    public static CookieManager getInstance() { return INSTANCE; }
+    public String getCookie(String origin) { return header; }
+    public void setCookie(String origin, String value, ValueCallback<Boolean> done) {
+        expired.add(origin + " " + value);
+        done.onReceiveValue(acknowledge);
+    }
     public void removeExpiredCookie() {}
-    public void flush() {}
+    public void flush() { flushes++; }
 }"#),
         ("Log.java", r#"package android.util;
 public class Log {
     public static int w(String tag, String text) { return 0; }
     public static int w(String tag, String text, Throwable error) { return 0; }
-}"#),
-        ("CredentialCookies.java", r#"package com.chatbot.app;
-public class CredentialCookies {
-    public static String expiredCookieValue(String name) { return name; }
 }"#),
         ("R.java", r#"package com.chatbot.app;
 public class R { public static class string { public static final int server_url = 1; } }"#),
@@ -433,6 +464,7 @@ public class R { public static class string { public static final int server_url
     let fixture = output_dir.path().join("ServerUrlSettingStoreSelectionTest.java");
     fs::write(&fixture, r#"import android.content.Context;
 import android.content.SharedPreferences;
+import android.webkit.CookieManager;
 import com.chatbot.app.util.ServerUrlResolver;
 import com.chatbot.app.util.ServerUrlSettingStore;
 
@@ -473,6 +505,32 @@ public class ServerUrlSettingStoreSelectionTest {
         expect("https://chosen.example:8443", ServerUrlSettingStore.selected(physical));
         expect(ServerUrlResolver.FALLBACK_URL, ServerUrlSettingStore.selected(null));
         if (ServerUrlSettingStore.flavorDefault(null) != null) throw new AssertionError("null context default");
+
+        CookieManager jar = CookieManager.getInstance();
+        jar.header = "session=S; remember-alice=A; enc_key-alice=K; csrf=C; other=V; session=S";
+        ServerUrlSettingStore.purgeSwitchCookiesAsync("https://old.example", ok -> {
+            if (!ok) throw new AssertionError("acknowledged purge must succeed");
+        });
+        if (jar.expired.size() != 3) throw new AssertionError("only unique switch cookies expire: " + jar.expired);
+        for (String name : new String[]{"session", "remember-alice", "enc_key-alice"}) {
+            if (!jar.expired.contains("https://old.example "
+                    + com.chatbot.app.CredentialCookies.expiredCookieValue(name))) {
+                throw new AssertionError("missing expiry: " + name);
+            }
+        }
+        if (jar.flushes != 1) throw new AssertionError("purge must flush");
+        jar.expired.clear();
+        jar.acknowledge = false;
+        jar.header = "session=S";
+        ServerUrlSettingStore.purgeSwitchCookiesAsync("https://old.example", ok -> {
+            if (ok) throw new AssertionError("rejected expiry must fail closed");
+        });
+        jar.expired.clear();
+        jar.header = "csrf=C";
+        ServerUrlSettingStore.purgeSwitchCookiesAsync("https://old.example", ok -> {
+            if (!ok) throw new AssertionError("no switch cookies must succeed");
+        });
+        if (!jar.expired.isEmpty()) throw new AssertionError("unrelated cookies must survive");
     }
 }"#).unwrap();
     let compile = Command::new("javac")
@@ -483,6 +541,7 @@ public class ServerUrlSettingStoreSelectionTest {
         .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlResolver.java"))
         .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlSetting.java"))
         .arg(root.join("android/app/src/main/java/com/chatbot/app/util/ServerUrlSettingStore.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/NativeSecureKey/CredentialCookies.java"))
         .arg(fixture)
         .output()
         .expect("test image must provide javac");
