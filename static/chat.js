@@ -647,23 +647,23 @@ function logoutThisComputer() {
     return;
   }
   var csrf = window.CSRF_TOKEN || '';
-  var done = Promise.resolve();
-  if (window.EncKey && window.EncKey.removeSlot) {
-    done = window.EncKey.removeSlot(username).catch(function () {});
-  }
-  done
-    .then(function () {
-      return fetch('/login/forget', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body:
-          'csrf_token=' + encodeURIComponent(csrf) +
-          '&username=' + encodeURIComponent(username),
-      });
+  fetch('/login/forget', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body:
+      'csrf_token=' + encodeURIComponent(csrf) +
+      '&username=' + encodeURIComponent(username),
+  })
+    .then(function (response) {
+      if (!response.ok) throw new Error('Forget request failed');
+      if (window.EncKey && window.EncKey.removeSlot) return window.EncKey.removeSlot(username);
     })
-    .catch(function () {})
     .then(function () {
       window.location.href = '/logout';
+    })
+    .catch(function (err) {
+      console.debug('forget token revoke failed', err);
+      alert('Could not forget this account. Please try again.');
     });
 }
 
@@ -1126,6 +1126,7 @@ function desktopTtsIsLive(sessionId) {
 let loadedPrivacy = null;
 let privacyChanging = false;
 const PRIVACY_LEVELS = ['private', 'standard', 'non_private'];
+const SELECTABLE_PRIVACY_LEVELS = ['private', 'non_private'];
 function privacyEligible(destination, chatLevel) {
   const required = PRIVACY_LEVELS.indexOf(chatLevel);
   const classified = PRIVACY_LEVELS.indexOf(destination);
@@ -3067,9 +3068,9 @@ $(document).ready(function() {
     $('#privacy-select').on('change', async function() {
       const requested = this.value;
       this.value = loadedPrivacy ? loadedPrivacy.level : '';
-      if (!chatPolicyReady() || !PRIVACY_LEVELS.includes(requested) || requested === loadedPrivacy.level) return;
+      if (!chatPolicyReady() || !SELECTABLE_PRIVACY_LEVELS.includes(requested) || requested === loadedPrivacy.level) return;
       if (PRIVACY_LEVELS.indexOf(requested) > PRIVACY_LEVELS.indexOf(loadedPrivacy.level)
-          && !confirm('Allow this chat to use ' + privacyLabel(requested) + ' services? Standard services have limited retention; Non-private services may retain data or train on it. Earlier transmissions cannot be undone.')) return;
+          && !confirm('Non-private services may retain data or train on it. Earlier transmissions cannot be undone. Allow this chat to use them?')) return;
       const binding = captureVoiceBinding();
       const expectedVersion = window.APP_DATA.setVersion;
       if (expectedVersion == null || !binding.setId) return;

@@ -301,25 +301,25 @@ $(function() {
     }
     $(this).prop('disabled', true);
     try {
+      const csrf = $('input[name="csrf_token"]').first().val() || '';
+      const resp = await fetch('/login/forget', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body:
+          'csrf_token=' + encodeURIComponent(csrf) +
+          '&username=' + encodeURIComponent(username),
+      });
+      if (!resp.ok) throw new Error('Forget request failed');
       await window.EncKey.removeSlot(username);
-      try {
-        const csrf = $('input[name="csrf_token"]').first().val() || '';
-        await fetch('/login/forget', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body:
-            'csrf_token=' + encodeURIComponent(csrf) +
-            '&username=' + encodeURIComponent(username),
-        });
-      } catch (err) {
-        console.debug('forget token revoke failed', err);
-      }
       await renderSavedAccountSelect();
       if (!savedAccountSectionVisible()) {
         showLoginNotice('Removed the cached login. Sign in with the username and password.');
       } else {
         showLoginNotice('Removed the cached login for ' + username + '.');
       }
+    } catch (err) {
+      console.debug('forget token revoke failed', err);
+      showLoginError('Could not forget this account. Please try again.');
     } finally {
       $(this).prop('disabled', false);
     }
@@ -333,6 +333,7 @@ $(function() {
       $('#username').val($('#saved-account-select').val());
     }
     $('#username').prop('disabled', false);
+    form.querySelector('input[name="storage_key"]')?.remove();
 
     if (cachedModeActive() && !$('#password').val()) {
       try {
@@ -390,7 +391,6 @@ $(function() {
         return;
       }
 
-      form.querySelector('input[name="storage_key"]')?.remove();
       $('<input>').attr({
         type: 'hidden',
         name: 'storage_key',
