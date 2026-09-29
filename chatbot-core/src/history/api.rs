@@ -199,6 +199,9 @@ impl HistoryService {
                     .cache
                     .get_snapshot_if_version(user, set_id, meta.version)
                 {
+                    // The cache is plaintext: authenticate this request's key
+                    // against the sealed, version-bound manifest before using it.
+                    self.store.load_manifest(user, set_id, meta.version, key)?;
                     return Ok(cached);
                 }
             }
