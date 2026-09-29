@@ -12,6 +12,21 @@ use chatbot_test_support::TestWorkspace;
 use serde_json::{json, Value};
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
+use tracing_subscriber::{layer::Context, prelude::*, Layer};
+
+struct PauseBeforeTtsInsertion {
+    reached: Mutex<Option<oneshot::Sender<()>>>,
+    resume: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for PauseBeforeTtsInsertion {
+    fn on_event(&self, event: &tracing::Event<'_>, _context: Context<'_, S>) {
+        if event.metadata().target() == "tts::admission" {
+            self.reached.lock().unwrap().take().unwrap().send(()).unwrap();
+            self.resume.lock().unwrap().recv().unwrap();
+        }
+    }
+}
 
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -311,6 +326,53 @@ async fn queued_non_private_tts_token_is_invalidated_before_private_switch_can_s
         .body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(hits.load(Ordering::SeqCst), 0, "invalidated token must never reach voice service");
+    shutdown.send(()).unwrap(); server.await.unwrap();
+}
+
+#[tokio::test]
+async fn private_switch_between_tts_eligibility_and_token_insertion_never_synthesizes() {
+    let _guard = test_lock();
+    let (addr, _, hits, shutdown, server) = voice_stub().await;
+    let (_workspace, app, first, second, _, set_id, version) = setup(addr).await;
+    let (status, changed) = json_post(&app, &second, "/set_privacy", json!({"set_id":set_id,"expected_version":version,"privacy_level":"non_private"})).await;
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    let non_private_version = changed["version"].as_u64().unwrap();
+
+    let (reached_tx, reached_rx) = oneshot::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let post_app = app.clone();
+    let post_set_id = set_id.clone();
+    let post = std::thread::spawn(move || {
+        let subscriber = tracing_subscriber::registry().with(PauseBeforeTtsInsertion {
+            reached: Mutex::new(Some(reached_tx)),
+            resume: Mutex::new(resume_rx),
+        });
+        tracing::subscriber::with_default(subscriber, || {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                json_post(&post_app, &first, "/tts", json!({"text":"Do not send after switch","set_id":post_set_id})).await
+            })
+        })
+    });
+    reached_rx.await.expect("POST reached token insertion after checking Non-private mode");
+
+    let (switch_status, switch_body) = json_post(&app, &second, "/set_privacy", json!({"set_id":set_id,"expected_version":non_private_version,"privacy_level":"private"})).await;
+    resume_tx.send(()).unwrap();
+    let (post_status, issued) = post.join().unwrap();
+    assert_eq!(post_status, StatusCode::OK, "{issued}");
+    let token = issued["token"].as_str().unwrap();
+
+    if switch_status == StatusCode::CONFLICT {
+        assert_eq!(switch_body["error"], "privacy_busy");
+        let (status, changed) = json_post(&app, &second, "/set_privacy", json!({"set_id":set_id,"expected_version":non_private_version,"privacy_level":"private"})).await;
+        assert_eq!(status, StatusCode::OK, "{changed}");
+    } else {
+        assert_eq!(switch_status, StatusCode::OK, "{switch_body}");
+    }
+
+    let response = app.clone().oneshot(Request::builder().uri(format!("/tts_stream/{token}"))
+        .body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND, "token cannot survive a Private switch");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "Private set content must not reach Non-private TTS");
     shutdown.send(()).unwrap(); server.await.unwrap();
 }
 

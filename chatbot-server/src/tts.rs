@@ -134,7 +134,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     )?;
     let (session_context, encryption_key) = data_context.into_unverified_parts();
     let chat = services.chat().clone();
-    let (binding, destination) = match session_context.username.as_deref() {
+    let (binding, destination, admission_permit) = match session_context.username.as_deref() {
         Some(user) => {
             let tts_level = services
                 .config_source()
@@ -167,9 +167,6 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
                     ));
                 }
                 let destination = capture_tts_destination(&services, required);
-                // Release the shared permit after admission; queued tokens
-                // must not hold privacy settings locked.
-                drop(permit);
                 (
                     TtsBinding::Set {
                         owner: crate::tts::store::normalise_tts_owner(user),
@@ -177,6 +174,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
                         required,
                     },
                     destination,
+                    Some(permit),
                 )
             } else {
                 chat.validate_encryption_key_for_user(user, encryption_key.as_ref())
@@ -194,6 +192,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
                         owner: crate::tts::store::normalise_tts_owner(user),
                     },
                     destination,
+                    None,
                 )
             }
         }
@@ -211,6 +210,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
                     &services,
                     chatbot_core::config::PrivacyLevel::NonPrivate,
                 ),
+                None,
             )
         }
     };
@@ -221,9 +221,12 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
 
+    debug!(target: "tts::admission", "TTS token admission complete; inserting token");
     let inserted = services
         .pending_tts()
         .insert_bound(token.clone(), cleaned, binding, destination);
+    // Queued tokens need no permit once they are visible to mode-change invalidation.
+    drop(admission_permit);
     if !inserted {
         return Err(api_error(
             StatusCode::TOO_MANY_REQUESTS,
