@@ -86,15 +86,16 @@ pub async fn handle_client_logs(request: Request<Body>) -> Result<Response<Body>
     let csrf_token = crate::request_context::extract_csrf(&parts.headers);
 
     // Log-only endpoint: no state mutation. The native reporter cannot obtain
-    // the page's CSRF token, so a live session cookie is accepted as
-    // authorization when no CSRF header is presented; a presented CSRF token
-    // must still validate. Rate limiting applies (route is in LIMITED_PATHS).
-    let authorized = match csrf_token {
-        Some(token) => identity
-            .validate_csrf_token(cookie_header.as_deref(), Some(token))
-            .map_err(|err| map_session_err(err, "client_logs::csrf"))?,
-        None => identity.has_live_session(cookie_header.as_deref()),
-    };
+    // the page's CSRF token, so a live session cookie is required with or
+    // without a CSRF header; a presented CSRF token must also validate.
+    // Rate limiting applies (route is in LIMITED_PATHS).
+    let authorized = identity.has_live_session(cookie_header.as_deref())
+        && match csrf_token {
+            Some(token) => identity
+                .validate_csrf_token(cookie_header.as_deref(), Some(token))
+                .map_err(|err| map_session_err(err, "client_logs::csrf"))?,
+            None => true,
+        };
     if !authorized {
         return Err(api_error(
             StatusCode::UNAUTHORIZED,

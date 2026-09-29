@@ -205,10 +205,28 @@ async fn client_logs_require_live_session_without_csrf_and_reject_bad_csrf() {
     assert_eq!(post_logs(&app, "session=unknown-session-cookie", None, body).await, StatusCode::UNAUTHORIZED);
     assert_eq!(post_logs(&app, &guest, None, body).await, StatusCode::NO_CONTENT);
     assert_eq!(post_logs(&app, &guest, Some("invalid-csrf"), body).await, StatusCode::UNAUTHORIZED);
+    let valid_csrf = store.prepare_home_context(Some(&guest), true).unwrap().csrf_token;
+    assert_eq!(post_logs(&app, &guest, Some(&valid_csrf), body).await, StatusCode::NO_CONTENT);
+    assert_eq!(post_logs(&app, "session=unknown-session-cookie", Some(&valid_csrf), body).await, StatusCode::UNAUTHORIZED);
     let authenticated = store.finalize_login(Some(&guest), "log_user", true).unwrap();
     let authenticated_cookie = common::extract_cookie(&authenticated.set_cookie);
     assert_eq!(post_logs(&app, &guest, None, body).await, StatusCode::UNAUTHORIZED, "rotated session is no longer live");
     assert_eq!(post_logs(&app, &authenticated_cookie, None, body).await, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn client_logs_reject_csrf_header_without_live_session_when_csrf_disabled() {
+    let _lock = WORKSPACE_LOCK.lock().unwrap();
+    let _workspace = TestWorkspace::with_config(&format!("{}csrf: false\n", test_config()));
+    let store = Arc::new(HttpSessionStore::new(3600));
+    let app = build_router_with_identity(resolve_static_root(), RequestIdentity::with_store(store));
+    let live_cookie = session_cookie_from_home(&app).await;
+    let body = r#"{"lines":["test"]}"#;
+
+    assert_eq!(post_logs(&app, "session=unknown-session-cookie", Some("arbitrary-token"), body).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(post_logs(&app, "", Some("arbitrary-token"), body).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(post_logs(&app, &live_cookie, None, body).await, StatusCode::NO_CONTENT);
+    assert_eq!(post_logs(&app, &live_cookie, Some("arbitrary-token"), body).await, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
