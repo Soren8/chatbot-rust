@@ -455,12 +455,12 @@ fn expand_speech_numbers(input: &str) -> String {
         })
         .into_owned();
 
-    debug!(expanded_preview = ?expanded.get(..100.min(expanded.len())), "expand_speech_numbers: result");
+    debug!(expanded_len = expanded.len(), "expand_speech_numbers: result");
     expanded
 }
 
 pub(super) fn sanitize_text(input: &str) -> String {
-    debug!(input_len = input.len(), input_preview = ?input.get(..100.min(input.len())), "sanitize_text: starting");
+    debug!(input_len = input.len(), "sanitize_text: starting");
 
     let mut no_think = THINK_REGEX.replace_all(input, "").into_owned();
 
@@ -471,11 +471,10 @@ pub(super) fn sanitize_text(input: &str) -> String {
     }
 
     // Remove URLs BEFORE markdown parsing so [text](url) links are handled correctly
-    let url_matches: Vec<_> = URL_REGEX.find_iter(&no_think).collect();
-    debug!(url_match_count = url_matches.len(), matches = ?url_matches.iter().map(|m| m.as_str()).collect::<Vec<_>>(), "sanitize_text: URL matches before stripping");
+    debug!(url_match_count = URL_REGEX.find_iter(&no_think).count(), "sanitize_text: URL matches before stripping");
 
     let no_urls = URL_REGEX.replace_all(&no_think, "");
-    debug!(no_urls_preview = ?no_urls.get(..100.min(no_urls.len())), "sanitize_text: after URL removal");
+    debug!(no_urls_len = no_urls.len(), "sanitize_text: after URL removal");
 
     let no_emoji = EMOJI_REGEX.replace_all(&no_urls, "");
 
@@ -510,7 +509,7 @@ pub(super) fn sanitize_text(input: &str) -> String {
     // Collapse multiple spaces into one. `split_whitespace` already drops
     // leading/trailing runs, so the join needs no further trim.
     let result = expanded.split_whitespace().collect::<Vec<_>>().join(" ");
-    debug!(result_preview = ?result.get(..100.min(result.len())), "sanitize_text: final result");
+    debug!(result_len = result.len(), "sanitize_text: final result");
     if !result.chars().any(|c| c.is_alphanumeric()) {
         return String::new();
     }
@@ -520,6 +519,58 @@ pub(super) fn sanitize_text(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{io::Write, sync::{Arc, Mutex}};
+
+    #[derive(Clone)]
+    struct Logs(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn sanitize_text_and_number_expansion_do_not_log_private_speech() {
+        let logs = Logs(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let prompt = "SEC006_PRIVATE_SPEECH_PROMPT_9241";
+        let url = "https://private-speech.example/SEC006_PRIVATE_URL_7318";
+        let number = "847291";
+        let input = format!("{prompt} {url} amount {number} and 42%.");
+
+        let speech = sanitize_text(&input);
+        let expanded = expand_speech_numbers(&format!("{prompt} {number}"));
+
+        assert!(speech.contains(prompt));
+        assert!(!speech.contains(url));
+        assert!(expanded.contains(number));
+        let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        for sentinel in [prompt, url, number] {
+            assert!(!output.contains(sentinel), "speech content appeared in tracing logs: {sentinel}");
+        }
+        for stage in ["sanitize_text: starting", "sanitize_text: URL matches before stripping"] {
+            assert!(output.contains(stage), "missing speech pipeline stage: {stage}");
+        }
+    }
 
     #[test]
     fn test_sanitize_text_strips_emojis() {
