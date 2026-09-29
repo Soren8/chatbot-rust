@@ -137,7 +137,7 @@ async fn log_server_error_responses(
     next: Next,
 ) -> Response {
     let method = request.method().clone();
-    let path = request.uri().path().to_owned();
+    let path = sanitize_log_path(request.uri().path());
     let response = next.run(request).await;
     if response.status().is_server_error() {
         error!(
@@ -148,6 +148,36 @@ async fn log_server_error_responses(
         );
     }
     response
+}
+
+/// Only `/tts_stream/{token}` carries a bearer credential in its path.
+/// Preserve other route paths (including unrelated opaque identifiers).
+fn sanitize_log_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("/tts_stream/") {
+        if !rest.is_empty() {
+            let suffix = rest.find('/').map(|index| &rest[index..]).unwrap_or("");
+            return format!("/tts_stream/[REDACTED]{suffix}");
+        }
+    }
+    path.to_owned()
+}
+
+#[cfg(test)]
+mod log_path_tests {
+    use super::sanitize_log_path;
+
+    #[test]
+    fn ordinary_paths_remain_unchanged() {
+        assert_eq!(sanitize_log_path("/health"), "/health");
+        assert_eq!(sanitize_log_path("/history_image/abc/1/2/3"), "/history_image/abc/1/2/3");
+        assert_eq!(sanitize_log_path("/tts_streaming/visible"), "/tts_streaming/visible");
+    }
+
+    #[test]
+    fn tts_bearer_token_is_redacted() {
+        assert_eq!(sanitize_log_path("/tts_stream/SECRET_TOKEN_4729"), "/tts_stream/[REDACTED]");
+        assert_eq!(sanitize_log_path("/tts_stream/SECRET_TOKEN_4729/extra"), "/tts_stream/[REDACTED]/extra");
+    }
 }
 
 /// Enforce HTTP cache revalidation on static assets (`/static/*`).

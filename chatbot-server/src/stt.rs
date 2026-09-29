@@ -122,7 +122,6 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     tracing::info!(
         bytes = audio_bytes.len(),
         content_type = %audio_content_type,
-        file = %audio_file_name,
         compressed,
         "STT audio received"
     );
@@ -266,4 +265,65 @@ fn extract_error(status: reqwest::StatusCode, body: &[u8]) -> String {
         .canonical_reason()
         .unwrap_or("STT backend provider error")
         .to_string()
+}
+
+#[cfg(test)]
+mod filename_log_tests {
+    use std::{io::Write, sync::{Arc, Mutex}};
+
+    use axum::http::header;
+    use chatbot_core::{config_source::ConfigSource, session_identity::HttpSessionStore};
+
+    use super::*;
+    use crate::identity::RequestIdentity;
+
+    #[derive(Clone)]
+    struct Logs(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Logs {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&self) -> Self::Writer { self.clone() }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn caller_filename_never_appears_in_info_logs_for_allowed_or_denied_uploads() {
+        let logs = Logs(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let config = ConfigSource::new(false, 3600, "prompt".to_owned(), "http://127.0.0.1:1".to_owned());
+        let identity = RequestIdentity::with_store(Arc::new(HttpSessionStore::new(3600)))
+            .with_config_source(config.clone());
+        let services = AppServices::with_identity(identity).with_config_source(config);
+
+        for (set_id, expected_status) in [(None, StatusCode::BAD_GATEWAY), (Some("not-owned"), StatusCode::BAD_REQUEST)] {
+            let boundary = "stt-log-boundary";
+            let sentinel = "STT_FILENAME_SECRET_9173";
+            let metadata = set_id.map(|id| format!("--{boundary}\r\nContent-Disposition: form-data; name=\"set_id\"\r\n\r\n{id}\r\n")).unwrap_or_default();
+            let body = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"{sentinel}.wav\"\r\nContent-Type: audio/wav\r\n\r\naudio\r\n{metadata}--{boundary}--\r\n");
+            let mut request = Request::builder().method(Method::POST).uri("/stt")
+                .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+                .body(Body::from(body)).unwrap();
+            request.extensions_mut().insert(services.clone());
+
+            let result = handle_stt(request).await;
+            assert_eq!(result.err().expect("expected denied request or closed backend").0, expected_status);
+            let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+            assert!(output.contains("STT audio received"), "missing INFO codec telemetry: {output}");
+            assert!(output.contains("compressed=false"), "missing WAV fallback telemetry: {output}");
+            assert!(!output.contains(sentinel), "caller filename leaked into logs: {output}");
+        }
+    }
 }
