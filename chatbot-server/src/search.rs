@@ -72,7 +72,7 @@ pub async fn search_augmented_stream(
                 .unwrap_or("");
 
             prefix_chunks.push(format!("<think>Searching for: {}...</think>", query));
-            debug!(query = %query, "executing brave_web_search");
+            debug!("executing brave_web_search");
 
             let result = brave.search(query).await.unwrap_or_else(|e| {
                 warn!(?e, "Brave Search request failed");

@@ -156,8 +156,7 @@ impl XaiProvider {
             store,
         };
 
-        let body_json = serde_json::to_string(&payload).unwrap_or_default();
-        debug!(body = %body_json, xai_zdr = self.xai_zdr, "sending xAI request");
+        debug!(xai_zdr = self.xai_zdr, "sending xAI request");
 
         // Ensure base_url is correct. If it's missing or empty, default to https://api.x.ai/v1
         let base = if self.base_url.is_empty() {
@@ -190,7 +189,6 @@ impl XaiProvider {
                 while let Some(chunk) = body_stream.next().await {
                     let bytes = chunk.context("LLM stream read error")?;
                     let piece = String::from_utf8_lossy(&bytes);
-                    debug!(chunk = %piece, "xAI raw stream chunk");
                     buffer.push_str(&piece);
 
                     let outcome = extract_sse_payloads(&mut buffer)?;
@@ -204,10 +202,8 @@ impl XaiProvider {
                 }
             } else {
                 let status = response.status();
-                let text = response.text().await.unwrap_or_default();
-                debug!(status = ?status, body = %text, "xAI API response payload");
-                error!(status = ?status, body_preview = %text.chars().take(200).collect::<String>(), "xAI error response");
-                Err(anyhow::anyhow!("HTTP {} - {}", status, text))?;
+                error!(status = ?status, "xAI error response");
+                Err(anyhow::anyhow!("HTTP {}", status))?;
             }
         };
 

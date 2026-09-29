@@ -498,17 +498,6 @@ struct ExtractionOutcome {
     done: bool,
 }
 
-const PROVIDER_ERROR_BODY_MAX_CHARS: usize = 512;
-
-fn truncate_for_error(body: &str) -> String {
-    if body.chars().count() <= PROVIDER_ERROR_BODY_MAX_CHARS {
-        return body.to_string();
-    }
-    let mut truncated: String = body.chars().take(PROVIDER_ERROR_BODY_MAX_CHARS).collect();
-    truncated.push('…');
-    truncated
-}
-
 /// Send the chat-completions request once.
 async fn send_openai_request(
     client: &Client,
@@ -564,20 +553,14 @@ fn rate_limit_wait(
     retry_after.unwrap_or(backoff).min(max_wait)
 }
 
-/// Surface HTTP error statuses with the provider's error body instead of
-/// discarding it via `error_for_status` (quota/auth/model errors live there).
+/// Surface HTTP error statuses without echoing untrusted provider response bodies.
 async fn check_openai_response(response: Response) -> Result<Response> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
-    let body = response.text().await.unwrap_or_default();
-    error!(
-        status = ?status,
-        body_preview = %body.chars().take(200).collect::<String>(),
-        "OpenAI error response"
-    );
-    Err(anyhow::anyhow!("HTTP {} - {}", status, truncate_for_error(&body)))
+    error!(status = ?status, "OpenAI error response");
+    Err(anyhow::anyhow!("HTTP {}", status))
 }
 
 fn extract_sse_payloads(
@@ -926,7 +909,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_chat_includes_status_and_body_on_http_error() {
+    async fn stream_chat_includes_status_without_body_on_http_error() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock listener");
@@ -986,8 +969,8 @@ mod tests {
             "error must include the HTTP status, got: {message}"
         );
         assert!(
-            message.contains("Rate limit exceeded, quota reached"),
-            "error must include the provider error body, got: {message}"
+            !message.contains("Rate limit exceeded, quota reached"),
+            "error must not include the provider error body, got: {message}"
         );
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
@@ -1208,8 +1191,8 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains("429"), "error must keep status, got: {message}");
         assert!(
-            message.contains("Rate limit exceeded"),
-            "error must keep provider body, got: {message}"
+            !message.contains("Rate limit exceeded"),
+            "error must not include provider body, got: {message}"
         );
         assert_eq!(
             statuses.len(),
