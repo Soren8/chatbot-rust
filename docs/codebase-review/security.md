@@ -105,3 +105,9 @@ Full workspace suite on the closing tree (`8045092` + ledger docs): job `2026092
 ## Final gate, 2026-09-29 (sessions 082 tree)
 
 Full workspace suite on the closing tree (`e2c66af`): job `20260929T031346-2a1c5b00855f`, exit 0, untruncated, 127 ok suites, 1025 passed / 0 failed; log `temp/test-logs/phase4-final3-20260929.log`. Ready for re-review.
+
+## Sessions 083 — resume-lock, token-log fixes + ledger completion, 2026-09-29
+
+- Resume lock `1ef1eb0`: `promptResumeUnlock` routes unavailable authentication through the JVM-tested `NativeUnlockGate` — logs and stays locked with the retry overlay instead of `unlockApp()`; first-run/no-session path unchanged. JVM-executed unavailable/cancelled/failed/success cases (`ResumeUnlockGateTest`) + routing pins. Red `20260929T032632-313e05fba8f7` (2 ran); green distribution `20260929T032848-007b5801bde8` (19); APK `20260929T032942-e1643b9c3b2d`.
+- Token-log fixes `1ef1eb0`/`a63c3b6`: TTS playback logs code-only (no URL); 5xx middleware uses prefix-scoped `sanitize_log_path` (`/tts_stream/{token}` → `[REDACTED]`, other paths byte-identical); STT INFO log drops the caller filename, keeping bytes/content-type/compressed telemetry. Captured-log regressions with sentinels for allowed + denied uploads. Red `20260929T032750-aee8dbd7bb08` / `20260929T032811-4d4089aa6599`; green sanitizer `20260929T032936-7b28af09f7b7` (2), sttname `20260929T032901-ab9c5c0c4206` (1).
+- Ledger: the 16 remaining `P` application units advanced to `R` on completed reads (S01/S02/S03/S05/S06/S09/S10/S12, W01/W04/W05, N01/N02/N03, O01/O02); per-unit ranges in the coverage note above. Sec `R` now covers every application unit except T01/T02/T04 (security-regression bodies; assertion audit is test-quality scope).

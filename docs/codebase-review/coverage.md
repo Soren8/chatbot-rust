@@ -1,8 +1,10 @@
 # Review coverage
 
-## Sessions 075–082 — Phase 4 Sec column (implementation recorded, review verdict pending)
+## Sessions 075–083 — Phase 4 Sec column (review verdict pending)
 
-The Sec column above is filled per unit at `main@883e419`. `R` marks units where every owned file received a focused security read in sessions 075–082: all of R01/C01–C09/P01 (core), S01–S06/S08–S12 (server), W01–W05 (browser), N01–N03 (native), X01, G01, O01–O02, T03. Round-3 closure reads verified complete 1→EOF accounting including inline tests (e.g. C04 all twelve history modules; N02 every mic/TTS/audio file; G01 service + all six voice test files; O02 every chart/compose file). `P` marks T01/T02/T04 only, covering security-regression test bodies, not assertion-level review of every fixture (test-quality pass scope). `B` keeps its boundary-only meaning (V01, S07, N04, O03, D01, D02, R00) with the stated exclusions. `R` is read coverage, not proof of absence; device/GPU/topology proofs are recorded as accepted limits, not findings. Per-file ranges, retain/defer dispositions and backlog candidates with prerequisites live in [security.md](security.md) sessions 075–082 (session-081/082 reconciliation detail retained in worker returns). Backlog candidates (unbatched, each with prerequisites): raw-400 log sentinel + TTS-token 5xx path log (R01), substituted-env panic value (C01), legacy list-cache key check (C04), malformed image-tag outbound shape (C06), patch-credential lifetimes (P01), STT filename sentinel (S05), image `Cache-Control` contract (S03), backend URL credential sentinel + token-collision test (S09/S10), duplicate-cookie parser test (S12), W01 exception-sentinel-to-client_logs + hostile-Markdown sinks (W05 carry-over), MainActivity resume-lock + switch-concurrency tests (N01), native enqueue origin restriction (N02), car transport adapter + host allowlist (N03), log-sink sentinel (T04), `webserver.env` literal policy + publisher provenance (O02/O01), voice exception-echo + workload bounds (G01). Corrected in session 081: resume() no longer revokes on secret mismatch (fail-closed) and revoke_if_username() accepts the previous-generation secret — the session-075 C03 replay-policy note is superseded. Closed in session 082: the S04 in-band-error log candidate is covered by SEC-012 (the logged error is now generic at construction).
+Sec `R` now covers every application unit except T01/T02/T04 (security-regression bodies only; assertion-level review is test-quality scope) and boundary units (V01/S07/N04/O03/D01/D02/R00, exclusions as stated).
+
+Per-unit read ranges for the session-083 promotions: S01 (`chat.rs:1–426`, `chat_utils.rs:1–341`, `regenerate.rs:1–355`), S02 (`home.rs:1–456`, `login.rs:1–667`, `logout.rs:1–56`, `signup.rs:1–164`), S03 (`sets.rs:1–971`, `memory.rs:1–452`, `preferences.rs:1–95`, `reset_chat.rs:1–153`), S05 (`stt.rs:1–269`, `tts.rs:1–557`, `tts_opus.rs:1–612`), S06 (`client_logs.rs:1–134`, `health.rs:1–104`, `rate_limit_middleware.rs:1–96`), S09 (`tts/backend.rs:1–310`), S10 (`tts/store.rs:1–301`), S12 (`policy.rs`, `generation_deps.rs`, `services.rs`, `identity.rs`, `request_context.rs`, `enc_key_cookies.rs` full), W01 (`chat.js` sink-driven 1–4907 + earlier reads), W04 (all templates/styles/substitutions), W05 (four remaining modules + nine earlier reads), N01 (`NativeSecureKeyPlugin.java` + `MainActivity.java` full, Logger, codecs, all seven `util/` files), N02 (every mic/TTS/audio file), N03 (`VoiceScreen.java` full, `VoiceSession.java`, car service), O01 (workflows/scripts/CodeQL/dependabot), O02 (values, all templates, compose files). Earlier-`R` ranges stand as recorded in [security.md](security.md) sessions 075–082. `R` is read coverage, not proof of absence; device/GPU/topology proofs are recorded as accepted limits, not findings. Backlog candidates (unbatched, each with prerequisites): raw-400 log sentinel (R01), substituted-env panic value (C01), legacy list-cache key check (C04), malformed image-tag outbound shape (C06), patch-credential lifetimes (P01), image `Cache-Control` contract (S03), backend URL credential sentinel + token-collision test (S09/S10), duplicate-cookie parser test (S12), W01 exception-sentinel-to-client_logs + hostile-Markdown sinks (W05 carry-over), N01 switch-concurrency test, native enqueue origin restriction (N02), car transport adapter + host allowlist (N03), log-sink sentinel (T04), `webserver.env` literal policy + publisher provenance (O02/O01), voice exception-echo + workload bounds (G01). Fixed in session 083: resume-lock fail-open, TTS URL token logs, 5xx token-path logs, STT filename logs. Corrected in session 081: fail-closed resume/prev-secret forget. Closed in session 082: the S04 in-band-error log candidate (SEC-012).
 
 ## Sessions 063–074 — Phase 3 abstractions column (complete)
 
@@ -148,34 +150,34 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 | C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | R | R | — | — | — |
 | P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | R | R | R | — | — | — |
 | T01 Core integration tests | `chatbot-core/tests/*` | R | P | — | P | — | — | — |
-| S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | R | R | P | — | — | — |
-| S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | R | R | P | — | — | — |
-| S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | R | R | R | P | — | — | — |
+| S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | R | R | R | R | — | — | — |
+| S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | R | R | R | R | — | — | — |
+| S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | R | R | R | R | — | — | — |
 | S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | R | R | R | — | — | — |
-| S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | R | R | P | — | — | — |
+| S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | R | R | R | R | — | — | — |
 | S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | R | R | R | — | — | — |
-| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | R | P | — | — | — |
-| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | R | R | P | — | — | — |
-| S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | R | R | P | — | — | — |
+| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | R | R | — | — | — |
+| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | R | R | R | R | — | — | — |
+| S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | R | R | R | R | — | — | — |
 | S11 Server privacy/agent coordination (post-baseline) | `chatbot-server/src/set_privacy_coordinator.rs`, `chatbot-server/src/agent_connections.rs` | — | R | R | R | — | — | — |
-| S12 Server composition/policy adapters (post-baseline) | `chatbot-server/src/policy.rs`, `chatbot-server/src/generation_deps.rs`, `chatbot-server/src/services.rs`, `chatbot-server/src/identity.rs`, `chatbot-server/src/enc_key_cookies.rs`, `chatbot-server/src/request_context.rs` | — | R | R | P | — | — | — |
+| S12 Server composition/policy adapters (post-baseline) | `chatbot-server/src/policy.rs`, `chatbot-server/src/generation_deps.rs`, `chatbot-server/src/services.rs`, `chatbot-server/src/identity.rs`, `chatbot-server/src/enc_key_cookies.rs`, `chatbot-server/src/request_context.rs` | — | R | R | R | — | — | — |
 | T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | P | — | P | — | — | — |
 | T03 Shared test support | `chatbot-test-support/src/*` | R | R | R | R | — | — | — |
 | S07 Server examples/protected configuration | `chatbot-server/examples/*`, `chatbot-server/.config.yml` | B | B | — | B | — | — | — |
-| W01 Browser chat UI | `static/chat.js` | R | R | R | P | — | — | — |
+| W01 Browser chat UI | `static/chat.js` | R | R | R | R | — | — | — |
 | W02 Browser identity/rendering security | `static/login.js`, `static/enc-key.js`, `static/tt.js` | R | R | R | R | — | — | — |
 | W03 Browser/native bridge/audio | `static/native-audio.js`, `static/native-bridge.js` | R | R | R | R | — | — | — |
-| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | R | R | R | P | — | — | — |
-| W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js` | R | R | R | P | — | — | — |
-| N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | R | P | — | — | — |
-| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | R | P | — | — | — |
-| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | R | P | — | — | — |
+| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | R | R | R | R | — | — | — |
+| W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js` | R | R | R | R | — | — | — |
+| N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | R | R | — | — | — |
+| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | R | R | — | — | — |
+| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | R | R | R | R | — | — | — |
 | T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | P | — | — | — |
 | N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | B | — | — | — |
 | X01 DNS sidecar (post-baseline) | `dns/*` | — | R | R | R | — | — | — |
 | G01 GPU voice service | `chatbot-cuda/*` | R | R | R | R | — | — | — |
-| O01 CI/automation | `.github/*`, `scripts/*` | R | R | R | P | — | — | — |
-| O02 Deployment templates | `deploy/*` | R | R | R | P | — | — | — |
+| O01 CI/automation | `.github/*`, `scripts/*` | R | R | R | R | — | — | — |
+| O02 Deployment templates | `deploy/*` | R | R | R | R | — | — | — |
 | O03 Repository development environment | `.devcontainer/*`, `.grok/*` | B | B | — | B | — | — | — |
 | D01 Review records | `docs/codebase-review/*` | B | B | — | B | — | — | — |
 | D02 Architecture/operator documentation | `docs/*` | B | B | — | B | — | — | — |
