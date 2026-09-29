@@ -100,7 +100,7 @@ public class VoiceScreen extends Screen {
     @NonNull
     @Override
     public Template onGetTemplate() {
-        FileLogger.log(TAG, "onGetTemplate status=" + statusText + " last=" + lastTranscription);
+        FileLogger.log(TAG, "onGetTemplate status=" + statusText);
 
         Pane.Builder paneBuilder = new Pane.Builder();
         paneBuilder.addRow(new Row.Builder()
@@ -296,7 +296,6 @@ public class VoiceScreen extends Screen {
             try {
                 setStatus("Transcribing…");
                 String text = postStt(turnUrl, pcm);
-                FileLogger.log(TAG, "STT result: " + text);
                 if (text == null || text.trim().isEmpty()) {
                     setStatus("Listening…");
                     return;
@@ -306,7 +305,6 @@ public class VoiceScreen extends Screen {
 
                 setStatus("Thinking…");
                 String response = postChat(turnUrl, text);
-                FileLogger.log(TAG, "Chat response: " + (response == null ? "null" : response.substring(0, Math.min(120, response.length()))));
                 if (response == null || response.isEmpty()) {
                     setStatus("Listening…");
                     return;
@@ -351,7 +349,6 @@ public class VoiceScreen extends Screen {
         InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
         String body = readAll(is);
         conn.disconnect();
-        FileLogger.log(TAG, "postStt body=" + body);
         if (code < 200 || code >= 300) {
             return null;
         }
@@ -382,14 +379,12 @@ public class VoiceScreen extends Screen {
         String body = readAll(is);
         conn.disconnect();
         if (code < 200 || code >= 300) {
-            FileLogger.log(TAG, "postChat error body=" + body);
             return null;
         }
         return body;
     }
 
     private void playTts(String turnUrl, String text) throws IOException {
-        FileLogger.log(TAG, "playTts text=" + text.substring(0, Math.min(50, text.length())));
         // Step 1: get token
         URL url = new URL(turnUrl + "/tts");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -404,8 +399,7 @@ public class VoiceScreen extends Screen {
         int code = conn.getResponseCode();
         FileLogger.log(TAG, "playTts /tts code=" + code);
         if (code != 200) {
-            String err = readAll(conn.getErrorStream());
-            FileLogger.log(TAG, "playTts /tts error=" + err);
+            readAll(conn.getErrorStream());
             conn.disconnect();
             return;
         }
@@ -413,7 +407,6 @@ public class VoiceScreen extends Screen {
         String body = readAll(conn.getInputStream());
         conn.disconnect();
         if (token == null) token = body;
-        FileLogger.log(TAG, "playTts token=" + token);
 
         // Step 2: stream
         conn = (HttpURLConnection) new URL(turnUrl + "/tts_stream/" + token).openConnection();

@@ -228,6 +228,28 @@ fn all_native_consumers_read_only_the_flavor_resource() {
     );
 }
 
+#[test]
+fn car_voice_logs_exclude_turn_content_and_tts_tokens() {
+    // FileLogger persists these lines and the crash reporter can upload them.
+    // Keep HTTP status and audio diagnostics, but never pass turn payloads.
+    for (line_number, line) in VOICE_SCREEN.lines().enumerate() {
+        if !line.contains("FileLogger.log(") {
+            continue;
+        }
+        for sensitive in [
+            "+ text", "+ response", "+ token", "+ body", "+ err",
+            "+ lastTranscription", "text.substring", "response.substring",
+            "token=", "body=", "error=",
+        ] {
+            assert!(
+                !line.contains(sensitive),
+                "VoiceScreen.java:{} logs turn content or a token ({sensitive}): {line}",
+                line_number + 1
+            );
+        }
+    }
+}
+
 /// The shipped resolver is pure Java (no Android imports, so no stubs are
 /// needed) — this harness compiles the real `ServerUrlResolver.java` and
 /// runs the pure-Java behavior fixture: canonical flavor passthrough
