@@ -26,6 +26,8 @@ import com.chatbot.app.util.FileLogger;
 import com.chatbot.app.util.ServerUrlResolver;
 import com.chatbot.app.util.ServerUrlSettingStore;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -63,6 +65,9 @@ public class VoiceScreen extends Screen {
     private final AtomicBoolean captureRunning = new AtomicBoolean(false);
     private final AtomicBoolean ttsPlaying = new AtomicBoolean(false);
 
+    private volatile DurableVoiceProtocol generation;
+    private volatile String generationOrigin;
+    private volatile AudioTrack activeTrack;
     private AudioRecord audioRecord;
     private AudioFocusRequest audioFocusRequest;
     private boolean hasAudioFocus = false;
@@ -295,6 +300,7 @@ public class VoiceScreen extends Screen {
             String turnUrl = serverUrl();
             try {
                 setStatus("Transcribing…");
+                refreshIdentity(turnUrl);
                 String text = postStt(turnUrl, pcm);
                 if (text == null || text.trim().isEmpty()) {
                     setStatus("Listening…");
@@ -325,12 +331,40 @@ public class VoiceScreen extends Screen {
         });
     }
 
+    private String csrfToken = "";
+
+    private void applyIdentity(HttpURLConnection conn, String turnUrl) {
+        String cookie = android.webkit.CookieManager.getInstance().getCookie(turnUrl);
+        if (cookie != null) conn.setRequestProperty("Cookie", cookie);
+        if (!csrfToken.isEmpty()) conn.setRequestProperty("X-CSRF-Token", csrfToken);
+    }
+
+    private void refreshIdentity(String turnUrl) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(turnUrl + "/").openConnection();
+        applyIdentity(conn, turnUrl);
+        conn.setConnectTimeout(15000); conn.setReadTimeout(20000);
+        try {
+            String html = readAll(conn.getInputStream());
+            java.util.regex.Matcher match = java.util.regex.Pattern.compile("<meta name=\"csrf-token\" content=\"([^\"]+)\"").matcher(html);
+            if (!match.find()) throw new IOException("Session unavailable");
+            csrfToken = match.group(1);
+            java.util.Map<String, java.util.List<String>> headers = conn.getHeaderFields();
+            for (java.util.Map.Entry<String, java.util.List<String>> entry : headers.entrySet()) {
+                if ("Set-Cookie".equalsIgnoreCase(entry.getKey())) {
+                    for (String value : entry.getValue()) android.webkit.CookieManager.getInstance().setCookie(turnUrl, value);
+                }
+            }
+        } finally { conn.disconnect(); }
+    }
+
     private String postStt(String turnUrl, byte[] pcm) throws IOException {
         byte[] wav = wrapPcmAsWav(pcm, SAMPLE_RATE, 1);
         String boundary = "----chatbotauto" + UUID.randomUUID();
         URL url = new URL(turnUrl + "/stt");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
+        applyIdentity(conn, turnUrl);
+        conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);
@@ -366,22 +400,47 @@ public class VoiceScreen extends Screen {
         URL url = new URL(turnUrl + "/chat");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
+        applyIdentity(conn, turnUrl);
         conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(60000);
-        String json = String.format(Locale.US, "{\"message\":%s}", escapeJson(text));
+        conn.setRequestProperty("X-Generation-Mode", "durable");
+        String json = String.format(Locale.US, "{\"message\":%s,\"set_id\":\"\",\"expected_version\":0}", escapeJson(text));
         conn.getOutputStream().write(json.getBytes());
 
         int code = conn.getResponseCode();
         FileLogger.log(TAG, "postChat code=" + code);
-        InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
-        String body = readAll(is);
-        conn.disconnect();
-        if (code < 200 || code >= 300) {
-            return null;
+        if (code < 200 || code >= 300) { conn.disconnect(); return null; }
+        DurableVoiceProtocol cursor = new DurableVoiceProtocol(conn.getHeaderField("X-Generation-Id"));
+        generation = cursor;
+        generationOrigin = turnUrl;
+        while (!cursor.saved() && captureRunning.get()) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.trim().isEmpty()) continue;
+                    org.json.JSONObject event = new org.json.JSONObject(line);
+                    cursor.apply(event.optLong("seq"), event.optString("type"), event.optString("text"));
+                    if (cursor.saved()) break;
+                }
+            } catch (org.json.JSONException e) {
+                throw new IOException("Invalid generation event", e);
+            } catch (IOException e) {
+                if (!captureRunning.get()) break;
+                if ("Generation failed".equals(e.getMessage())) throw e;
+            } finally { conn.disconnect(); }
+            if (!cursor.saved() && captureRunning.get()) {
+                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted", e); }
+                conn = (HttpURLConnection) new URL(turnUrl + cursor.eventsPath()).openConnection();
+                applyIdentity(conn, turnUrl);
+                conn.setConnectTimeout(15000); conn.setReadTimeout(20000);
+                if (conn.getResponseCode() == 404) { conn.disconnect(); throw new IOException("Generation interrupted"); }
+            }
         }
-        return body;
+        generation = null;
+        return cursor.text();
     }
 
     private void playTts(String turnUrl, String text) throws IOException {
@@ -389,7 +448,9 @@ public class VoiceScreen extends Screen {
         URL url = new URL(turnUrl + "/tts");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
+        applyIdentity(conn, turnUrl);
         conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(60000);
@@ -450,6 +511,7 @@ public class VoiceScreen extends Screen {
             return;
         }
 
+        activeTrack = track;
         long total = 0;
         String contentType = conn.getContentType();
         boolean isOpus = contentType != null && contentType.contains("opus");
@@ -499,6 +561,7 @@ public class VoiceScreen extends Screen {
             FileLogger.log(TAG, "playTts track.stop", e);
         }
         track.release();
+        activeTrack = null;
         conn.disconnect();
         FileLogger.log(TAG, "playTts complete");
     }
@@ -598,6 +661,22 @@ public class VoiceScreen extends Screen {
     private void exitVoiceMode() {
         FileLogger.log(TAG, "exitVoiceMode");
         stopCapture();
+        AudioTrack track = activeTrack;
+        if (track != null) { try { track.pause(); track.flush(); } catch (IllegalStateException ignored) {} }
+        final DurableVoiceProtocol cursor = generation;
+        final String origin = generationOrigin;
+        if (cursor != null) captureExecutor.execute(() -> {
+            try {
+                HttpURLConnection conn = (HttpURLConnection) new URL(origin + cursor.stopPath()).openConnection();
+                conn.setRequestMethod("POST");
+                applyIdentity(conn, origin);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
+                conn.setDoOutput(true); conn.setConnectTimeout(15000); conn.setReadTimeout(20000);
+                conn.getOutputStream().write("{}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                conn.getResponseCode(); conn.disconnect();
+            } catch (IOException e) { FileLogger.log(TAG, "Explicit Stop failed"); }
+        });
         abandonAudioFocus();
         try {
             getCarContext().finishCarApp();

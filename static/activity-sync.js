@@ -63,7 +63,7 @@
             if (await deps.refreshSession()) { init = deps.refreshCsrfInit(init); continue; }
             state('needs-action'); return response;
           }
-          if (!retryable(response.status)) return response;
+          if (!retryable(response.status) && !(response.status === 429 && /^\/(tts(?:_stream\/|$)|stt$)/.test(url))) return response;
           if (response.body && response.body.cancel) await response.body.cancel();
         } catch (e) {
           if (signal && signal.aborted) throw aborted();
@@ -87,7 +87,7 @@
       }
       if (read) reads.add(controller);
       if (mutation) {
-        init.headers = Object.assign({}, init.headers || {}, { 'Idempotency-Key': operationId() });
+        init.headers = Object.assign({ 'Idempotency-Key': operationId() }, init.headers || {});
         if (url === '/create_set') {
           var body = JSON.parse(init.body || '{}');
           if (!body.name) body.name = deps.createSetName ? deps.createSetName() : 'New Chat ' + clock().toString(36) + '-' + serial;

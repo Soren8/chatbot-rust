@@ -2,6 +2,23 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
+fn android_auto_durable_replay_cursor_and_stop() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let native = std::fs::read_to_string(root.join("android/app/src/main/java/com/chatbot/app/car/VoiceScreen.java")).unwrap();
+    assert!(native.contains("CookieManager.getInstance().getCookie(turnUrl)"), "native reconnect must keep the admitted identity");
+    assert!(native.contains("X-CSRF-Token"), "native mutations must include CSRF");
+    let output_dir = tempfile::tempdir().unwrap();
+    let compile = Command::new("javac").arg("-d").arg(output_dir.path())
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/car/DurableVoiceProtocol.java"))
+        .arg(root.join("chatbot-server/tests/fixtures/DurableVoiceProtocolTest.java"))
+        .output().expect("test image must provide javac");
+    assert!(compile.status.success(), "{}", String::from_utf8_lossy(&compile.stderr));
+    let run = Command::new("java").arg("-cp").arg(output_dir.path()).arg("DurableVoiceProtocolTest")
+        .output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+}
+
+#[test]
 fn native_js_lookahead_orders_refills_retries_and_cancels() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let run = Command::new("node")

@@ -215,6 +215,19 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         }
     };
 
+    let owner = session_context.username.as_ref().map(|user| format!("user:{user}")).unwrap_or_else(|| format!("guest:{}", session_context.session_id));
+    let operation = crate::idempotency::operation_request(&headers, "/tts", &json!({"text": raw_text, "set_id": payload.set_id}))?;
+    let store = services.pending_tts();
+    let _operation_guard = match &operation {
+        Some(operation) => Some(store.operations.acquire(&owner, &operation.id).await),
+        None => None,
+    };
+    if let Some(operation) = &operation {
+        if let Some(token) = store.replay_admission(&owner, operation)? {
+            return tts_token_response(&token);
+        }
+    }
+
     // Generate a temporary token and store the cleaned text. The decryption
     // key is never stored in the token.
     let mut token_bytes = [0u8; 16];
@@ -234,6 +247,11 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         ));
     }
 
+    if let Some(operation) = &operation { store.record_admission(&owner, operation, &token); }
+    tts_token_response(&token)
+}
+
+fn tts_token_response(token: &str) -> Result<Response<Body>, HttpError> {
     // Return the token as JSON
     let payload = json!({ "token": token });
     let body = serde_json::to_vec(&payload)
@@ -242,7 +260,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
-        .header("X-TTS-Token", token.as_str())
+        .header("X-TTS-Token", token)
         .body(Body::from(body))
         .map_err(|err| map_response_build_err(err, "tts::post::token_response"))
 }

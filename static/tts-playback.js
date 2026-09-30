@@ -7,6 +7,11 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  var sentenceSerial = 0;
+  function sentenceOperationId() {
+    return 'tts-' + Date.now().toString(36) + '-' + (++sentenceSerial).toString(36) + '-' + Math.floor(Math.random() * 0x100000000).toString(36);
+  }
+
   // Owned desktop/native TTS sentence queues and desktop clip pipeline.
   // Single owner for the streaming discover/pump/retry loops; chat keeps
   // DOM/event composition (button UI, STT abort, VAD reset, text-change
@@ -124,9 +129,10 @@
       }
 
       var signal = getAbortSignal();
+      var sentenceOperation = sentenceOperationId();
       var promise = fetchVoiceRetry('/tts', {
         method: 'POST',
-        headers: withCsrf({ 'Content-Type': 'application/json' }),
+        headers: withCsrf({ 'Content-Type': 'application/json', 'Idempotency-Key': sentenceOperation }),
         body: JSON.stringify(Object.assign({ text: cleaned }, getSetId && getSetId() ? { set_id: getSetId() } : {})),
         signal: signal
       })
@@ -814,11 +820,12 @@
     function postOneToken(rawText) {
       var cleaned = sanitize(rawText || '').trim();
       if (!cleaned) return Promise.resolve(null);
+      var sentenceOperation = sentenceOperationId();
       return ensureSession().then(function () {
         if (!live()) return null;
         return fetchVoiceRetry('/tts', {
           method: 'POST',
-          headers: withCsrf({ 'Content-Type': 'application/json' }),
+          headers: withCsrf({ 'Content-Type': 'application/json', 'Idempotency-Key': sentenceOperation }),
           body: JSON.stringify(Object.assign({ text: cleaned }, deps.isAuthenticated && deps.isAuthenticated() && binding && binding.setId ? { set_id: binding.setId } : {})),
           signal: ttsSignal
         });

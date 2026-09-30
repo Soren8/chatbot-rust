@@ -193,6 +193,19 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         }
     };
 
+    use sha2::{Digest, Sha256};
+    let audio_hash = Sha256::digest(&audio_bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let operation = crate::idempotency::operation_request(&headers, "/stt", &serde_json::json!({"audio_hash": audio_hash, "content_type": audio_content_type, "set_id": set_id_raw}))?;
+    let owner = session_context.username.as_ref().map(|user| format!("user:{user}")).unwrap_or_else(|| format!("guest:{}", session_context.session_id));
+    let registry = services.generations();
+    let _operation_guard = match &operation {
+        Some(operation) => Some(registry.voice_operations.acquire(&owner, &operation.id).await),
+        None => None,
+    };
+    if let Some(operation) = &operation {
+        if let Some(response) = registry.replay(&owner, operation)? { return Ok(response); }
+    }
+
     let config = services.config_source();
     let base = config.voice_service_base_url();
     let base = base.trim_end_matches('/');
@@ -238,6 +251,7 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     let parsed: Value = serde_json::from_slice(&body_bytes)
         .map_err(|err| map_json_parse_err(err, "stt::post::voice_response"))?;
 
+    if let Some(operation) = &operation { registry.record(&owner, operation, StatusCode::OK, &parsed); }
     let out = serde_json::to_vec(&parsed)
         .map_err(|err| map_serialization_err(err, "stt::post::response"))?;
 

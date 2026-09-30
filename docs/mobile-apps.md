@@ -89,6 +89,13 @@ the host.
                     └──────────────────────┘
 ```
 
+Android Auto uses durable `/chat` NDJSON views and a contiguous event cursor for
+`GET /generations/{id}/events?after=N` reconnects. Duplicate deltas do not append
+answer text; Exit issues explicit Stop and clears local playback. This native
+protocol update requires an updated APK. Web voice sends use the same durable
+adapter as text sends; confirmed handheld/desktop barge-in sends Stop without
+changing either VAD gate. Reloaded recovered text is displayed silently.
+
 ### Why not other frameworks?
 
 - **React Native**: Partial web reuse — jQuery/Bootstrap must be ported (~2-4 week rewrite).

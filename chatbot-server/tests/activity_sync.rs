@@ -31,7 +31,7 @@ fn activity_sync_page_wiring() {
     assert!(chat.contains("renderRecoveredActivity"), "recovered text renderer");
     assert!(chat.contains("loadHistoryImage"), "retrying history image loader");
     assert!(chat.contains("if (activitySync.interrupted()) paintFailedAiTurn($pendingUserMessage, errText);"), "interrupted generation must show Retry");
-    assert!(chat.contains("if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();"), "durable renderer must not double bump");
+    assert!(!chat.contains("if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();"), "all durable renderers must not double bump");
     let connections = std::fs::read_to_string(root.join("static/agent-connections.js")).unwrap();
     assert!(connections.contains("activitySync.request"));
 }

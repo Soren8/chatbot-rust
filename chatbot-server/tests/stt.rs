@@ -207,6 +207,37 @@ fn stt_success_router() -> (Router, Arc<std::sync::Mutex<usize>>) {
 }
 
 #[tokio::test]
+async fn stt_replays_transcript_without_second_backend_call() {
+    let _lock = STT_TEST_MUTEX.lock().unwrap();
+    let calls = Arc::new(std::sync::Mutex::new(0));
+    let count = calls.clone();
+    let router = Router::new().route("/v1/stt", post(move || {
+        let count = count.clone();
+        async move { *count.lock().unwrap() += 1; Json(json!({"text":"one transcript"})) }
+    }));
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    let _workspace = TestWorkspace::with_config(&stt_test_config(&addr.ip().to_string(), addr.port()));
+    let app = build_router(resolve_static_root());
+    let home = app.clone().oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+    let cookie = common::extract_cookie(home.headers()[header::SET_COOKIE].to_str().unwrap());
+    let body = axum::body::to_bytes(home.into_body(), 256 * 1024).await.unwrap();
+    let csrf = META_TOKEN_RE.captures(std::str::from_utf8(&body).unwrap()).unwrap()[1].to_owned();
+    let multipart = "--receipt\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\naudio\r\n--receipt--\r\n";
+    for _ in 0..2 {
+        let result = app.clone().oneshot(Request::builder().method(Method::POST).uri("/stt")
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=receipt")
+            .header(header::COOKIE, &cookie).header("X-CSRF-Token", &csrf)
+            .header("Idempotency-Key", "stt-utterance-00001")
+            .body(Body::from(multipart)).unwrap()).await.unwrap();
+        assert_eq!(result.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(result.into_body(), 128 * 1024).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["text"], "one transcript");
+    }
+    assert_eq!(*calls.lock().unwrap(), 1);
+    shutdown.send(()).ok(); handle.join().unwrap();
+}
+
+#[tokio::test]
 async fn stt_accepts_audio_larger_than_two_megabytes() {
     common::init_tracing();
     let _lock = STT_TEST_MUTEX.lock().unwrap();

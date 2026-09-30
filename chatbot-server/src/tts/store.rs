@@ -104,13 +104,32 @@ pub(crate) enum BeginOutcome<'a> {
 /// the lock only for its own arbitration; no lock is held across synthesis.
 pub(crate) struct PendingTtsStore {
     map: RwLock<HashMap<String, PendingTts>>,
+    receipts: RwLock<HashMap<(String, String), (chatbot_core::operation_receipt::Receipt, String)>>,
+    pub(crate) operations: crate::idempotency::InFlightOperations,
 }
 
 impl PendingTtsStore {
     pub(crate) fn new() -> Self {
         Self {
             map: RwLock::new(HashMap::new()),
+            receipts: RwLock::new(HashMap::new()),
+            operations: crate::idempotency::InFlightOperations::default(),
         }
+    }
+
+    pub(crate) fn replay_admission(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest) -> Result<Option<String>, crate::http_error::HttpError> {
+        use chatbot_core::operation_receipt::{ReceiptClock, SystemReceiptClock};
+        let mut receipts = self.receipts.write().expect("tts receipts");
+        receipts.retain(|_, (receipt, _)| !receipt.expired(SystemReceiptClock.now_secs()));
+        let Some((receipt, token)) = receipts.get(&(owner.into(), operation.id.as_str().into())) else { return Ok(None); };
+        if !receipt.matches(operation) { return Err(crate::idempotency::reused()); }
+        Ok(self.snapshot(token).map(|_| token.clone()))
+    }
+
+    pub(crate) fn record_admission(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest, token: &str) {
+        use chatbot_core::operation_receipt::{Receipt, ReceiptClock, ReceiptOutcome, SystemReceiptClock};
+        let receipt = Receipt::new(operation, ReceiptOutcome::Applied, 200, Vec::new(), SystemReceiptClock.now_secs());
+        self.receipts.write().expect("tts receipts").insert((owner.into(), operation.id.as_str().into()), (receipt, token.into()));
     }
 
     /// Admit a fresh token. Returns false when full with nothing safe to

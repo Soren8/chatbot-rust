@@ -176,8 +176,14 @@ there is no bundler requirement.
 ## Voice and TTS
 
 Sentence discovery consumes newly applied text only; replayed chunks never
-requeue sentences. Playback has a per-generation cursor. Recovered text after
+requeue sentences. The durable response adapter feeds the existing request-bound
+playback source, preserving its cursor across reconnects. Recovered text after
 a reload does not autoplay.
+
+TTS admission receipts are owner-scoped RAM records retained for 24 hours; a
+replay rechecks authorization and returns the valid token, or replaces an expired
+token for that same sentence. STT receipts fingerprint audio bytes, codec and set
+binding, and replay the transcript without a second backend call.
 
 Keep `POST /tts` → `GET /tts_stream/{token}` as implemented in
 `chatbot-server/src/tts.rs`. Idempotent admission returns the same token.

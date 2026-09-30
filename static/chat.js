@@ -385,12 +385,21 @@ function isRetryableVoiceStatus(status) {
   return sessionClient.isRetryableVoiceStatus(status);
 }
 
-function fetchVoiceRetry(url, buildOptions, attempts) {
-  return sessionClient.fetchVoiceRetry(url, buildOptions, attempts);
+async function fetchVoiceRetry(url, buildOptions, attempts) {
+  const init = typeof buildOptions === 'function' ? await buildOptions() : buildOptions;
+  const response = await activitySync.request(url, init);
+  if (!response.ok) {
+    const error = new Error(await response.text());
+    error.status = response.status;
+    throw error;
+  }
+  return response;
 }
 
-function postVoiceSttXhr(url, buildOptions, attempts) {
-  return sessionClient.postVoiceSttXhr(url, buildOptions, attempts);
+async function postVoiceSttXhr(url, buildOptions, attempts) {
+  const init = typeof buildOptions === 'function' ? await buildOptions() : buildOptions;
+  const response = await fetchVoiceRetry(url, init, attempts);
+  return { responseText: await response.text(), net: { bytes: init.bodyBytes || 0, upMs: 0 } };
 }
 
 function withCsrf(headers) {
@@ -1805,8 +1814,7 @@ function swallowCancel(promise) {
 }
 
 function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
-  // Phase 4 migrates voice; its existing sentence/playback path remains legacy.
-  if (!window.voiceModeActive && (url === '/chat' || url === '/regenerate')) {
+  if (url === '/chat' || url === '/regenerate') {
     return activitySync.generationResponse(url === '/chat' ? 'chat' : 'regenerate', init).then(function (response) {
       if (response.status === 409 && activitySync.queued()) {
         $('#user-input').val(activitySync.queued().message || '');
@@ -1831,10 +1839,7 @@ function handleStopClick() {
   if (typeof window.stopAllTtsPlayback === 'function') {
     window.stopAllTtsPlayback();
   }
-  if (!window.voiceModeActive) {
-    activitySync.stop().catch(function () {});
-    return;
-  }
+  activitySync.stop().catch(function () {});
   chatRequests.stopForUser();
   syncSendButtonState();
 }
@@ -2476,8 +2481,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               finishMessagePlayback($target);
               var $regenUser = $target.prev('.message.user-message');
               clearLocalOnlyTurn($regenUser, $target);
-              if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();
-              if (typeof loadSets === 'function') loadSets(false);
+                            if (typeof loadSets === 'function') loadSets(false);
               return;
             }
             const chunk = decoder.decode(value, {stream:true});
@@ -3823,8 +3827,7 @@ $(document).ready(function() {
               finishMessagePlayback($targetElement);
               historyWindow.noteChatPersisted(pairIndex);
               clearLocalOnlyTurn($pendingUserMessage, $targetElement);
-              if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();
-              if (typeof loadSets === 'function') loadSets(false);
+                            if (typeof loadSets === 'function') loadSets(false);
               return;
             }
             const chunk = decoder.decode(value, { stream: true });
@@ -4719,6 +4722,7 @@ $(document).ready(function() {
   }
 
   function handleBargeIn() {
+    activitySync.stop().catch(function () {});
     stopAllTtsPlayback({ preserveListen: true });
     const endedAt = lastVoiceSpeechEndedAt || 0;
     const startedAt = lastVoiceUtteranceStartedAt || Date.now();

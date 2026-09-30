@@ -1383,6 +1383,32 @@ fn slow_kokoro_voice_router(pcm: Arc<Vec<u8>>) -> Router {
 }
 
 #[tokio::test]
+async fn tts_admission_reuses_valid_token_and_rejects_changed_sentence() {
+    let _lock = tts_test_lock();
+    let _workspace = begin_kokoro_workspace("127.0.0.1", 1);
+    let app = build_router(resolve_static_root());
+    let (cookie, csrf) = guest_session(&app).await;
+    let mut token = None;
+    for text in ["One sentence.", "One sentence.", "Different sentence."] {
+        let response = app.clone().oneshot(
+            Request::builder().method(Method::POST).uri("/tts")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &csrf).header(header::COOKIE, &cookie)
+                .header("Idempotency-Key", "tts-sentence-00001")
+                .body(Body::from(json!({"text": text}).to_string())).unwrap(),
+        ).await.unwrap();
+        if text == "Different sentence." {
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        } else {
+            assert_eq!(response.status(), StatusCode::OK);
+            let current = response.headers()["X-TTS-Token"].to_str().unwrap().to_owned();
+            if let Some(first) = &token { assert_eq!(first, &current); }
+            token = Some(current);
+        }
+    }
+}
+
+#[tokio::test]
 async fn tts_replays_all_four_native_download_attempts_without_resynthesis() {
     let _lock = tts_test_lock();
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));

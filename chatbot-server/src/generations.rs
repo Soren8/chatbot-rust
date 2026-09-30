@@ -142,6 +142,7 @@ pub(crate) struct GenerationRegistry {
     entries: Mutex<HashMap<String, Arc<Generation>>>,
     receipts: Mutex<HashMap<(String, String), Receipt>>,
     admission: AsyncMutex<()>,
+    pub(crate) voice_operations: crate::idempotency::InFlightOperations,
     pub timing: GenerationTiming,
 }
 impl Default for GenerationRegistry {
@@ -150,12 +151,13 @@ impl Default for GenerationRegistry {
             entries: Mutex::new(HashMap::new()),
             receipts: Mutex::new(HashMap::new()),
             admission: AsyncMutex::new(()),
+            voice_operations: crate::idempotency::InFlightOperations::default(),
             timing: GenerationTiming::default(),
         }
     }
 }
 impl GenerationRegistry {
-    fn replay(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest) -> Result<Option<Response<Body>>, HttpError> {
+    pub(crate) fn replay(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest) -> Result<Option<Response<Body>>, HttpError> {
         let mut receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemReceiptClock.now_secs();
         receipts.retain(|_, receipt| !receipt.expired(now));
@@ -165,7 +167,7 @@ impl GenerationRegistry {
             None => Ok(None),
         }
     }
-    fn record(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest, status: StatusCode, value: impl Serialize) {
+    pub(crate) fn record(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest, status: StatusCode, value: impl Serialize) {
         let outcome = if status.is_success() { ReceiptOutcome::Applied } else { ReceiptOutcome::Rejected };
         let receipt = Receipt::new(operation, outcome, status.as_u16(), serde_json::to_vec(&value).expect("receipt"), SystemReceiptClock.now_secs());
         self.receipts.lock().unwrap_or_else(|e| e.into_inner()).insert((owner.into(), operation.id.as_str().into()), receipt);

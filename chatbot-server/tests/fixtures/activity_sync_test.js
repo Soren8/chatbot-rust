@@ -222,4 +222,56 @@ const delta = (seq, text) => ({ seq, type: 'delta', text });
   assert.ok(reconnectUrl.endsWith('after=1'));
   assert.equal(h.events.filter(e => e.type === 'delta').map(e => e.text).join(''), 'firstnext');
   console.log('PASS admission body drop resumes cursor');
+
+  const voiceCalls = [];
+  const voiceCtx = vm.createContext({ window: { voiceModeActive: true }, activitySync: {
+    generationResponse: async (kind, init) => { voiceCalls.push(kind); return { status: 200 }; },
+    queued: () => null, stop: () => { voiceCalls.push('stop'); return Promise.resolve(); }
+  }, sessionClient: { fetchWithGenerateRetry: () => { throw new Error('legacy voice send'); } } });
+  vm.runInContext(slice('function fetchWithGenerateRetry(', 'function setGeneratingState('), voiceCtx);
+  await vm.runInContext("fetchWithGenerateRetry('/chat', {})", voiceCtx);
+  assert.deepEqual(voiceCalls, ['chat'], 'voice sends must use deduplicated durable adapter');
+  assert.ok(slice('  function handleBargeIn()', '  function applyVoiceAmendToUserMessage(').includes('activitySync.stop()'), 'confirmed barge-in explicitly stops server work');
+  assert.ok(!chatSource.includes('if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();'), 'voice durable persistence must not double bump');
+  console.log('PASS voice durable send, confirmed Stop and persistence');
+
+  keys = [];
+  h = harness(async (url, init) => { keys.push(init.headers['Idempotency-Key']); return response(200, {}); });
+  await h.sync.request('/tts', { method: 'POST', headers: { 'Idempotency-Key': 'sentence-1' }, body: '{}' });
+  await h.sync.request('/tts', { method: 'POST', headers: { 'Idempotency-Key': 'sentence-1' }, body: '{}' });
+  assert.deepEqual(keys, ['sentence-1', 'sentence-1'], 'sentence identity survives admission retries');
+  console.log('PASS stable sentence admission identity');
+  const voiceTransport = { activitySync: { request: async (url, init) => { assert.equal(url, '/stt'); assert.ok(init.headers); return { ok: true, status: 200, text: async () => '{"text":"once"}' }; } } };
+  const voiceTransportCtx = vm.createContext(voiceTransport);
+  vm.runInContext(slice('async function fetchVoiceRetry(', 'function withCsrf('), voiceTransportCtx);
+  const transcript = await vm.runInContext("postVoiceSttXhr('/stt', () => ({method: 'POST', headers: {}, body: 'audio'}))", voiceTransportCtx);
+  assert.equal(transcript.responseText, '{"text":"once"}');
+  console.log('PASS STT uses sync retry owner');
+  const ttsSource = fs.readFileSync(process.argv[3].replace('chat.js', 'tts-playback.js'), 'utf8');
+  assert.ok(ttsSource.includes("'Idempotency-Key': sentenceOperation"), 'both playback paths attach sentence receipt identities');
+  console.log('PASS sentence receipt wiring');
+
+  let voiceView = 0;
+  const spoken = [];
+  h = harness(async url => {
+    if (url === '/chat') return response(202, { generation_id: 'voice-reply' });
+    return response(200, null, ++voiceView === 1
+      ? frames([delta(1, 'First sentence.')], true)
+      : frames([delta(1, 'First sentence.'), delta(2, ' Second sentence.'), {seq: 3, type: 'saved'}]));
+  });
+  const voiceResponse = await h.sync.generationResponse('chat', {body: JSON.stringify({message: 'voice'})});
+  const voiceReader = voiceResponse.body.getReader();
+  while (true) {
+    const chunk = await voiceReader.read();
+    if (chunk.done) break;
+    spoken.push(new TextDecoder().decode(chunk.value));
+  }
+  assert.deepEqual(spoken, ['First sentence.', ' Second sentence.'], 'reconnected renderer sentence discovery receives new text only');
+  assert.ok(!slice('function renderRecoveredActivity(', 'function renderInterruptedActivity(').includes('playTTS('), 'reload recovered text must not autoplay');
+  console.log('PASS voice reconnect sentence cursor and silent reload recovery');
+  let voiceBusy = 0;
+  h = harness(async () => response(++voiceBusy === 1 ? 429 : 200, {}));
+  await h.sync.request('/tts', {method: 'POST', body: '{}'});
+  assert.equal(voiceBusy, 2, 'voice admission busy retries through sync policy');
+  console.log('PASS voice busy sync recovery');
 })().catch(e => { console.error(e); process.exitCode = 1; });
