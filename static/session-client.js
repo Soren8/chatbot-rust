@@ -431,6 +431,13 @@
           });
         }
         return res;
+      }, function (error) {
+        if (error && error.name === 'TypeError' && !(init && init.signal && init.signal.aborted)) {
+          var lost = new Error('The connection to the server was lost. Your message is still available. Click Retry to try again; the server may already have received it. If Retry fails, refresh the page.');
+          lost.name = 'GenerateConnectionError';
+          throw lost;
+        }
+        throw error;
       });
     }
 

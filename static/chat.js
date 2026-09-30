@@ -3757,7 +3757,10 @@ $(document).ready(function() {
           const errText = error && error.message ? error.message : String(error);
           if ($pendingUserMessage.length) {
             paintFailedAiTurn($pendingUserMessage, errText);
-            if (window.voiceModeActive && !opts.voiceRetried) {
+            if (error.name === 'GenerateConnectionError' && !$userInputElement.val()) {
+              $userInputElement.val(message);
+            }
+            if (window.voiceModeActive && !opts.voiceRetried && error.name !== 'GenerateConnectionError') {
               sendMessage({
                 reuseLastUser: true,
                 message: fullMessage,
