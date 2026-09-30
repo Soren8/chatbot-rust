@@ -407,40 +407,6 @@
       return response;
     }
 
-    function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
-      attempt = attempt || 0;
-      var fetchFn = getFetch();
-      return fetchFn(url, init).then(function (res) {
-        if (res.status === 401 && !afterRefresh) {
-          return refreshSession().then(function (restored) {
-            if (!restored) {
-              redirectHomeOnAuthFailure();
-              throw new Error('Session expired');
-            }
-            return fetchWithGenerateRetry(url, refreshCsrfInit(init), attempt, true);
-          });
-        }
-        if ((res.status === 429 || (res.status === 400 && attempt < 8)) && attempt < 12) {
-          return sleepMs(200 + attempt * 150).then(function () {
-            if (init && init.signal && init.signal.aborted) {
-              var err = new Error('Aborted');
-              err.name = 'AbortError';
-              throw err;
-            }
-            return fetchWithGenerateRetry(url, init, attempt + 1, afterRefresh);
-          });
-        }
-        return res;
-      }, function (error) {
-        if (error && error.name === 'TypeError' && !(init && init.signal && init.signal.aborted)) {
-          var lost = new Error('The connection to the server was lost. Your message is still available. Click Retry to try again; the server may already have received it. If Retry fails, refresh the page.');
-          lost.name = 'GenerateConnectionError';
-          throw lost;
-        }
-        throw error;
-      });
-    }
-
     return {
       redirectHomeOnAuthFailure: redirectHomeOnAuthFailure,
       installFetchInterceptor: installFetchInterceptor,
@@ -454,8 +420,7 @@
       withCsrfAsync: withCsrfAsync,
       response401Message: response401Message,
       response401Kind: response401Kind,
-      handle401OrRetry: handle401OrRetry,
-      fetchWithGenerateRetry: fetchWithGenerateRetry
+      handle401OrRetry: handle401OrRetry
     };
   }
 

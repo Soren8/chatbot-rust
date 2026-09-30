@@ -1813,16 +1813,13 @@ function swallowCancel(promise) {
   if (promise && typeof promise.catch === 'function') promise.catch(function () {});
 }
 
-function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
-  if (url === '/chat' || url === '/regenerate') {
-    return activitySync.generationResponse(url === '/chat' ? 'chat' : 'regenerate', init).then(function (response) {
-      if (response.status === 409 && activitySync.queued()) {
-        $('#user-input').val(activitySync.queued().message || '');
-      }
-      return response;
-    });
-  }
-  return sessionClient.fetchWithGenerateRetry(url, init, attempt, afterRefresh);
+function generationResponse(kind, init) {
+  return activitySync.generationResponse(kind, init).then(function (response) {
+    if (response.status === 409 && activitySync.queued()) {
+      $('#user-input').val(activitySync.queued().message || '');
+    }
+    return response;
+  });
 }
 
 function setGeneratingState(isGenerating) {
@@ -2359,7 +2356,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     if (playBtn) setTimeout(() => { if (isLiveChatRequest(seq) && isLiveConversation(regenBinding)) playMessageTts(playBtn); }, 50);
   }
 
-  fetchWithGenerateRetry('/regenerate', {
+  generationResponse('regenerate', {
     method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
     signal: chatRequests.signal(),
     body: JSON.stringify(activeSetPayload({
@@ -3666,7 +3663,7 @@ $(document).ready(function() {
     // across a set switch.
     const chatBinding = captureChatBinding(seq);
 
-    fetchWithGenerateRetry('/chat', {
+    generationResponse('chat', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
       signal: chatRequests.signal(),
@@ -3873,10 +3870,7 @@ $(document).ready(function() {
           const errText = error && error.message ? error.message : String(error);
           if ($pendingUserMessage.length) {
             paintFailedAiTurn($pendingUserMessage, errText);
-            if (error.name === 'GenerateConnectionError' && !$userInputElement.val()) {
-              $userInputElement.val(message);
-            }
-            if (window.voiceModeActive && !opts.voiceRetried && error.name !== 'GenerateConnectionError') {
+            if (window.voiceModeActive && !opts.voiceRetried) {
               sendMessage({
                 reuseLastUser: true,
                 message: fullMessage,

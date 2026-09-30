@@ -175,8 +175,8 @@ fn late_voice_utterance_amends_last_user_turn_instead_of_sending_a_new_one() {
         "aborted /chat must not clobber the replacement request or paint [Stopped]/error"
     );
     assert!(
-        chat_js.contains("fetchWithGenerateRetry") || chat_js.contains("status === 429"),
-        "amend must retry the generate lock instead of showing the 429 to the driver"
+        chat_js.contains("activitySync.generationResponse(kind, init)"),
+        "amend must use durable admission, whose active conflict attaches and queues intent"
     );
 }
 

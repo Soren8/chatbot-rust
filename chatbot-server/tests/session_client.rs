@@ -100,11 +100,9 @@ fn chat_page_wires_session_client_before_app_script() {
         "sessionClient.installFetchInterceptor()",
         "sessionClient.refreshSession()",
         "sessionClient.refreshCsrfInit",
-        "sessionClient.fetchVoiceRetry",
-        "sessionClient.postVoiceSttXhr",
+        "activitySync.request(url, init)",
         "sessionClient.withCsrf",
         "sessionClient.handle401OrRetry",
-        "sessionClient.fetchWithGenerateRetry",
     ] {
         assert!(
             src.contains(marker),
@@ -226,11 +224,6 @@ fn abort_signal_preserved() {
             && stt.contains("AbortError"),
         "STT XHR aborts on the user signal and surfaces AbortError; got: {stt}"
     );
-    let gen = function_body(unit, "fetchWithGenerateRetry").expect("fetchWithGenerateRetry");
-    assert!(
-        gen.contains("init.signal.aborted") && gen.contains("name = 'AbortError'"),
-        "generate retry checks the caller signal before reissuing; got: {gen}"
-    );
 }
 
 /// Retry eligibility, counts, delays, and per-attempt bodies stay exact.
@@ -265,21 +258,6 @@ fn retry_eligibility_count_delay_body_preserved() {
             && stt.contains("retryableVoice = true")
             && stt.contains("retryableVoice === false"),
         "STT marks transport failures retryable and honors the flag; got: {stt}"
-    );
-    let gen = function_body(unit, "fetchWithGenerateRetry").expect("fetchWithGenerateRetry");
-    assert!(
-        gen.contains("res.status === 429")
-            && gen.contains("res.status === 400 && attempt < 8")
-            && gen.contains("attempt < 12")
-            && gen.contains("200 + attempt * 150"),
-        "generate retries 429 plus early 400s with linear backoff; got: {gen}"
-    );
-    assert!(
-        gen.contains("res.status === 401 && !afterRefresh")
-            && gen.contains("refreshSession()")
-            && gen.contains("refreshCsrfInit(init)")
-            && gen.contains("attempt, true"),
-        "generate refreshes once with a rebuilt CSRF header; got: {gen}"
     );
 }
 

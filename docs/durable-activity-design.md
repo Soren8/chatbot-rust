@@ -13,16 +13,10 @@ The storage, CAS and privacy boundaries in `docs/design.md`,
 
 ## Current boundary
 
-`POST /chat` in `chatbot-server/src/chat.rs` acquires a generation lease. The lease,
-finalize closure and a copy of the encryption key live in the streaming response
-body. `StreamCompletionGuard` in `chatbot-server/src/chat_utils.rs` persists partial
-text when a polled body is dropped: a network drop therefore acts as Stop.
-`chatbot-server/src/regenerate.rs` has the same ownership boundary.
-
-A second send while leased gets 429 Busy through `map_prepare_policy_err` in
-`chatbot-server/src/http_error.rs`. `fetchWithGenerateRetry` in
-`static/session-client.js` loops on 429. Neither body ownership nor contention
-retry can distinguish a lost view from an intentional cancellation.
+Header-free `POST /chat` and `/regenerate` permanently retain body-owned leases
+and partial-text persistence on disconnect for non-durable clients. The web client
+uses durable admission exclusively; its former 429 Busy retry loop and manual
+`GenerateConnectionError` recovery path have been retired.
 
 ## Server-owned generations
 
@@ -231,7 +225,8 @@ remain working behind capability negotiation until supported clients migrate.
    event application and set-version reconciliation with injected transports.
 4. Bring voice/TTS/STT and Android Auto to parity. Verify sentence and STT
    deduplication, playback recovery and confirmed barge-in; ship the native APK.
-5. Retire body-owned stream guards, the 429 Busy retry loop, the
-   `GenerateConnectionError` manual path associated with commit `9ba449f`, and
-   legacy client code path after supported APKs migrate; header-free server routes
-   remain compatible permanently. Transport abort remains view detachment for durable clients.
+5. Retire only legacy client admission, the 429 Busy retry loop and the
+   `GenerateConnectionError` manual path associated with commit `9ba449f`.
+   Header-free server routes and body-owned stream guards remain compatible
+   permanently. The renderer's stream decoder remains used by the durable event
+   adapter, which closes only on settlement; transport abort is view detachment.

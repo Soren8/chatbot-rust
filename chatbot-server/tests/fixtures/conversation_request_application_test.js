@@ -325,7 +325,7 @@ function makeWorld() {
       generationResponse: async (kind, init) => {
         const initiatingSet = APP_DATA.lastSetId;
         const initiatingSeq = chatRequests.seq();
-        const response = await sessionClient.fetchWithGenerateRetry('/' + (kind === 'chat' ? 'chat' : 'regenerate'), init);
+        const response = await fetch('/' + kind, init);
         // Model the sync owner's authoritative settlement, rather than the
         // retired renderer-local version bump, in this leaf transport fake.
         if (response.ok && response.body) {

@@ -263,6 +263,7 @@
   function createChatRequestTracker(createController) {
     var seq = 0;
     var controller = null;
+    var active = false;
 
     function makeController() {
       if (typeof createController === 'function') return createController();
@@ -277,35 +278,40 @@
     return {
       seq: function () { return seq; },
       signal: function () { return controller ? controller.signal : null; },
-      isGenerating: function () { return !!controller; },
+      isGenerating: function () { return active; },
       isLive: function (s) { return s === seq; },
       begin: function () {
         seq += 1;
         abortCaught();
         controller = makeController();
+        active = true;
         return seq;
       },
       finish: function (s) {
         if (s !== seq) return false;
         controller = null;
+        active = false;
         return true;
       },
       abortQuietly: function () {
         seq += 1;
         abortCaught();
         controller = null;
+        active = false;
         return seq;
       },
       stopForUser: function () {
         if (!controller) return seq;
         controller.abort();
         controller = null;
+        active = false;
         return seq;
       },
       interruptForVoiceTurn: function () {
         if (!controller) return false;
         controller.abort();
         controller = null;
+        active = false;
         seq += 1;
         return true;
       }

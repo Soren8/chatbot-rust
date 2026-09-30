@@ -301,60 +301,6 @@ async function testFetchVoiceRetryPassesThroughAbortAnd401() {
   assert.deepEqual(authState.delays, []);
 }
 
-async function testFetchWithGenerateRetryRefreshesOnce() {
-  // Given a 401 then success, when fetching generate, then one refresh runs
-  // and the retry carries the fresh CSRF header exactly once.
-  let fetches = 0;
-  const { client, state } = clientWith({
-    csrf: 'stale',
-    fetchImpl: async (url, init) => {
-      fetches++;
-      if (fetches === 1) return mockResponse({ status: 401 });
-      assert.equal(init.headers['X-CSRF-Token'], 'fresh-1', 'retry must refresh the snapshotted header');
-      return mockResponse({ status: 200 });
-    },
-    bootstrapFetch: async (url) => {
-      if (url === '/login') return mockResponse({ status: 200, textBody: '<input name="csrf_token" value="b">' });
-      state.csrf = 'fresh-1';
-      state.setTokens.push('fresh-1');
-      return mockResponse({ status: 200, jsonBody: { csrf_token: 'fresh-1' } });
-    },
-  });
-  const res = await client.fetchWithGenerateRetry('/chat', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'stale' }, body: '{}',
-  });
-  assert.equal(res.status, 200);
-  assert.equal(fetches, 2);
-
-  // Given a 429, when fetching generate, then it backs off and preserves the body.
-  let tries = 0;
-  const { client: rate, state: rateState } = clientWith({
-    fetchImpl: async (url, init) => {
-      tries++;
-      assert.equal(init.body, 'same-body');
-      if (tries === 1) return mockResponse({ status: 429 });
-      return mockResponse({ status: 200 });
-    },
-  });
-  const ok = await rate.fetchWithGenerateRetry('/chat', { method: 'POST', body: 'same-body' });
-  assert.equal(ok.status, 200);
-  assert.deepEqual(rateState.delays, [200], 'generate backoff starts at 200ms');
-}
-
-async function testFetchWithGenerateRetryHonorsAbort() {
-  // Given an aborted generate signal, when the 429 backoff elapses, then the
-  // retry surfaces AbortError instead of reissuing the request.
-  let fetches = 0;
-  const { client } = clientWith({
-    fetchImpl: async () => { fetches++; return mockResponse({ status: 429 }); },
-  });
-  const controller = new AbortController();
-  const pending = client.fetchWithGenerateRetry('/chat', { method: 'POST', signal: controller.signal });
-  controller.abort();
-  await assert.rejects(pending, (e) => e.name === 'AbortError');
-  assert.equal(fetches, 1, 'aborted generate must not reissue');
-}
-
 async function testResponse401KindAndHandle() {
   // Given an unlock message, when classified, then it is an enc-key failure
   // that never triggers a session refresh.
@@ -570,8 +516,6 @@ const cases = [
   ['instances are independent', testInstancesAreIndependent],
   ['voice retry retries transient with fresh body', testFetchVoiceRetryRetriesTransientWithFreshBody],
   ['voice retry passes through abort and 401', testFetchVoiceRetryPassesThroughAbortAnd401],
-  ['generate retry refreshes once', testFetchWithGenerateRetryRefreshesOnce],
-  ['generate retry honors abort', testFetchWithGenerateRetryHonorsAbort],
   ['401 kind and handle', testResponse401KindAndHandle],
   ['stt xhr retries transient not 400', testSttXhrRetriesTransientNot400],
   ['interceptor preserves semantics', testInterceptorPreservesSemantics],

@@ -256,9 +256,9 @@ const delta = (seq, text) => ({ seq, type: 'delta', text });
   const voiceCtx = vm.createContext({ window: { voiceModeActive: true }, activitySync: {
     generationResponse: async (kind, init) => { voiceCalls.push(kind); return { status: 200 }; },
     queued: () => null, stop: () => { voiceCalls.push('stop'); return Promise.resolve(); }
-  }, sessionClient: { fetchWithGenerateRetry: () => { throw new Error('legacy voice send'); } } });
-  vm.runInContext(slice('function fetchWithGenerateRetry(', 'function setGeneratingState('), voiceCtx);
-  await vm.runInContext("fetchWithGenerateRetry('/chat', {})", voiceCtx);
+  } });
+  vm.runInContext(slice('function generationResponse(', 'function setGeneratingState('), voiceCtx);
+  await vm.runInContext("generationResponse('chat', {})", voiceCtx);
   assert.deepEqual(voiceCalls, ['chat'], 'voice sends must use deduplicated durable adapter');
   assert.ok(slice('  function handleBargeIn()', '  function applyVoiceAmendToUserMessage(').includes('activitySync.stop()'), 'confirmed barge-in explicitly stops server work');
   assert.ok(!chatSource.includes('if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();'), 'voice durable persistence must not double bump');

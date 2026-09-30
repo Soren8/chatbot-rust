@@ -433,11 +433,18 @@ fn ghost_turns_route_to_chat_resend_not_indexed_endpoints() {
 
 /// Exact request shapes for chat, regenerate, history, and voice routing.
 #[test]
+fn request_activity_is_not_controller_presence() {
+    let unit = unit_js();
+    assert!(!unit.contains("isGenerating: function () { return !!controller; }"));
+    assert!(unit.contains("isGenerating: function () { return active; }"));
+}
+
+#[test]
 fn request_shapes_match_server_contract() {
     let src = chat_js();
     for marker in [
-        "fetchWithGenerateRetry('/chat'",
-        "fetchWithGenerateRetry('/regenerate'",
+        "generationResponse('chat'",
+        "generationResponse('regenerate'",
         "signal: chatRequests.signal()",
         "system_prompt: systemPrompt",
         "model_name: $('#modelSelect').val()",

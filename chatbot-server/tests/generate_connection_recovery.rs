@@ -3,6 +3,19 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
+fn web_generation_admission_has_no_legacy_transport() {
+    let page = include_str!("../../static/chat.js");
+    let session = include_str!("../../static/session-client.js");
+    for retired in ["fetchWithGenerateRetry", "GenerateConnectionError", "fetch('/chat'", "fetch('/regenerate'", "fetch(\"/chat\"", "fetch(\"/regenerate\""] {
+        assert!(!page.contains(retired), "page retains legacy transport: {retired}");
+        assert!(!session.contains(retired), "session retains legacy transport: {retired}");
+    }
+    assert!(page.contains("activitySync.generationResponse(kind, init)"));
+    let transport = include_str!("../../static/activity-sync.js");
+    assert!(transport.contains("'X-Generation-Mode': 'durable'"));
+}
+
+#[test]
 fn generate_connection_recovery() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let run = Command::new("node")
