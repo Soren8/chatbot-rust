@@ -20,7 +20,7 @@ Use `--package NAME` (repeatable), `--test TARGET` or `--lib`, and `--filter NAM
 
 **Do not repeat unchanged green tests.** Tee output to `temp/test-logs/` and inspect the saved file if you need details again. Expand to other affected targets when the change affects shared behavior. Run the full local suite only when explicitly requested or when the affected scope cannot be covered reliably by targeted tests.
 
-If a test fails because implementation code needs fixing, fix the code and re-run the affected tests. Only stop and ask the user if you believe an existing test itself needs to be modified, or if failures appear unrelated to the current change and cannot be resolved cleanly without modifying tests. Do not narrow a selection to hide a known failure, ignore failures, or declare the task done while required tests are failing.
+If a test fails because implementation code needs fixing, fix the code and re-run the affected tests. Never weaken or rewrite a test's expectations to make broken code pass. Updating existing tests is expected when the change intentionally alters the behavior or wiring they cover (refactors, replaced code paths, harness dependencies); make those updates without stopping and call them out in the handoff. Do not narrow a selection to hide a known failure, ignore failures, or declare the task done while required tests are failing.
 
 First-party `static/*.js` is parsed by the `js_syntax` cargo test (`oxc_parser`, locked in `Cargo.lock`). Do not install Node/npm for this, and do not add hand-rolled brace scanners.
 
@@ -28,7 +28,7 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Build & Run Commands
 
-- Tests (default): `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package PACKAGE --test TARGET` (or `--lib`; optionally add `--filter NAME --exact`; ask before modifying existing tests). Omit selectors only when a full workspace run is warranted. On the host, start DNS with `docker compose up -d --build dns` before `docker compose run --rm tests` (full suite).
+- Tests (default): `testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package PACKAGE --test TARGET` (or `--lib`; optionally add `--filter NAME --exact`). Omit selectors only when a full workspace run is warranted. On the host, start DNS with `docker compose up -d --build dns` before `docker compose run --rm tests` (full suite).
 - Do not run `cargo test` / app binaries outside that container
 - Allowed compose from the sandbox: **`tests` only**. It injects its own env and does not need workspace `.env`.
 - Do **not** `docker compose up`, `build`, or recreate **`webserver`** or **`voice-service`**. Ask the **user** to rebuild/restart those on the host when a live deploy is needed.
