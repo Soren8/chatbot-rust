@@ -142,8 +142,11 @@ timers and RNG as dependencies, touches no DOM, and is tested through the
 existing Node-vm harness pattern in
 `chatbot-server/tests/fixtures/session_client_test.js`.
 
-The module owns all transport: an in-memory outbox, safe-read retry for page-load
+The module owns transport: an in-memory outbox, safe-read retry for page-load
 reads, unresolved mutation replay, generation attachment and set reconciliation.
+Set mutations remain ordered; Stop, TTS admission and STT use independent lanes
+so unresolved voice work cannot delay cancellation. Phase 4 device validation and
+page-level replay coverage are not implied by the transport adapter tests.
 Network errors use exponential full-jitter backoff, approximately 500 ms initially
 with a 30-second cap and no fixed give-up. Online, focus, visibility and resume
 triggers are coalesced rather than starting competing recovery loops.

@@ -102,8 +102,9 @@
       }
       if (mutation) outbox.set(key, pending);
       // Absolute-value writes must not overtake an unresolved earlier write.
-      var result = mutation ? mutationTail.then(run) : run();
-      if (mutation) mutationTail = result.catch(function () {});
+      var ordered = mutation && !(/^\/(tts$|stt$|generations\/[^/]+\/stop$)/.test(url));
+      var result = ordered ? mutationTail.then(run) : run();
+      if (ordered) mutationTail = result.catch(function () {});
       return result.finally(function () {
         reads.delete(controller);
         if (key) outbox.delete(key);

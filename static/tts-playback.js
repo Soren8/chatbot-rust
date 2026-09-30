@@ -105,10 +105,14 @@
     var registerClipCanceller = deps.registerClipCanceller;
     var unregisterClipCanceller = deps.unregisterClipCanceller;
     var activeClips = new Set();
+    var sentenceOperations = new Map();
 
     // Session cancellation: silently settle every active clip for the session
     // (all when sessionId is null). Silent skips note/notify; stop owns those.
     function cancelSession(sessionId) {
+      sentenceOperations.forEach(function (operation, key) {
+        if (sessionId == null || key.indexOf(sessionId + ':') === 0) sentenceOperations.delete(key);
+      });
       var targets = [];
       activeClips.forEach(function (entry) {
         if (sessionId == null || !entry || entry.sessionId === sessionId) targets.push(entry);
@@ -129,26 +133,24 @@
       }
 
       var signal = getAbortSignal();
-      var sentenceOperation = sentenceOperationId();
-      var promise = fetchVoiceRetry('/tts', {
+      var sentenceOperation = sentenceOperations.get(cacheKey);
+      if (!sentenceOperation) { sentenceOperation = sentenceOperationId(); sentenceOperations.set(cacheKey, sentenceOperation); }
+      function admit() { return fetchVoiceRetry('/tts', {
         method: 'POST',
         headers: withCsrf({ 'Content-Type': 'application/json', 'Idempotency-Key': sentenceOperation }),
         body: JSON.stringify(Object.assign({ text: cleaned }, getSetId && getSetId() ? { set_id: getSetId() } : {})),
         signal: signal
-      })
-      .then(function (r) {
-        if (!isLive(sessionId)) return null;
-        return r.json();
-      })
-      .then(function (data) {
+      }).then(function (r) { return r.json(); }); }
+      function download(data, renewed) {
         if (!isLive(sessionId) || !data || !data.token) return null;
-        var clipUrl = '/tts_stream/' + encodeURIComponent(data.token);
-        return fetchVoiceRetry(clipUrl, {
-          method: 'GET',
-          headers: withCsrf({}),
-          signal: signal
-        }, MAX_TTS_CLIP_ATTEMPTS);
-      })
+        return fetchVoiceRetry('/tts_stream/' + encodeURIComponent(data.token), {
+          method: 'GET', headers: withCsrf({}), signal: signal
+        }, MAX_TTS_CLIP_ATTEMPTS).catch(function (err) {
+          if (!renewed && err && err.status === 404 && isLive(sessionId)) return admit().then(function (fresh) { return download(fresh, true); });
+          throw err;
+        });
+      }
+      var promise = admit().then(function (data) { return download(data, false); })
       .then(function (res) {
         if (!res || !isLive(sessionId)) return null;
         return res.blob();
@@ -817,10 +819,9 @@
       }
     }
 
-    function postOneToken(rawText) {
+    function postOneToken(rawText, sentenceOperation) {
       var cleaned = sanitize(rawText || '').trim();
       if (!cleaned) return Promise.resolve(null);
-      var sentenceOperation = sentenceOperationId();
       return ensureSession().then(function () {
         if (!live()) return null;
         return fetchVoiceRetry('/tts', {
@@ -858,9 +859,10 @@
     }
 
     function requestToken(text) {
+      var sentenceOperation = sentenceOperationId();
       function attempt(n) {
         if (!live()) return Promise.resolve(null);
-        return postOneToken(text).catch(function (err) {
+        return postOneToken(text, sentenceOperation).catch(function (err) {
           if (!live() || (err && err.message === 'Session expired')) throw err;
           var match = /request failed \((\d+)\)/.exec((err && err.message) || '');
           var status = match ? Number(match[1]) : 0;

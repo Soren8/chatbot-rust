@@ -28,6 +28,35 @@ function harness(fetchImpl, extra) {
 }
 const delta = (seq, text) => ({ seq, type: 'delta', text });
 (async () => {
+  let releaseVoice;
+  const laneCalls = [];
+  let lane = harness(async url => {
+    laneCalls.push(url);
+    if (url === '/tts') return new Promise(resolve => { releaseVoice = () => resolve(response(200, {})); });
+    return response(200, {});
+  });
+  const hangingVoice = lane.sync.request('/tts', { method: 'POST' });
+  await tick();
+  const priorityStop = lane.sync.request('/generations/g/stop', { method: 'POST' });
+  await tick();
+  assert.ok(laneCalls.includes('/generations/g/stop'), 'Stop must bypass hanging TTS admission');
+  releaseVoice(); await hangingVoice; await priorityStop;
+  let releaseSet;
+  const orderedCalls = [];
+  lane = harness(async url => {
+    orderedCalls.push(url);
+    if (url === '/set_memory') return new Promise(resolve => { releaseSet = () => resolve(response(200, {})); });
+    return response(200, {});
+  });
+  const firstSet = lane.sync.request('/set_memory', { method: 'POST' });
+  const secondSet = lane.sync.request('/set_system_prompt', { method: 'POST' });
+  const independentStt = lane.sync.request('/stt', { method: 'POST' });
+  await tick();
+  assert.ok(orderedCalls.includes('/stt'), 'STT must bypass ordered set writes');
+  assert.ok(!orderedCalls.includes('/set_system_prompt'), 'ordered writes must remain serialized');
+  releaseSet(); await firstSet; await secondSet; await independentStt;
+  console.log('PASS Stop and voice bypass ordered mutation lane');
+
   let keys = [], admissions = 0, urls = [];
   let h = harness(async (url, init) => {
     urls.push(url);

@@ -122,12 +122,17 @@ function setupDesktop(opts) {
   const urlCalls = { created: [], revoked: [] };
   let urlSeq = 0;
   const token = opts.token || 'tok1';
-  const fetchStub = (url) => {
+  const admissionKeys = [];
+  let streamAttempts = 0;
+  const fetchStub = (url, init) => {
     fetchCalls.push(String(url));
     if (String(url) === '/tts') {
+      admissionKeys.push(init.headers['Idempotency-Key']);
+      if (opts.fetchMode === 'expired-token') return Promise.resolve({ json: async () => ({ token: admissionKeys.length === 1 ? 'expired' : 'fresh' }) });
       if (opts.fetchMode === 'no-token') return Promise.resolve({ json: async () => ({}) });
       return Promise.resolve({ json: async () => ({ token }) });
     }
+    if (opts.fetchMode === 'expired-token' && streamAttempts++ === 0) { const error = new Error('expired'); error.status = 404; return Promise.reject(error); }
     return Promise.resolve({ blob: async () => ({ fakeBlob: true }) });
   };
   const pipelineDeps = {
@@ -161,7 +166,7 @@ function setupDesktop(opts) {
     pipelineDeps.unregisterClipCanceller = (entry) => lifecycle.unregisterDesktopClipCanceller(entry);
   }
   const pipeline = ttsPlayback.createDesktopClipPipeline(pipelineDeps);
-  return { fakeAudio, timers, lifecycle, pipeline, notifications, errors, fetchCalls, urlCalls };
+  return { fakeAudio, timers, lifecycle, pipeline, notifications, errors, fetchCalls, urlCalls, admissionKeys };
 }
 
 function makeSettledSource(text) {
@@ -400,6 +405,11 @@ async function checkSentenceRetry() {
 }
 
 (async () => {
+  const expired = setupDesktop({ fetchMode: 'expired-token' });
+  const expiredSession = expired.lifecycle.beginDesktopPlayback({});
+  await expired.pipeline.fetchClip(expiredSession, 'One sentence.');
+  assert.deepEqual(expired.fetchCalls, ['/tts', '/tts_stream/expired', '/tts', '/tts_stream/fresh']);
+  assert.equal(expired.admissionKeys[0], expired.admissionKeys[1], 'expired token re-admission retains sentence identity');
   const checks = {
     midclip: checkMidclip,
     replacement: checkReplacement,

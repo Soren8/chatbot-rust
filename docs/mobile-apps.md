@@ -92,7 +92,11 @@ the host.
 Android Auto uses durable `/chat` NDJSON views and a contiguous event cursor for
 `GET /generations/{id}/events?after=N` reconnects. Duplicate deltas do not append
 answer text; Exit issues explicit Stop and clears local playback. This native
-protocol update requires an updated APK. Web voice sends use the same durable
+protocol update requires an updated APK. Native admission resolves a default/current
+set version and retries lost admissions with the same key; a rejected version
+conflict creates a new intent after refreshing the version. Off-device tests cover
+framing and retry identity, not authenticated device sessions or car audio routing.
+Web voice sends use the same durable
 adapter as text sends; confirmed handheld/desktop barge-in sends Stop without
 changing either VAD gate. Reloaded recovered text is displayed silently.
 

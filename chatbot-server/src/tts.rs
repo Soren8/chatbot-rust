@@ -215,8 +215,16 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         }
     };
 
-    let owner = session_context.username.as_ref().map(|user| format!("user:{user}")).unwrap_or_else(|| format!("guest:{}", session_context.session_id));
-    let operation = crate::idempotency::operation_request(&headers, "/tts", &json!({"text": raw_text, "set_id": payload.set_id}))?;
+    let owner = session_context
+        .username
+        .as_ref()
+        .map(|user| format!("user:{user}"))
+        .unwrap_or_else(|| format!("guest:{}", session_context.session_id));
+    let operation = crate::idempotency::operation_request(
+        &headers,
+        "/tts",
+        &json!({"text": raw_text, "set_id": payload.set_id}),
+    )?;
     let store = services.pending_tts();
     let _operation_guard = match &operation {
         Some(operation) => Some(store.operations.acquire(&owner, &operation.id).await),
@@ -247,7 +255,9 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
         ));
     }
 
-    if let Some(operation) = &operation { store.record_admission(&owner, operation, &token); }
+    if let Some(operation) = &operation {
+        store.record_admission(&owner, operation, &token);
+    }
     tts_token_response(&token)
 }
 

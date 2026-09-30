@@ -77,7 +77,7 @@ function session(sentences, generating = false, modern = true) {
     observeChanges: (callback) => { state.observer = callback; return () => { state.observer = null; }; },
     fetchVoiceRetry(url, options) {
       return new Promise((resolve, reject) => {
-        posts.push({ text: JSON.parse(options.body).text, reject,
+        posts.push({ text: JSON.parse(options.body).text, key: options.headers['Idempotency-Key'], reject,
           resolve(token) { resolve({ headers: { get: () => token }, json: async () => ({ token }) }); }
         });
       });
@@ -300,10 +300,13 @@ async function failedHeadRetriesInOrderWithoutRepostingReadyTail() {
   s.posts[0].reject(new Error('network lost'));
   await flush();
   assert.deepEqual(s.posts.map(p => p.text), ['One.', 'Two.', 'One.']);
+  assert.equal(s.posts[0].key, s.posts[2].key, 'outer sentence retry retains its admission identity');
   assert.deepEqual(s.enqueued, [], 'ready tail waits through head retry');
   s.posts[2].resolve('one');
   await flush();
   assert.deepEqual(s.enqueued, ['one', 'two'], 'retry plays each sentence once in order');
+  s.restream(); s.restream(); await flush();
+  assert.equal(s.posts.length, 3, 'duplicate published text never requeues through the real sentence pipeline');
 }
 
 async function stopCancelsLateTokensWithoutEnqueueingThem() {

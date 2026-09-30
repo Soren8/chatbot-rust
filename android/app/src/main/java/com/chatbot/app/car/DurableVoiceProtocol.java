@@ -9,12 +9,41 @@ public final class DurableVoiceProtocol {
     private boolean saved;
     private final StringBuilder text = new StringBuilder();
 
+    public interface Admission<T> { T send(String key) throws IOException; }
+    public interface Sleeper { void sleep(long ms) throws IOException; }
+
+    public static <T> T retryAdmission(String key, Admission<T> admission, Sleeper sleeper) throws IOException {
+        int attempt = 0;
+        while (true) {
+            try { return admission.send(key); }
+            catch (IOException lost) {
+                sleeper.sleep(Math.min(30000L, 500L << Math.min(attempt++, 6)));
+            }
+        }
+    }
+
     public DurableVoiceProtocol(String generationId) {
         if (generationId == null || !generationId.matches("[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException("Invalid generation id");
         }
         this.generationId = generationId;
     }
+
+    private final StringBuilder pendingLine = new StringBuilder();
+
+    public interface LineConsumer { void accept(String line) throws IOException; }
+
+    public void feed(String chunk, LineConsumer consumer) throws IOException {
+        pendingLine.append(chunk);
+        int newline;
+        while ((newline = pendingLine.indexOf("\n")) >= 0) {
+            String line = pendingLine.substring(0, newline);
+            pendingLine.delete(0, newline + 1);
+            if (!line.trim().isEmpty()) consumer.accept(line);
+        }
+    }
+
+    public void resetView() { pendingLine.setLength(0); }
 
     public boolean apply(long next, String type, String value) throws IOException {
         if ("heartbeat".equals(type) || next <= seq) return false;

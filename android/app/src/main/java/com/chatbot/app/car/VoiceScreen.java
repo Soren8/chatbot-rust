@@ -26,7 +26,6 @@ import com.chatbot.app.util.FileLogger;
 import com.chatbot.app.util.ServerUrlResolver;
 import com.chatbot.app.util.ServerUrlSettingStore;
 
-import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -301,6 +300,7 @@ public class VoiceScreen extends Screen {
             try {
                 setStatus("Transcribing…");
                 refreshIdentity(turnUrl);
+                resolveSet(turnUrl);
                 String text = postStt(turnUrl, pcm);
                 if (text == null || text.trim().isEmpty()) {
                     setStatus("Listening…");
@@ -357,14 +357,26 @@ public class VoiceScreen extends Screen {
         } finally { conn.disconnect(); }
     }
 
+    private void retryDelay(long ms) throws IOException {
+        if (!captureRunning.get()) throw new IOException("Voice session stopped");
+        try { Thread.sleep(ms); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted", e); }
+        if (!captureRunning.get()) throw new IOException("Voice session stopped");
+    }
+
     private String postStt(String turnUrl, byte[] pcm) throws IOException {
+        final String key = UUID.randomUUID().toString();
+        return DurableVoiceProtocol.retryAdmission(key, operation -> postSttAttempt(turnUrl, pcm, operation), this::retryDelay);
+    }
+
+    private String postSttAttempt(String turnUrl, byte[] pcm, String key) throws IOException {
         byte[] wav = wrapPcmAsWav(pcm, SAMPLE_RATE, 1);
         String boundary = "----chatbotauto" + UUID.randomUUID();
         URL url = new URL(turnUrl + "/stt");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         applyIdentity(conn, turnUrl);
-        conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
+        conn.setRequestProperty("Idempotency-Key", key);
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
         conn.setDoOutput(true);
         conn.setConnectTimeout(15000);
@@ -375,6 +387,9 @@ public class VoiceScreen extends Screen {
             out.writeBytes("Content-Disposition: form-data; name=\"audio\"; filename=\"capture.wav\"\r\n");
             out.writeBytes("Content-Type: audio/wav\r\n\r\n");
             out.write(wav);
+            if (!activeSetId.isEmpty()) {
+                out.writeBytes("\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"set_id\"\r\n\r\n" + activeSetId);
+            }
             out.writeBytes("\r\n--" + boundary + "--\r\n");
         }
 
@@ -383,55 +398,99 @@ public class VoiceScreen extends Screen {
         InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
         String body = readAll(is);
         conn.disconnect();
+        if (code == 408 || code == 429 || code >= 500) throw new IOException("STT temporarily unavailable");
         if (code < 200 || code >= 300) {
             return null;
         }
-        // Expect {"text":"..."}
-        int idx = body.indexOf("\"text\"");
-        if (idx < 0) return null;
-        int colon = body.indexOf(':', idx);
-        int q1 = body.indexOf('"', colon + 1);
-        int q2 = body.indexOf('"', q1 + 1);
-        if (q1 < 0 || q2 < 0) return null;
-        return body.substring(q1 + 1, q2);
+        try { return new org.json.JSONObject(body).optString("text"); }
+        catch (org.json.JSONException e) { throw new IOException("Invalid transcript", e); }
+    }
+
+    private HttpURLConnection admitJson(String turnUrl, String path, String json, String key, boolean durable) throws IOException {
+        return DurableVoiceProtocol.retryAdmission(key, operation -> {
+            HttpURLConnection conn = (HttpURLConnection) new URL(turnUrl + path).openConnection();
+            try {
+                conn.setRequestMethod("POST");
+                applyIdentity(conn, turnUrl);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("Idempotency-Key", operation);
+                if (durable) conn.setRequestProperty("X-Generation-Mode", "durable");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(60000);
+                conn.getOutputStream().write(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                int code = conn.getResponseCode();
+                if (code == 408 || code == 429 || code >= 500) throw new IOException("Admission temporarily unavailable");
+                return conn;
+            } catch (IOException e) { conn.disconnect(); throw e; }
+        }, this::retryDelay);
+    }
+
+    private String activeSetId = "";
+    private long activeSetVersion;
+
+    private void resolveSet(String turnUrl) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(turnUrl + "/get_sets").openConnection();
+        applyIdentity(conn, turnUrl);
+        conn.setConnectTimeout(15000); conn.setReadTimeout(20000);
+        try {
+            if (conn.getResponseCode() == 401) { activeSetId = ""; activeSetVersion = 0; return; }
+            org.json.JSONArray sets = new org.json.JSONArray(readAll(conn.getInputStream()));
+            org.json.JSONObject selected = null;
+            for (int i = 0; i < sets.length(); i++) {
+                org.json.JSONObject candidate = sets.getJSONObject(i);
+                if (selected == null || candidate.optBoolean("is_default")) selected = candidate;
+                if (candidate.optString("set_id").equals(activeSetId)) { selected = candidate; break; }
+            }
+            if (selected == null) throw new IOException("No active chat");
+            activeSetId = selected.getString("set_id");
+            activeSetVersion = selected.getLong("version");
+        } catch (org.json.JSONException e) { throw new IOException("Invalid chat list", e); }
+        finally { conn.disconnect(); }
     }
 
     private String postChat(String turnUrl, String text) throws IOException {
-        URL url = new URL(turnUrl + "/chat");
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        applyIdentity(conn, turnUrl);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
-        conn.setDoOutput(true);
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(60000);
-        conn.setRequestProperty("X-Generation-Mode", "durable");
-        String json = String.format(Locale.US, "{\"message\":%s,\"set_id\":\"\",\"expected_version\":0}", escapeJson(text));
-        conn.getOutputStream().write(json.getBytes());
-
-        int code = conn.getResponseCode();
-        FileLogger.log(TAG, "postChat code=" + code);
-        if (code < 200 || code >= 300) { conn.disconnect(); return null; }
+        resolveSet(turnUrl);
+        HttpURLConnection conn;
+        while (true) {
+            String key = UUID.randomUUID().toString();
+            String json = String.format(Locale.US, "{\"message\":%s,\"set_id\":%s,\"expected_version\":%d}", escapeJson(text), escapeJson(activeSetId), activeSetVersion);
+            conn = admitJson(turnUrl, "/chat", json, key, true);
+            int code = conn.getResponseCode();
+            if (code == 409) {
+                String rejected = readAll(conn.getErrorStream());
+                conn.disconnect();
+                try {
+                    if ("version_conflict".equals(new org.json.JSONObject(rejected).optString("error"))) { resolveSet(turnUrl); continue; }
+                } catch (org.json.JSONException e) { throw new IOException("Invalid admission rejection", e); }
+                return null;
+            }
+            if (code < 200 || code >= 300) { conn.disconnect(); return null; }
+            break;
+        }
         DurableVoiceProtocol cursor = new DurableVoiceProtocol(conn.getHeaderField("X-Generation-Id"));
         generation = cursor;
         generationOrigin = turnUrl;
         while (!cursor.saved() && captureRunning.get()) {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) continue;
-                    org.json.JSONObject event = new org.json.JSONObject(line);
-                    cursor.apply(event.optLong("seq"), event.optString("type"), event.optString("text"));
-                    if (cursor.saved()) break;
+            try (InputStreamReader reader = new InputStreamReader(conn.getInputStream(), java.nio.charset.StandardCharsets.UTF_8)) {
+                char[] chunk = new char[2048];
+                int count;
+                while (!cursor.saved() && (count = reader.read(chunk)) != -1) {
+                    cursor.feed(new String(chunk, 0, count), line -> {
+                        try {
+                            org.json.JSONObject event = new org.json.JSONObject(line);
+                            cursor.apply(event.optLong("seq"), event.optString("type"), event.optString("text"));
+                        } catch (org.json.JSONException e) {
+                            throw new IOException("Invalid generation event", e);
+                        }
+                    });
                 }
-            } catch (org.json.JSONException e) {
-                throw new IOException("Invalid generation event", e);
             } catch (IOException e) {
                 if (!captureRunning.get()) break;
                 if ("Generation failed".equals(e.getMessage())) throw e;
             } finally { conn.disconnect(); }
             if (!cursor.saved() && captureRunning.get()) {
+                cursor.resetView();
                 try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted", e); }
                 conn = (HttpURLConnection) new URL(turnUrl + cursor.eventsPath()).openConnection();
                 applyIdentity(conn, turnUrl);
@@ -444,19 +503,9 @@ public class VoiceScreen extends Screen {
     }
 
     private void playTts(String turnUrl, String text) throws IOException {
-        // Step 1: get token
-        URL url = new URL(turnUrl + "/tts");
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        applyIdentity(conn, turnUrl);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
-        conn.setDoOutput(true);
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(60000);
-        String json = String.format(Locale.US, "{\"text\":%s}", escapeJson(text));
-        conn.getOutputStream().write(json.getBytes());
-
+        String key = UUID.randomUUID().toString();
+        String json = String.format(Locale.US, "{\"text\":%s%s}", escapeJson(text), activeSetId.isEmpty() ? "" : ",\"set_id\":" + escapeJson(activeSetId));
+        HttpURLConnection conn = admitJson(turnUrl, "/tts", json, key, false);
         int code = conn.getResponseCode();
         FileLogger.log(TAG, "playTts /tts code=" + code);
         if (code != 200) {
@@ -666,12 +715,13 @@ public class VoiceScreen extends Screen {
         final DurableVoiceProtocol cursor = generation;
         final String origin = generationOrigin;
         if (cursor != null) captureExecutor.execute(() -> {
+            String key = UUID.randomUUID().toString();
             try {
                 HttpURLConnection conn = (HttpURLConnection) new URL(origin + cursor.stopPath()).openConnection();
                 conn.setRequestMethod("POST");
                 applyIdentity(conn, origin);
                 conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("Idempotency-Key", UUID.randomUUID().toString());
+                conn.setRequestProperty("Idempotency-Key", key);
                 conn.setDoOutput(true); conn.setConnectTimeout(15000); conn.setReadTimeout(20000);
                 conn.getOutputStream().write("{}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 conn.getResponseCode(); conn.disconnect();

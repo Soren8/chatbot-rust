@@ -157,7 +157,11 @@ impl Default for GenerationRegistry {
     }
 }
 impl GenerationRegistry {
-    pub(crate) fn replay(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest) -> Result<Option<Response<Body>>, HttpError> {
+    pub(crate) fn replay(
+        &self,
+        owner: &str,
+        operation: &chatbot_core::operation_receipt::OperationRequest,
+    ) -> Result<Option<Response<Body>>, HttpError> {
         let mut receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemReceiptClock.now_secs();
         receipts.retain(|_, receipt| !receipt.expired(now));
@@ -167,10 +171,29 @@ impl GenerationRegistry {
             None => Ok(None),
         }
     }
-    pub(crate) fn record(&self, owner: &str, operation: &chatbot_core::operation_receipt::OperationRequest, status: StatusCode, value: impl Serialize) {
-        let outcome = if status.is_success() { ReceiptOutcome::Applied } else { ReceiptOutcome::Rejected };
-        let receipt = Receipt::new(operation, outcome, status.as_u16(), serde_json::to_vec(&value).expect("receipt"), SystemReceiptClock.now_secs());
-        self.receipts.lock().unwrap_or_else(|e| e.into_inner()).insert((owner.into(), operation.id.as_str().into()), receipt);
+    pub(crate) fn record(
+        &self,
+        owner: &str,
+        operation: &chatbot_core::operation_receipt::OperationRequest,
+        status: StatusCode,
+        value: impl Serialize,
+    ) {
+        let outcome = if status.is_success() {
+            ReceiptOutcome::Applied
+        } else {
+            ReceiptOutcome::Rejected
+        };
+        let receipt = Receipt::new(
+            operation,
+            outcome,
+            status.as_u16(),
+            serde_json::to_vec(&value).expect("receipt"),
+            SystemReceiptClock.now_secs(),
+        );
+        self.receipts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((owner.into(), operation.id.as_str().into()), receipt);
     }
     fn owned(&self, owner: &str, id: &str) -> Result<Arc<Generation>, HttpError> {
         self.entries
