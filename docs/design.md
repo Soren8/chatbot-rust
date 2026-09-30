@@ -4,6 +4,10 @@ This document captures the current architecture of the project and the potential
 
 ## Current Architecture
 
+The Compose webserver uses host networking so browser/Tailscale traffic avoids Docker bridge NAT. DNS, voice-service and tests remain on the bridge; a read-only resolver bind points webserver at the sidecar's pinned bridge address. Voice-service publishes only `127.0.0.1:5100` for webserver, whose service/provider references use localhost. Custom DNS addresses require a matching resolver file via `WEB_RESOLV_CONF` (see `dns/README.md`).
+
+Home rendering exposes `agentConnectionsEnabled` only for authenticated, deployment-allowed accounts with an enrolled key verifier and a connection service. The Connections panel and client initialization are gated by that flag; API authorization continues to enforce the policy independently.
+
 Android foreground stops propagate stopped/already-stopped/failure outcomes through the platform adapter. Failed stops retain session ownership; successful outcomes reconcile only the initiating generation. Platform start/stop calls are serialized separately from the session monitor so an older stop cannot follow a replacement start.
 
 The voice service tracks non-streaming Kokoro/STT jobs alongside streaming producers. A cancelled waiter does not interrupt inference or release its STT staging file; the worker cleans up before delivering its result. Lifespan shutdown rejects new jobs and joins all worker types off-loop under one shared bounded deadline, retaining work that has not exited.

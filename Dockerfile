@@ -109,7 +109,8 @@ COPY capacitor.config.json package.json package-lock.json .gitignore /app/
 COPY deploy/helm/chatbot /app/deploy/helm/chatbot
 COPY .config.yml.example /app/.config.yml.example
 # docker_build.rs guards the image build recipe itself.
-COPY Dockerfile /app/Dockerfile
+COPY Dockerfile docker-compose.yml /app/
+COPY dns /app/dns
 ENV CHATBOT_STATIC_ROOT="/app/static"
 ENV CARGO_TARGET_DIR=/app/.cargo/target
 

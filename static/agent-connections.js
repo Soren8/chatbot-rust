@@ -1,5 +1,6 @@
 (function () {
   'use strict';
+  if (!window.APP_DATA || window.APP_DATA.agentConnectionsEnabled !== true) return;
   var root = document.getElementById('connections-settings');
   if (!root) return;
 

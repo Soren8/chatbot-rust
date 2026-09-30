@@ -35,6 +35,8 @@ services:
       # First-run model downloads can take 20–30 min on a slow connection.
       # Warm starts (cache hit) are ready in ~60s.
       start_period: 1800s
+    ports:
+      - "127.0.0.1:5100:5100"
     environment:
       NEMO_CACHE_DIR: /app/model_cache/nemo
 
@@ -53,14 +55,15 @@ services:
     depends_on:
       dns:
         condition: service_healthy
-    dns:
-      - ${DNS_ADDRESS:-172.29.0.53}
-    ports:
-      - "${CHATBOT_PORT:-80}:${CHATBOT_PORT:-80}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     volumes:
       - ./data:/app/data
+      - type: bind
+        source: ${WEB_RESOLV_CONF:-./dns/host-resolv.conf}
+        target: /etc/resolv.conf
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ./.config.yml
         target: /app/.config.yml

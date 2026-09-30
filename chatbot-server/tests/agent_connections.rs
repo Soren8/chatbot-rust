@@ -151,6 +151,26 @@ fn change_policy(setup: &Setup, edit: impl FnOnce(String) -> String) {
 }
 
 #[tokio::test]
+async fn home_connections_capability_matches_account_policy() {
+    let _guard = serial();
+    let setup = Setup::new();
+    let alice = setup.actor(ALICE, KEY_A);
+    let unknown = setup.actor("not_allowed", KEY_A);
+    for (actor, enabled) in [(None, false), (Some(&unknown), false), (Some(&alice), true)] {
+        let (status, page) = setup.call(actor, Method::GET, "/", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        let page = page["raw"].as_str().unwrap();
+        assert!(page.contains(&format!("\"agentConnectionsEnabled\": {enabled}")));
+        assert_eq!(page.contains("id=\"connections-settings\""), enabled);
+    }
+    change_policy(&setup, |config| config.replacen("enabled: true", "enabled: false", 1));
+    let (_, page) = setup.call(Some(&alice), Method::GET, "/", Value::Null).await;
+    let page = page["raw"].as_str().unwrap();
+    assert!(page.contains("\"agentConnectionsEnabled\": false"));
+    assert!(!page.contains("id=\"connections-settings\""));
+}
+
+#[tokio::test]
 async fn live_target_and_feature_revocation_override_previous_success() {
     let _guard = serial();
     let setup = Setup::new();

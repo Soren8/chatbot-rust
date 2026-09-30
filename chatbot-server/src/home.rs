@@ -182,6 +182,12 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         tts_access,
     };
 
+    let agent_connections_enabled = bootstrap.username.as_deref().is_some_and(|username| {
+        if services.connections().is_none() { return false; }
+        let policy = chatbot_core::config::app_config().external_connections.clone();
+        policy.enabled && policy.allowed_users.iter().any(|user| user == username)
+            && accounts.users().and_then(|users| users.has_key_verifier(username)).unwrap_or(false)
+    });
     let html = render_template(
         logged_in,
         &user_details,
@@ -191,6 +197,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
         save_thoughts,
         send_thoughts,
         &voice_capabilities,
+        agent_connections_enabled,
     )
     .map_err(|err| {
         log_and_api_error(
@@ -305,11 +312,13 @@ fn render_template(
     save_thoughts: bool,
     send_thoughts: bool,
     voice_capabilities: &VoiceCapabilities,
+    agent_connections_enabled: bool,
 ) -> Result<String, minijinja::Error> {
     let env = template_env();
     let template = env.get_template("chat.html")?;
     let rendered = template.render(context! {
         logged_in => logged_in,
+        agent_connections_enabled => agent_connections_enabled,
         username => user_details.username,
         user_tier => user_details.tier,
         last_set => user_details.last_set,
@@ -447,6 +456,7 @@ mod tests {
                 tts: VoiceCapability { privacy_level: PrivacyLevel::NonPrivate },
                 tts_access: "anyone",
             },
+            false,
         )
         .expect("render template");
 

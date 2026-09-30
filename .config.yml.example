@@ -1,7 +1,7 @@
 # User-defined variables — referenced as ${VAR_NAME} anywhere below.
 # Environment variables (from .env) take precedence over these.
 vars:
-  LOCAL_HOST: host.docker.internal
+  LOCAL_HOST: localhost
   LOCAL_PORT: 11434
 
 # TTS / Voice configuration
@@ -19,7 +19,7 @@ tts_privacy_level: non_private
 # premium on internet-facing hosts that pay for GPU voice.
 tts_access: anyone
 # Voice service connection (the vertically integrated chatbot-cuda container)
-voice_service_host: voice-service
+voice_service_host: localhost
 voice_service_port: 5100
 # GPU device index (as shown by nvidia-smi) for the voice service.
 # Set to 0 for the first GPU, 1 for the second, etc.

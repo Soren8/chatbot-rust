@@ -9,6 +9,23 @@
 //! linked from an old rlib. The build must advance workspace source mtimes
 //! past any warm cache entry before cargo reads them.
 
+#[test]
+fn webserver_uses_host_network_with_sidecar_resolver() {
+    let compose: serde_yaml::Value = serde_yaml::from_str(include_str!("../../docker-compose.yml")).unwrap();
+    let web = &compose["services"]["webserver"];
+    assert_eq!(web["network_mode"].as_str(), Some("host"));
+    for key in ["ports", "dns", "networks", "extra_hosts"] {
+        assert!(!web.as_mapping().unwrap().contains_key(serde_yaml::Value::from(key)), "host webserver must not use {key}");
+    }
+    let resolver = web["volumes"].as_sequence().unwrap().iter()
+        .find(|mount| mount["target"].as_str() == Some("/etc/resolv.conf"))
+        .expect("host webserver needs a sidecar resolver bind");
+    assert_eq!(resolver["source"].as_str(), Some("${WEB_RESOLV_CONF:-./dns/host-resolv.conf}"));
+    assert_eq!(resolver["read_only"].as_bool(), Some(true));
+    assert_eq!(include_str!("../../dns/host-resolv.conf"), "nameserver 172.29.0.53\n");
+    assert_eq!(compose["services"]["voice-service"]["ports"], serde_yaml::to_value(["127.0.0.1:5100:5100"]).unwrap());
+}
+
 const DOCKERFILE: &str = include_str!("../../Dockerfile");
 
 fn stage_body<'a>(dockerfile: &'a str, name: &str) -> &'a str {

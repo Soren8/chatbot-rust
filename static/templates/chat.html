@@ -195,6 +195,7 @@
                             </div>
                         </div>
                     </div>
+                    {% if agent_connections_enabled %}
                     <div id="connections-settings" class="card mb-3">
                         <div class="card-header"><h6 class="mb-0">Connections</h6></div>
                         <div class="card-body">
@@ -221,6 +222,7 @@
                             </form>
                         </div>
                     </div>
+                    {% endif %}
                     {% endif %}
                 </div>
             </div>
@@ -267,6 +269,7 @@
     {
         "userTier": "{{ user_tier }}",
         "availableModels": {{ available_llms | default([]) | tojson }},
+        "agentConnectionsEnabled": {{ agent_connections_enabled | default(false) | tojson }},
         "loggedIn": {{ logged_in | tojson }},
         "username": {{ username | tojson }},
         "defaultSystemPrompt": {{ default_system_prompt | tojson }},

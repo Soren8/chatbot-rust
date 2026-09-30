@@ -5,6 +5,16 @@ use axum::{
 use chatbot_server::build_router;
 use tower::ServiceExt;
 
+#[test]
+fn connections_client_returns_before_requests_when_disabled() {
+    let script = include_str!("../../static/agent-connections.js");
+    let guard = script.find("if (!window.APP_DATA || window.APP_DATA.agentConnectionsEnabled !== true) return;")
+        .expect("connections must be explicitly enabled before client initialization");
+    assert!(guard < script.find("document.getElementById").unwrap());
+    assert!(guard < script.find("activitySync.request").unwrap());
+    assert!(guard < script.find("perform(function () { return load(false)").unwrap());
+}
+
 #[tokio::test]
 async fn serves_static_files_from_configured_root() {
     let temp_dir = tempfile::tempdir().unwrap();

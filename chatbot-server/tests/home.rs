@@ -499,8 +499,8 @@ async fn home_route_logged_in_settings_has_system_prompt_memory_and_connections(
     assert!(body.contains("data-logged-in=\"true\""));
     assert_settings_has_system_prompt_and_memory(body);
     assert!(
-        body.contains(r#"id="connections-settings""#),
-        "logged-in settings must keep the Connections section alongside System Prompt and Memory",
+        !body.contains(r#"id="connections-settings""#),
+        "disabled Connections section must not render for logged-in users",
     );
 }
 

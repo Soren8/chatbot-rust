@@ -104,6 +104,7 @@ try {
         userTier: (cfg && cfg.userTier) || 'free',
         availableModels: (cfg && cfg.availableModels) || [],
         voiceCapabilities: (cfg && cfg.voiceCapabilities) || {},
+        agentConnectionsEnabled: !!(cfg && cfg.agentConnectionsEnabled),
         loggedIn: !!(cfg && cfg.loggedIn),
         username: (cfg && cfg.username) || null,
         saveThoughts: cfg && cfg.saveThoughts !== undefined ? cfg.saveThoughts : true,

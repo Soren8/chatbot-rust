@@ -30,7 +30,7 @@ Not a single line of code in this repository was written manually. Human work in
 
 ## Development Workflow
 1. Copy `.config.yml.example` to `.config.yml` and adjust provider settings.
-   Set `voice_service_host: voice-service` in existing configs; the voice service is on the Compose bridge, not host localhost. Linux host-based providers can use `host.docker.internal` from the webserver.
+   Set `voice_service_host: localhost` in existing configs; the bridge voice service publishes only `127.0.0.1:5100`. The host-networked webserver uses `localhost` for host-based providers, not `host.docker.internal`.
 1. Add API keys to environment variables or copy `.env.example` to `.env` and adjust.
 1. Run the integration and unit tests:
    ```bash
@@ -41,11 +41,11 @@ Not a single line of code in this repository was written manually. Human work in
    ```bash
    docker compose up --build
    ```
-   Webserver publishes port 80 by default; set `CHATBOT_PORT` to the same port as a custom `CHATBOT_BIND_ADDR` (which must listen on `0.0.0.0`). Set `DNS_SUBNET` and `DNS_ADDRESS` together if `172.29.0.0/16` overlaps your network; recreate the Compose default network on first rollout.
+   Webserver uses host networking and listens directly on port 80 by default; `CHATBOT_BIND_ADDR` controls the host listener (with `CHATBOT_PORT` as its default port). DNS, voice-service and tests remain on the Compose bridge. Webserver mounts `dns/host-resolv.conf` read-only to use the DNS sidecar. If `172.29.0.0/16` overlaps your network, set `DNS_SUBNET` and `DNS_ADDRESS` together, recreate the Compose default network, and set `WEB_RESOLV_CONF` to a host resolver file containing `nameserver <DNS_ADDRESS>`; Compose cannot substitute variables inside that file.
    RUST_BUILD_TARGET=debug by default, you may want to set it to release.
 1. Keep caches under `temp/` as described in `AGENTS.md`.
 
-**Secure context for browser dev (encryption keys):** Client-side key derivation and storage (required for Private Mode chat data) needs a browser secure context. Use `http://localhost` or https (recommended for LAN: run Tailscale Serve on the host pointing at the app, e.g. proxying to the published localhost port). Plain http://LAN-IP will cause login to fall back to server derivation and subsequent data operations to require unlock that cannot succeed in-browser. The native Android app works over HTTP using its NativeSecureKey plugin.
+**Secure context for browser dev (encryption keys):** Client-side key derivation and storage (required for Private Mode chat data) needs a browser secure context. Use `http://localhost` or https (recommended for LAN: run Tailscale Serve on the host pointing at the app, e.g. proxying to the host listener). Plain http://LAN-IP will cause login to fall back to server derivation and subsequent data operations to require unlock that cannot succeed in-browser. The native Android app works over HTTP using its NativeSecureKey plugin.
 
 ## Configuration
 - Provider and environment settings live in `.config.yml`; secrets should be injected through environment variables where possible.
