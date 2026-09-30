@@ -51,6 +51,31 @@ struct ChatRequest {
     send_thoughts: Option<bool>,
 }
 
+pub(crate) fn persist_setup_error(
+    feedback: Option<&crate::generations::GenerationFeedback>,
+    persist: impl FnOnce() -> chatbot_core::session::FinalizeOutcome,
+) {
+    let outcome = persist();
+    if let Some(feedback) = feedback { feedback.finalized(&outcome); }
+}
+
+#[cfg(test)]
+mod setup_error_tests {
+    #[test]
+    fn saved_setup_error_reports_finalize_outcome() {
+        use std::sync::{Arc, Mutex};
+        use chatbot_core::session::FinalizeOutcome;
+        let feedback = crate::generations::GenerationFeedback {
+            expected_version: 4,
+            base_version: Arc::new(Mutex::new(4)),
+            outcome: Arc::new(Mutex::new(None)),
+            provider_failed: Arc::new(Mutex::new(false)),
+        };
+        super::persist_setup_error(Some(&feedback), || FinalizeOutcome::DurableCommitted);
+        assert_eq!(*feedback.outcome.lock().unwrap(), Some(FinalizeOutcome::DurableCommitted));
+    }
+}
+
 pub(crate) fn saved_provider_error_response(
     err: &anyhow::Error,
     user_chars: usize,
@@ -80,6 +105,7 @@ pub(crate) fn forward_provider_stream(
     mut provider_stream: Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>,
     mut guard: StreamCompletionGuard,
     regenerate: bool,
+    feedback: Option<crate::generations::GenerationFeedback>,
 ) -> impl Stream<Item = Bytes> {
     stream! {
         while let Some(item) = provider_stream.next().await {
@@ -95,6 +121,7 @@ pub(crate) fn forward_provider_stream(
                         error!(?err, "error while reading provider stream");
                     }
                     guard.mark_provider_error();
+                    if let Some(feedback) = &feedback { feedback.failed(); }
                     let (visible, detail) = provider_error_parts(&err);
                     let msg = format!(
                         "\n[Error] {visible}\n{open}{detail}{close}\n",
@@ -115,6 +142,26 @@ pub(crate) fn forward_provider_stream(
     }
 }
 
+pub(crate) async fn generation_stream(
+    provider: crate::providers::generation::GenerationProvider,
+    config: chatbot_core::config::ProviderConfig,
+    messages: Vec<crate::providers::messages::ChatMessagePayload>,
+    web_search: bool,
+    fallback: bool,
+    generation: crate::generation_deps::GenerationDeps,
+    owned: bool,
+) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send + 'static>>> {
+    if !owned {
+        return dispatch_stream(&provider, &config, messages, web_search, fallback, &generation).await;
+    }
+    Ok(Box::pin(stream! {
+        match dispatch_stream(&provider, &config, messages, web_search, fallback, &generation).await {
+            Ok(mut source) => while let Some(item) = source.next().await { yield item; },
+            Err(error) => yield Err(error),
+        }
+    }))
+}
+
 pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     if request.method() != axum::http::Method::POST {
         return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
@@ -122,6 +169,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
+    let feedback = parts.extensions.get::<crate::generations::GenerationFeedback>().cloned();
     let identity = services.identity().clone();
     let chat = services.chat().clone();
     let generation = services.generation_deps();
@@ -169,6 +217,9 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
                 selected_model.as_str()
             };
             error!(model = %model, "requested model not found");
+            if feedback.is_some() {
+                return Err(api_error(StatusCode::BAD_REQUEST, "requested model not found"));
+            }
             if !payload.message.trim().is_empty() {
                 return error_as_saved_chat_turn_with_service(&chat,
                     &session_context,
@@ -199,6 +250,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
             provider_type = %provider_type,
             "unsupported provider type for chat"
         );
+        if feedback.is_some() { return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type")); }
         if !payload.message.trim().is_empty() {
             return error_as_saved_chat_turn_with_service(&chat,
                 &session_context,
@@ -222,7 +274,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         // a 200 assistant turn instead of a raw 400.
         let set_id = match crate::set_privacy_coordinator::resolve_content_set(&history, user, payload.set_id.as_deref(), payload.set_name.as_deref(), key) {
             Ok(id) => id,
-            Err(chatbot_core::history::HistoryError::NotFound) if !payload.message.trim().is_empty() => {
+            Err(chatbot_core::history::HistoryError::NotFound) if feedback.is_none() && !payload.message.trim().is_empty() => {
                 return error_as_saved_chat_turn_with_service(&chat,
                     &session_context,
                     payload.set_name.as_deref(),
@@ -286,6 +338,7 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     }
 
     if let Some(err) = prepare.error {
+        if feedback.is_some() { return Err(crate::chat_utils::prepare_rejection(err)); }
         return map_prepare_error(
             err,
             &chat,
@@ -301,6 +354,9 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     })?;
     if privacy_binding.is_some() && context.prepare_capture.is_none() {
         return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "missing set privacy capture"));
+    }
+    if let Some(feedback) = &feedback {
+        feedback.capture(context.prepare_capture.as_ref())?;
     }
     let mut allow_native_search_fallback = true;
     if let Some((_, _, level)) = privacy_binding.as_ref() {
@@ -330,10 +386,10 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
         Ok(provider) => provider,
         Err(err) => {
             return saved_provider_error_response(&err, payload.message.chars().count(), None, "chat::setup_error", |assistant| {
-                let _ = lease.complete_chat_outcome(
+                persist_setup_error(feedback.as_ref(), || lease.complete_chat_outcome(
                     context.set_name.as_str(), payload.message.as_str(), assistant,
                     encryption_key.as_ref(), context.prepare_capture.clone(),
-                );
+                ));
             });
         }
     };
@@ -350,13 +406,14 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
 
     let messages = map_core_messages(&prepared.messages);
 
-    let provider_stream = match dispatch_stream(
-        &provider,
-        &context.provider,
+    let provider_stream = match generation_stream(
+        provider,
+        context.provider.clone(),
         messages,
         payload.web_search.unwrap_or(false),
         allow_native_search_fallback,
-        &generation,
+        generation,
+        feedback.is_some(),
     )
     .await
     {
@@ -367,10 +424,10 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
             }
             error!(?err, "provider stream setup failed");
             return saved_provider_error_response(&err, payload.message.chars().count(), None, "chat::setup_error", |assistant| {
-                let _ = lease.complete_chat_outcome(
+                persist_setup_error(feedback.as_ref(), || lease.complete_chat_outcome(
                     context.set_name.as_str(), payload.message.as_str(), assistant,
                     encryption_key.as_ref(), context.prepare_capture.clone(),
-                );
+                ));
             });
         }
     };
@@ -380,28 +437,25 @@ pub async fn handle_chat(request: Request<Body>) -> Result<Response<Body>, HttpE
     let enc_for_guard = encryption_key.clone();
     let capture_for_guard = context.prepare_capture.clone();
 
+    let feedback_for_guard = feedback.clone();
+    let persist = move |final_response: &str| -> Result<Vec<String>, ()> {
+        let outcome = lease.complete_chat_outcome(
+            &set_name_for_guard, &user_message_for_guard, final_response,
+            enc_for_guard.as_ref(), capture_for_guard.clone(),
+        );
+        if let Some(feedback) = &feedback_for_guard { feedback.finalized(&outcome); }
+        Ok(render_finalize_outcome(&outcome))
+    };
+    let mut persist = Some(persist);
+    let owned_guard = feedback.as_ref().map(|_| StreamCompletionGuard::new(save_thoughts, persist.take().expect("persist")));
     let stream = stream! {
         let _privacy_permit = privacy_permit;
-        // The persist closure owns the lease. Dropping an unpolled stream
-        // releases it without persisting.
-        let guard = StreamCompletionGuard::new(
-            save_thoughts,
-            move |final_response: &str| -> Result<Vec<String>, ()> {
-                let outcome = lease.complete_chat_outcome(
-                    &set_name_for_guard,
-                    &user_message_for_guard,
-                    final_response,
-                    enc_for_guard.as_ref(),
-                    capture_for_guard.clone(),
-                );
-                Ok(render_finalize_outcome(&outcome))
-            },
-        );
+        let guard = owned_guard.unwrap_or_else(|| StreamCompletionGuard::new(save_thoughts, persist.take().expect("persist")));
 
         // Full stream consumed: persist + unlock. If the client aborted earlier,
         // this generator was dropped and StreamCompletionGuard::drop already
         // finalized whatever partial text we had (so Stop → Edit can regenerate).
-        let forwarded = forward_provider_stream(provider_stream, guard, false);
+        let forwarded = forward_provider_stream(provider_stream, guard, false, feedback);
         futures_util::pin_mut!(forwarded);
         while let Some(chunk) = forwarded.next().await {
             yield chunk;

@@ -17,6 +17,7 @@ use crate::{
 
 const LIMITED_PATHS: &[&str] = &[
     "/chat",
+    "/generations",
     "/regenerate",
     "/tts",
     "/tts_stream",

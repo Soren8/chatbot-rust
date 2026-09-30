@@ -24,6 +24,7 @@ pub mod chat_utils;
 pub mod client_logs;
 pub mod enc_key_cookies;
 pub mod generation_deps;
+pub mod generations;
 mod health;
 pub mod http_error;
 pub mod identity;
@@ -369,6 +370,7 @@ pub fn build_router_with_services(
             post(login::handle_login_forget_post),
         )
         .route("/chat", post(chat::handle_chat))
+        .route("/generations", post(generations::create))
         .route("/tts", post(tts::handle_tts))
         .route(
             "/tts_stream/{token}",
@@ -388,6 +390,10 @@ pub fn build_router_with_services(
         .nest_service("/static", ServeDir::new(static_root))
         .route("/favicon.ico", get(favicon))
         .route("/health", get(health::handle_health))
+        .route("/generations/{id}", get(generations::status))
+        .route("/generations/{id}/events", get(generations::events))
+        .route("/generations/{id}/stop", post(generations::stop))
+        .route("/activity", get(generations::activity))
         .route("/", get(home::handle_home))
         .route("/auth/salt/{username}", get(login::handle_get_salt))
         .route("/logout", get(logout::handle_logout))

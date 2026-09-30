@@ -80,6 +80,7 @@ pub struct AppServices {
     tts_policy: TtsPolicy,
     config: ConfigSource,
     set_privacy: SetPrivacyCoordinator,
+    generations: Arc<crate::generations::GenerationRegistry>,
 }
 
 impl AppServices {
@@ -100,6 +101,7 @@ impl AppServices {
             tts_policy: TtsPolicy::global(),
             config: ConfigSource::global(),
             set_privacy: SetPrivacyCoordinator::default(),
+            generations: Arc::new(crate::generations::GenerationRegistry::default()),
         }
     }
 
@@ -125,6 +127,7 @@ impl AppServices {
             tts_policy: TtsPolicy::global(),
             config,
             set_privacy: SetPrivacyCoordinator::default(),
+            generations: Arc::new(crate::generations::GenerationRegistry::default()),
         }
     }
 
@@ -155,6 +158,7 @@ impl AppServices {
             tts_policy: TtsPolicy::global(),
             config,
             set_privacy: SetPrivacyCoordinator::default(),
+            generations: Arc::new(crate::generations::GenerationRegistry::default()),
         }
     }
 
@@ -294,6 +298,15 @@ impl AppServices {
     /// return their explicit values.
     pub fn config_source(&self) -> ConfigSource {
         self.config.clone()
+    }
+
+    pub(crate) fn generations(&self) -> Arc<crate::generations::GenerationRegistry> {
+        self.generations.clone()
+    }
+
+    pub fn with_generation_timing(mut self, timing: crate::generations::GenerationTiming) -> Self {
+        Arc::get_mut(&mut self.generations).expect("configure before cloning services").timing = timing;
+        self
     }
 
     pub(crate) fn set_privacy(&self) -> SetPrivacyCoordinator {

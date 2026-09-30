@@ -224,6 +224,15 @@ pub fn error_as_saved_chat_turn_with_service(
         .map_err(|err| map_response_build_err(err, "chat_utils::error_as_saved_chat_turn"))
 }
 
+pub(crate) fn prepare_rejection(err: session::PrepareError) -> HttpError {
+    match err {
+        session::PrepareError::Validation(error) => map_prepare_validation_err(&error),
+        session::PrepareError::Policy(error) => map_prepare_policy_err(&error),
+        session::PrepareError::History(error) => map_prepare_history_err(&error),
+        session::PrepareError::Session(error) => map_session_operation_err(&error),
+    }
+}
+
 /// Render a prepare failure, saving a nonempty user message only for eligible errors.
 pub fn map_prepare_error(
     err: session::PrepareError,

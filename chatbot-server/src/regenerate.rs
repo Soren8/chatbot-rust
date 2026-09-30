@@ -26,7 +26,7 @@ use crate::http_error::{
     map_session_err, HttpError,
 };
 use crate::providers::generation::{
-    build_provider_with_generation, dispatch_stream, map_core_messages,
+    build_provider_with_generation, map_core_messages,
 };
 use crate::services::AppServices;
 
@@ -62,6 +62,7 @@ pub async fn handle_regenerate(
 
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
+    let feedback = parts.extensions.get::<crate::generations::GenerationFeedback>().cloned();
     let identity = services.identity().clone();
     let chat = services.chat().clone();
     let generation = services.generation_deps();
@@ -109,6 +110,9 @@ pub async fn handle_regenerate(
                 selected_model.as_str()
             };
             error!(model = %model, "requested model not found");
+            if feedback.is_some() {
+                return Err(api_error(StatusCode::BAD_REQUEST, "requested model not found"));
+            }
             if !payload.message.trim().is_empty() {
                 return error_as_saved_chat_turn_with_service(&chat,
                     &session_context,
@@ -134,6 +138,7 @@ pub async fn handle_regenerate(
             provider_type = %provider_type,
             "unsupported provider type for regenerate"
         );
+        if feedback.is_some() { return Err(api_error(StatusCode::BAD_REQUEST, "unsupported provider type")); }
         if !payload.message.trim().is_empty() {
             return error_as_saved_chat_turn_with_service(&chat,
                 &session_context,
@@ -157,7 +162,7 @@ pub async fn handle_regenerate(
         // a 200 assistant turn instead of a raw 400.
         let set_id = match crate::set_privacy_coordinator::resolve_content_set(&history, user, payload.set_id.as_deref(), payload.set_name.as_deref(), key) {
             Ok(id) => id,
-            Err(chatbot_core::history::HistoryError::NotFound) if !payload.message.trim().is_empty() => {
+            Err(chatbot_core::history::HistoryError::NotFound) if feedback.is_none() && !payload.message.trim().is_empty() => {
                 return error_as_saved_chat_turn_with_service(&chat,
                     &session_context,
                     payload.set_name.as_deref(),
@@ -205,6 +210,7 @@ pub async fn handle_regenerate(
     }
 
     if let Some(err) = prepare.error {
+        if feedback.is_some() { return Err(crate::chat_utils::prepare_rejection(err)); }
         return map_prepare_error(
             err,
             &chat,
@@ -220,6 +226,9 @@ pub async fn handle_regenerate(
     })?;
     if privacy_binding.is_some() && context.prepare_capture.is_none() {
         return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "missing set privacy capture"));
+    }
+    if let Some(feedback) = &feedback {
+        feedback.capture(context.prepare_capture.as_ref())?;
     }
     let mut allow_native_search_fallback = true;
     if let Some((_, _, level)) = privacy_binding.as_ref() {
@@ -252,10 +261,10 @@ pub async fn handle_regenerate(
         Ok(provider) => provider,
         Err(err) => {
             return saved_provider_error_response(&err, payload.message.chars().count(), insertion_index, "regenerate::setup_error", |assistant| {
-                let _ = lease.complete_regenerate_outcome(
+                crate::chat::persist_setup_error(feedback.as_ref(), || lease.complete_regenerate_outcome(
                     context.set_name.as_str(), payload.message.as_str(), assistant,
                     insertion_index, encryption_key.as_ref(), context.prepare_capture.clone(),
-                );
+                ));
             });
         }
     };
@@ -281,13 +290,14 @@ pub async fn handle_regenerate(
 
     let messages = map_core_messages(&prepared.messages);
 
-    let provider_stream = match dispatch_stream(
-        &provider,
-        &context.provider,
+    let provider_stream = match crate::chat::generation_stream(
+        provider,
+        context.provider.clone(),
         messages,
         payload.web_search.unwrap_or(false),
         allow_native_search_fallback,
-        &generation,
+        generation,
+        feedback.is_some(),
     )
     .await
     {
@@ -298,10 +308,10 @@ pub async fn handle_regenerate(
             }
             error!(?err, "provider stream setup failed");
             return saved_provider_error_response(&err, user_message.chars().count(), insertion_index, "regenerate::setup_error", |assistant| {
-                let _ = lease.complete_regenerate_outcome(
+                crate::chat::persist_setup_error(feedback.as_ref(), || lease.complete_regenerate_outcome(
                     context.set_name.as_str(), user_message.as_str(), assistant,
                     insertion_index, encryption_key.as_ref(), context.prepare_capture.clone(),
-                );
+                ));
             });
         }
     };
@@ -311,26 +321,22 @@ pub async fn handle_regenerate(
     let enc_for_guard = encryption_key.clone();
     let capture_for_guard = context.prepare_capture.clone();
 
+    let feedback_for_guard = feedback.clone();
+    let persist = move |final_response: &str| -> Result<Vec<String>, ()> {
+        let outcome = lease.complete_regenerate_outcome(
+            &set_name_for_guard, &user_message_for_guard, final_response, insertion_index,
+            enc_for_guard.as_ref(), capture_for_guard.clone(),
+        );
+        if let Some(feedback) = &feedback_for_guard { feedback.finalized(&outcome); }
+        Ok(render_finalize_outcome(&outcome))
+    };
+    let mut persist = Some(persist);
+    let owned_guard = feedback.as_ref().map(|_| StreamCompletionGuard::new(save_thoughts, persist.take().expect("persist")));
     let stream = stream! {
         let _privacy_permit = privacy_permit;
-        // The persist closure owns the lease. Dropping an unpolled stream
-        // releases it without persisting.
-        let guard = StreamCompletionGuard::new(
-            save_thoughts,
-            move |final_response: &str| -> Result<Vec<String>, ()> {
-                let outcome = lease.complete_regenerate_outcome(
-                    &set_name_for_guard,
-                    &user_message_for_guard,
-                    final_response,
-                    insertion_index,
-                    enc_for_guard.as_ref(),
-                    capture_for_guard.clone(),
-                );
-                Ok(render_finalize_outcome(&outcome))
-            },
-        );
+        let guard = owned_guard.unwrap_or_else(|| StreamCompletionGuard::new(save_thoughts, persist.take().expect("persist")));
 
-        let forwarded = forward_provider_stream(provider_stream, guard, true);
+        let forwarded = forward_provider_stream(provider_stream, guard, true, feedback);
         futures_util::pin_mut!(forwarded);
         while let Some(chunk) = forwarded.next().await {
             yield chunk;
