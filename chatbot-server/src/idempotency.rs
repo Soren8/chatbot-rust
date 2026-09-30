@@ -48,6 +48,34 @@ pub fn replay(receipt: &Receipt) -> Result<Response<Body>, HttpError> {
         .expect("valid receipt response"))
 }
 
+/// RAM-only STT transcripts and per-operation admission serialization.
+#[derive(Default)]
+pub(crate) struct SttReceipts {
+    receipts: Mutex<HashMap<(String, String), Receipt>>,
+    pub(crate) voice_operations: InFlightOperations,
+}
+impl SttReceipts {
+    pub(crate) fn replay(&self, owner: &str, operation: &OperationRequest) -> Result<Option<Response<Body>>, HttpError> {
+        use chatbot_core::operation_receipt::{ReceiptClock, SystemReceiptClock};
+        let mut receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
+        let now = SystemReceiptClock.now_secs();
+        receipts.retain(|_, receipt| !receipt.expired(now));
+        match receipts.get(&(owner.into(), operation.id.as_str().into())) {
+            Some(receipt) if !receipt.matches(operation) => Err(reused()),
+            Some(receipt) => replay(receipt).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn record(&self, owner: &str, operation: &OperationRequest, status: StatusCode, value: impl serde::Serialize) {
+        use chatbot_core::operation_receipt::{ReceiptClock, ReceiptOutcome, SystemReceiptClock};
+        let outcome = if status.is_success() { ReceiptOutcome::Applied } else { ReceiptOutcome::Rejected };
+        let receipt = Receipt::new(operation, outcome, status.as_u16(), serde_json::to_vec(&value).expect("receipt"), SystemReceiptClock.now_secs());
+        self.receipts.lock().unwrap_or_else(|e| e.into_inner())
+            .insert((owner.into(), operation.id.as_str().into()), receipt);
+    }
+}
+
 /// Per-owned-service serialization, including asynchronous connection checks.
 /// Durable stores must still arbitrate using their own write transaction.
 #[derive(Default)]

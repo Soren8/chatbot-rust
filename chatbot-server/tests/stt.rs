@@ -24,6 +24,14 @@ static META_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
 });
 
+#[test]
+fn stt_receipts_have_a_dedicated_owner() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let source = std::fs::read_to_string(root.join("chatbot-server/src/stt.rs")).unwrap();
+    assert!(source.contains("services.stt_receipts()"));
+    assert!(!source.contains("services.generations()"));
+}
+
 static STT_TEST_MUTEX: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
 
 fn stt_test_config(voice_host: &str, voice_port: u16) -> String {

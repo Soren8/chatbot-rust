@@ -80,6 +80,7 @@ pub struct AppServices {
     tts_policy: TtsPolicy,
     config: ConfigSource,
     set_privacy: SetPrivacyCoordinator,
+    stt_receipts: Arc<crate::idempotency::SttReceipts>,
     generations: Arc<crate::generations::GenerationRegistry>,
 }
 
@@ -101,6 +102,7 @@ impl AppServices {
             tts_policy: TtsPolicy::global(),
             config: ConfigSource::global(),
             set_privacy: SetPrivacyCoordinator::default(),
+            stt_receipts: Arc::new(crate::idempotency::SttReceipts::default()),
             generations: Arc::new(crate::generations::GenerationRegistry::default()),
         }
     }
@@ -127,6 +129,7 @@ impl AppServices {
             tts_policy: TtsPolicy::global(),
             config,
             set_privacy: SetPrivacyCoordinator::default(),
+            stt_receipts: Arc::new(crate::idempotency::SttReceipts::default()),
             generations: Arc::new(crate::generations::GenerationRegistry::default()),
         }
     }
@@ -158,6 +161,7 @@ impl AppServices {
             tts_policy: TtsPolicy::global(),
             config,
             set_privacy: SetPrivacyCoordinator::default(),
+            stt_receipts: Arc::new(crate::idempotency::SttReceipts::default()),
             generations: Arc::new(crate::generations::GenerationRegistry::default()),
         }
     }
@@ -298,6 +302,10 @@ impl AppServices {
     /// return their explicit values.
     pub fn config_source(&self) -> ConfigSource {
         self.config.clone()
+    }
+
+    pub(crate) fn stt_receipts(&self) -> Arc<crate::idempotency::SttReceipts> {
+        self.stt_receipts.clone()
     }
 
     pub(crate) fn generations(&self) -> Arc<crate::generations::GenerationRegistry> {

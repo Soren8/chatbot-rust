@@ -22,6 +22,31 @@ public final class DurableVoiceProtocol {
         }
     }
 
+    public interface TokenStream<T> { T open(String token) throws IOException; }
+
+    /** A null stream denotes an expired token; renew the same sentence receipt. */
+    public static <T> T openTts(String key, Admission<String> admission, TokenStream<T> stream, Sleeper sleeper) throws IOException {
+        while (true) {
+            String token = retryAdmission(key, admission, sleeper);
+            if (token == null) return null;
+            T opened = stream.open(token);
+            if (opened != null) return opened;
+        }
+    }
+
+    public static int selectSet(String[] ids, boolean[] defaults, String preferred) {
+        int selected = -1;
+        for (int i = 0; i < ids.length; i++) {
+            if (ids[i].equals(preferred)) return i;
+            if (selected < 0 || defaults[i]) selected = i;
+        }
+        return selected;
+    }
+
+    public static boolean refreshRejectedVersion(int status, String error) {
+        return status == 409 && "version_conflict".equals(error);
+    }
+
     public DurableVoiceProtocol(String generationId) {
         if (generationId == null || !generationId.matches("[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException("Invalid generation id");

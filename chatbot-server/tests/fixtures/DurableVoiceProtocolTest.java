@@ -9,6 +9,16 @@ public final class DurableVoiceProtocolTest {
             return "accepted";
         }, ms -> {});
         if (!admitted.equals("accepted") || !keys.equals(java.util.Arrays.asList("stable-key", "stable-key"))) throw new AssertionError("lost admission identity");
+        java.util.List<String> ttsKeys = new java.util.ArrayList<>();
+        String renewed = DurableVoiceProtocol.openTts("sentence-key", key -> {
+            ttsKeys.add(key);
+            if (ttsKeys.size() == 1) throw new java.io.IOException("response body lost after admission");
+            return ttsKeys.size() == 2 ? "expired" : "renewed";
+        }, token -> "expired".equals(token) ? null : token, ms -> {});
+        if (!"renewed".equals(renewed) || !ttsKeys.equals(java.util.Arrays.asList("sentence-key", "sentence-key", "sentence-key"))) throw new AssertionError("TTS body loss and token renewal preserve identity");
+        if (DurableVoiceProtocol.selectSet(new String[]{"first", "default", "selected"}, new boolean[]{false, true, false}, "selected") != 2) throw new AssertionError("selected WebView set");
+        if (DurableVoiceProtocol.selectSet(new String[]{"first", "default"}, new boolean[]{false, true}, "missing") != 1) throw new AssertionError("default fallback");
+        if (!DurableVoiceProtocol.refreshRejectedVersion(409, "version_conflict") || DurableVoiceProtocol.refreshRejectedVersion(503, "version_conflict") || DurableVoiceProtocol.refreshRejectedVersion(409, "generation_active")) throw new AssertionError("only explicit version rejection changes intent");
         DurableVoiceProtocol protocol = new DurableVoiceProtocol("generation-1");
         if (!protocol.apply(1, "delta", "First sentence.")) throw new AssertionError("new delta");
         if (protocol.apply(1, "delta", "First sentence.")) throw new AssertionError("duplicate delta");

@@ -23,7 +23,10 @@ async function flush() {
   for (let i = 0; i < 40; i++) await Promise.resolve();
 }
 
-function session(sentences, generating = false, modern = true) {
+const voiceText = require(require('node:path').join(require('node:path').dirname(process.argv[2]), 'voice-text.js'));
+const activitySync = require(require('node:path').join(require('node:path').dirname(process.argv[2]), 'activity-sync.js'));
+
+function session(sentences, generating = false, modern = true, realSplit = false) {
   const posts = [];
   const enqueued = [];
   const cancelled = [];
@@ -70,7 +73,7 @@ function session(sentences, generating = false, modern = true) {
   };
   const deps = {
     voiceLifecycle,
-    split: () => state.sentences.map(text => ({ text })),
+    split: realSplit ? voiceText.splitSentences : () => state.sentences.map(text => ({ text })),
     terminator: text => /[.!?]$/.test(text),
     sanitize: text => text,
     source: source,
@@ -332,7 +335,48 @@ async function olderApkDoesNotWaitForUnsupportedConsumptionEvents() {
   assert.equal(s.state.ended, 1);
 }
 
+async function durableReplayFeedsRealSentenceQueueOnce() {
+  const s = session([], true, true, true);
+  await flush();
+  let views = 0;
+  const urls = [];
+  let text = '';
+  const sync = activitySync.createActivitySync({
+    fetch: async url => {
+      urls.push(url);
+      const first = ++views === 1;
+      const events = first ? [{ seq: 1, type: 'delta', text: 'First sentence. ' }] : [
+        { seq: 1, type: 'delta', text: 'First sentence. ' },
+        { seq: 2, type: 'delta', text: 'Second sentence. ' },
+        { seq: 3, type: 'saved' }
+      ];
+      let index = 0;
+      return { ok: true, status: 200, body: { getReader: () => ({
+        read: async () => {
+          if (index < events.length) return { value: new TextEncoder().encode(JSON.stringify(events[index++]) + '\n'), done: false };
+          if (first) throw new TypeError('view lost');
+          return { done: true };
+        }, cancel: async () => {}
+      }) } };
+    }, sleep: async () => {}, refreshSession: async () => true,
+    onEvent: event => {
+      if (event.type !== 'delta') return;
+      text += event.text;
+      s.state.sentences = [text];
+      s.restream();
+    }
+  });
+  await sync.attach({ generation_id: 'sentences' });
+  await flush();
+  assert.ok(urls[1].endsWith('after=1'), 'overlapping reconnect uses contiguous cursor');
+  assert.deepEqual(s.posts.map(post => post.text), ['First sentence.', 'Second sentence.'], 'actual discovery queues each sentence once');
+  s.posts.forEach((post, i) => post.resolve('replay-' + i));
+  await flush();
+  assert.deepEqual(s.enqueued, ['replay-0', 'replay-1'], 'actual playback queue does not replay sentences');
+}
+
 (async () => {
+  await durableReplayFeedsRealSentenceQueueOnce();
   await fallbackWithoutBridgeSkipsDomAndDelegates();
   await toggleCurrentButtonStopsWithoutDomReads();
   await messageContextInitializesAtTheOriginalPoint();

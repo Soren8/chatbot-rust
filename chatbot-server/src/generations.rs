@@ -142,7 +142,6 @@ pub(crate) struct GenerationRegistry {
     entries: Mutex<HashMap<String, Arc<Generation>>>,
     receipts: Mutex<HashMap<(String, String), Receipt>>,
     admission: AsyncMutex<()>,
-    pub(crate) voice_operations: crate::idempotency::InFlightOperations,
     pub timing: GenerationTiming,
 }
 impl Default for GenerationRegistry {
@@ -151,7 +150,6 @@ impl Default for GenerationRegistry {
             entries: Mutex::new(HashMap::new()),
             receipts: Mutex::new(HashMap::new()),
             admission: AsyncMutex::new(()),
-            voice_operations: crate::idempotency::InFlightOperations::default(),
             timing: GenerationTiming::default(),
         }
     }

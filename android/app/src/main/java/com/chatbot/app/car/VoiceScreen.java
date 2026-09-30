@@ -348,6 +348,11 @@ public class VoiceScreen extends Screen {
             java.util.regex.Matcher match = java.util.regex.Pattern.compile("<meta name=\"csrf-token\" content=\"([^\"]+)\"").matcher(html);
             if (!match.find()) throw new IOException("Session unavailable");
             csrfToken = match.group(1);
+            java.util.regex.Matcher preference = java.util.regex.Pattern.compile("\"lastSet\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|null)").matcher(html);
+            if (preference.find()) {
+                try { preferredSetName = new org.json.JSONArray("[" + preference.group(1) + "]").optString(0, ""); }
+                catch (org.json.JSONException e) { throw new IOException("Invalid selected chat", e); }
+            }
             java.util.Map<String, java.util.List<String>> headers = conn.getHeaderFields();
             for (java.util.Map.Entry<String, java.util.List<String>> entry : headers.entrySet()) {
                 if ("Set-Cookie".equalsIgnoreCase(entry.getKey())) {
@@ -382,6 +387,7 @@ public class VoiceScreen extends Screen {
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(60000);
 
+        try {
         try (DataOutputStream out = new DataOutputStream(conn.getOutputStream())) {
             out.writeBytes("--" + boundary + "\r\n");
             out.writeBytes("Content-Disposition: form-data; name=\"audio\"; filename=\"capture.wav\"\r\n");
@@ -397,13 +403,13 @@ public class VoiceScreen extends Screen {
         FileLogger.log(TAG, "postStt response code=" + code);
         InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
         String body = readAll(is);
-        conn.disconnect();
         if (code == 408 || code == 429 || code >= 500) throw new IOException("STT temporarily unavailable");
         if (code < 200 || code >= 300) {
             return null;
         }
         try { return new org.json.JSONObject(body).optString("text"); }
         catch (org.json.JSONException e) { throw new IOException("Invalid transcript", e); }
+        } finally { conn.disconnect(); }
     }
 
     private HttpURLConnection admitJson(String turnUrl, String path, String json, String key, boolean durable) throws IOException {
@@ -427,6 +433,7 @@ public class VoiceScreen extends Screen {
     }
 
     private String activeSetId = "";
+    private String preferredSetName = "";
     private long activeSetVersion;
 
     private void resolveSet(String turnUrl) throws IOException {
@@ -436,13 +443,16 @@ public class VoiceScreen extends Screen {
         try {
             if (conn.getResponseCode() == 401) { activeSetId = ""; activeSetVersion = 0; return; }
             org.json.JSONArray sets = new org.json.JSONArray(readAll(conn.getInputStream()));
-            org.json.JSONObject selected = null;
+            String[] names = new String[sets.length()];
+            boolean[] defaults = new boolean[sets.length()];
             for (int i = 0; i < sets.length(); i++) {
                 org.json.JSONObject candidate = sets.getJSONObject(i);
-                if (selected == null || candidate.optBoolean("is_default")) selected = candidate;
-                if (candidate.optString("set_id").equals(activeSetId)) { selected = candidate; break; }
+                names[i] = candidate.optString("name");
+                defaults[i] = candidate.optBoolean("is_default");
             }
-            if (selected == null) throw new IOException("No active chat");
+            int index = DurableVoiceProtocol.selectSet(names, defaults, preferredSetName);
+            if (index < 0) throw new IOException("No active chat");
+            org.json.JSONObject selected = sets.getJSONObject(index);
             activeSetId = selected.getString("set_id");
             activeSetVersion = selected.getLong("version");
         } catch (org.json.JSONException e) { throw new IOException("Invalid chat list", e); }
@@ -461,7 +471,7 @@ public class VoiceScreen extends Screen {
                 String rejected = readAll(conn.getErrorStream());
                 conn.disconnect();
                 try {
-                    if ("version_conflict".equals(new org.json.JSONObject(rejected).optString("error"))) { resolveSet(turnUrl); continue; }
+                    if (DurableVoiceProtocol.refreshRejectedVersion(code, new org.json.JSONObject(rejected).optString("error"))) { resolveSet(turnUrl); continue; }
                 } catch (org.json.JSONException e) { throw new IOException("Invalid admission rejection", e); }
                 return null;
             }
@@ -505,29 +515,27 @@ public class VoiceScreen extends Screen {
     private void playTts(String turnUrl, String text) throws IOException {
         String key = UUID.randomUUID().toString();
         String json = String.format(Locale.US, "{\"text\":%s%s}", escapeJson(text), activeSetId.isEmpty() ? "" : ",\"set_id\":" + escapeJson(activeSetId));
-        HttpURLConnection conn = admitJson(turnUrl, "/tts", json, key, false);
-        int code = conn.getResponseCode();
-        FileLogger.log(TAG, "playTts /tts code=" + code);
-        if (code != 200) {
-            readAll(conn.getErrorStream());
-            conn.disconnect();
-            return;
-        }
-        String token = conn.getHeaderField("X-TTS-Token");
-        String body = readAll(conn.getInputStream());
-        conn.disconnect();
-        if (token == null) token = body;
-
-        // Step 2: stream
-        conn = (HttpURLConnection) new URL(turnUrl + "/tts_stream/" + token).openConnection();
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(60000);
-        code = conn.getResponseCode();
-        FileLogger.log(TAG, "playTts /tts_stream code=" + code);
-        if (code != 200) {
-            conn.disconnect();
-            return;
-        }
+        HttpURLConnection conn = DurableVoiceProtocol.openTts(key, operation -> {
+            HttpURLConnection admission = admitJson(turnUrl, "/tts", json, operation, false);
+            try {
+                if (admission.getResponseCode() != 200) return null;
+                String token = admission.getHeaderField("X-TTS-Token");
+                String body = readAll(admission.getInputStream());
+                return token == null ? body : token;
+            } finally { admission.disconnect(); }
+        }, token -> {
+            HttpURLConnection stream = (HttpURLConnection) new URL(turnUrl + "/tts_stream/" + token).openConnection();
+            try {
+                applyIdentity(stream, turnUrl);
+                stream.setConnectTimeout(15000);
+                stream.setReadTimeout(60000);
+                int code = stream.getResponseCode();
+                if (code == 404) { stream.disconnect(); return null; }
+                if (code != 200) throw new IOException("TTS stream unavailable");
+                return stream;
+            } catch (IOException e) { stream.disconnect(); throw e; }
+        }, this::retryDelay);
+        if (conn == null) return;
 
         int sampleRate = 24000;
         AudioAttributes audioAttrs = new AudioAttributes.Builder()

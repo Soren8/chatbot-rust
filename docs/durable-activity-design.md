@@ -186,7 +186,11 @@ a reload does not autoplay.
 TTS admission receipts are owner-scoped RAM records retained for 24 hours; a
 replay rechecks authorization and returns the valid token, or replaces an expired
 token for that same sentence. STT receipts fingerprint audio bytes, codec and set
-binding, and replay the transcript without a second backend call.
+binding, and replay the transcript without a second backend call. A dedicated
+STT receipt owner in `AppServices` keeps transcripts and in-flight serialization
+separate from generation lifetime. Composed page tests drive STT response-loss
+replay through speech submission and verify one chat turn; queue tests feed
+reconnect overlap into the real sentence discovery and native playback queue.
 
 Keep `POST /tts` → `GET /tts_stream/{token}` as implemented in
 `chatbot-server/src/tts.rs`. Idempotent admission returns the same token.

@@ -967,8 +967,47 @@ async function scenarioBlockedSendBeforePolicyLoadAfterSwitch() {
   assert.equal(fetchBody(lastFetch(w)).set_id, 'set-B', 'switch-load: replacement targets B');
 }
 
+async function scenarioVoiceSttReplay() {
+  const w = makeWorld();
+  const activity = require(require('node:path').join(require('node:path').dirname(chatPath), 'activity-sync.js'));
+  let uploads = 0;
+  const keys = [];
+  const sync = activity.createActivitySync({
+    fetch: async (url, init) => {
+      assert.equal(url, '/stt');
+      keys.push(init.headers['Idempotency-Key']);
+      if (++uploads === 1) throw new TypeError('transcript response lost after admission');
+      return { ok: true, status: 200, text: async () => '{"text":"one voice turn"}' };
+    },
+    sleep: async () => {}, refreshSession: async () => true,
+    refreshCsrfInit: init => init
+  });
+  const box = w.ctx;
+  box.activitySync.request = sync.request;
+  Object.assign(box, {
+    vadSttInProgress: false, nativeMicBridge: null, voiceModeSessionGeneration: 1,
+    voiceSttAbortController: null, lastVoiceSpeechEndedAt: 0, lastVoiceUtteranceStartedAt: 1,
+    voiceModeVAD: null, NativeAudio: { NATIVE_MIC_SAMPLE_RATE: 16000,
+      encodeAudioForStt: async () => ({ blob: { size: 100 }, filename: 'capture.wav' }) },
+    FormData: class { append() {} }, isLiveVoiceBinding: () => true,
+    appendVoiceSetId() {}, reportVoice() {}, reportVoiceThrottled() {}, nativeLog() {},
+    reinitializeVAD: async () => {}, shouldAmendLastVoiceTurn: () => false
+  });
+  w.window.voiceModeActive = true;
+  box.voiceLifecycle.hasActiveVoiceSession = () => false;
+  vm.runInContext(loadSlice('async function fetchVoiceRetry(url, buildOptions, attempts) {', 'function withCsrf(headers) {'), box);
+  vm.runInContext(loadSlice('  function submitVoiceUtterance(text, timing, binding) {', '  // Pause/resume VAD when page is hidden'), box);
+  await vm.runInContext('handleSpeechEnd(new Float32Array([0.1]), {})', box);
+  await flush();
+  assert.equal(uploads, 2, 'lost transcript response is replayed: ' + JSON.stringify(w.appended));
+  assert.ok(keys[0]);
+  assert.equal(keys[0], keys[1], 'STT replay keeps the key');
+  assert.equal(w.fetchCalls.filter(call => call.url === '/chat').length, 1, 'whole voice flow submits one chat turn');
+}
+
 (async () => {
   const cases = [
+    ['voice-stt-replay', scenarioVoiceSttReplay],
     ['chat-switch', scenarioChatSwitch],
     ['aborted-stream', scenarioAbortedStreamStaysSilent],
     ['chat-queued-headers', scenarioChatQueuedHeaders],

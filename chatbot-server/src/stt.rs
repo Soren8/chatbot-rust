@@ -208,7 +208,7 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
         .as_ref()
         .map(|user| format!("user:{user}"))
         .unwrap_or_else(|| format!("guest:{}", session_context.session_id));
-    let registry = services.generations();
+    let registry = services.stt_receipts();
     let _operation_guard = match &operation {
         Some(operation) => Some(registry.voice_operations.acquire(&owner, &operation.id).await),
         None => None,
