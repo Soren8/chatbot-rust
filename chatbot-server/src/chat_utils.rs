@@ -9,7 +9,7 @@ use chatbot_core::{
 };
 use anyhow::Error;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::OnceLock;
 
 use crate::http_error::{
@@ -286,12 +286,7 @@ pub fn error_as_saved_chat_turn(
 
 /// Standard CAS conflict body for durable set mutations.
 pub fn version_conflict_json(set_id: SetId, current_version: SetVersion) -> Value {
-    json!({
-        "error": "version_conflict",
-        "set_id": set_id.to_string(),
-        "current_version": current_version.get(),
-        "message": "Set was modified; syncing latest version."
-    })
+    chatbot_core::history::HistoryService::version_conflict_body(set_id, current_version)
 }
 
 pub fn history_error_to_http(err: HistoryError) -> HttpError {

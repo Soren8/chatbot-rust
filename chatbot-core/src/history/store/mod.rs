@@ -18,11 +18,12 @@ use super::types::{
 };
 use crate::config::PrivacyLevel;
 use crate::enc_key::EncryptionKey;
+use crate::operation_receipt::{OperationRequest, Receipt, RECEIPT_TTL_SECS};
 use keys::{
     migrated_user_meta_key, set_id_key, user_set_key, user_sets_prefix, user_sets_prefix_end,
 };
 use tables::{
-    META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, SETS_NAME, SETS_POLICY, SetMetaValue,
+    SetMetaValue, META, SCHEMA_KEY, SCHEMA_VERSION, SETS_BLOB, SETS_META, SETS_NAME, SETS_POLICY,
     USER_SETS,
 };
 
@@ -170,6 +171,11 @@ fn upgrade_legacy_redb_file(path: &Path, from_version: u8) -> Result<(), StoreEr
     Ok(())
 }
 
+const FORK_RECEIPT_TIMES: redb::TableDefinition<'_, &str, u64> =
+    redb::TableDefinition::new("fork_receipt_times");
+const FORK_RECEIPTS: redb::TableDefinition<'_, &str, &[u8]> =
+    redb::TableDefinition::new("fork_operation_receipts");
+
 pub struct RedbHistoryStore {
     db: Arc<Database>,
     path: PathBuf,
@@ -210,6 +216,8 @@ impl RedbHistoryStore {
             if current < SCHEMA_VERSION {
                 meta.insert(SCHEMA_KEY, [SCHEMA_VERSION].as_slice())?;
             }
+            let _ = txn.open_table(FORK_RECEIPT_TIMES)?;
+            let _ = txn.open_table(FORK_RECEIPTS)?;
             let _ = txn.open_table(SETS_META)?;
             let _ = txn.open_table(SETS_BLOB)?;
             let _ = txn.open_table(SETS_NAME)?;
@@ -223,6 +231,120 @@ impl RedbHistoryStore {
         }
         txn.commit()?;
         Ok(())
+    }
+
+    pub fn fork_receipt(
+        &self,
+        user: &str,
+        request: &OperationRequest,
+        key: &EncryptionKey,
+        now: u64,
+    ) -> Result<Option<Receipt>, StoreError> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(FORK_RECEIPTS)?;
+        let storage_key = format!("{user}:{}", request.id.as_str());
+        let Some(value) = table.get(storage_key.as_str())? else {
+            return Ok(None);
+        };
+        let receipt = Receipt::open(user, &request.id, value.value(), key)
+            .map_err(|_| StoreError::DecryptFailed)?;
+        Ok((!receipt.expired(now)).then_some(receipt))
+    }
+
+    fn purge_fork_receipts(tx: &redb::WriteTransaction, now: u64) -> Result<(), StoreError> {
+        let mut times = tx.open_table(FORK_RECEIPT_TIMES)?;
+        let mut expired = Vec::new();
+        for row in times.iter()? {
+            let (id, time) = row?;
+            if now.saturating_sub(time.value()) >= RECEIPT_TTL_SECS {
+                expired.push(id.value().to_owned());
+            }
+        }
+        let mut receipts = tx.open_table(FORK_RECEIPTS)?;
+        for id in expired {
+            times.remove(id.as_str())?;
+            receipts.remove(id.as_str())?;
+        }
+        Ok(())
+    }
+
+    pub fn record_fork_rejection(
+        &self,
+        user: &str,
+        key: &EncryptionKey,
+        receipt: &Receipt,
+    ) -> Result<(), StoreError> {
+        let sealed = receipt.seal(user, key).map_err(|_| StoreError::Crypto)?;
+        let tx = self.db.begin_write()?;
+        Self::purge_fork_receipts(&tx, receipt.created_at)?;
+        let id = format!("{user}:{}", receipt.operation_id.as_str());
+        tx.open_table(FORK_RECEIPTS)?
+            .insert(id.as_str(), sealed.as_slice())?;
+        tx.open_table(FORK_RECEIPT_TIMES)?
+            .insert(id.as_str(), receipt.created_at)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn create_fork_snapshot(
+        &self,
+        user: &str,
+        snapshot: &SetSnapshot,
+        key: &EncryptionKey,
+        receipt: &Receipt,
+    ) -> Result<SetSummary, StoreError> {
+        let blob = crypto::seal_blob(
+            user,
+            snapshot.set_id,
+            snapshot.version,
+            BlobFormat::AeadV1,
+            &SetPayloadV1::from_snapshot(snapshot),
+            key,
+        )?;
+        let name = crypto::seal_name_v1(user, snapshot.set_id, &snapshot.display_name, key)?;
+        let policy = crypto::seal_policy_v1(user, snapshot.set_id, snapshot.privacy_level, key)?;
+        let sealed = receipt.seal(user, key).map_err(|_| StoreError::Crypto)?;
+        let now = now_millis();
+        let meta = SetMetaValue {
+            user_id: user.to_owned(),
+            version: snapshot.version,
+            created_at: now,
+            updated_at: now,
+            is_default: false,
+            blob_format: BlobFormat::AeadV1,
+            header_generation: 0,
+            pair_count: None,
+        };
+        let tx = self.db.begin_write()?;
+        Self::purge_fork_receipts(&tx, receipt.created_at)?;
+        let id = set_id_key(snapshot.set_id);
+        tx.open_table(SETS_META)?
+            .insert(id.as_slice(), meta.encode().as_slice())?;
+        tx.open_table(SETS_BLOB)?
+            .insert(id.as_slice(), blob.as_slice())?;
+        tx.open_table(SETS_NAME)?
+            .insert(id.as_slice(), name.as_slice())?;
+        tx.open_table(SETS_POLICY)?
+            .insert(id.as_slice(), policy.as_slice())?;
+        tx.open_table(USER_SETS)?
+            .insert(user_set_key(user, snapshot.set_id).as_slice(), now)?;
+        tx.open_table(FORK_RECEIPT_TIMES)?.insert(
+            format!("{user}:{}", receipt.operation_id.as_str()).as_str(),
+            receipt.created_at,
+        )?;
+        tx.open_table(FORK_RECEIPTS)?.insert(
+            format!("{user}:{}", receipt.operation_id.as_str()).as_str(),
+            sealed.as_slice(),
+        )?;
+        tx.commit()?;
+        Ok(SetSummary {
+            set_id: snapshot.set_id,
+            version: snapshot.version,
+            display_name: snapshot.display_name.clone(),
+            updated_at: now,
+            is_default: false,
+            privacy_level: snapshot.privacy_level,
+        })
     }
 
     /// Load non-sensitive meta only (no blob decrypt). Used for cache validation.
@@ -937,7 +1059,10 @@ mod tests {
             PrivacyLevel::Private
         );
         assert_eq!(
-            store.load_snapshot("alice", id, &key).unwrap().privacy_level,
+            store
+                .load_snapshot("alice", id, &key)
+                .unwrap()
+                .privacy_level,
             PrivacyLevel::Private
         );
         assert!(matches!(
@@ -1207,11 +1332,9 @@ mod tests {
                 .unwrap();
         }
         txn.commit().unwrap();
-        assert!(
-            store
-                .change_policy("alice", id, meta.version, PrivacyLevel::NonPrivate, &key)
-                .is_err()
-        );
+        assert!(store
+            .change_policy("alice", id, meta.version, PrivacyLevel::NonPrivate, &key)
+            .is_err());
         let (after, policy) = store.load_meta_policy("alice", id, &key).unwrap();
         assert_eq!(after.version, meta.version);
         assert_eq!(policy, PrivacyLevel::default_chat());

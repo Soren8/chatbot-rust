@@ -859,6 +859,15 @@ pub async fn handle_fork_set(
     let key = verified.key();
     let history = chat.history().map_err(history_error_to_http)?;
 
+    let operation = crate::idempotency::operation_request(&headers, "/fork_set", &json!({"set_id":payload.set_id,"set_name":payload.set_name,"expected_version":payload.expected_version,"pair_index":payload.pair_index,"new_name":payload.new_name}))?;
+    if let Some(request) = &operation {
+        match history.fork_receipt(username, request, key) {
+            Ok(Some(receipt)) => return crate::idempotency::replay(&receipt),
+            Ok(None) => (),
+            Err(HistoryError::InvalidInput("operation_id_reused")) => return Err(crate::idempotency::reused()),
+            Err(err) => return Err(history_error_to_http(err)),
+        }
+    }
     let source_id = match resolve_set_id(
         &history,
         username,
@@ -875,6 +884,14 @@ pub async fn handle_fork_set(
     let expected = payload.expected_version.map(SetVersion);
     let new_name = payload.new_name.as_deref().filter(|s| !s.trim().is_empty());
 
+    if let Some(operation) = operation {
+        match history.fork_operation(username, source_id, expected, pair_index, new_name, key, &operation) {
+            Ok(receipt) => return crate::idempotency::replay(&receipt),
+            Err(HistoryError::InvalidInput("operation_id_reused")) => return Err(crate::idempotency::reused()),
+            Err(HistoryError::Conflict { current_version }) => return build_json_response(StatusCode::CONFLICT, crate::chat_utils::version_conflict_json(source_id, current_version)),
+            Err(err) => return Err(history_error_to_http(err)),
+        }
+    }
     match history.fork_set(username, source_id, expected, pair_index, new_name, key) {
         Ok(summary) => build_json_response(
             StatusCode::OK,

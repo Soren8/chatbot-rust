@@ -74,6 +74,7 @@ pub struct AppServices {
     chat: ChatService,
     accounts: AccountService,
     connections: Option<ConnectionService>,
+    connection_operations: Option<Arc<crate::agent_connections::ConnectionOperations>>,
     generation: GenerationDeps,
     rate_policy: RatePolicy,
     tts_policy: TtsPolicy,
@@ -93,6 +94,7 @@ impl AppServices {
             chat: ChatService::global(),
             accounts: AccountService::global(),
             connections: None,
+            connection_operations: None,
             generation: GenerationDeps::global(),
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
@@ -117,6 +119,7 @@ impl AppServices {
             chat: ChatService::global(),
             accounts: AccountService::global(),
             connections: None,
+            connection_operations: None,
             generation: GenerationDeps::global(),
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
@@ -146,6 +149,7 @@ impl AppServices {
             chat: ChatService::global(),
             accounts: AccountService::global(),
             connections: None,
+            connection_operations: None,
             generation: GenerationDeps::global(),
             rate_policy: RatePolicy::global(),
             tts_policy: TtsPolicy::global(),
@@ -187,6 +191,18 @@ impl AppServices {
     /// have no connection store until explicitly configured.
     pub fn with_connection_service(mut self, connections: ConnectionService) -> Self {
         self.connections = Some(connections);
+        self.connection_operations = Some(Arc::new(crate::agent_connections::ConnectionOperations::default()));
+        self
+    }
+
+    pub(crate) fn connection_operations(&self) -> Option<&crate::agent_connections::ConnectionOperations> {
+        self.connection_operations.as_deref()
+    }
+
+    pub fn with_connection_receipt_clock(mut self, clock: Arc<dyn chatbot_core::operation_receipt::ReceiptClock>) -> Self {
+        if let Some(operations) = self.connection_operations.as_mut() {
+            Arc::get_mut(operations).expect("configure before cloning services").clock = clock;
+        }
         self
     }
 

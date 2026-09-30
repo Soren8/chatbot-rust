@@ -17,6 +17,17 @@ use crate::{
     services::AppServices,
 };
 
+use chatbot_core::{connection_receipts, operation_receipt::{Receipt, ReceiptClock, ReceiptOutcome, SystemReceiptClock}};
+use crate::idempotency::{operation_request, replay, reused, InFlightOperations};
+
+pub(crate) struct ConnectionOperations {
+    flights: InFlightOperations,
+    pub(crate) clock: Arc<dyn ReceiptClock>,
+}
+impl Default for ConnectionOperations {
+    fn default() -> Self { Self { flights: InFlightOperations::default(), clock: Arc::new(SystemReceiptClock) } }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateInput {
@@ -169,9 +180,9 @@ fn redacted(record: ConnectionRecord, connections: &ConnectionService, user: &st
             _ => Value::Null,
         }
     };
-    Ok(json!({"id":record.id,"revision":record.revision,"name":record.name,"kind":record.kind,
-        "base_url":record.base_url,"username":record.username,"has_password":record.has_password,
-        "privacy_level":"non_private","last_check":availability}))
+    let mut value = created_projection(&record);
+    value["last_check"] = availability;
+    Ok(value)
 }
 
 pub async fn list(request: Request<Body>) -> Result<Response<Body>, HttpError> {
@@ -185,18 +196,68 @@ pub async fn list(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     json_response(StatusCode::OK, json!(records))
 }
 
+fn created_projection(record: &ConnectionRecord) -> Value {
+    json!({"id":record.id,"revision":record.revision,"name":record.name,"kind":record.kind,
+        "base_url":record.base_url,"username":record.username,"has_password":record.has_password,
+        "privacy_level":"non_private","last_check":Value::Null})
+}
+
 pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError> {
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let data = mutation_context(&services, &parts.headers)?;
     let (verified, connections, policy) = authorized(&services, &data)?;
-    let input: CreateInput = parse(body).await?;
-    if input.kind != "opencode" { return Err(api_error(StatusCode::BAD_REQUEST, "invalid_connection_kind")); }
-    let base_url = canonical(&policy, verified.username(), &input.base_url)?;
-    let record = connections.create(verified.username(), verified.key(), ConnectionInput {
-        name: input.name, base_url, username: input.username, password: input.password,
-    }).map_err(map_connection)?;
-    json_response(StatusCode::CREATED, redacted(record, &connections, verified.username(), verified.key(), &policy)?)
+    let mut semantic: Value = parse(body).await?;
+    if let Some(url) = semantic.get("base_url").and_then(Value::as_str) {
+        if let Ok(url) = canonical(&policy, verified.username(), url) {
+            semantic["base_url"] = Value::String(url);
+        }
+    }
+    let operation = operation_request(&parts.headers, "agent_connections.create", &semantic)?;
+    let operations = services.connection_operations().expect("connection service operations");
+    let _guard = match &operation {
+        Some(operation) => Some(operations.flights.acquire(verified.username(), &operation.id).await),
+        None => None,
+    };
+    let now = operations.clock.now_secs();
+    if let Some(operation) = &operation {
+        if let Some(receipt) = connections.receipt_read(verified.username(), verified.key(), |tx, owner| {
+            connection_receipts::read(tx, owner, &operation.id, verified.key(), now)
+        }).map_err(map_connection)? {
+            return if receipt.matches(operation) { replay(&receipt) } else { Err(reused()) };
+        }
+    }
+    let prepared = (|| {
+        let input: CreateInput = serde_json::from_value(semantic).map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_connection_input"))?;
+        if input.kind != "opencode" { return Err(api_error(StatusCode::BAD_REQUEST, "invalid_connection_kind")); }
+        let base_url = canonical(&policy, verified.username(), &input.base_url)?;
+        Ok(ConnectionInput { name: input.name, base_url, username: input.username, password: input.password })
+    })();
+    let result = prepared.and_then(|input| {
+        connections.create_with_hook(verified.username(), verified.key(), input, |tx, record| {
+            if let Some(operation) = &operation {
+                let receipt = Receipt::new(operation, ReceiptOutcome::Applied, 201,
+                    serde_json::to_vec(&created_projection(record)).map_err(|_| ConnectionError::Storage)?, now);
+                connection_receipts::write(tx, verified.username(), &receipt, verified.key(), now)?;
+            }
+            Ok(())
+        }).map_err(map_connection)
+    });
+    match result {
+        Ok(record) => json_response(StatusCode::CREATED, created_projection(&record)),
+        Err(error) => {
+            if let Some(operation) = &operation {
+                if error.0 == StatusCode::BAD_REQUEST || error.0 == StatusCode::FORBIDDEN {
+                    let receipt = Receipt::new(operation, ReceiptOutcome::Rejected, error.0.as_u16(),
+                        serde_json::to_vec(&error.1.0).map_err(|err| map_serialization_err(err, "agent_connections::receipt"))?, now);
+                    connections.receipt_write(verified.username(), verified.key(), |tx, owner| {
+                        connection_receipts::write(tx, owner, &receipt, verified.key(), now)
+                    }).map_err(map_connection)?;
+                }
+            }
+            Err(error)
+        }
+    }
 }
 
 pub async fn update(request: Request<Body>) -> Result<Response<Body>, HttpError> {

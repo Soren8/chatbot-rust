@@ -16,9 +16,12 @@ use super::migration;
 use super::ops::{self, OpsError};
 use super::store::{RedbHistoryStore, StoreError};
 use super::types::{LogicalSnapshot, PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
-use crate::config::PrivacyLevel;
 use crate::config::app_config;
+use crate::config::PrivacyLevel;
 use crate::enc_key::EncryptionKey;
+use crate::operation_receipt::{
+    OperationRequest, Receipt, ReceiptClock, ReceiptOutcome, SystemReceiptClock,
+};
 
 /// Serializes create/rename uniqueness checks per user (names live only in ciphertext).
 fn name_mutation_locks() -> &'static DashMap<String, Mutex<()>> {
@@ -106,6 +109,7 @@ pub struct HistoryService {
     default_system_prompt: String,
     /// Host data dir containing `user_sets/` for legacy migration.
     data_dir: PathBuf,
+    receipt_clock: Arc<dyn ReceiptClock>,
 }
 
 impl HistoryService {
@@ -141,6 +145,7 @@ impl HistoryService {
             cache: SetCache::new(),
             default_system_prompt: default_system_prompt.into(),
             data_dir: data_dir.into(),
+            receipt_clock: Arc::new(SystemReceiptClock),
         })
     }
 
@@ -501,7 +506,6 @@ impl HistoryService {
         if source.history.is_empty() || up_to_pair_index >= source.history.len() {
             return Err(HistoryError::InvalidInput("pair_index out of range"));
         }
-        let prefix: Vec<(String, String)> = source.history[..=up_to_pair_index].to_vec();
 
         let lock_entry = name_mutation_locks()
             .entry(user.clone())
@@ -510,52 +514,18 @@ impl HistoryService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        let existing = self
-            .list_sets(&user, key)?
-            .into_iter()
-            .map(|s| s.display_name)
-            .collect::<Vec<_>>();
-        let requested = new_name.map(str::trim).filter(|s| !s.is_empty());
-        let base = match requested {
-            Some(n) => {
-                let clean = n.trim().to_owned();
-                if clean.is_empty() || clean.eq_ignore_ascii_case("default") {
-                    return Err(HistoryError::InvalidInput("empty set name"));
-                }
-                if clean.chars().count() > ops::MAX_DISPLAY_NAME_CHARS {
-                    return Err(HistoryError::InvalidInput("set name too large"));
-                }
-                clean
-            }
-            None => ops::branch_name_for(&source.display_name),
-        };
-        let effective = ops::dedup_name(&base, |c| existing.iter().any(|e| e == c));
-
-        let new_id = SetId::new();
+        let mut snap = self.build_fork_snapshot(&user, &source, up_to_pair_index, new_name, key)?;
+        let new_id = snap.set_id;
         let summary = self.store.create_set_with_policy(
             &user,
             new_id,
-            &effective,
-            &source.system_prompt,
+            &snap.display_name,
+            &snap.system_prompt,
             false,
-            source.privacy_level,
+            snap.privacy_level,
             key,
         )?;
-        // Fresh pair ids: image blobs are bound to the new set id in AAD.
-        let pair_ids = (0..prefix.len())
-            .map(|_| super::types::PairId::new())
-            .collect::<Vec<_>>();
-        let snap = SetSnapshot {
-            set_id: new_id,
-            version: summary.version,
-            display_name: effective,
-            memory: source.memory.clone(),
-            system_prompt: source.system_prompt.clone(),
-            history: prefix,
-            pair_ids,
-            is_default: false,
-            privacy_level: source.privacy_level,
-        };
+        snap.version = summary.version;
         let (v, committed) = self
             .store
             .commit_snapshot(&user, summary.version, snap, key)?;
@@ -570,6 +540,154 @@ impl HistoryService {
         self.remember(&user, &committed);
         self.cache.put_summary(&user, &final_summary);
         Ok(final_summary)
+    }
+
+    fn build_fork_snapshot(
+        &self,
+        user: &str,
+        source: &SetSnapshot,
+        pair_index: usize,
+        new_name: Option<&str>,
+        key: &EncryptionKey,
+    ) -> Result<SetSnapshot, HistoryError> {
+        if pair_index >= source.history.len() {
+            return Err(HistoryError::InvalidInput("pair_index out of range"));
+        }
+        let base = match new_name.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) => {
+                if name.eq_ignore_ascii_case("default") {
+                    return Err(HistoryError::InvalidInput("empty set name"));
+                }
+                if name.chars().count() > ops::MAX_DISPLAY_NAME_CHARS {
+                    return Err(HistoryError::InvalidInput("set name too large"));
+                }
+                name.to_owned()
+            }
+            None => ops::branch_name_for(&source.display_name),
+        };
+        let existing = self.list_sets(user, key)?;
+        let name = ops::dedup_name(&base, |name| {
+            existing.iter().any(|set| set.display_name == name)
+        });
+        let history = source.history[..=pair_index].to_vec();
+        let pair_ids = (0..history.len())
+            .map(|_| super::types::PairId::new())
+            .collect();
+        Ok(SetSnapshot {
+            set_id: SetId::new(),
+            version: SetVersion(2),
+            display_name: name,
+            memory: source.memory.clone(),
+            system_prompt: source.system_prompt.clone(),
+            history,
+            pair_ids,
+            is_default: false,
+            privacy_level: source.privacy_level,
+        })
+    }
+
+    pub fn with_receipt_clock(mut self, clock: Arc<dyn ReceiptClock>) -> Self {
+        self.receipt_clock = clock;
+        self
+    }
+
+    pub fn fork_receipt(
+        &self,
+        user: &str,
+        request: &OperationRequest,
+        key: &EncryptionKey,
+    ) -> Result<Option<Receipt>, HistoryError> {
+        let user = normalise_user(user)?;
+        let receipt =
+            self.store
+                .fork_receipt(&user, request, key, self.receipt_clock.now_secs())?;
+        if let Some(receipt) = &receipt {
+            if !receipt.matches(request) {
+                return Err(HistoryError::InvalidInput("operation_id_reused"));
+            }
+        }
+        Ok(receipt)
+    }
+
+    pub fn version_conflict_body(set_id: SetId, current_version: SetVersion) -> serde_json::Value {
+        serde_json::json!({
+            "error": "version_conflict",
+            "set_id": set_id.to_string(),
+            "current_version": current_version.get(),
+            "message": "Set was modified; syncing latest version."
+        })
+    }
+
+    pub fn fork_operation(
+        &self,
+        user: &str,
+        source_id: SetId,
+        expected: Option<SetVersion>,
+        pair_index: usize,
+        new_name: Option<&str>,
+        key: &EncryptionKey,
+        request: &OperationRequest,
+    ) -> Result<Receipt, HistoryError> {
+        let now = self.receipt_clock.now_secs();
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        let lock = name_mutation_locks()
+            .entry(user.clone())
+            .or_insert_with(|| Mutex::new(()));
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(receipt) = self.store.fork_receipt(&user, request, key, now)? {
+            if !receipt.matches(request) {
+                return Err(HistoryError::InvalidInput("operation_id_reused"));
+            }
+            return Ok(receipt);
+        }
+        let source = self.load(&user, source_id, key)?;
+        let rejection = if expected.is_some_and(|expected| source.version != expected) {
+            Some((409, Self::version_conflict_body(source_id, source.version)))
+        } else if pair_index >= source.history.len() {
+            Some((
+                404,
+                serde_json::json!({"status":"error","error":"pair_index out of range"}),
+            ))
+        } else {
+            None
+        };
+        if let Some((status, body)) = rejection {
+            let receipt = Receipt::new(
+                request,
+                ReceiptOutcome::Rejected,
+                status,
+                serde_json::to_vec(&body).map_err(|_| HistoryError::Internal)?,
+                now,
+            );
+            self.store.record_fork_rejection(&user, key, &receipt)?;
+            return Ok(receipt);
+        }
+        let snap = match self.build_fork_snapshot(&user, &source, pair_index, new_name, key) {
+            Ok(snapshot) => snapshot,
+            Err(HistoryError::InvalidInput(message)) => {
+                let body = serde_json::json!({"status":"error","error":message});
+                let receipt = Receipt::new(
+                    request,
+                    ReceiptOutcome::Rejected,
+                    400,
+                    serde_json::to_vec(&body).map_err(|_| HistoryError::Internal)?,
+                    now,
+                );
+                self.store.record_fork_rejection(&user, key, &receipt)?;
+                return Ok(receipt);
+            }
+            Err(error) => return Err(error),
+        };
+        let body = serde_json::to_vec(&serde_json::json!({"status":"success", "set_id":snap.set_id.to_string(), "name":snap.display_name, "version":snap.version.get(), "privacy_level":snap.privacy_level})).map_err(|_| HistoryError::Internal)?;
+        let receipt = Receipt::new(request, ReceiptOutcome::Applied, 200, body, now);
+        let summary = self
+            .store
+            .create_fork_snapshot(&user, &snap, key, &receipt)?;
+        let committed = self.load_snapshot_cached(&user, snap.set_id, key)?;
+        self.remember(&user, &committed);
+        self.cache.put_summary(&user, &summary);
+        Ok(receipt)
     }
 
     /// Ensure a default set exists (empty history). Returns its snapshot.
@@ -818,7 +936,11 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         self.mutate_content(user, set_id, expected, key, |snap| {
-            Ok(ops::delete_pair(snap.into_snapshot(), pair_index, expected_user_msg)?)
+            Ok(ops::delete_pair(
+                snap.into_snapshot(),
+                pair_index,
+                expected_user_msg,
+            )?)
         })
     }
 
@@ -1259,11 +1381,9 @@ mod tests {
         assert_eq!(reloaded.history.len(), 1);
         assert_eq!(reloaded.history[0].0, image_msg);
         assert_eq!(reloaded.history[0].1, "a cat");
-        assert!(
-            reloaded.history[0]
-                .0
-                .contains("[IMAGE:data:image/png;base64,")
-        );
+        assert!(reloaded.history[0]
+            .0
+            .contains("[IMAGE:data:image/png;base64,"));
     }
 
     #[test]
@@ -1437,11 +1557,10 @@ mod tests {
             .unwrap()
             .expect("default");
         assert_eq!(found.set_id, def.set_id);
-        assert!(
-            svc.find_by_display_name("gina", "missing", &key)
-                .unwrap()
-                .is_none()
-        );
+        assert!(svc
+            .find_by_display_name("gina", "missing", &key)
+            .unwrap()
+            .is_none());
     }
 
     /// Large image-bearing histories must stay fast on warm list/delete (no multi-second
@@ -1685,16 +1804,12 @@ mod tests {
         // Original names unchanged
         let listed = svc.list_sets("uniq", &key).unwrap();
         assert_eq!(listed.len(), 2);
-        assert!(
-            listed
-                .iter()
-                .any(|s| s.set_id == a.set_id && s.display_name == "alpha")
-        );
-        assert!(
-            listed
-                .iter()
-                .any(|s| s.set_id == b.set_id && s.display_name == "beta")
-        );
+        assert!(listed
+            .iter()
+            .any(|s| s.set_id == a.set_id && s.display_name == "alpha"));
+        assert!(listed
+            .iter()
+            .any(|s| s.set_id == b.set_id && s.display_name == "beta"));
     }
 
     #[test]
@@ -1779,7 +1894,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
         let key = key();
-        svc.create_set("auto", "Plan my trip to Tokyo", &key).unwrap();
+        svc.create_set("auto", "Plan my trip to Tokyo", &key)
+            .unwrap();
         let created = svc.create_set("auto", "", &key).unwrap();
 
         let version = svc
@@ -1807,7 +1923,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
         let key = key();
-        svc.create_set("auto", "Plan my trip to Tokyo", &key).unwrap();
+        svc.create_set("auto", "Plan my trip to Tokyo", &key)
+            .unwrap();
         let created = svc.create_set("auto", "", &key).unwrap();
         let capture =
             PrepareCapture::from_snapshot(&svc.load("auto", created.set_id, &key).unwrap());

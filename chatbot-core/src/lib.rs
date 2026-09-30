@@ -1,5 +1,6 @@
 pub mod account_service;
 pub mod agent_connections;
+pub mod connection_receipts;
 pub mod agent_egress;
 pub mod chat;
 pub mod chat_images;
@@ -12,6 +13,7 @@ pub mod history;
 /// Permanent pre-redb `sets.json` migration surface — do not remove casually.
 pub mod legacy_sets_json;
 pub mod names;
+pub mod operation_receipt;
 pub mod persistence;
 pub mod rate_limit;
 pub mod remember_store;

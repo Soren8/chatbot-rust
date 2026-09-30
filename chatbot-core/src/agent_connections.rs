@@ -237,6 +237,11 @@ impl ConnectionService {
     }
 
     pub fn create(&self, user: &str, key: &EncryptionKey, input: ConnectionInput) -> Result<ConnectionRecord, ConnectionError> {
+        self.create_with_hook(user, key, input, |_, _| Ok(()))
+    }
+
+    pub fn create_with_hook<F>(&self, user: &str, key: &EncryptionKey, input: ConnectionInput, hook: F) -> Result<ConnectionRecord, ConnectionError>
+    where F: FnOnce(&redb::WriteTransaction, &ConnectionRecord) -> Result<(), ConnectionError> {
         let owner = self.verify(user, key)?;
         let mut input = input;
         let secret = SecretRecord { name: std::mem::take(&mut input.name), base_url: std::mem::take(&mut input.base_url), username: std::mem::take(&mut input.username), password: std::mem::take(&mut input.password) };
@@ -255,8 +260,24 @@ impl ConnectionService {
             if count >= 16 { return Err(ConnectionError::LimitReached); }
             table.insert(id.as_bytes().as_slice(), encode(&owner, revision, &blob).as_slice()).map_err(storage)?;
         }
+        let record = projection(id, revision, &secret);
+        hook(&tx, &record)?;
         tx.commit().map_err(storage)?;
-        Ok(projection(id, revision, &secret))
+        Ok(record)
+    }
+
+    pub fn receipt_read<T, F>(&self, user: &str, key: &EncryptionKey, read: F) -> Result<T, ConnectionError>
+    where F: FnOnce(&redb::ReadTransaction, &str) -> Result<T, ConnectionError> {
+        let owner = self.verify(user, key)?;
+        read(&self.0.db.begin_read().map_err(storage)?, &owner)
+    }
+
+    pub fn receipt_write<F>(&self, user: &str, key: &EncryptionKey, write: F) -> Result<(), ConnectionError>
+    where F: FnOnce(&redb::WriteTransaction, &str) -> Result<(), ConnectionError> {
+        let owner = self.verify(user, key)?;
+        let tx = self.0.db.begin_write().map_err(storage)?;
+        write(&tx, &owner)?;
+        tx.commit().map_err(storage)
     }
 
     pub fn list(&self, user: &str, key: &EncryptionKey) -> Result<Vec<ConnectionRecord>, ConnectionError> {
