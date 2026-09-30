@@ -89,12 +89,14 @@ fn request(
     payload: Value,
     key: Option<&str>,
 ) -> Request<Body> {
+    let durable = method == "POST" && (uri == "/chat" || uri == "/regenerate");
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
         .header(header::COOKIE, &f.cookie)
         .header("X-CSRF-Token", &f.csrf)
         .header(header::CONTENT_TYPE, "application/json");
+    if durable { builder = builder.header("X-Generation-Mode", "durable"); }
     if let Some(key) = key {
         builder = builder.header("Idempotency-Key", key);
     }
@@ -121,13 +123,19 @@ async fn call(
         .unwrap()
 }
 async fn value(response: Response<Body>) -> Value {
+    if let Some(id) = response.headers().get("X-Generation-Id") {
+        let id = id.to_str().unwrap().to_owned();
+        let version = response.headers().get("X-Generation-Base-Version").unwrap().to_str().unwrap().parse::<u64>().unwrap();
+        drop(response);
+        return json!({"generation_id":id, "state":"running", "base_version":version});
+    }
     serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
 }
 fn send() -> Value {
     json!({"kind":"chat", "set_id":"", "expected_version":0, "message":"question"})
 }
 async fn admit(f: &Fixture) -> String {
-    let response = call(f, "POST", "/generations", send(), None).await;
+    let response = call(f, "POST", "/chat", send(), None).await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     value(response).await["generation_id"]
         .as_str()
@@ -154,6 +162,28 @@ async fn events(f: &Fixture, id: &str, after: u64) -> Vec<Value> {
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|v| v["type"] != "heartbeat")
         .collect()
+}
+
+#[tokio::test]
+async fn header_free_chat_and_regenerate_keep_legacy_disconnect_stop() {
+    let _lock = lock();
+    let _workspace = common::TestWorkspace::with_openai_provider();
+    let f = fixture(100, Duration::from_secs(1800)).await;
+    for route in ["/chat", "/regenerate"] {
+        let mut payload = send();
+        if route == "/regenerate" { payload["pair_index"] = json!(0); }
+        let mut req = request(&f, "POST", route, payload, None);
+        req.headers_mut().remove("X-Generation-Mode");
+        let response = f.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert!(!response.headers().contains_key("X-Generation-Id"));
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "first");
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(f.chat.session_history(&f.session).last().unwrap().1, "first");
+    }
 }
 
 #[tokio::test]
@@ -212,7 +242,7 @@ async fn stop_partial_reservation_idempotency_and_ownership() {
     let response = call(
         &f,
         "POST",
-        "/generations",
+        "/chat",
         send(),
         Some("generation-operation-001"),
     )
@@ -223,7 +253,7 @@ async fn stop_partial_reservation_idempotency_and_ownership() {
         call(
             &f,
             "POST",
-            "/generations",
+            "/chat",
             send(),
             Some("generation-operation-001"),
         )
@@ -233,7 +263,7 @@ async fn stop_partial_reservation_idempotency_and_ownership() {
     assert_eq!(descriptor, replay);
     let mut other = send();
     other["message"] = json!("other");
-    let conflict = call(&f, "POST", "/generations", other, None).await;
+    let conflict = call(&f, "POST", "/chat", other, None).await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
     assert_eq!(value(conflict).await["error"], "generation_active");
     let id = descriptor["generation_id"].as_str().unwrap();
@@ -401,7 +431,7 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
     let response = f
         .app
         .clone()
-        .oneshot(authenticated("POST", "/generations", payload.clone()))
+        .oneshot(authenticated("POST", "/chat", payload.clone()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
@@ -421,7 +451,7 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
         .unwrap();
     let mut other = authenticated(
         "POST",
-        "/generations",
+        "/chat",
         json!({"kind":"chat", "set_id":snapshot.set_id.to_string().to_uppercase(), "expected_version":snapshot.version.0, "message":"other"}),
     );
     other.headers_mut().insert(
@@ -455,7 +485,7 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
         .load("alice", snapshot.set_id, &key)
         .unwrap();
     assert_eq!(saved.history.last().unwrap().1, "firstsecond");
-    let response = f.app.clone().oneshot(authenticated("POST", "/generations", json!({"kind":"regenerate", "set_id":snapshot.set_id.to_string(), "expected_version":saved.version.0, "message":"question", "pair_index":0}))).await.unwrap();
+    let response = f.app.clone().oneshot(authenticated("POST", "/regenerate", json!({"kind":"regenerate", "set_id":snapshot.set_id.to_string(), "expected_version":saved.version.0, "message":"question", "pair_index":0}))).await.unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let id = value(response).await["generation_id"]
         .as_str()
@@ -490,12 +520,12 @@ async fn invalid_admission_never_saves_legacy_error_turn() {
     let f = fixture(0, Duration::from_secs(1800)).await;
     let mut payload = send();
     payload["model_name"] = json!("missing-provider");
-    let response = call(&f, "POST", "/generations", payload, None).await;
+    let response = call(&f, "POST", "/chat", payload, None).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(f.chat.session_history(&f.session).is_empty());
     let mut payload = send();
     payload["expected_version"] = json!(99);
-    let response = call(&f, "POST", "/generations", payload, None).await;
+    let response = call(&f, "POST", "/chat", payload, None).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(value(response).await["error"], "version_conflict");
     assert!(f.chat.session_history(&f.session).is_empty());
@@ -551,7 +581,7 @@ async fn blocked_provider_connection_is_worker_owned_and_deadline_bounded() {
     };
     let response = tokio::time::timeout(
         Duration::from_millis(100),
-        call(&f, "POST", "/generations", send(), None),
+        call(&f, "POST", "/chat", send(), None),
     )
     .await
     .expect("admission must not await provider connection");
@@ -659,9 +689,9 @@ async fn receipts_replay_stop_and_rejected_admission_without_reexecution() {
     let f = fixture(1000, Duration::from_secs(1800)).await;
     let mut invalid = send();
     invalid["model_name"] = json!("missing-provider");
-    let rejected = call(&f, "POST", "/generations", invalid, Some("rejected-operation-0001")).await;
+    let rejected = call(&f, "POST", "/chat", invalid, Some("rejected-operation-0001")).await;
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
-    let reused = call(&f, "POST", "/generations", send(), Some("rejected-operation-0001")).await;
+    let reused = call(&f, "POST", "/chat", send(), Some("rejected-operation-0001")).await;
     assert_eq!(reused.status(), StatusCode::CONFLICT);
     assert_eq!(value(reused).await["error"], "operation_id_reused");
     let id = admit(&f).await;
@@ -694,10 +724,10 @@ async fn activity_and_conflicts_use_canonical_set_identity() {
         request.headers_mut().insert("X-Enc-Key", "test-encryption-key-material".parse().unwrap());
         request
     };
-    let response = f.app.clone().oneshot(authenticated("POST", "/generations", json!({"kind":"chat", "set_id":snapshot.set_id.to_string(), "expected_version":99, "message":"question"}))).await.unwrap();
+    let response = f.app.clone().oneshot(authenticated("POST", "/chat", json!({"kind":"chat", "set_id":snapshot.set_id.to_string(), "expected_version":99, "message":"question"}))).await.unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(value(response).await, chatbot_core::history::HistoryService::version_conflict_body(snapshot.set_id, snapshot.version));
-    let response = f.app.clone().oneshot(authenticated("POST", "/generations", json!({"kind":"chat", "set_id":snapshot.set_id.to_string(), "expected_version":snapshot.version.0, "message":"question"}))).await.unwrap();
+    let response = f.app.clone().oneshot(authenticated("POST", "/chat", json!({"kind":"chat", "set_id":snapshot.set_id.to_string(), "expected_version":snapshot.version.0, "message":"question"}))).await.unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let descriptor = value(response).await;
     let response = f.app.clone().oneshot(authenticated("GET", &format!("/activity?set_id={}", snapshot.set_id.to_string().to_uppercase()), Value::Null)).await.unwrap();

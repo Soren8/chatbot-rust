@@ -370,7 +370,6 @@ pub fn build_router_with_services(
             post(login::handle_login_forget_post),
         )
         .route("/chat", post(chat::handle_chat))
-        .route("/generations", post(generations::create))
         .route("/tts", post(tts::handle_tts))
         .route(
             "/tts_stream/{token}",

@@ -45,7 +45,7 @@
       options.headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': window.CSRF_TOKEN || '' };
       options.body = JSON.stringify(payload);
     }
-    var response = await fetch(path, options);
+    var response = await window.activitySync.request(path, options);
     if (!response.ok) {
       var body = await response.json().catch(function () { return {}; });
       throw new Error(errorMessage(body && body.error));

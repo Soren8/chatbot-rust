@@ -87,7 +87,8 @@ var chatRenderer = ChatRenderer.createChatRenderer({
   createTrustedHtml: ttHtml,
   isMarkdownEnabled: function () { return !(window.APP_DATA && window.APP_DATA.renderMarkdown === false); },
   getLocation: function () { return window.location; },
-  getStreamDecoder: function () { return ChatStreamDecoder; }
+  getStreamDecoder: function () { return ChatStreamDecoder; },
+  loadHistoryImage: loadHistoryImage
 });
 
 // Ensure config exists before any DOM-ready handlers use it
@@ -247,6 +248,86 @@ var sessionClient = ChatSessionClient.createSessionClient({
   redirectHome: function () { window.location.href = '/'; }
 });
 sessionClient.installFetchInterceptor();
+
+var activitySync = ChatActivitySync.createActivitySync({
+  fetch: function (url, init) { return fetch(url, init); },
+  refreshSession: function () { return sessionClient.refreshSession(); },
+  refreshCsrfInit: function (init) { return sessionClient.refreshCsrfInit(init); },
+  response401Kind: function (response) { return sessionClient.response401Kind(response); },
+  headers: function () { return sessionClient.withCsrf({ 'Content-Type': 'application/json' }); },
+  createSetName: function () {
+    var names = new Set();
+    $('#set-selector option').each(function () { names.add($(this).attr('data-name') || $(this).text()); });
+    var name = 'New Chat';
+    var n = 2;
+    while (names.has(name)) name = 'New Chat ' + n++;
+    return name;
+  },
+  onState: function (state) {
+    var indicator = document.getElementById('activity-status');
+    if (!indicator) {
+      indicator = document.createElement('span');
+      indicator.id = 'activity-status';
+      indicator.setAttribute('role', 'status');
+      var button = document.getElementById('send-button');
+      if (button) button.parentNode.appendChild(indicator);
+    }
+    indicator.textContent = state === 'idle' ? '' : ' ' + state.replace('-', ' ');
+    if (window.activityUiReady && typeof chatRequests !== 'undefined' && !window.voiceModeActive) {
+      setGeneratingState(state === 'sending' || state === 'streaming' || state === 'saving' || chatRequests.isGenerating());
+    }
+  },
+  onEvent: renderRecoveredActivity,
+  onInterrupted: renderInterruptedActivity,
+  reconcile: async function (setId) {
+    if (!setId || setId !== currentSetId()) return;
+    var response = await activitySync.request('/load_set', {
+      method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ set_id: setId, limit: historyWindow.getPageSize(), thumbnails: true })
+    });
+    if (response.ok && setId === currentSetId()) noteSetVersionFromResponse(await response.json());
+  }
+});
+window.activitySync = activitySync;
+var recoveredActivity = null;
+function renderRecoveredActivity(event) {
+  if (!recoveredActivity || recoveredActivity.id !== event.generation_id) {
+    appendMessage('', 'ai-message');
+    recoveredActivity = { id: event.generation_id, host: $('.ai-message:last-child'), visible: '', thinking: '' };
+  }
+  var recovered = recoveredActivity;
+  if (event.type === 'delta') recovered.visible += event.text;
+  if (event.type === 'thinking') recovered.thinking += event.text;
+  recovered.host.find('.ai-message-text').html(renderMarkdown(recovered.visible));
+  if (recovered.thinking) {
+    recovered.host.find('.thinking-container').show();
+    recovered.host.find('.thinking-content').text(recovered.thinking);
+  }
+  recovered.host.attr('data-original', combinedAiOriginal(recovered.visible, recovered.thinking));
+  if (event.type === 'error') {
+    replaceChildrenNative(recovered.host[0], buildAiErrorChildren(event.text || 'Generation failed. Retry to send again.'));
+    return;
+  }
+  if (event.type === 'saved') { recoveredActivity = null; $('#set-selector').trigger('change'); }
+}
+function renderInterruptedActivity() {
+  if (recoveredActivity) {
+    replaceChildrenNative(recoveredActivity.host[0], buildAiErrorChildren('Generation interrupted after server restart. Retry to send again.'));
+    recoveredActivity = null;
+  } else {
+    appendMessage('Generation interrupted after server restart. Retry by sending your message again.', 'error-message');
+  }
+}
+function discoverActivity(setId, loadGen) {
+  if (!historyWindow.isLiveGen(loadGen)) return Promise.resolve();
+  recoveredActivity = null;
+  return activitySync.recover().catch(function () {});
+}
+function recoverActivity() { activitySync.recover().catch(function () {}); }
+window.addEventListener('online', recoverActivity);
+window.addEventListener('focus', recoverActivity);
+window.addEventListener('resume', recoverActivity);
+document.addEventListener('visibilitychange', function () { if (!document.hidden) recoverActivity(); });
 
 function redirectHomeOnAuthFailure() {
   return sessionClient.redirectHomeOnAuthFailure();
@@ -520,7 +601,7 @@ function parseJsonOrEmpty(response) {
 /** POST /reset_chat with self-healing: on 409 version_conflict, adopt the
  *  authoritative version from the body and retry once with a fresh payload. */
 function submitResetChat(isRetry) {
-  return fetch('/reset_chat', {
+  return activitySync.request('/reset_chat', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(activeSetPayload({}))
@@ -647,7 +728,7 @@ function logoutThisComputer() {
     return;
   }
   var csrf = window.CSRF_TOKEN || '';
-  fetch('/login/forget', {
+  activitySync.request('/login/forget', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body:
@@ -1266,7 +1347,7 @@ function fetchHistoryPair(pairIndex, extra) {
   var pairTarget = ChatConversationState.snapshotSetIdentity(currentSetIdentity());
   var pairGen = historyWindow.snapshot().setGen;
   return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
-    return fetch('/history_pair', {
+    return activitySync.request('/history_pair', {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(ChatConversationState.buildActiveSetPayload(pairTarget, Object.assign({ pair_index: pairIndex }, extra || {})))
@@ -1329,6 +1410,20 @@ function updateLoadOlderBar() {
   }
 }
 
+function loadHistoryImage(image, url) {
+  if (url.indexOf('/history_image/') !== 0) { image.setAttribute('src', url); return; }
+  var binding = historyWindow.snapshot().setGen;
+  activitySync.request(url).then(function (response) {
+    if (!response.ok) throw new Error('History image unavailable');
+    return response.blob();
+  }).then(function (blob) {
+    if (!historyWindow.isLiveGen(binding) || !image.isConnected) return;
+    var objectUrl = URL.createObjectURL(blob);
+    image.onload = image.onerror = function () { URL.revokeObjectURL(objectUrl); };
+    image.setAttribute('src', objectUrl);
+  }).catch(function () {});
+}
+
 function startDeferredThumbs(root, newestFirst) {
   var scope = root || document;
   var imgs = scope.querySelectorAll
@@ -1345,7 +1440,7 @@ function startDeferredThumbs(root, newestFirst) {
     if (newestFirst && i === 0) {
       list[i].setAttribute('fetchpriority', 'high');
     }
-    if (safeUrl) list[i].setAttribute('src', safeUrl);
+    if (safeUrl) loadHistoryImage(list[i], safeUrl);
   }
 }
 
@@ -1416,7 +1511,7 @@ function loadOlderMessages() {
   var setId = req.setId;
   var setName = req.setName;
   withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
-    return fetch('/load_set', {
+    return activitySync.request('/load_set', {
       method: 'POST',
       headers: headers,
       body: JSON.stringify({
@@ -1483,7 +1578,7 @@ function openImageLightbox(src) {
   const safeSrc = sanitizeLightboxSrc(src);
   if (!safeSrc) return;
   const $overlay = ensureImageLightbox();
-  $overlay.find('.image-lightbox-img').attr('src', safeSrc);
+  loadHistoryImage($overlay.find('.image-lightbox-img')[0], safeSrc);
   $overlay.removeAttr('hidden').addClass('is-open');
   document.body.classList.add('image-lightbox-open');
 }
@@ -1710,6 +1805,15 @@ function swallowCancel(promise) {
 }
 
 function fetchWithGenerateRetry(url, init, attempt, afterRefresh) {
+  // Phase 4 migrates voice; its existing sentence/playback path remains legacy.
+  if (!window.voiceModeActive && (url === '/chat' || url === '/regenerate')) {
+    return activitySync.generationResponse(url === '/chat' ? 'chat' : 'regenerate', init).then(function (response) {
+      if (response.status === 409 && activitySync.queued()) {
+        $('#user-input').val(activitySync.queued().message || '');
+      }
+      return response;
+    });
+  }
   return sessionClient.fetchWithGenerateRetry(url, init, attempt, afterRefresh);
 }
 
@@ -1726,6 +1830,10 @@ function setGeneratingState(isGenerating) {
 function handleStopClick() {
   if (typeof window.stopAllTtsPlayback === 'function') {
     window.stopAllTtsPlayback();
+  }
+  if (!window.voiceModeActive) {
+    activitySync.stop().catch(function () {});
+    return;
   }
   chatRequests.stopForUser();
   syncSendButtonState();
@@ -2368,7 +2476,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               finishMessagePlayback($target);
               var $regenUser = $target.prev('.message.user-message');
               clearLocalOnlyTurn($regenUser, $target);
-              noteLocalVersionBumpAfterPersist();
+              if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
             }
@@ -2386,6 +2494,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               const playBtn = $target.find('.play-button').prop('disabled', false);
               if (!playBtn.is(voiceLifecycle.getCurrentButton())) playBtn.html('<i class="bi bi-play-fill"></i>');
             } catch (e) {}
+            if (activitySync.interrupted()) replaceChildrenNative($target[0], buildAiErrorChildren(err.message));
             finishChatRequest(seq);
             finishMessagePlayback($target);
           });
@@ -2447,7 +2556,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
 
   // Server matches pair_index + user_message only (ai_message is ignored). Do not
   // send aiText — image-bearing user_message alone can approach the body limit.
-  fetch('/delete_message', {
+  activitySync.request('/delete_message', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(activeSetPayload({
@@ -2531,7 +2640,7 @@ function handleForkMessage(buttonElement, isRetry) {
   const pairIndex = liveUserPairIndex($user);
   if (pairIndex < 0) return;
   const $btn = $(buttonElement).prop('disabled', true);
-  fetch('/fork_set', {
+  activitySync.request('/fork_set', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(activeSetPayload({ pair_index: pairIndex }))
@@ -2603,6 +2712,7 @@ $(document).on('click', '.delete-button', function(e) {
 
 // Main ready block
 $(document).ready(function() {
+  window.activityUiReady = true;
   $('#reload-ui').on('click', function() {
     if (window._recoverNativeVoice) {
       window._recoverNativeVoice().finally(function () {
@@ -2725,7 +2835,7 @@ $(document).ready(function() {
       };
 
       withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
-          return fetch('/update_preferences', {
+          return activitySync.request('/update_preferences', {
               method: 'POST',
               headers: headers,
               body: JSON.stringify(preferences)
@@ -2947,12 +3057,12 @@ $(document).ready(function() {
         const $imgPreview = $('<div>').addClass('edit-image-preview');
         const $img = $('<img>')
           .addClass('edit-image-thumb')
-          .attr('src', editSafeSrc)
           .attr('alt', 'Attached image')
           .attr('title', 'Attached image (kept when you save)');
         const $removeImg = $('<button type="button" class="btn btn-sm btn-danger remove-edit-image" title="Remove image">&times;</button>');
         $imgPreview.append($img).append($removeImg);
         $editContainer.append($imgPreview);
+        loadHistoryImage($img[0], editSafeSrc);
       }
 
       const $textarea = $('<textarea>')
@@ -3082,7 +3192,7 @@ $(document).ready(function() {
       $('#privacy-status').text('Saving privacy setting…');
       refreshPrivacyControls();
       try {
-        const response = await fetch('/set_privacy', {
+        const response = await activitySync.request('/set_privacy', {
           method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ set_id: binding.setId, expected_version: Number(expectedVersion), privacy_level: requested })
         });
@@ -3120,7 +3230,7 @@ $(document).ready(function() {
     });
     function loadSets(shouldTriggerChange = true) {
       async function fetchSets() {
-        return fetch('/get_sets', { headers: await withCsrfAsync() });
+        return activitySync.request('/get_sets', { headers: await withCsrfAsync() });
       }
       return fetchSets()
         .then(function(r) {
@@ -3204,6 +3314,7 @@ $(document).ready(function() {
       }
       window.APP_DATA.lastSetId = setId;
       window.APP_DATA.lastSet = setName;
+      activitySync.navigate(setId);
       var loadGen = historyWindow.beginSetLoad();
       loadedPrivacy = null;
       $('#privacy-status').text('');
@@ -3214,7 +3325,7 @@ $(document).ready(function() {
       savePreferences();
       function fetchSet() {
         return withCsrfAsync({ 'Content-Type': 'application/json' }).then(function(headers) {
-          return fetch('/load_set', {
+          return activitySync.request('/load_set', {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({
@@ -3263,6 +3374,7 @@ $(document).ready(function() {
           $('#user-memory').val(data.memory || '');
           applyHistoryPage(data, 'replace');
           appendMessage('Loaded set: ' + setName, 'system-message');
+          discoverActivity(setId, loadGen);
         })
         .catch(error => { if (!historyWindow.isLiveGen(loadGen)) return; refreshPrivacyControls(); appendMessage('Failed to load set: ' + (error && error.message ? error.message : String(error)), 'error-message'); });
       });
@@ -3276,7 +3388,7 @@ $(document).ready(function() {
     $('#new-set').on('click', function() {
       // One click: server assigns `New Chat` / `New Chat 2` and renames it
       // from the first message. Rename button still covers manual names.
-      fetch('/create_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({}) })
+      activitySync.request('/create_set', { method: 'POST', headers: withCsrf({ 'Content-Type': 'application/json' }), body: JSON.stringify({}) })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'success') {
@@ -3309,7 +3421,7 @@ $(document).ready(function() {
     });
 
     function submitRenameSet(setId, oldName, newName, isRetry) {
-      fetch('/rename_set', {
+      activitySync.request('/rename_set', {
         method: 'POST',
         headers: withCsrf({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -3353,7 +3465,7 @@ $(document).ready(function() {
     });
 
     function submitDeleteSet(setId, setName, isRetry) {
-      fetch('/delete_set', {
+      activitySync.request('/delete_set', {
         method: 'POST',
         headers: withCsrf({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -3388,7 +3500,7 @@ $(document).ready(function() {
   function saveSystemPromptNow(sysPromptText, isRetry, capturedTarget, capturedGen) {
     var target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
     var binding = captureMemoryBinding(target, capturedGen);
-    return fetch('/update_system_prompt', {
+    return activitySync.request('/update_system_prompt', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {
@@ -3437,7 +3549,7 @@ $(document).ready(function() {
   function saveMemoryNow(memText, isRetry, capturedTarget, capturedGen) {
     var target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
     var binding = captureMemoryBinding(target, capturedGen);
-    return fetch('/update_memory', {
+    return activitySync.request('/update_memory', {
       method: 'POST',
       headers: withCsrf({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {
@@ -3711,7 +3823,7 @@ $(document).ready(function() {
               finishMessagePlayback($targetElement);
               historyWindow.noteChatPersisted(pairIndex);
               clearLocalOnlyTurn($pendingUserMessage, $targetElement);
-              noteLocalVersionBumpAfterPersist();
+              if (window.voiceModeActive) noteLocalVersionBumpAfterPersist();
               if (typeof loadSets === 'function') loadSets(false);
               return;
             }
@@ -3733,6 +3845,7 @@ $(document).ready(function() {
             const errText = err && err.message ? err.message : String(err);
             flushStreamRemainder();
             appendVisible('\n[Error] The response stream was interrupted.');
+            if (activitySync.interrupted()) paintFailedAiTurn($pendingUserMessage, errText);
             finishChatRequest(seq);
             finishMessagePlayback($targetElement);
           });
@@ -3822,7 +3935,7 @@ $(document).ready(function() {
   function persistWebSearchPref() {
       if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
       withCsrfAsync({ 'Content-Type': 'application/json' }).then(function (headers) {
-          return fetch('/update_preferences', {
+          return activitySync.request('/update_preferences', {
               method: 'POST',
               headers: headers,
               body: JSON.stringify({ web_search: window.APP_DATA.webSearch }),
@@ -4278,7 +4391,7 @@ $(document).ready(function() {
     window.APP_DATA.voiceMode = on;
     if (!window.APP_DATA || !window.APP_DATA.loggedIn) return;
     withCsrfAsync({ 'Content-Type': 'application/json' }).then(function (headers) {
-      return fetch('/update_preferences', {
+      return activitySync.request('/update_preferences', {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({ voice_mode: on }),

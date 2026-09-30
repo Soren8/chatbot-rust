@@ -102,6 +102,7 @@ async function logoutCase() {
     EncKey: { removeSlot: async () => { removed = true; } } };
   const context = { window, fetch: async () => ({ ok: false }), alert: text => alerts.push(text),
     console: { debug() {} }, encodeURIComponent };
+  context.activitySync = { request: (...args) => context.fetch(...args) };
   vm.runInNewContext(chatSource.slice(start, end), context);
   context.logoutThisComputer();
   await tick();
@@ -135,6 +136,7 @@ async function privacyCase() {
     loadedPrivacy: { setId: 'set-1', level: 'private' },
     fetch: async (...args) => { posts.push(args); throw Error('cancelled confirmation must not POST'); }
   };
+  context.activitySync = { request: (...args) => context.fetch(...args) };
   vm.runInNewContext(chatSource.slice(start, end), context);
   assert.equal(typeof handlers.change, 'function');
   await handlers.change.call({ value: 'standard' });

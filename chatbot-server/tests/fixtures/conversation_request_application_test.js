@@ -318,6 +318,36 @@ function makeWorld() {
     ChatSessionClient: S,
     ChatStreamDecoder: D,
     sessionClient,
+    // This adapter fixture tests rendering/fencing, not wire admission; transport
+    // behavior (including durable recovery) is covered by activity_sync_test.js.
+    activitySync: {
+      request: (url, init) => fetch(url, init),
+      generationResponse: async (kind, init) => {
+        const initiatingSet = APP_DATA.lastSetId;
+        const initiatingSeq = chatRequests.seq();
+        const response = await sessionClient.fetchWithGenerateRetry('/' + (kind === 'chat' ? 'chat' : 'regenerate'), init);
+        // Model the sync owner's authoritative settlement, rather than the
+        // retired renderer-local version bump, in this leaf transport fake.
+        if (response.ok && response.body) {
+          const getReader = response.body.getReader.bind(response.body);
+          response.body.getReader = () => {
+            const reader = getReader();
+            return { cancel: () => reader.cancel(), read: async () => {
+              const chunk = await reader.read();
+              if (chunk.done && initiatingSet === APP_DATA.lastSetId && chatRequests.isLive(initiatingSeq)) APP_DATA.setVersion++;
+              return chunk;
+            } };
+          };
+        }
+        return response;
+      },
+      queued: () => null,
+      interrupted: () => false,
+      navigate() {},
+      stop: () => Promise.resolve(),
+      recover: () => Promise.resolve()
+    },
+    discoverActivity: () => Promise.resolve(),
     voiceLifecycle: { isTtsActive: () => false, getCurrentButton: () => null },
     TextDecoder,
     TextEncoder,

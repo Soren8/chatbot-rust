@@ -28,10 +28,13 @@ retry can distinguish a lost view from an intentional cancellation.
 
 ### Admission and lifetime
 
-`POST /generations` accepts `{operation_id, kind, set_id, expected_version, ...}`.
-`kind` is `chat` or `regenerate`; the remaining payload contains message/options
-or the target pair. Successful admission returns 202
-`{generation_id, state, base_version}`.
+`POST /chat` and `POST /regenerate` opt into durable admission with
+`X-Generation-Mode: durable`, the existing message/options or target-pair payload,
+`set_id`, `expected_version` and an `Idempotency-Key`. Successful admission returns
+202 with an NDJSON event view and `X-Generation-Id` (plus
+`X-Generation-Base-Version`) headers. Replays return the same worker's view.
+There is no `POST /generations`. Without the header these routes permanently retain
+the legacy text/plain stream and disconnect-as-Stop behavior for older clients.
 
 A background worker owned by `AppServices` in `chatbot-server/src/services.rs`
 owns the provider stream, cancellation, privacy permit, generation reservation
@@ -157,6 +160,10 @@ reaches rendering and sentence discovery. Connection closure is a transport
 condition, not an ended event or an instruction to finalize a turn.
 
 The UI projects sending, streaming, reconnecting, saving and needs-action states.
+An error followed by settlement, or a failed status after an event view closes,
+is terminal rather than an invitation to reconnect forever. Missing workers are
+shown as interrupted, including recovered and regenerated responses, with retry
+controls. Reader cancellation cleanup never delays view recovery.
 `static/conversation-state.js` remains the pure reducer. `static/chat.js` renders
 and dispatches intents rather than issuing direct fetch calls. Session/CSRF
 mechanics in `static/session-client.js` remain reusable beneath the transport
@@ -203,9 +210,9 @@ remain working behind capability negotiation until supported clients migrate.
 1. Add operation IDs and atomic receipts to existing mutations. IDs remain
    optional for legacy callers. Cover response loss, duplicate execution,
    fingerprint mismatch and rejection replay before changing handlers.
-2. Add server-owned workers, RAM event buffers, `/generations` endpoints, explicit
-   Stop and 409 attachment. Keep `/chat` and `/regenerate` working. Verify that
-   disconnects do not cancel and that Stop saves partial text.
+2. Add server-owned workers, RAM event buffers, durable `/chat` and `/regenerate`
+   admission, explicit Stop and 409 attachment. Keep header-free legacy behavior
+   permanently. Verify that disconnects do not cancel and that Stop saves partial text.
 3. Introduce `static/activity-sync.js`. Move page-load reads and mutations first,
    then chat/regenerate. Exercise session recovery, outbox replay, contiguous
    event application and set-version reconciliation with injected transports.
@@ -213,5 +220,5 @@ remain working behind capability negotiation until supported clients migrate.
    deduplication, playback recovery and confirmed barge-in; ship the native APK.
 5. Retire body-owned stream guards, the 429 Busy retry loop, the
    `GenerateConnectionError` manual path associated with commit `9ba449f`, and
-   AbortController-as-generating-state. Retire old routes only after supported
-   APKs migrate; transport abort remains a view-detachment mechanism.
+   legacy client code path after supported APKs migrate; header-free server routes
+   remain compatible permanently. Transport abort remains view detachment for durable clients.

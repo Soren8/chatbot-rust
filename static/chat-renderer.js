@@ -132,6 +132,8 @@
         }
         if (opts && opts.deferSrc) {
           img.setAttribute('data-pending-src', safeSrc);
+        } else if (safeSrc.indexOf('/history_image/') === 0 && deps.loadHistoryImage) {
+          deps.loadHistoryImage(img, safeSrc);
         } else {
           img.setAttribute('src', safeSrc);
         }

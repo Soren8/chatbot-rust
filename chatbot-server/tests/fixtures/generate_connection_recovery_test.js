@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-// Reuse the composed adapter harness without changing its existing tests.
+// Legacy voice intentionally keeps manual connection recovery until Phase 4.
+// Durable desktop transport retry/replay is covered by activity_sync_test.js.
+// Reuse the composed renderer harness.
 const source = fs.readFileSync(path.join(__dirname, 'conversation_request_application_test.js'), 'utf8');
 const box = { require, process, console, TextDecoder, TextEncoder };
 vm.runInNewContext(source.slice(0, source.indexOf('(async () => {')) +
@@ -33,6 +35,7 @@ async function networkFailure() {
 async function exhausted429() {
   const w = makeWorld();
   w.userInput._val = 'busy draft';
+  // The renderer harness's generationResponse fake supplies legacy retry here.
   vm.runInContext('sendMessage()', w.ctx);
   for (let i = 0; i <= 12; i++) {
     await flush(150);
@@ -46,6 +49,7 @@ async function exhausted429() {
 
 async function regenerateNetworkFailure() {
   const v = makeWorld();
+  v.window.voiceModeActive = true;
   const errors = [];
   v.ctx.buildAiErrorChildren = (text) => { errors.push(text); return {}; };
   v.ctx.__ai = v.aiFake;

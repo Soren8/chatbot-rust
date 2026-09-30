@@ -237,7 +237,7 @@ fn owner(services: &AppServices, request: &Request<Body>, csrf: bool) -> Result<
     }
 }
 
-pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError> {
+pub(crate) async fn admit(request: Request<Body>, kind: &str) -> Result<Response<Body>, HttpError> {
     let services = AppServices::from_extensions(request.extensions());
     let owner = owner(&services, &request, true)?;
     let (mut parts, body) = request.into_parts();
@@ -246,10 +246,7 @@ pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError>
         .map_err(|e| crate::http_error::map_body_read_err(e, "generations::create"))?;
     let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|e| crate::http_error::map_json_parse_err(e, "generations::create"))?;
-    let kind = payload["kind"]
-        .as_str()
-        .filter(|kind| matches!(*kind, "chat" | "regenerate"))
-        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "invalid generation kind"))?;
+    let route = if kind == "chat" { "/chat" } else { "/regenerate" };
     let mut set_id = payload["set_id"]
         .as_str()
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "missing set_id"))?
@@ -268,11 +265,18 @@ pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError>
         .as_u64()
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "missing expected_version"))?;
     let operation =
-        crate::idempotency::operation_request(&parts.headers, "/generations", &payload)?;
+        crate::idempotency::operation_request(&parts.headers, route, &payload)?;
     let registry = services.generations();
     let _admission = registry.admission.lock().await;
     if let Some(operation) = &operation {
-        if let Some(response) = registry.replay(&owner, operation)? { return Ok(response); }
+        if let Some(response) = registry.replay(&owner, operation)? {
+            if !response.status().is_success() { return Ok(response); }
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await
+                .map_err(|e| crate::http_error::map_body_read_err(e, "generations::replay"))?;
+            let descriptor: Value = serde_json::from_slice(&bytes).expect("recorded descriptor");
+            let generation = registry.owned(&owner, descriptor["generation_id"].as_str().expect("generation id"))?;
+            return Ok(event_response(generation, registry.timing.heartbeat, 0, StatusCode::ACCEPTED));
+        }
     }
     if let Some(active) = registry.running(&owner, &set_id).into_iter().next() {
         return Err(api_error_json(
@@ -289,9 +293,9 @@ pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError>
     parts.extensions.insert(feedback.clone());
     let legacy = Request::from_parts(parts, Body::from(bytes));
     let response = match if kind == "chat" {
-        crate::chat::handle_chat(legacy).await
+        crate::chat::handle_chat_legacy(legacy).await
     } else {
-        crate::regenerate::handle_regenerate(legacy).await
+        crate::regenerate::handle_regenerate_legacy(legacy).await
     } {
         Ok(response) => response,
         Err(error) => {
@@ -336,11 +340,11 @@ pub async fn create(request: Request<Body>) -> Result<Response<Body>, HttpError>
     generation.emit("status", "running");
     tokio::spawn(worker(
         registry.clone(),
-        generation,
+        generation.clone(),
         response.into_body(),
         feedback,
     ));
-    Ok(json_response(StatusCode::ACCEPTED, descriptor))
+    Ok(event_response(generation, registry.timing.heartbeat, 0, StatusCode::ACCEPTED))
 }
 
 #[derive(Default)]
@@ -528,10 +532,13 @@ pub async fn events(
     let owner = owner(&services, &request, false)?;
     let registry = services.generations();
     let generation = registry.owned(&owner, &id)?;
+    Ok(event_response(generation, registry.timing.heartbeat, query.after, StatusCode::OK))
+}
+fn event_response(generation: Arc<Generation>, heartbeat: Duration, after: u64, status: StatusCode) -> Response<Body> {
+    let descriptor = generation.descriptor();
     let mut receiver = generation.events.subscribe();
-    let heartbeat = registry.timing.heartbeat;
     let stream = async_stream::stream! {
-        let mut cursor = query.after;
+        let mut cursor = after;
         let mut timer = tokio::time::interval(heartbeat);
         timer.tick().await;
         loop {
@@ -551,12 +558,15 @@ pub async fn events(
             }
         }
     };
-    Ok(Response::builder()
+    Response::builder()
+        .status(status)
+        .header("X-Generation-Id", descriptor.generation_id)
+        .header("X-Generation-Base-Version", descriptor.base_version)
         .header(header::CONTENT_TYPE, "application/x-ndjson")
         .header(header::CACHE_CONTROL, "no-store")
         .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(stream))
-        .expect("valid stream response"))
+        .expect("valid stream response")
 }
 fn line(event: &Event) -> Bytes {
     let mut bytes = serde_json::to_vec(event).expect("event serialization");

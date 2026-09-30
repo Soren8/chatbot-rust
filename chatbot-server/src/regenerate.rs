@@ -53,7 +53,14 @@ struct RegenerateRequest {
     send_thoughts: Option<bool>,
 }
 
-pub async fn handle_regenerate(
+pub async fn handle_regenerate(request: Request<Body>) -> Result<Response<Body>, HttpError> {
+    if request.headers().get("X-Generation-Mode").is_some_and(|v| v == "durable") {
+        return crate::generations::admit(request, "regenerate").await;
+    }
+    handle_regenerate_legacy(request).await
+}
+
+pub(crate) async fn handle_regenerate_legacy(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
     if request.method() != axum::http::Method::POST {
