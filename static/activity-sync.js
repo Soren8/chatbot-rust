@@ -162,10 +162,11 @@
               });
               if (chunk.done) { closed = true; break; }
               buffer += decoder.decode(chunk.value, { stream: true });
-              var newline;
-              while ((newline = buffer.indexOf('\n')) >= 0) {
-                var line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-                alive();
+              var newline, offset = 0, rearm = true;
+              while ((newline = buffer.indexOf('\n', offset)) >= 0) {
+                var line = buffer.slice(offset, newline); offset = newline + 1;
+                // Lines between awaits arrive together; one re-arm per run is equivalent.
+                if (rearm) { alive(); rearm = false; }
                 if (!line.trim()) continue;
                 var event = JSON.parse(line);
                 if (event.type === 'heartbeat') continue;
@@ -179,9 +180,10 @@
                 if (event.type === 'error') { current.failed = true; wasInterrupted = true; state('needs-action'); }
                 if (event.type === 'saved') current.saved = true;
                 if (event.type === 'ended' || event.type === 'saved') {
-                  if (deps.reconcile) await deps.reconcile(setId, event);
+                  if (deps.reconcile) { await deps.reconcile(setId, event); rearm = true; }
                 }
               }
+              buffer = buffer.slice(offset);
             }
           } catch (e) {
             if (!current.detached && e.name !== 'TypeError' && e.name !== 'AbortError') { state('needs-action'); throw e; }

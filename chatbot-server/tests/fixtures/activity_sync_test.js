@@ -303,4 +303,46 @@ const delta = (seq, text) => ({ seq, type: 'delta', text });
   await h.sync.request('/tts', {method: 'POST', body: '{}'});
   assert.equal(voiceBusy, 2, 'voice admission busy retries through sync policy');
   console.log('PASS voice busy sync recovery');
+
+  function rawChunks(parts) {
+    let i = 0;
+    return { read: async () => i < parts.length ? { value: parts[i++], done: false } : { done: true }, cancel: async () => {} };
+  }
+  function counted(chunks, extra) {
+    const ops = { sets: 0, clears: 0, setsAtRead: [] };
+    const reader = rawChunks(chunks);
+    const read = reader.read;
+    reader.read = () => { ops.setsAtRead.push(ops.sets); return read(); };
+    const ch = harness(async () => response(200, null, reader), Object.assign({
+      setTimeout: () => { ops.sets++; return {}; }, clearTimeout: () => { ops.clears++; } }, extra));
+    return { ch, ops };
+  }
+  const enc = s => new TextEncoder().encode(s);
+  const many = [];
+  for (let i = 1; i < 200; i++) many.push(JSON.stringify(delta(i, 't' + i)));
+  many.push(JSON.stringify({ seq: 200, type: 'saved' }));
+  let c = counted([enc(many.join('\n') + '\n')]);
+  await c.ch.sync.attach({ generation_id: 'bulk' });
+  assert.deepEqual(c.ch.events.filter(e => e.type === 'delta').map(e => e.seq), Array.from({ length: 199 }, (_, i) => i + 1), 'every event delivered in order');
+  assert.ok(c.ops.sets <= 3, 'stall timer set O(1) per chunk, got ' + c.ops.sets);
+  assert.ok(c.ops.clears <= 3, 'stall timer clear O(1) per chunk, got ' + c.ops.clears);
+  console.log('PASS one chunk of 200 lines re-arms the stall timer O(1) times');
+
+  const split = enc(JSON.stringify(delta(2, 'café')) + '\n');
+  const cut = split.indexOf(0xa9);
+  c = counted([enc(JSON.stringify(delta(1, 'a')) + '\n'), split.slice(0, 5), split.slice(5, cut), split.slice(cut),
+    enc(JSON.stringify(delta(3, 'b')) + '\n' + JSON.stringify({ seq: 4, type: 'saved' }) + '\n')]);
+  await c.ch.sync.attach({ generation_id: 'split' });
+  assert.equal(c.ch.events.filter(e => e.type === 'delta').map(e => e.text).join(''), 'acaféb', 'line and UTF-8 split across chunks');
+  const rearmed = c.ops.setsAtRead.slice(1).map((n, i) => n - c.ops.setsAtRead[i]);
+  assert.deepEqual(rearmed.slice(0, 3), [1, 0, 0], 'only chunks completing a line re-arm the stall timer');
+  console.log('PASS chunk split mid-line and mid-character');
+
+  let setsAtReconcile = -1;
+  c = counted([enc([delta(1, 'x'), { seq: 2, type: 'ended' }, delta(3, 'y'), { seq: 4, type: 'saved' }].map(e => JSON.stringify(e)).join('\n') + '\n')],
+    { reconcile: async (_, e) => { if (e.type === 'ended') { setsAtReconcile = c.ops.sets; await tick(); } } });
+  await c.ch.sync.attach({ generation_id: 'reconcile' });
+  assert.equal(c.ch.events.map(e => e.seq).join(','), '1,2,3,4');
+  assert.ok(c.ops.sets > setsAtReconcile, 'a line after the reconcile await re-arms the stall timer');
+  console.log('PASS stall timer re-armed after reconcile await within a chunk');
 })().catch(e => { console.error(e); process.exitCode = 1; });
