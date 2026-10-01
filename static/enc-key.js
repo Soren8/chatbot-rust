@@ -59,8 +59,16 @@
     return global.isSecureContext === true;
   }
 
+  // One connection per page, reused by every operation. Dropped (and closed)
+  // on versionchange or unexpected close, or when the open fails, so the
+  // next operation reopens.
+  let dbPromise = null;
+
   function openDb() {
-    return new Promise((resolve, reject) => {
+    if (dbPromise) {
+      return dbPromise;
+    }
+    const pending = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -68,9 +76,29 @@
           db.createObjectStore(STORE_NAME);
         }
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        const drop = () => {
+          if (dbPromise === pending) {
+            dbPromise = null;
+          }
+        };
+        db.onversionchange = () => {
+          drop();
+          db.close();
+        };
+        db.onclose = drop;
+        resolve(db);
+      };
       request.onerror = () => reject(request.error);
     });
+    dbPromise = pending;
+    pending.catch(() => {
+      if (dbPromise === pending) {
+        dbPromise = null;
+      }
+    });
+    return pending;
   }
 
   async function idbGet(key) {
@@ -207,24 +235,52 @@
     await removeLegacySlots();
   }
 
+  // Applies deletes then puts in one readwrite transaction.
+  async function idbApply(deletes, puts) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      for (const key of deletes) {
+        store.delete(key);
+      }
+      for (const { key, value } of puts) {
+        store.put(value, key);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // Scans read-only; writes only when a wrap key, legacy wrapped slot, or
+  // wrapped non-PRF slot is present.
   async function scrubWrappedKeys() {
     try {
-      await idbDelete(WRAP_KEY_ID);
-      await idbDelete(LEGACY_WRAPPED_KEY_ID);
       const entries = await idbGetAllEntries();
+      const deletes = [];
+      const puts = [];
       for (const entry of entries) {
+        if (entry.key === WRAP_KEY_ID || entry.key === LEGACY_WRAPPED_KEY_ID) {
+          deletes.push(entry.key);
+          continue;
+        }
         if (!entry.value || typeof entry.value !== 'object' || !entry.value.wrapped) {
           continue;
         }
         if (entry.value.mode === 'webauthn-prf') {
           continue;
         }
-        const next = {
-          mode: 'cookie',
-          remembered: entry.value.remembered !== false,
-          updatedAt: entry.value.updatedAt || Date.now(),
-        };
-        await idbSet(entry.key, next);
+        puts.push({
+          key: entry.key,
+          value: {
+            mode: 'cookie',
+            remembered: entry.value.remembered !== false,
+            updatedAt: entry.value.updatedAt || Date.now(),
+          },
+        });
+      }
+      if (deletes.length || puts.length) {
+        await idbApply(deletes, puts);
       }
     } catch (_) {}
   }

@@ -34,6 +34,24 @@ fn credential_metadata_projects_owned_policy() {
     );
 }
 
+/// enc-key.js IndexedDB lifecycle against a counting fake indexedDB: one
+/// cached connection, read-only scan on a clean load, same scrub results.
+#[test]
+fn enc_key_reuses_one_connection_and_scans_read_only() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let run = Command::new("node")
+        .arg(root.join("chatbot-server/tests/fixtures/enc_key_idb_test.js"))
+        .arg(root.join("static/enc-key.js"))
+        .arg(root.join("static/credential-metadata.js"))
+        .output()
+        .expect("test image must provide the JS behavior-test runtime");
+    assert!(
+        run.status.success(),
+        "JS enc-key IndexedDB lifecycle: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[test]
 fn credential_metadata_js_parses() {
     let source = unit_js();

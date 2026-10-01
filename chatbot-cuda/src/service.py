@@ -3,7 +3,7 @@
 One ``InferenceService`` per process, built in FastAPI lifespan from
 ``VoiceSettings`` and shared by all routes via ``app.state``. ``load_models``
 loads Kokoro only for ``tts_provider == "kokoro"`` and always loads STT;
-load failures raise (only Kokoro warmup and ``torch.compile`` warn and
+load failures raise (only Kokoro/STT warmup and ``torch.compile`` warn and
 continue). Streaming lifecycle: each ``synthesize_kokoro_stream`` registers
 service-owned producer work (daemon thread + bounded asyncio queue,
 ``STREAM_BUFFER_SIZE``) in ``_active`` under ``_lock``. The producer posts one
@@ -30,8 +30,10 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+import tempfile
 import threading
 import time
+import wave
 from typing import Any, AsyncGenerator, Callable, Optional
 
 from .settings import VoiceSettings
@@ -221,11 +223,32 @@ class InferenceService:
             )
         logger.info("Kokoro TTS loaded.")
 
+    def _warmup_stt(self) -> None:
+        # Warmup: pays torch.compile and graph capture before the first real
+        # /v1/stt, through the same WAV-file transcribe path requests use.
+        path = None
+        try:
+            rate = self.settings.parakeet_sample_rate
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                path = tmp.name
+            with wave.open(path, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(rate)
+                wav.writeframes(b"\x00\x00" * rate)
+            self.transcribe(path)
+        except Exception as exc:
+            logger.warning("STT warmup failed (non-fatal): %s", exc)
+        finally:
+            if path is not None:
+                self._unlink_quietly(path)
+
     def load_models(self) -> None:
         """Load the configured models; failures propagate to the caller."""
         if self.settings.tts_provider == "kokoro":
             self.load_kokoro()
         self.load_stt()
+        self._warmup_stt()
         try:
             import torch  # type: ignore
         except ImportError:

@@ -7,7 +7,9 @@ historical globals behavior. No torch/numpy/nemo/kokoro/GPU imports.
 """
 
 import asyncio
+import os
 import unittest
+import wave
 
 from src.service import InferenceService
 from src.settings import VoiceSettings
@@ -225,10 +227,77 @@ class TestSynthesisBehavior(unittest.TestCase):
         self.assertEqual(service.kokoro_sample_rate(), 24000)
 
 
+class TestSttWarmup(unittest.TestCase):
+    def test_load_models_warms_stt_once_with_one_second_of_silence(self):
+        seen = []
+
+        class RecordingStt:
+            def transcribe(self, paths):
+                path = paths[0]
+                with wave.open(path, "rb") as wav:
+                    seen.append(
+                        {
+                            "paths": list(paths),
+                            "channels": wav.getnchannels(),
+                            "width": wav.getsampwidth(),
+                            "rate": wav.getframerate(),
+                            "frames": wav.getnframes(),
+                            "silent": set(wav.readframes(wav.getnframes())) <= {0},
+                        }
+                    )
+                return [""]
+
+        settings = _settings("kokoro")
+        service = InferenceService(
+            settings,
+            kokoro_factory=lambda device: FakeKokoroPipeline(["w"]),
+            stt_factory=lambda model_id: RecordingStt(),
+            pcm_converter=lambda audio: b"x",
+        )
+
+        service.load_models()
+
+        rate = settings.parakeet_sample_rate
+        self.assertEqual(len(seen), 1, "load_models must issue exactly one STT warmup")
+        call = seen[0]
+        self.assertEqual(len(call["paths"]), 1)
+        self.assertEqual(
+            (call["channels"], call["width"], call["rate"], call["frames"]),
+            (1, 2, rate, rate),
+        )
+        self.assertTrue(call["silent"], "warmup audio must be silence")
+        self.assertFalse(
+            os.path.exists(call["paths"][0]), "warmup WAV must be removed"
+        )
+
+    def test_stt_warmup_failure_warns_and_does_not_propagate(self):
+        service = InferenceService(
+            _settings("kokoro"),
+            kokoro_factory=lambda device: FakeKokoroPipeline(["w"]),
+            stt_factory=lambda model_id: _RaisingStt(),
+            pcm_converter=lambda audio: b"x",
+        )
+
+        with self.assertLogs("src.service", level="WARNING") as logs:
+            service.load_models()
+
+        self.assertTrue(service.stt_loaded)
+        self.assertIn(
+            "WARNING:src.service:STT warmup failed (non-fatal): warmup boom",
+            logs.output,
+        )
+
+
+class _RaisingStt:
+    def transcribe(self, paths):
+        raise RuntimeError("warmup boom")
+
+
 class TestTranscriptionMapping(unittest.TestCase):
     def _loaded_service_with(self, result):
         service, _, model = _service(stt_result=result)
         service.load_models()
+        model.paths.clear()  # drop the load-time STT warmup call
         return service, model
 
     def test_string_hypothesis_is_stripped(self):
