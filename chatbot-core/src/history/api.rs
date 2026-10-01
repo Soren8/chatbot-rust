@@ -396,6 +396,18 @@ impl HistoryService {
         Ok(self.store.materialize_snapshot(&user, &logical, key)?)
     }
 
+    /// Durable privacy policy of an owned set, read without loading its history.
+    pub fn privacy_level(
+        &self,
+        user: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<PrivacyLevel, HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        Ok(self.store.load_meta_policy(&user, set_id, key)?.1)
+    }
+
     /// Resolve display name → set_id for transition shims (decrypts all sets).
     pub fn find_by_display_name(
         &self,

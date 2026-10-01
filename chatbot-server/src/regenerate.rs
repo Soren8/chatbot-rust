@@ -182,8 +182,8 @@ pub(crate) async fn handle_regenerate_legacy(
             Err(err) => return Err(crate::set_privacy_coordinator::map_resolution_error(err)),
         };
         let permit = services.set_privacy().content(user, set_id).await;
-        let snapshot = history.load(user, set_id, key).map_err(crate::set_privacy_coordinator::map_resolution_error)?;
-        Some((permit, set_id, snapshot.privacy_level))
+        let level = history.privacy_level(user, set_id, key).map_err(crate::set_privacy_coordinator::map_resolution_error)?;
+        Some((permit, set_id, level))
     } else { None };
 
     let (default_save_thoughts, default_send_thoughts) = generation.thoughts_defaults();

@@ -7,6 +7,7 @@
 
 mod api;
 mod cache;
+pub mod cost;
 mod crypto;
 mod migration;
 mod ops;

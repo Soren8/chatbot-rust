@@ -160,10 +160,10 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
                     crate::set_privacy_coordinator::resolve_content_set(&history, user, Some(raw), None, key)
                         .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
                 let permit = services.set_privacy().content(user, set_id).await;
-                let snapshot = history
-                    .load(user, set_id, key)
+                let level = history
+                    .privacy_level(user, set_id, key)
                     .map_err(crate::set_privacy_coordinator::map_resolution_error)?;
-                if !chatbot_core::config::destination_is_eligible(snapshot.privacy_level, stt_level) {
+                if !chatbot_core::config::destination_is_eligible(level, stt_level) {
                     return Err(api_error_json(
                         StatusCode::FORBIDDEN,
                         serde_json::json!({"error":"privacy_restricted","destination":"stt"}),

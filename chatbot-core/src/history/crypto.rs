@@ -399,6 +399,7 @@ pub fn open_pair_v1(
     blob: &[u8],
     key: &EncryptionKey,
 ) -> Result<PairPayloadV1, CryptoError> {
+    super::cost::pair_opened();
     let aad = build_pair_aad(user_id, set_id, pair_id, generation);
     let plaintext = aead_open(&aad, blob, key)?;
     Ok(serde_json::from_slice(&plaintext)?)
@@ -450,6 +451,7 @@ pub fn open_image_v1(
     blob: &[u8],
     key: &EncryptionKey,
 ) -> Result<ImagePayloadV1, CryptoError> {
+    super::cost::image_opened();
     let aad = build_image_aad(user_id, set_id, image_id);
     let plaintext = aead_open(&aad, blob, key)?;
     let (mime, bytes) = decode_media_plaintext(&plaintext)?;
@@ -475,6 +477,7 @@ pub fn open_thumb_v1(
     blob: &[u8],
     key: &EncryptionKey,
 ) -> Result<ThumbPayloadV1, CryptoError> {
+    super::cost::thumb_opened();
     let aad = build_thumb_aad(user_id, set_id, image_id);
     let plaintext = aead_open(&aad, blob, key)?;
     let (mime, bytes) = decode_media_plaintext(&plaintext)?;
