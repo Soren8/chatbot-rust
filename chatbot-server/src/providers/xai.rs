@@ -64,10 +64,7 @@ impl XaiProvider {
 
     fn with_fake_key(config: &ProviderConfig, fake_key: Option<Option<String>>) -> Result<Self> {
         let timeout = Duration::from_secs_f64(config.request_timeout.unwrap_or(300.0));
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .context("failed to build reqwest client")?;
+        let client = super::shared_client(timeout)?;
 
         Ok(Self {
             client,

@@ -80,10 +80,7 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     pub fn new(config: &ProviderConfig) -> Result<Self> {
         let timeout = Duration::from_secs_f64(config.request_timeout.unwrap_or(300.0));
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .context("failed to build reqwest client")?;
+        let client = super::shared_client(timeout)?;
 
         // If the provider-level config does not include test chunks, allow overriding
         // via the `CHATBOT_TEST_OPENAI_CHUNKS` environment variable so tests can
@@ -131,10 +128,7 @@ impl OpenAiProvider {
         fake_tool_query: Option<String>,
     ) -> Result<Self> {
         let timeout = Duration::from_secs_f64(config.request_timeout.unwrap_or(300.0));
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .context("failed to build reqwest client")?;
+        let client = super::shared_client(timeout)?;
 
         let test_chunks = fake_chunks.or_else(|| config.test_chunks.clone());
         let fake_tool_query = fake_tool_query.filter(|q| !q.is_empty());
