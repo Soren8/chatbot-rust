@@ -113,7 +113,7 @@ NativeMicUtteranceVAD.prototype._noteVoicedFrame = function _noteVoicedFrame(cop
   this.voicedWindow.push(copy);
   const w = host.nativeAudio.SPEECH_VOICED_WINDOW_FRAMES;
   if (this.voicedWindow.length > w) this.voicedWindow.shift();
-  if (this.voicedWindow.length >= w) {
+  if (this.voicedWindow.length >= w && host.voiceLifecycle.hasActiveVoiceSession() && !this.bargeInFired) {
     const win = host.nativeAudio.mergePcm16Chunks(this.voicedWindow);
     if (host.nativeAudio.pcm16IsVoicedSpeech(win)) this.voicedMs += frameMs;
   }
@@ -203,7 +203,9 @@ NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance() {
   host.onUtteranceStartedAt(this.utteranceStartedAt);
   this.speechActiveMs = startChunks.length * 20;
   this.speechLikeMs = startChunks.length * 20;
-  this.voicedMs = host.nativeAudio.pcm16VoicedMsFromChunks(startChunks, 20);
+  this.voicedMs = host.voiceLifecycle.hasActiveVoiceSession()
+    ? host.nativeAudio.pcm16VoicedMsFromChunks(startChunks, 20)
+    : 0;
   this.voicedWindow = startChunks.slice(-host.nativeAudio.SPEECH_VOICED_WINDOW_FRAMES);
   const preRoll = this.preRollBuffer.snapshotChunks();
   this.utteranceChunks = preRoll.length ? preRoll : startChunks;

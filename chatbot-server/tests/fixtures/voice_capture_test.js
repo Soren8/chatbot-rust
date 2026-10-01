@@ -222,6 +222,57 @@ function feedAll(vad, frames) {
     assert(vad.inSpeech && barges === 0, 'idle listen must record a short utterance without barging in');
   });
 
+  // Voicing (pcm16PitchPeriodicity autocorrelation, one per evaluated
+  // window) feeds only the barge-in gate, so it runs only while barge-in is
+  // armed: an active TTS session that has not fired yet. 3 s utterance.
+  const longSpeech = framesOf(noisyVowel(200.0, 1200, FRAME * 150, SR, 0.35), FRAME);
+  const countingAudio = (stats) => Object.assign({}, NativeAudio, {
+    pcm16IsVoicedSpeech: (pcm) => { stats.evals++; return NativeAudio.pcm16IsVoicedSpeech(pcm); },
+    pcm16VoicedMsFromChunks: (chunks, ms) => {
+      const w = NativeAudio.SPEECH_VOICED_WINDOW_FRAMES;
+      if (chunks && chunks.length >= w) stats.evals += chunks.length - w + 1;
+      return NativeAudio.pcm16VoicedMsFromChunks(chunks, ms);
+    },
+  });
+
+  check('idle listen runs no voicing autocorrelation', () => {
+    const stats = { evals: 0 };
+    const host = makeHost(makeLifecycle(false), { onBargeIn: () => { stats.barges = (stats.barges || 0) + 1; } });
+    host.nativeAudio = countingAudio(stats);
+    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
+    vad.isRecording = true;
+    feedAll(vad, longSpeech);
+    assert(vad.inSpeech, 'idle 3 s speech must record');
+    assert.equal(stats.barges || 0, 0, 'idle listen never barges in');
+    assert.equal(stats.evals, 0, 'no voicing windows without an armed barge-in, got ' + stats.evals);
+  });
+
+  check('voicing runs while barge-in is armed and stops once it fires', () => {
+    const stats = { evals: 0 };
+    let bargeFrame = -1;
+    const host = makeHost(makeLifecycle(true), { onBargeIn: () => { bargeFrame = cursor; } });
+    host.nativeAudio = countingAudio(stats);
+    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
+    vad.isRecording = true;
+    let cursor = -1;
+    const perFrame = [];
+    longSpeech.forEach((frame, i) => {
+      cursor = i;
+      const before = stats.evals;
+      vad._onNativePcm(frame);
+      perFrame.push(stats.evals - before);
+    });
+    assert(bargeFrame >= 0, 'sustained speech during TTS must barge in');
+    const bargeAt = (bargeFrame + 1) * FRAME_MS;
+    const realMs = NativeAudio.REAL_SPEECH_MS;
+    assert(bargeAt >= realMs - 40 && bargeAt <= realMs + 120,
+      'barge-in at ' + bargeAt + ' ms must stay at real-speech confirm (~' + realMs + ')');
+    const armed = perFrame.slice(0, bargeFrame + 1).reduce((a, b) => a + b, 0);
+    const after = perFrame.slice(bargeFrame + 1).reduce((a, b) => a + b, 0);
+    assert(armed > 0, 'armed frames still evaluate voicing before barge-in');
+    assert.equal(after, 0, 'no voicing windows after barge-in fired, got ' + after + ' (armed=' + armed + ', bargeFrame=' + bargeFrame + ')');
+  });
+
   // start() awaits the permission gate before touching the recorder.
   await checkAsync('start awaits permission before recorder start', async () => {
     const lifecycle = makeLifecycle(true);

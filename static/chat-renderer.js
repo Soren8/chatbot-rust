@@ -275,6 +275,9 @@
       }
       if (typeof console !== 'undefined' && console.debug) console.debug('Initializing marked with highlight.js');
       var renderer = new markedLib.Renderer();
+      var cacheHljs = null;
+      var highlightCache = Object.create(null);
+      var highlightCacheSize = 0;
 
       renderer.code = function (args) {
         var text;
@@ -291,18 +294,32 @@
         var rawCode = decodeHTMLEntities(text);
         var highlighted;
 
-        if (typeof console !== 'undefined' && console.debug) console.debug('Rendering code block:', { language: language, textLength: rawCode.length });
-
         var hljsLib = getHljs();
         if (typeof hljsLib !== 'undefined') {
           try {
-            var langObj = hljsLib.getLanguage(language);
-            if (langObj) {
-              highlighted = hljsLib.highlight(rawCode, { language: language }).value;
-              if (typeof console !== 'undefined' && console.debug) console.debug('Highlight.js success for:', language);
+            if (hljsLib !== cacheHljs) {
+              cacheHljs = hljsLib;
+              highlightCache = Object.create(null);
+              highlightCacheSize = 0;
+            }
+            var cacheKey = language + '\u0000' + rawCode;
+            if (Object.prototype.hasOwnProperty.call(highlightCache, cacheKey)) {
+              highlighted = highlightCache[cacheKey];
             } else {
-              highlighted = hljsLib.highlightAuto(rawCode).value;
-              if (typeof console !== 'undefined' && console.debug) console.debug('Highlight.js auto-highlighting used');
+              var langObj = hljsLib.getLanguage(language);
+              if (langObj) {
+                highlighted = hljsLib.highlight(rawCode, { language: language }).value;
+              } else {
+                highlighted = hljsLib.highlightAuto(rawCode).value;
+              }
+              // Streaming adds one entry per partial open fence; start over
+              // rather than keep every prefix.
+              if (highlightCacheSize >= 64) {
+                highlightCache = Object.create(null);
+                highlightCacheSize = 0;
+              }
+              highlightCache[cacheKey] = highlighted;
+              highlightCacheSize++;
             }
           } catch (e) {
             if (typeof console !== 'undefined' && console.error) console.error('Highlight.js error:', e);

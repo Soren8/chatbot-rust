@@ -289,6 +289,80 @@ function makeRenderer(overrides) {
     assert(lit.includes('HL:a<b'), 'late highlighter applies per fence, got: ' + lit);
   });
 
+  // Streaming re-renders the whole reply every frame. A closed fence must be
+  // highlighted once (unknown languages fall back to highlightAuto, which
+  // tries every grammar); only the trailing open fence re-highlights. No
+  // per-block console.debug. Output stays byte-identical to an uncached run.
+  check('streaming highlights a closed fence once and logs nothing per block', () => {
+    const makeStubHljs = (stats) => ({
+      getLanguage: (lang) => (lang === 'js' ? { name: 'js' } : null),
+      highlight: (code) => { stats.highlightChars += code.length; return { value: 'HL:' + Renderer.escapeHTML(code) }; },
+      highlightAuto: (code) => { stats.autoChars += code.length; return { value: 'AUTO:' + Renderer.escapeHTML(code) }; },
+    });
+    const install = (hljs) => {
+      let installed = null;
+      const made = makeRenderer({
+        marked: { Renderer: function () {}, use: (opts) => { installed = opts.renderer; }, parse: (s) => s },
+        hljs,
+      });
+      made.renderer.configureMarked();
+      return (tok) => installed.code(tok);
+    };
+    const closedCode = Array.from({ length: 64 }, (_, i) => 'line ' + i + ' = value_' + i + ';').join('\n').padEnd(2048, 'x');
+    const closedRaw = '```\n' + closedCode + '\n```';
+    const tail = 'const growing = 1;\nconsole.log(growing);';
+    const K = 30;
+    const frames = [];
+    for (let k = 1; k <= K; k++) {
+      const openText = tail.slice(0, Math.ceil(tail.length * k / K));
+      frames.push([
+        { text: closedCode, lang: '', raw: closedRaw },
+        { text: openText, lang: 'js', raw: '```js\n' + openText },
+      ]);
+    }
+
+    const stats = { highlightChars: 0, autoChars: 0 };
+    const code = install(makeStubHljs(stats));
+    let debugs = 0;
+    const origDebug = console.debug;
+    console.debug = function () { debugs++; };
+    const out = [];
+    try {
+      frames.forEach((frame) => out.push(frame.map((tok) => code(tok)).join('')));
+    } finally {
+      console.debug = origDebug;
+    }
+
+    const expectedOpenChars = frames.reduce((n, frame) => n + frame[1].text.length, 0);
+    assert.equal(stats.autoChars, closedCode.length,
+      'closed unlabeled fence must hit highlightAuto once across ' + K + ' frames, got chars=' + stats.autoChars);
+    assert.equal(stats.highlightChars, expectedOpenChars,
+      'the open fence still re-highlights every frame, got chars=' + stats.highlightChars);
+    assert.equal(debugs, 0, 'no per-block console.debug while rendering, got ' + debugs);
+
+    frames.forEach((frame, i) => {
+      const fresh = install(makeStubHljs({ highlightChars: 0, autoChars: 0 }));
+      assert.equal(out[i], frame.map((tok) => fresh(tok)).join(''), 'frame ' + i + ' must match an uncached render');
+    });
+
+    const reconfigured = { highlightChars: 0, autoChars: 0 };
+    const reHl = makeStubHljs(reconfigured);
+    let installedAgain = null;
+    const made = makeRenderer({
+      marked: { Renderer: function () {}, use: (opts) => { installedAgain = opts.renderer; }, parse: (s) => s },
+      hljs: makeStubHljs(stats),
+    });
+    made.renderer.configureMarked();
+    installedAgain.code(frames[0][0]);
+    made.libs.hljs = reHl;
+    const relit = installedAgain.code(frames[0][0]);
+    assert.equal(reconfigured.autoChars, closedCode.length, 'a replaced highlighter must not serve the old cache');
+    assert(relit.includes('AUTO:'), 'replaced highlighter output applies, got: ' + relit.slice(0, 80));
+    made.libs.hljs = undefined;
+    const plain = installedAgain.code(frames[0][0]);
+    assert(!plain.includes('AUTO:'), 'an unloaded highlighter falls back to escaped text, not the cache');
+  });
+
   if (failures.length) {
     console.error('chat renderer FAILED:\n' + failures.join('\n'));
     process.exitCode = 1;
