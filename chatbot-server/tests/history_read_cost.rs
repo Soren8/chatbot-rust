@@ -198,3 +198,27 @@ async fn committing_a_turn_decrypts_no_unchanged_pairs() {
     let opens = take_blob_opens();
     assert_eq!(opens.pairs, 0, "the append is compared against the cached snapshot it was prepared from: {opens:?}");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_history_page_decrypts_only_its_pairs() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    take_blob_opens();
+    let response = app.clone().oneshot(json_request(&session, "/load_set", json!({"set_id":set_id,"limit":1,"thumbnails":true}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let page: Value = serde_json::from_slice(&to_bytes(response.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(page["history"].as_array().map(Vec::len), Some(1), "{page}");
+    let opens = take_blob_opens();
+    assert_eq!((opens.pairs, opens.images), (1, 0), "a one-pair text page reads one pair: {opens:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_history_pair_decrypts_only_that_pair() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    take_blob_opens();
+    let response = app.clone().oneshot(json_request(&session, "/history_pair", json!({"set_id":set_id,"pair_index":0}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let opens = take_blob_opens();
+    assert_eq!((opens.pairs, opens.images), (1, 1), "one pair and its image: {opens:?}");
+}

@@ -71,6 +71,20 @@ impl RedbHistoryStore {
         meta: &SetMetaValue,
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, StoreError> {
+        Ok(self.load_chunked_window(user_id, set_id, meta, key, |total| 0..total)?.0)
+    }
+
+    /// Header, name, policy and manifest plus only the pairs in the range
+    /// `window` picks from the pair count. The snapshot's `history` and
+    /// `pair_ids` hold just that range.
+    fn load_chunked_window(
+        &self,
+        user_id: &str,
+        set_id: SetId,
+        meta: &SetMetaValue,
+        key: &EncryptionKey,
+        window: impl FnOnce(usize) -> std::ops::Range<usize>,
+    ) -> Result<(SetSnapshot, ManifestV1, std::ops::Range<usize>), StoreError> {
         let txn = self.db.begin_read()?;
         let id_key = set_id_key(set_id);
         let header_table = txn.open_table(SETS_HEADER)?;
@@ -98,9 +112,13 @@ impl RedbHistoryStore {
             None => String::new(),
         };
 
-        let mut history = Vec::with_capacity(manifest.pairs.len());
-        let mut pair_ids = Vec::with_capacity(manifest.pairs.len());
-        for entry in &manifest.pairs {
+        let total = manifest.pairs.len();
+        let wanted = window(total);
+        let start = wanted.start.min(total);
+        let range = start..wanted.end.clamp(start, total);
+        let mut history = Vec::with_capacity(range.len());
+        let mut pair_ids = Vec::with_capacity(range.len());
+        for entry in &manifest.pairs[range.clone()] {
             let ck = chunk_key(set_id, entry.pair_id.as_uuid());
             let pair_blob = pair_table.get(ck.as_slice())?.ok_or(StoreError::NotFound)?;
             let pair = crypto::open_pair_v1(
@@ -115,7 +133,7 @@ impl RedbHistoryStore {
             pair_ids.push(entry.pair_id);
         }
 
-        Ok(SetSnapshot {
+        let snapshot = SetSnapshot {
             set_id,
             version: meta.version,
             display_name,
@@ -125,7 +143,8 @@ impl RedbHistoryStore {
             pair_ids,
             is_default: meta.is_default,
             privacy_level: self.load_policy(user_id, set_id, key)?,
-        })
+        };
+        Ok((snapshot, manifest, range))
     }
 
     /// Expand a cached logical snapshot into the public materialized DTO.
@@ -270,11 +289,13 @@ impl RedbHistoryStore {
             });
         }
 
-        let logical = self.load_logical_chunked(user_id, set_id, &meta, key)?;
-        let manifest = self.load_manifest(user_id, set_id, meta.version, key)?;
+        let (logical, manifest, range) = self.load_chunked_window(user_id, set_id, &meta, key, |total| {
+            let page = page_history(total, limit, before);
+            page.start..page.end
+        })?;
         let page = page_history(manifest.pairs.len(), limit, before);
-        let window = &manifest.pairs[page.start..page.end];
-        let slice = page.slice(&logical.history);
+        let window = &manifest.pairs[range];
+        let slice = &logical.history;
 
         let history = if thumbnails {
             // Text only — client fetches thumbs via GET /history_image?size=thumb.
@@ -322,13 +343,14 @@ impl RedbHistoryStore {
                 .ok_or(StoreError::InvalidInput)?;
             return Ok((snap.version, pair));
         }
-        let logical = self.load_logical_chunked(user_id, set_id, &meta, key)?;
+        let (logical, manifest, _) = self.load_chunked_window(user_id, set_id, &meta, key, |_| {
+            pair_index..pair_index.saturating_add(1)
+        })?;
         let (user, assistant) = logical
             .history
-            .get(pair_index)
-            .cloned()
+            .into_iter()
+            .next()
             .ok_or(StoreError::InvalidInput)?;
-        let manifest = self.load_manifest(user_id, set_id, meta.version, key)?;
         let entry = manifest
             .pairs
             .get(pair_index)
