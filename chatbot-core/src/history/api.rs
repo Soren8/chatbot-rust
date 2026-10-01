@@ -169,11 +169,11 @@ impl HistoryService {
             expected,
             next,
             key,
-            known.as_ref().map(LogicalSnapshot::as_snapshot),
+            known.as_deref().map(LogicalSnapshot::as_snapshot),
         )?)
     }
 
-    fn remember(&self, user: &str, snap: &LogicalSnapshot) {
+    fn remember(&self, user: &str, snap: impl Into<Arc<LogicalSnapshot>>) {
         self.cache.put_snapshot(user, snap);
     }
 
@@ -217,7 +217,7 @@ impl HistoryService {
         user: &str,
         set_id: SetId,
         key: &EncryptionKey,
-    ) -> Result<LogicalSnapshot, HistoryError> {
+    ) -> Result<Arc<LogicalSnapshot>, HistoryError> {
         self.ensure_chunked(user, set_id, key)?;
         match self.store.load_meta(user, set_id) {
             Ok(meta) => {
@@ -235,8 +235,8 @@ impl HistoryService {
             Err(StoreError::Forbidden) => return Err(HistoryError::Forbidden),
             Err(err) => return Err(err.into()),
         }
-        let snap = self.store.load_logical(user, set_id, key)?;
-        self.remember(user, &snap);
+        let snap = Arc::new(self.store.load_logical(user, set_id, key)?);
+        self.remember(user, Arc::clone(&snap));
         Ok(snap)
     }
 
@@ -250,9 +250,7 @@ impl HistoryService {
     ) -> Result<SetSnapshot, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        Ok(self
-            .load_snapshot_cached(&user, set_id, key)?
-            .into_snapshot())
+        Ok(Arc::unwrap_or_clone(self.load_snapshot_cached(&user, set_id, key)?).into_snapshot())
     }
 
     pub fn load_page(
@@ -505,7 +503,7 @@ impl HistoryService {
             is_default: summary.is_default,
             privacy_level: summary.privacy_level,
         };
-        self.remember(&user, &LogicalSnapshot::from_normalized(snap));
+        self.remember(&user, LogicalSnapshot::from_normalized(snap));
         self.cache.put_summary(&user, &summary);
         Ok(summary)
     }
@@ -570,7 +568,7 @@ impl HistoryService {
             is_default: false,
             privacy_level: source.privacy_level,
         };
-        self.remember(&user, &committed);
+        self.remember(&user, committed);
         self.cache.put_summary(&user, &final_summary);
         Ok(final_summary)
     }
@@ -718,7 +716,7 @@ impl HistoryService {
             .store
             .create_fork_snapshot(&user, &snap, key, &receipt)?;
         let committed = self.load_snapshot_cached(&user, snap.set_id, key)?;
-        self.remember(&user, &committed);
+        self.remember(&user, committed);
         self.cache.put_summary(&user, &summary);
         Ok(receipt)
     }
@@ -828,7 +826,7 @@ impl HistoryService {
         // Reject collision with any other set (same name on self is a no-op rename).
         self.ensure_display_name_available(&user, &next.display_name, Some(set_id), key)?;
         let (v, committed) = self.commit(&user, expected, next, key)?;
-        self.remember(&user, &committed);
+        self.remember(&user, committed);
         Ok(v)
     }
 
@@ -924,7 +922,7 @@ impl HistoryService {
             &mut next,
         )?;
         let (v, committed) = self.commit(&user, expected, next, key)?;
-        self.remember(&user, &committed);
+        self.remember(&user, committed);
         Ok(v)
     }
 
@@ -953,7 +951,7 @@ impl HistoryService {
         )?;
         let (v, committed) = self
             .commit(&user, capture.version, next, key)?;
-        self.remember(&user, &committed);
+        self.remember(&user, committed);
         Ok(v)
     }
 
@@ -1002,7 +1000,7 @@ impl HistoryService {
         let next = ops::apply_regenerate(capture, assistant_response)?;
         let (v, committed) = self
             .commit(&user, capture.version, next, key)?;
-        self.remember(&user, &committed);
+        self.remember(&user, committed);
         Ok(v)
     }
 
@@ -1017,7 +1015,7 @@ impl HistoryService {
     ) -> Result<SetVersion, HistoryError> {
         self.mutate_content(user, set_id, expected, key, |snap| {
             Ok(ops::delete_pair(
-                snap.into_snapshot(),
+                Arc::unwrap_or_clone(snap).into_snapshot(),
                 pair_index,
                 expected_user_msg,
             )?)
@@ -1032,7 +1030,7 @@ impl HistoryService {
         key: &EncryptionKey,
     ) -> Result<SetVersion, HistoryError> {
         self.mutate_content(user, set_id, expected, key, |snap| {
-            Ok(ops::reset_history(snap.into_snapshot()))
+            Ok(ops::reset_history(Arc::unwrap_or_clone(snap).into_snapshot()))
         })
     }
 
@@ -1068,7 +1066,7 @@ impl HistoryService {
         set_id: SetId,
         expected: SetVersion,
         key: &EncryptionKey,
-        operation: impl FnOnce(LogicalSnapshot) -> Result<SetSnapshot, HistoryError>,
+        operation: impl FnOnce(Arc<LogicalSnapshot>) -> Result<SetSnapshot, HistoryError>,
     ) -> Result<SetVersion, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
@@ -1081,7 +1079,7 @@ impl HistoryService {
         }
         let next = operation(snap)?;
         let (v, committed) = self.commit(&user, expected, next, key)?;
-        self.remember(&user, &committed);
+        self.remember(&user, committed);
         Ok(v)
     }
 
