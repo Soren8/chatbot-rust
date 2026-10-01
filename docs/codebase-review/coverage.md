@@ -1,8 +1,18 @@
 # Review coverage
 
+## Session 085 — Phase 5 completion accepted
+
+Phase 5 is complete for the repository-wide performance/resource-use review with bounded remediation. Batches PERF-A through PERF-T are committed. The Perf column records the affected batches/findings, reviewed units with no finding, and open/retained dispositions; coverage is not proof of device, GPU, host-proxy, or live-deployment performance. Correctness findings handed to later phases are UTF-8 split across SSE reads (`openai.rs:283, 405`; `xai.rs:191`), the `search.rs:220` non-character-boundary slicing panic, and the unlocked `users.json` read-modify-write race (`user_store.rs:182–209, 414–451`).
+
+Open/retained/not implemented: B-PERF-6 lazy ORT/VAD loading and host-proxy compression; S-PERF-7 response compression (host proxy unknown) and S-PERF-8 COOP/COEP (likely inert; enabling COEP affects subresources); B-PERF-8 GPU contention; S-PERF-10 search payload clones; N-PERF-1 native mic wakeups (not implemented; requires device timing); PERF-011 inline Opus encoding (release-host measurement), PERF-012 desktop TTS prefetch (GPU timing), N-PERF-5/6 car transport/TTS (user-deferred); R-PERF-4 per-owner concurrency (policy choice); B-PERF-10 WAV copies/process spawn, B-PERF-11 set-list refresh, B-PERF-13 concurrent thumbnail fetch, B-PERF-14 voice pulse, N-PERF-12/13/14/17 Android costs, S-PERF-5 users.json household-scale parsing, S-PERF-9 bounded SSE remainder movement, S-PERF-11 remember-family scans, and the unchanged Auto audio-focus cleanup and unbounded `retryAdmission` IOException retry. R-PERF-5 and PERF-008/009 were rejected as bounded/low-cost; PERF-011 streaming synthesis was rejected because the current route already submits one sentence and POST-time synthesis would bypass privacy revalidation. WebView frame/battery behavior and GPU/device timings remain evidence limits.
+
+Final gate at `5f64c9e`: full suite `20261001T052944-8b04233f9f0f` passed (146 test binaries; the first run `…052045-c1680744a796` stopped on the `playback_source_boundary` publish-site pin, updated for the PERF-N frame renderers); APK `20261001T052703-f0fc4f8ed592` built `chatbot-physical-debug.apk` (12.6 MB).
+
+Applying Phase 5 requires a host rebuild/restart of static assets and the server, chatbot-cuda GPU service, and Android app to pick up the changes. See [performance.md](performance.md).
+
 ## Session 085 — Phase 5 inventory update
 
-At `refactor@247c875`, new post-Phase-4 paths are assigned: C10 (`operation_receipt.rs`, `connection_receipts.rs`), S13 (`generations.rs`, `idempotency.rs`), and W05 (`activity-sync.js`). `DurableVoiceProtocol.java` matches N03; new tests and fixtures match T02. Units whose owned files changed between `eb82b77` and `247c875` (R01, C04, P01, S01–S03, S05, S06, S10–S12, W01, W04, W05, N03, X01) carry `S` in their M/S/A/Sec cells. Root files changed (`Dockerfile`, `docker-compose.yml`) are R00 boundary material. The Perf column starts empty everywhere.
+At `refactor@247c875`, new post-Phase-4 paths are assigned: C10 (`operation_receipt.rs`, `connection_receipts.rs`), S13 (`generations.rs`, `idempotency.rs`), and W05 (`activity-sync.js`). `DurableVoiceProtocol.java` matches N03; new tests and fixtures match T02. Units whose owned files changed between `eb82b77` and `247c875` (R01, C04, P01, S01–S03, S05, S06, S10–S12, W01, W04, W05, N03, X01) carry `S` in their M/S/A/Sec cells. Root files changed (`Dockerfile`, `docker-compose.yml`) are R00 boundary material.
 
 ## Session 084 — Phase 4 completion accepted
 
@@ -145,53 +155,53 @@ Columns: M modularity; S simplicity; A abstractions/reuse/duplication; Sec secur
 
 | Unit | Owned paths, in matching order | M | S | A | Sec | Perf | T | D |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| V01 Third-party browser dependencies | `static/deps/*` | B | B | — | B | — | — | — |
-| R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | S | S | S | S | — | — | — |
-| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | R | R | R | — | — | — |
-| C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | R | R | R | — | — | — |
-| C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | R | R | — | — | — |
-| C04 Durable history | `chatbot-core/src/history/*` | S | S | S | S | — | — | — |
-| C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | R | R | R | — | — | — |
-| C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | R | R | — | — | — |
-| C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | R | R | R | — | — | — |
-| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | R | R | R | — | — | — |
-| C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | R | R | — | — | — |
-| P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | S | S | S | — | — | — |
-| C10 Core operation receipts (post-Phase-4) | `chatbot-core/src/operation_receipt.rs`, `chatbot-core/src/connection_receipts.rs` | — | — | — | — | — | — | — |
-| T01 Core integration tests | `chatbot-core/tests/*` | R | P | — | P | — | — | — |
-| S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | S | S | S | S | — | — | — |
-| S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | S | S | S | S | — | — | — |
-| S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | S | S | S | S | — | — | — |
-| S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | R | R | R | — | — | — |
-| S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | S | S | S | S | — | — | — |
-| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | R | R | R | — | — | — |
-| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | R | R | — | — | — |
-| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | S | S | S | S | — | — | — |
-| S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | S | S | S | S | — | — | — |
-| S11 Server privacy/agent coordination (post-baseline) | `chatbot-server/src/set_privacy_coordinator.rs`, `chatbot-server/src/agent_connections.rs` | — | S | S | S | — | — | — |
-| S12 Server composition/policy adapters (post-baseline) | `chatbot-server/src/policy.rs`, `chatbot-server/src/generation_deps.rs`, `chatbot-server/src/services.rs`, `chatbot-server/src/identity.rs`, `chatbot-server/src/enc_key_cookies.rs`, `chatbot-server/src/request_context.rs` | — | S | S | S | — | — | — |
-| S13 Durable generations/idempotency (post-Phase-4) | `chatbot-server/src/generations.rs`, `chatbot-server/src/idempotency.rs` | — | — | — | — | — | — | — |
-| T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | P | — | P | — | — | — |
-| T03 Shared test support | `chatbot-test-support/src/*` | R | R | R | R | — | — | — |
-| S07 Server examples/protected configuration | `chatbot-server/examples/*`, `chatbot-server/.config.yml` | B | B | — | B | — | — | — |
-| W01 Browser chat UI | `static/chat.js` | S | S | S | S | — | — | — |
-| W02 Browser identity/rendering security | `static/login.js`, `static/enc-key.js`, `static/tt.js` | R | R | R | R | — | — | — |
-| W03 Browser/native bridge/audio | `static/native-audio.js`, `static/native-bridge.js` | R | R | R | R | — | — | — |
-| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | S | S | S | S | — | — | — |
-| W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js`, `static/activity-sync.js` | S | S | S | S | — | — | — |
-| N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | R | R | — | — | — |
-| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | R | R | — | — | — |
-| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | S | S | S | S | — | — | — |
-| T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | P | — | — | — |
-| N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | B | — | — | — |
-| X01 DNS sidecar (post-baseline) | `dns/*` | — | S | S | S | — | — | — |
-| G01 GPU voice service | `chatbot-cuda/*` | R | R | R | R | — | — | — |
-| O01 CI/automation | `.github/*`, `scripts/*` | R | R | R | R | — | — | — |
-| O02 Deployment templates | `deploy/*` | R | R | R | R | — | — | — |
-| O03 Repository development environment | `.devcontainer/*`, `.grok/*` | B | B | — | B | — | — | — |
-| D01 Review records | `docs/codebase-review/*` | B | B | — | B | — | — | — |
-| D02 Architecture/operator documentation | `docs/*` | B | B | — | B | — | — | — |
-| R00 Root build/configuration/documentation | Remaining root files (no `/`) | B | B | — | B | — | — | — |
+| V01 Third-party browser dependencies | `static/deps/*` | B | B | — | B | B — no performance finding in dependency boundary review | — | — |
+| R01 Rust composition | `Cargo.toml`, `chatbot-core/Cargo.toml`, `chatbot-core/src/lib.rs`, `chatbot-server/Cargo.toml`, `chatbot-server/src/lib.rs`, `chatbot-server/src/main.rs`, `chatbot-server/src/background.rs`, `chatbot-server/src/http_error.rs`, `chatbot-server/src/test_instrumentation.rs`, `chatbot-test-support/Cargo.toml` | S | S | S | S | S-PERF-7 compression open (host proxy unknown); S-PERF-8 COOP/COEP open (likely inert; user decision) | — | — |
+| C01 Configuration/logging | `chatbot-core/src/config.rs`, `chatbot-core/src/logging.rs` | R | R | R | R | R — reviewed; no finding | — | — |
+| C02 Session state/orchestration | `chatbot-core/src/session.rs` | R | R | R | R | PERF-B, PERF-D | — | — |
+| C03 Identity/key stores | `chatbot-core/src/user_store.rs`, `chatbot-core/src/remember_store.rs`, `chatbot-core/src/enc_key.rs` | R | R | R | R | S-PERF-5 retained; users.json race handed to later correctness phase | — | — |
+| C04 Durable history | `chatbot-core/src/history/*` | S | S | S | S | PERF-B, PERF-D, PERF-F, PERF-L | — | — |
+| C05 Persistence/legacy migration | `chatbot-core/src/persistence.rs`, `chatbot-core/src/legacy_sets_json/*` | R | R | R | R | R — one-time migration; no performance finding | — | — |
+| C06 Chat content/images | `chatbot-core/src/chat.rs`, `chatbot-core/src/chat_images.rs` | R | R | R | R | PERF-B | — | — |
+| C07 Core rate limiting | `chatbot-core/src/rate_limit.rs` | R | R | R | R | R — reviewed; no finding | — | — |
+| C08 Shared naming/Fernet helpers | `chatbot-core/src/names.rs`, `chatbot-core/src/fernet_crypto.rs` | R | R | R | R | R — reviewed; no finding | — | — |
+| C09 Core account/session services (post-baseline) | `chatbot-core/src/account_service.rs`, `chatbot-core/src/config_source.rs`, `chatbot-core/src/session_identity.rs` | — | R | R | R | PERF-K | — | — |
+| P01 Core agent connectivity (post-baseline) | `chatbot-core/src/agent_connections.rs`, `chatbot-core/src/agent_egress.rs` | — | S | S | S | R — reviewed; no performance finding | — | — |
+| C10 Core operation receipts (post-Phase-4) | `chatbot-core/src/operation_receipt.rs`, `chatbot-core/src/connection_receipts.rs` | — | — | — | — | PERF-J (R-PERF-1); R-PERF-5 rejected (bounded, allowlisted writers) | — | — |
+| T01 Core integration tests | `chatbot-core/tests/*` | R | P | — | P | PERF-B, PERF-D, PERF-F, PERF-L (cost-bound regressions) | — | — |
+| S01 Chat streaming/orchestration | `chatbot-server/src/chat.rs`, `chatbot-server/src/chat_utils.rs`, `chatbot-server/src/regenerate.rs` | S | S | S | S | PERF-A, PERF-B, PERF-D, PERF-R | — | — |
+| S02 Authentication/home | `chatbot-server/src/home.rs`, `chatbot-server/src/login.rs`, `chatbot-server/src/logout.rs`, `chatbot-server/src/signup.rs` | S | S | S | S | PERF-T; users.json race handed to later correctness phase | — | — |
+| S03 History/memory/preferences routes | `chatbot-server/src/sets.rs`, `chatbot-server/src/memory.rs`, `chatbot-server/src/preferences.rs`, `chatbot-server/src/reset_chat.rs` | S | S | S | S | PERF-S | — | — |
+| S04 Providers/search/tools | `chatbot-server/src/providers/*`, `chatbot-server/src/brave.rs`, `chatbot-server/src/search.rs`, `chatbot-server/src/tools.rs` | R | R | R | R | PERF-R; S-PERF-10 retained; search.rs:220 slicing panic handed to later correctness phase | — | — |
+| S05 Voice endpoints/codecs | `chatbot-server/src/stt.rs`, `chatbot-server/src/tts.rs`, `chatbot-server/src/tts_opus.rs` | S | S | S | S | PERF-A, PERF-E, PERF-S, PERF-T | — | — |
+| S08 Speech-text normalization | `chatbot-server/src/tts/text.rs` | R | R | R | R | R — reviewed; no performance finding | — | — |
+| S09 TTS backend synthesis | `chatbot-server/src/tts/backend.rs` | R | R | R | R | PERF-E, PERF-R | — | — |
+| S10 TTS token-session store | `chatbot-server/src/tts/store.rs` | S | S | S | S | PERF-J | — | — |
+| S06 Operational endpoints/limits | `chatbot-server/src/health.rs`, `chatbot-server/src/client_logs.rs`, `chatbot-server/src/rate_limit_middleware.rs` | S | S | S | S | PERF-K, PERF-T | — | — |
+| S11 Server privacy/agent coordination (post-baseline) | `chatbot-server/src/set_privacy_coordinator.rs`, `chatbot-server/src/agent_connections.rs` | — | S | S | S | R — reviewed; no performance finding | — | — |
+| S12 Server composition/policy adapters (post-baseline) | `chatbot-server/src/policy.rs`, `chatbot-server/src/generation_deps.rs`, `chatbot-server/src/services.rs`, `chatbot-server/src/identity.rs`, `chatbot-server/src/enc_key_cookies.rs`, `chatbot-server/src/request_context.rs` | — | S | S | S | PERF-R, PERF-S, PERF-T; S-PERF-10 retained | — | — |
+| S13 Durable generations/idempotency (post-Phase-4) | `chatbot-server/src/generations.rs`, `chatbot-server/src/idempotency.rs` | — | — | — | — | PERF-D, PERF-J; R-PERF-4 retained (policy choice) | — | — |
+| T02 Server integration tests/fixtures | `chatbot-server/tests/*` | R | P | — | P | PERF-A–T regression coverage (see performance.md batch records) | — | — |
+| T03 Shared test support | `chatbot-test-support/src/*` | R | R | R | R | R — reviewed; no performance finding | — | — |
+| S07 Server examples/protected configuration | `chatbot-server/examples/*`, `chatbot-server/.config.yml` | B | B | — | B | B — no performance finding in example/protected-config boundary review | — | — |
+| W01 Browser chat UI | `static/chat.js` | S | S | S | S | PERF-C, PERF-N, PERF-O | — | — |
+| W02 Browser identity/rendering security | `static/login.js`, `static/enc-key.js`, `static/tt.js` | R | R | R | R | PERF-Q | — | — |
+| W03 Browser/native bridge/audio | `static/native-audio.js`, `static/native-bridge.js` | R | R | R | R | PERF-P (native-audio barge-in) | — | — |
+| W04 Templates/styles | `static/templates/*`, `static/style.css`, `static/opencode-theme.css` | S | S | S | S | B-PERF-14 retained (visual choice; device cost limit) | — | — |
+| W05 Browser state/voice/playback units | `static/session-client.js`, `static/conversation-state.js`, `static/voice-lifecycle.js`, `static/voice-text.js`, `static/voice-events.js`, `static/playback-source.js`, `static/stream-decoder.js`, `static/tts-playback.js`, `static/voice-capture.js`, `static/chat-renderer.js`, `static/credential-crypto.js`, `static/credential-metadata.js`, `static/agent-connections.js`, `static/activity-sync.js` | S | S | S | S | PERF-C, PERF-M, PERF-N, PERF-O, PERF-P | — | — |
+| N01 Android identity/activity/logging | `android/app/src/main/java/com/chatbot/app/MainActivity.java`, `android/app/src/main/java/com/chatbot/app/NativeSecureKey/*`, `android/app/src/main/java/com/chatbot/app/Logger/*`, `android/app/src/main/java/com/chatbot/app/util/*` | R | R | R | R | PERF-I (N-PERF-15) | — | — |
+| N02 Android voice/audio | `android/app/src/main/java/com/chatbot/app/NativeMic/*`, `android/app/src/main/java/com/chatbot/app/NativeVoiceTts/*`, `android/app/src/main/java/com/chatbot/app/audio/*` | R | R | R | R | PERF-G, PERF-I; N-PERF-1 not implemented (device timing); N-PERF-12/13/14/17 retained | — | — |
+| N03 Android Auto | `android/app/src/main/java/com/chatbot/app/car/*` | S | S | S | S | PERF-H; N-PERF-5/6 deferred (user-deferred protocol/transport) | — | — |
+| T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | P | PERF-G, PERF-H, PERF-I (native regression fixtures) | — | — |
+| N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | B | B — APK build gate pending; no packaging performance finding | — | — |
+| X01 DNS sidecar (post-baseline) | `dns/*` | — | S | S | S | R — reviewed; no performance finding | — | — |
+| G01 GPU voice service | `chatbot-cuda/*` | R | R | R | R | PERF-E, PERF-Q; B-PERF-8 open (host GPU timing); B-PERF-10 retained | — | — |
+| O01 CI/automation | `.github/*`, `scripts/*` | R | R | R | R | R — reviewed; no performance finding | — | — |
+| O02 Deployment templates | `deploy/*` | R | R | R | R | S-PERF-7 open (host proxy); S-PERF-8 open (COOP/COEP likely inert) | — | — |
+| O03 Repository development environment | `.devcontainer/*`, `.grok/*` | B | B | — | B | B — reviewed boundary; no performance finding | — | — |
+| D01 Review records | `docs/codebase-review/*` | B | B | — | B | B — Phase 5 record; no application performance finding | — | — |
+| D02 Architecture/operator documentation | `docs/*` | B | B | — | B | B — reviewed; no performance finding | — | — |
+| R00 Root build/configuration/documentation | Remaining root files (no `/`) | B | B | — | B | B — host-proxy compression open (S-PERF-7); deployment boundary | — | — |
 
 ## Session 001 read evidence and limitations
 
