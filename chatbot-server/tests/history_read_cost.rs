@@ -186,3 +186,15 @@ async fn regenerate_prompt_decrypts_only_the_edited_pair_image() {
     assert_eq!(opens.thumbs, IMAGES - 1, "the history prefix uses stored thumbnails: {opens:?}");
     to_bytes(response.into_body(), 64 * 1024).await.unwrap();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn committing_a_turn_decrypts_no_unchanged_pairs() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    let response = app.clone().oneshot(json_request(&session, "/chat", json!({"message":"next","set_id":set_id}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    take_blob_opens();
+    to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let opens = take_blob_opens();
+    assert_eq!(opens.pairs, 0, "the append is compared against the cached snapshot it was prepared from: {opens:?}");
+}

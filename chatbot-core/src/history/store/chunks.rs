@@ -552,6 +552,7 @@ impl RedbHistoryStore {
         expected: SetVersion,
         mut snapshot: SetSnapshot,
         key: &EncryptionKey,
+        known: Option<&SetSnapshot>,
     ) -> Result<(SetVersion, LogicalSnapshot), StoreError> {
         let set_id = snapshot.set_id;
         if snapshot.pair_ids.len() != snapshot.history.len() {
@@ -580,6 +581,12 @@ impl RedbHistoryStore {
         };
         let old_by_id: HashMap<PairId, &ManifestPair> =
             old_manifest.pairs.iter().map(|p| (p.pair_id, p)).collect();
+        // Plaintext already known at `expected` (CAS-checked above) stands in
+        // for decrypting each stored pair.
+        let known_by_id: HashMap<PairId, &(String, String)> = known
+            .filter(|k| k.set_id == set_id && k.version == expected && k.pair_ids.len() == k.history.len())
+            .map(|k| k.pair_ids.iter().copied().zip(k.history.iter()).collect())
+            .unwrap_or_default();
 
         let old_header = if current_meta.blob_format.is_chunked() {
             let txn = self.db.begin_read()?;
@@ -645,19 +652,27 @@ impl RedbHistoryStore {
             }
             let generation = match old_by_id.get(&pair_id) {
                 Some(old) => {
-                    let txn = self.db.begin_read()?;
-                    let table = txn.open_table(PAIR_BLOBS)?;
-                    let ck = chunk_key(set_id, pair_id.as_uuid());
-                    let blob = table.get(ck.as_slice())?.ok_or(StoreError::NotFound)?;
-                    let stored = crypto::open_pair_v1(
-                        user_id,
-                        set_id,
-                        pair_id,
-                        old.generation,
-                        blob.value(),
-                        key,
-                    )?;
-                    if stored.user == norm.user && stored.assistant == snapshot.history[idx].1 {
+                    let unchanged = match known_by_id.get(&pair_id) {
+                        Some((user, assistant)) => {
+                            *user == norm.user && *assistant == snapshot.history[idx].1
+                        }
+                        None => {
+                            let txn = self.db.begin_read()?;
+                            let table = txn.open_table(PAIR_BLOBS)?;
+                            let ck = chunk_key(set_id, pair_id.as_uuid());
+                            let blob = table.get(ck.as_slice())?.ok_or(StoreError::NotFound)?;
+                            let stored = crypto::open_pair_v1(
+                                user_id,
+                                set_id,
+                                pair_id,
+                                old.generation,
+                                blob.value(),
+                                key,
+                            )?;
+                            stored.user == norm.user && stored.assistant == snapshot.history[idx].1
+                        }
+                    };
+                    if unchanged {
                         // Already durable: keep ciphertext, record the ref shape.
                         snapshot.history[idx].0 = norm.user;
                         new_manifest_pairs.push(ManifestPair {

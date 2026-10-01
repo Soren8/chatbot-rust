@@ -154,6 +154,25 @@ impl HistoryService {
     /// Cache a durable-normalized logical snapshot (no re-load/decrypt).
     /// Only store-returned logical shapes reach here — never incoming
     /// `data:`-carrying working copies.
+    /// CAS commit, comparing unchanged pairs against the cached snapshot at
+    /// `expected` when one is present instead of decrypting them.
+    fn commit(
+        &self,
+        user: &str,
+        expected: SetVersion,
+        next: SetSnapshot,
+        key: &EncryptionKey,
+    ) -> Result<(SetVersion, LogicalSnapshot), HistoryError> {
+        let known = self.cache.get_snapshot_if_version(user, next.set_id, expected);
+        Ok(self.store.commit_snapshot_known(
+            user,
+            expected,
+            next,
+            key,
+            known.as_ref().map(LogicalSnapshot::as_snapshot),
+        )?)
+    }
+
     fn remember(&self, user: &str, snap: &LogicalSnapshot) {
         self.cache.put_snapshot(user, snap);
     }
@@ -808,7 +827,7 @@ impl HistoryService {
         let next = ops::rename(snap_ref, new_name)?;
         // Reject collision with any other set (same name on self is a no-op rename).
         self.ensure_display_name_available(&user, &next.display_name, Some(set_id), key)?;
-        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        let (v, committed) = self.commit(&user, expected, next, key)?;
         self.remember(&user, &committed);
         Ok(v)
     }
@@ -904,7 +923,7 @@ impl HistoryService {
             key,
             &mut next,
         )?;
-        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        let (v, committed) = self.commit(&user, expected, next, key)?;
         self.remember(&user, &committed);
         Ok(v)
     }
@@ -933,8 +952,7 @@ impl HistoryService {
             &mut next,
         )?;
         let (v, committed) = self
-            .store
-            .commit_snapshot(&user, capture.version, next, key)?;
+            .commit(&user, capture.version, next, key)?;
         self.remember(&user, &committed);
         Ok(v)
     }
@@ -983,8 +1001,7 @@ impl HistoryService {
         self.ensure_migrated(&user, key)?;
         let next = ops::apply_regenerate(capture, assistant_response)?;
         let (v, committed) = self
-            .store
-            .commit_snapshot(&user, capture.version, next, key)?;
+            .commit(&user, capture.version, next, key)?;
         self.remember(&user, &committed);
         Ok(v)
     }
@@ -1063,7 +1080,7 @@ impl HistoryService {
             });
         }
         let next = operation(snap)?;
-        let (v, committed) = self.store.commit_snapshot(&user, expected, next, key)?;
+        let (v, committed) = self.commit(&user, expected, next, key)?;
         self.remember(&user, &committed);
         Ok(v)
     }

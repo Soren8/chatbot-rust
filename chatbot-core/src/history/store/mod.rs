@@ -679,13 +679,27 @@ impl RedbHistoryStore {
         &self,
         user_id: &str,
         expected: SetVersion,
+        snapshot: SetSnapshot,
+        key: &EncryptionKey,
+    ) -> Result<(SetVersion, LogicalSnapshot), StoreError> {
+        self.commit_snapshot_known(user_id, expected, snapshot, key, None)
+    }
+
+    /// [`Self::commit_snapshot`] with the logical snapshot already known to be
+    /// stored at `expected` (e.g. the plaintext cache): chunked commits compare
+    /// unchanged pairs against it instead of decrypting them.
+    pub fn commit_snapshot_known(
+        &self,
+        user_id: &str,
+        expected: SetVersion,
         mut snapshot: SetSnapshot,
         key: &EncryptionKey,
+        known: Option<&SetSnapshot>,
     ) -> Result<(SetVersion, LogicalSnapshot), StoreError> {
         let set_id = snapshot.set_id;
         match self.load_meta(user_id, set_id) {
             Ok(meta) if meta.blob_format.is_chunked() => {
-                return self.commit_chunked(user_id, expected, snapshot, key);
+                return self.commit_chunked(user_id, expected, snapshot, key, known);
             }
             Ok(_) => (),
             Err(err) => return Err(err),
@@ -1365,6 +1379,42 @@ mod tests {
             meta.get(SCHEMA_KEY).unwrap().unwrap().value(),
             [SCHEMA_VERSION + 1]
         );
+    }
+
+    #[test]
+    fn known_snapshot_replaces_pair_decrypts_without_masking_changes() {
+        use crate::history::cost::take_blob_opens;
+        let dir = tempfile::tempdir().unwrap();
+        let store = RedbHistoryStore::open(dir.path().join("history.redb")).unwrap();
+        let key = key();
+        let set_id = SetId::new();
+        store.create_set("alice", set_id, "chat", "sys", false, &key).unwrap();
+        let snap = store.load_snapshot("alice", set_id, &key).unwrap();
+        let s1 = append_pair(&snap, "u1", "a1").unwrap();
+        store.commit_snapshot("alice", SetVersion(1), s1, &key).unwrap();
+        let s1 = store.load_snapshot("alice", set_id, &key).unwrap();
+        let s2 = append_pair(&s1, "u2", "a2").unwrap();
+        store.commit_snapshot("alice", SetVersion(2), s2, &key).unwrap();
+        assert!(store.migrate_set_to_chunks("alice", set_id, &key).unwrap());
+        let known = store.load_logical("alice", set_id, &key).unwrap().into_snapshot();
+
+        let mut edited = known.clone();
+        edited.history[0].1 = "edited".into();
+        take_blob_opens();
+        store.commit_snapshot_known("alice", known.version, edited, &key, Some(&known)).unwrap();
+        assert_eq!(take_blob_opens().pairs, 0, "an accurate snapshot replaces every stored-pair decrypt");
+        let after = store.load_logical("alice", set_id, &key).unwrap().into_snapshot();
+        assert_eq!((after.history[0].1.as_str(), after.history[1].1.as_str()), ("edited", "a2"));
+
+        // A snapshot from another version is ignored, so a stale copy that
+        // already holds the new text cannot make a change look unchanged.
+        let mut changed = after.clone();
+        changed.history[1].1 = "changed".into();
+        let mut stale = changed.clone();
+        stale.version = known.version;
+        store.commit_snapshot_known("alice", after.version, changed, &key, Some(&stale)).unwrap();
+        let last = store.load_logical("alice", set_id, &key).unwrap().into_snapshot();
+        assert_eq!(last.history[1].1, "changed");
     }
 
     #[test]

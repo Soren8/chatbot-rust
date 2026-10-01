@@ -70,3 +70,11 @@ Evidence: `history_read_cost` red (`20261001T004323-180566cd197d`: `/chat` and `
 - PERF-014: while a source subscription exists, desktop (60 ms) and native (80 ms) idle polls become a 1 s backstop; notifications and clip consumption remain the wake signals. The MOD-era source pin in `playback_source_boundary.rs` was updated to this contract (both fallbacks retained without a subscription).
 
 Full suite on the batch tree (`20261001T010928-249729e38fe6`): 1,077 passed, 1 failed — `chatbot-cuda` `test_shared_deadline_bounds_and_retains_busy_workers` (`active_stream_count` 0 != 1), a timing-dependent shutdown test in code this batch does not touch; it passed 64/64 on two immediate reruns (`20261001T012012-d51156f75c4f`, `20261001T012038-073324fa8c1f`). Recorded as a test-quality (Phase 6) flake lead. WebView frame timing and battery effect are device limits.
+
+## Batch PERF-D — generation views, admission and commit (PERF-005, PERF-006, PERF-007)
+
+- PERF-006: `State::events_after` slices the contiguous event buffer by sequence instead of filtering every buffered event after each delivered event (O(1) offset plus the new events, under the same mutex). Unit `events_after_slices_the_contiguous_buffer_by_sequence` pins evicted-prefix, middle, end and past-end cursors.
+- PERF-007: admission and Stop serialize per owner (`admission_lock`), not on one global lock held across another user's whole prepare. Receipts and running-generation checks are owner-scoped, so cross-owner ordering carried no invariant. Unit `admission_serializes_each_owner_independently`.
+- PERF-005: `HistoryService` commits pass the cached logical snapshot at the expected version (`commit_snapshot_known`); chunked commits compare unchanged pairs against it and decrypt only pairs it does not cover. A snapshot at any other version is ignored, so a stale copy cannot mask a change (store unit `known_snapshot_replaces_pair_decrypts_without_masking_changes`). `history_read_cost::committing_a_turn_decrypts_no_unchanged_pairs` red (`20261001T012136-f91016db47f1`) → green (`20261001T012314-b456446c454a`).
+
+Full suite on the batch C+D tree: `20261001T012601-5c7fd5fd9bbc`, 1,087 passed, 0 failed (`temp/test-logs/phase5-batchD-full.log`); this is also batch C's clean gate.

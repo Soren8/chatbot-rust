@@ -18,7 +18,7 @@ use chatbot_core::{
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, watch, Mutex as AsyncMutex};
+use tokio::sync::{broadcast, watch, Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::{
     http_error::{api_error, api_error_json, HttpError},
@@ -97,6 +97,15 @@ struct State {
     seq: u64,
     settled: bool,
 }
+impl State {
+    /// Buffered events after `cursor`. Sequences are contiguous (eviction
+    /// only drops the front), so this is an index, not a scan.
+    fn events_after(&self, cursor: u64) -> Vec<Event> {
+        let Some(first) = self.events.front().map(|e| e.seq) else { return Vec::new() };
+        let skip = usize::try_from((cursor + 1).saturating_sub(first)).unwrap_or(usize::MAX);
+        self.events.range(skip.min(self.events.len())..).cloned().collect()
+    }
+}
 struct Generation {
     owner: String,
     set_id: String,
@@ -141,7 +150,7 @@ impl Generation {
 pub(crate) struct GenerationRegistry {
     entries: Mutex<HashMap<String, Arc<Generation>>>,
     receipts: Mutex<HashMap<(String, String), Receipt>>,
-    admission: AsyncMutex<()>,
+    admission: Mutex<HashMap<String, std::sync::Weak<AsyncMutex<()>>>>,
     pub timing: GenerationTiming,
 }
 impl Default for GenerationRegistry {
@@ -149,12 +158,29 @@ impl Default for GenerationRegistry {
         Self {
             entries: Mutex::new(HashMap::new()),
             receipts: Mutex::new(HashMap::new()),
-            admission: AsyncMutex::new(()),
+            admission: Mutex::new(HashMap::new()),
             timing: GenerationTiming::default(),
         }
     }
 }
 impl GenerationRegistry {
+    /// Serializes admission and Stop for one owner. Receipts and running
+    /// generations are owner-scoped, so owners never wait on each other.
+    async fn admission_lock(&self, owner: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            match locks.get(owner).and_then(std::sync::Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(AsyncMutex::new(()));
+                    locks.insert(owner.to_owned(), Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        lock.lock_owned().await
+    }
     pub(crate) fn replay(
         &self,
         owner: &str,
@@ -290,7 +316,7 @@ pub(crate) async fn admit(request: Request<Body>, kind: &str) -> Result<Response
     let operation =
         crate::idempotency::operation_request(&parts.headers, route, &payload)?;
     let registry = services.generations();
-    let _admission = registry.admission.lock().await;
+    let _admission = registry.admission_lock(&owner).await;
     if let Some(operation) = &operation {
         if let Some(response) = registry.replay(&owner, operation)? {
             if !response.status().is_success() { return Ok(response); }
@@ -525,7 +551,7 @@ pub async fn stop(
         "/generations/stop",
         &json!({"generation_id":id}),
     )?;
-    let _admission = registry.admission.lock().await;
+    let _admission = registry.admission_lock(&owner).await;
     if let Some(operation) = &operation {
         if let Some(response) = registry.replay(&owner, operation)? { return Ok(response); }
     }
@@ -567,7 +593,7 @@ fn event_response(generation: Arc<Generation>, heartbeat: Duration, after: u64, 
         loop {
             let (replay, settled) = {
                 let state = generation.state.lock().unwrap_or_else(|e| e.into_inner());
-                (state.events.iter().filter(|e| e.seq > cursor).cloned().collect::<Vec<_>>(), state.settled)
+                (state.events_after(cursor), state.settled)
             };
             for event in replay { cursor = event.seq; yield Ok::<Bytes, std::convert::Infallible>(line(&event)); }
             if settled { break; }
@@ -595,4 +621,48 @@ fn line(event: &Event) -> Bytes {
     let mut bytes = serde_json::to_vec(event).expect("event serialization");
     bytes.push(b'\n');
     Bytes::from(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with(seqs: std::ops::RangeInclusive<u64>) -> State {
+        let mut state = State {
+            descriptor: Descriptor { generation_id: "g".into(), state: "running".into(), base_version: 0 },
+            events: VecDeque::new(),
+            bytes: 0,
+            seq: *seqs.end(),
+            settled: false,
+        };
+        for seq in seqs {
+            state.events.push_back(Event { generation_id: "g".into(), seq, kind: "delta".into(), channel: "answer".into(), text: seq.to_string() });
+        }
+        state
+    }
+
+    #[test]
+    fn events_after_slices_the_contiguous_buffer_by_sequence() {
+        let state = state_with(5..=9);
+        let seqs = |cursor| state.events_after(cursor).into_iter().map(|e| e.seq).collect::<Vec<_>>();
+        assert_eq!(seqs(0), vec![5, 6, 7, 8, 9], "a cursor before the evicted prefix replays what remains");
+        assert_eq!(seqs(4), vec![5, 6, 7, 8, 9]);
+        assert_eq!(seqs(6), vec![7, 8, 9]);
+        assert_eq!(seqs(9), Vec::<u64>::new());
+        assert_eq!(seqs(42), Vec::<u64>::new());
+        assert!(state_with(1..=0).events_after(0).is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_serializes_each_owner_independently() {
+        let registry = GenerationRegistry::default();
+        let held = registry.admission_lock("user:a").await;
+        let other = tokio::time::timeout(Duration::from_millis(50), registry.admission_lock("user:b")).await;
+        assert!(other.is_ok(), "another owner's admission or Stop must not wait");
+        let same = tokio::time::timeout(Duration::from_millis(50), registry.admission_lock("user:a")).await;
+        assert!(same.is_err(), "the same owner stays serialized");
+        drop(held);
+        let again = tokio::time::timeout(Duration::from_millis(50), registry.admission_lock("user:a")).await;
+        assert!(again.is_ok(), "released owner admits again");
+    }
 }
