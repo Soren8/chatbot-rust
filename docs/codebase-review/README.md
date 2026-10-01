@@ -1,5 +1,9 @@
 # Codebase review program
 
+## Session 085 — Phase 5 started, 2026-10-01
+
+Phase 5 (performance and resource use) begins at `refactor@247c875`. Scope, priorities, evidence standard and entering leads are recorded in [performance.md](performance.md). Session-start continuity: post-Phase-4 production paths are assigned to new units C10 and S13 and to W05 (`static/activity-sync.js`); units changed since `eb82b77` carry `S` in their earlier-pass cells in [coverage.md](coverage.md). Re-reviewing those earlier passes is not Phase 5 scope.
+
 ## Session 084 — current completion status, 2026-09-29
 
 **Phase 4 is complete for the agreed repository-wide security/privacy review and bounded fixes**, following the primary completion review and native follow-up corrections. This supersedes the Phase-4-pending status in the earlier records below. Final full suite: `20260929T043340-482ba1a11f9d`, 1,033 Rust tests plus 64 Python tests passed; matching-snapshot physical-debug APK: `20260929T044047-c48de723468d`, 72 tasks successful. The log-capture race, locked-screen account-switch bypass and native TTS throwable logging are resolved with retained/strengthened regressions. Evidence, accepted deferrals and device/topology limits are recorded in [security.md, session 084](security.md#session-084--primary-completion-review-2026-09-29). Phases 1–4 are complete for their authorized scopes; phases 5–7 have not started.
