@@ -170,3 +170,27 @@ N01 files (activity, secure key, logger plugin, util except `FileLogger`) and th
 - `TtsBodyInputStream`: the watchdog is a `ScheduledThreadPoolExecutor` with `setRemoveOnCancelPolicy(true)`, so each read's cancelled alarm leaves the queue at once. The per-clip watchdog thread is retained.
 - `FileLogger`: one formatter reused under the existing lock; the file rolls to a single `.1` backup at 1 MiB (~2 MiB on disk). No app code reads the file; the in-memory ring used by `ClientLogReporter` is unchanged. Open/append/close per line is retained.
 - `audio_perf.rs` (watchdog queue ≤ 1 after 5,000 reads; real decoder compiled against a deterministic concentus stub, byte-identical to independent 48 kHz and 24 kHz references at whole/2 KB/1 B/7 B chunking, retained buffers ≤ 128 KB for a 2.5 MB stream) and `file_logger_cap.rs` (4 threads, ~7.4 MB logged; directory under 4 MiB; every line timestamp-valid). Red: `20261001T020812-c4cc0302f0c0` (queue 5,001; decoder retained 4.2 MB), `…020638-2a5f9e028cd9` (log 7.5 MB). Green: `…021032-f914b8ecbdfe` 2/2, `…021959-5e8cd49a9dfc` 1/1. Regression: `tts_download_queue` 3/3, `voice_mode_reliability` 51/51, `client_log_reporting` 2/2, `native_tts_communication` 2/2, `native_foreground_stop` 1/1, `distribution` 21/21 (`…041919-0ef822b56b69`).
+
+## Session 085 — browser and GPU inventory (W01–W05, G01)
+
+Every `static/*.js` module, the templates, both stylesheets and `chatbot-cuda/src/*` read 1→EOF (`chat.js` 5,074 lines; `chat.html` body with long lines truncated). Leads beyond PERF-013–016:
+
+| Lead | Location | Cost | Disposition |
+|---|---|---|---|
+| B-PERF-1 | `chat.js:3811–3840, 2460–2489`; `playback-source.js:21–87`; `tts-playback.js` notify paths; `voice-text.js:198–328` | Per delta: full `data-original` rewrite, `publish`, and ~2 full speakable projections (~40 regex passes each) while a TTS queue is subscribed; O(K·L) per reply. | Batch PERF-N. |
+| B-PERF-2 | `chat.js:327–331`; `activity-sync.js:249–263`; `session-client.js:140–183`; `login.rs:410–420` | Every focus/resume: GET `/login`, POST `/login/remember` (rotates the durable token), GET `/activity`, POST `/load_set` for a version. | Batch PERF-O. |
+| B-PERF-3 | `chat.js:294–313` | Recovered/reattached events re-render full Markdown per event (≤ 8,192 on reattach). | Batch PERF-N. |
+| B-PERF-4 | `chat.js:3883–3887, 2524–2528, 1018–1038` | Per reader chunk: layout read plus scroll write and two rAF callbacks. | Batch PERF-N. |
+| B-PERF-5 | `chat-renderer.js:279–317` | Every frame re-highlights every fence (unknown languages through `highlightAuto`); two `console.debug` per block per render. | Batch PERF-P. |
+| B-PERF-6 | `chat.html:261–305`; `chat.js:4173`; `lib.rs:185–207`; no compression layer | `ort.min.js` (358 KB) and the VAD bundle load synchronously on every chat page; ~1.5 MB uncompressed JS/CSS revalidated per load. | Open: lazy loading touches the `chat.js` gate (after PERF-N); compression depends on the host proxy, which this sandbox cannot see. |
+| B-PERF-7 | `voice-capture.js:111–206`; `native-audio.js:128–189` | Pitch autocorrelation (~250k MAC) per speech-like frame when barge-in cannot fire. | Batch PERF-P, only with barge-in proof. |
+| B-PERF-8 | `service.py:387–445`; native lookahead 4 | Up to five concurrent GPU inferences per turn, unordered; first sentence competes with lookahead. | Deferred: needs host GPU timing. |
+| B-PERF-9 | `service.py:174–198` | STT compiled with `torch.compile` but never warmed; first request pays compile. | Batch PERF-Q. |
+| B-PERF-10 | `audio_utils.py:188–219`; `main.py:144–170` | Two WAV copies and a process spawn per utterance. | Retained: host-only cost, expected < 20 ms. |
+| B-PERF-11 | `chat.js:3879, 2520, 3570, 3619` | `/get_sets` plus option rebuild after every turn. | Retained: picks up server-side rename and version. |
+| B-PERF-12 | `chat.js:1494–1508, 945–963` | Replace-mode set load mounts up to 80 bubbles into the live DOM with a layout read each. | Batch PERF-N. |
+| B-PERF-13 | `chat.js:1437–1455, 2891–2904` | All thumbnails fetched at once. | Retained: small, immutable-cached. |
+| B-PERF-14 | `style.css:18–40` | Infinite pulse animation for the whole voice-mode session. | Retained: visual product choice; compositor cost is device-only. |
+| B-PERF-15 | `enc-key.js:62–74, 210–230, 522` | Three IndexedDB opens (never closed) and two readwrite deletes per page load. | Batch PERF-Q. |
+
+No lead in `login.js`, `tt.js`, `native-bridge.js`, login/signup templates, `opencode-theme.css`, `conversation-state.js`, `voice-lifecycle.js`, `voice-events.js`, `stream-decoder.js`, `credential-crypto.js`, `credential-metadata.js`, `agent-connections.js`, `settings.py`. Desktop hover highlight, the scroll-time hover clear and the settings resize handler are rAF-coalesced or trivial. Correctness note for a later pass: concurrent tabs rotating the shared remember cookie on focus may race.
