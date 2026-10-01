@@ -340,5 +340,39 @@ class TestSttRoutes(unittest.TestCase):
         self.assertIn("decode boom", response.json()["detail"])
 
 
+    def test_stt_conversion_does_not_block_other_requests(self):
+        import asyncio
+        import threading
+        import time
+
+        import httpx
+
+        service, _, _ = _service()
+        release = threading.Event()
+
+        def slow_converter(raw, target_sr=16000):
+            release.wait(3)
+            return b"WAV:" + bytes(raw)
+
+        app = create_app(inference_service=service, audio_converter=slow_converter)
+
+        async def run():
+            async with app.router.lifespan_context(app):
+                transport = httpx.ASGITransport(app=app)
+                async with httpx.AsyncClient(transport=transport, base_url="http://voice") as client:
+                    started = time.monotonic()
+                    stt = asyncio.create_task(client.post(
+                        "/v1/stt", files={"audio": ("r.webm", b"raw", "audio/webm")}
+                    ))
+                    await asyncio.sleep(0.1)
+                    health = await client.get("/health")
+                    waited = time.monotonic() - started
+                    release.set()
+                    return health.status_code, waited, (await stt).status_code
+
+        health_status, waited, stt_status = asyncio.run(run())
+        self.assertEqual((health_status, stt_status), (200, 200))
+        self.assertLess(waited, 1.0, f"health answered {waited:.2f}s after an audio conversion began")
+
 if __name__ == "__main__":
     unittest.main()

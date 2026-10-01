@@ -16,6 +16,7 @@ In-flight GPU inference for the current sentence or call cannot be
 interrupted (cooperative boundary).
 """
 
+import asyncio
 import logging
 import tempfile
 from contextlib import aclosing, asynccontextmanager
@@ -140,6 +141,12 @@ async def kokoro_tts_stream(req: KokoroTtsRequest, request: Request):
 
 # ── STT ───────────────────────────────────────────────────────────────────────
 
+def _stage_wav(wav_bytes: bytes) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(wav_bytes)
+        return tmp.name
+
+
 @router.post("/v1/stt")
 async def stt(request: Request, audio: UploadFile = File(...)):
     raw = await audio.read()
@@ -149,16 +156,18 @@ async def stt(request: Request, audio: UploadFile = File(...)):
     service: InferenceService = request.app.state.inference_service
     converter = request.app.state.audio_converter
 
-    # Convert any ffmpeg-compatible format to 16 kHz WAV for Parakeet
+    # Convert any ffmpeg-compatible format to 16 kHz WAV for Parakeet. The
+    # ffmpeg subprocess and staging write run off the event loop so other
+    # requests (including streaming TTS) keep flowing.
     try:
-        wav_bytes = converter(raw, target_sr=service.settings.parakeet_sample_rate)
+        wav_bytes = await asyncio.to_thread(
+            converter, raw, target_sr=service.settings.parakeet_sample_rate
+        )
     except Exception as exc:
         logger.exception("Audio conversion failed")
         raise HTTPException(status_code=422, detail=f"Audio conversion failed: {exc}")
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp.write(wav_bytes)
-        tmp_path = tmp.name
+    tmp_path = await asyncio.to_thread(_stage_wav, wav_bytes)
 
     try:
         text = await service.transcribe_async(tmp_path)

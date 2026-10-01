@@ -229,6 +229,9 @@ class TestSttStartFailureCleansFile(unittest.TestCase):
 
         loop = asyncio.new_event_loop()
         try:
+            # Conversion and staging run on the loop's executor; start its
+            # worker first so only the transcription job's thread start fails.
+            loop.run_until_complete(loop.run_in_executor(None, lambda: None))
             with (
                 mock.patch.object(
                     threading.Thread,
