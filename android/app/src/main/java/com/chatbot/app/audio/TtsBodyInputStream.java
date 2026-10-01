@@ -4,9 +4,8 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -14,13 +13,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class TtsBodyInputStream extends FilterInputStream {
     private final long timeoutMs;
     private final Runnable disconnect;
-    private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor(
-            runnable -> new Thread(runnable, "NativeVoiceTts-body-timeout"));
+    private final ScheduledThreadPoolExecutor watchdog = new ScheduledThreadPoolExecutor(
+            1, runnable -> new Thread(runnable, "NativeVoiceTts-body-timeout"));
 
     public TtsBodyInputStream(InputStream input, long timeoutMs, Runnable disconnect) {
         super(input);
         this.timeoutMs = timeoutMs;
         this.disconnect = disconnect;
+        // Each read cancels its alarm; without this the queue holds every cancelled alarm for timeoutMs.
+        watchdog.setRemoveOnCancelPolicy(true);
     }
 
     @Override

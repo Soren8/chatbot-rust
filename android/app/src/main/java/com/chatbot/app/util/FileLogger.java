@@ -20,6 +20,11 @@ public class FileLogger {
     /** Recent lines for the debug-build crash/log reporter (ClientLogReporter). */
     private static final int RING_MAX_LINES = 150;
     private static final ArrayDeque<String> ring = new ArrayDeque<>();
+    /** On reaching this size the log rolls to a single ".1" backup, bounding disk use to ~2x. */
+    private static final long MAX_LOG_BYTES = 1024 * 1024;
+    /** Guarded by lock; SimpleDateFormat is not thread-safe. */
+    private static final SimpleDateFormat TIMESTAMP_FORMAT =
+            new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
 
     public static void init(Context context) {
         if (context == null) {
@@ -48,12 +53,12 @@ public class FileLogger {
     }
 
     public static void log(String tag, String msg) {
-        String line = timestamp() + " [" + tag + "] " + msg;
         try {
             Log.d(tag, msg != null ? msg : "null");
         } catch (Throwable ignored) {
         }
         synchronized (lock) {
+            String line = timestamp() + " [" + tag + "] " + msg;
             ring.addLast(line);
             while (ring.size() > RING_MAX_LINES) {
                 ring.removeFirst();
@@ -61,6 +66,7 @@ public class FileLogger {
             if (logFile == null) {
                 return;
             }
+            rollIfFull();
             try (FileWriter fw = new FileWriter(logFile, true)) {
                 fw.write(line + "\n");
             } catch (Throwable e) {
@@ -81,9 +87,28 @@ public class FileLogger {
         log(tag, (msg != null ? msg : "") + " | " + trace);
     }
 
+    /** Caller holds lock. */
+    private static void rollIfFull() {
+        try {
+            if (logFile.length() < MAX_LOG_BYTES) {
+                return;
+            }
+            File backup = new File(logFile.getPath() + ".1");
+            if (backup.exists()) {
+                backup.delete();
+            }
+            if (!logFile.renameTo(backup)) {
+                logFile.delete();
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to roll log", e);
+        }
+    }
+
+    /** Caller holds lock. */
     private static String timestamp() {
         try {
-            return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+            return TIMESTAMP_FORMAT.format(new Date());
         } catch (Throwable t) {
             return "";
         }

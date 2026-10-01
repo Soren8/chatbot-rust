@@ -39,9 +39,13 @@ public class OggOpusStreamDecoder {
     /** First audio-header packet of an Ogg-Opus stream. */
     private static final String OPUS_HEAD_MAGIC = "OpusHead";
 
-    private final ByteArrayOutputStream staging = new ByteArrayOutputStream(8192);
-    private final ByteArrayOutputStream pcm = new ByteArrayOutputStream(8192);
+    /** Unparsed network bytes live in staging[stagingConsumed, stagingEnd); parsed pages are dropped on feed. */
+    private byte[] staging = new byte[8192];
+    private int stagingEnd;
     private int stagingConsumed;
+    private final ByteArrayOutputStream pcm = new ByteArrayOutputStream(8192);
+    private final short[] decodedSamples = new short[MAX_OUTPUT_SAMPLES_120MS_48K];
+    private final byte[] pcmScratch = new byte[MAX_OUTPUT_SAMPLES_120MS_48K * 2];
 
     private OpusDecoder decoder;
     private int sampleRate = 24000;
@@ -73,7 +77,19 @@ public class OggOpusStreamDecoder {
 
     /** Feed freshly read network bytes. */
     public void feed(byte[] buf, int n) throws IOException {
-        staging.write(buf, 0, n);
+        int avail = stagingAvail();
+        if (stagingConsumed > 0) {
+            System.arraycopy(staging, stagingConsumed, staging, 0, avail);
+            stagingConsumed = 0;
+            stagingEnd = avail;
+        }
+        if (avail + n > staging.length) {
+            byte[] grown = new byte[Math.max(staging.length * 2, avail + n)];
+            System.arraycopy(staging, 0, grown, 0, avail);
+            staging = grown;
+        }
+        System.arraycopy(buf, 0, staging, stagingEnd, n);
+        stagingEnd += n;
         parseAvailable();
     }
 
@@ -92,17 +108,13 @@ public class OggOpusStreamDecoder {
     }
 
     private int stagingAvail() {
-        return staging.size() - stagingConsumed;
-    }
-
-    private byte[] stagingBytes() {
-        return staging.toByteArray();
+        return stagingEnd - stagingConsumed;
     }
 
     private void parseAvailable() throws IOException {
-        byte[] all = stagingBytes();
+        byte[] all = staging;
         while (true) {
-            int avail = all.length - stagingConsumed;
+            int avail = stagingEnd - stagingConsumed;
             if (avail < 27) {
                 return;
             }
@@ -132,15 +144,12 @@ public class OggOpusStreamDecoder {
             } else if (pageSerial != serial) {
                 throw new IOException("Ogg serial changed mid-stream");
             }
-            byte[] body = new byte[bodyLen];
-            System.arraycopy(all, base + 27 + segCount, body, 0, bodyLen);
             stagingConsumed += 27 + segCount + bodyLen;
-            all = stagingBytes();
-            handlePageBody(body, lacing, headerType);
+            handlePageBody(all, base + 27 + segCount, lacing, headerType);
         }
     }
 
-    private void handlePageBody(byte[] body, int[] lacing, int headerType) throws IOException {
+    private void handlePageBody(byte[] page, int bodyOffset, int[] lacing, int headerType) throws IOException {
         if ((headerType & 0x04) != 0) {
             sawEndOfStream = true;
         }
@@ -152,7 +161,7 @@ public class OggOpusStreamDecoder {
             pos += lacing[i];
             if (lacing[i] < 255) {
                 byte[] packet = new byte[pos - packetStart];
-                System.arraycopy(body, packetStart, packet, 0, packet.length);
+                System.arraycopy(page, bodyOffset + packetStart, packet, 0, packet.length);
                 packetStart = pos;
                 handlePacket(packet);
             }
@@ -206,7 +215,7 @@ public class OggOpusStreamDecoder {
         if (decoder == null) {
             throw new IOException("audio packet before OpusHead");
         }
-        short[] out = new short[MAX_OUTPUT_SAMPLES_120MS_48K];
+        short[] out = decodedSamples;
         int decoded;
         try {
             decoded = decoder.decode(packet, 0, packet.length, out, 0,
@@ -216,18 +225,17 @@ public class OggOpusStreamDecoder {
         }
         int skip = (int) Math.min(preskipRemaining, decoded);
         preskipRemaining -= skip;
+        int bytes;
         if (downsampler == null) {
+            bytes = 0;
             for (int i = skip; i < decoded; i++) {
-                appendPcm(out[i]);
+                pcmScratch[bytes++] = (byte) out[i];
+                pcmScratch[bytes++] = (byte) (out[i] >> 8);
             }
         } else {
-            downsampler.process(out, skip, decoded, pcm);
+            bytes = downsampler.process(out, skip, decoded, pcmScratch);
         }
-    }
-
-    private void appendPcm(short s) {
-        pcm.write(s & 0xFF);
-        pcm.write((s >> 8) & 0xFF);
+        pcm.write(pcmScratch, 0, bytes);
     }
 
     private static boolean startsWithMagic(byte[] packet, String magic) {
@@ -277,9 +285,11 @@ public class OggOpusStreamDecoder {
             this.nextCenter = delay;
         }
 
-        void process(short[] in, int from, int to, ByteArrayOutputStream out) {
+        /** Writes PCM16 LE for the decimated samples into out; returns the byte count. */
+        int process(short[] in, int from, int to, byte[] out) {
+            int bytes = 0;
             if (from >= to) {
-                return;
+                return bytes;
             }
             for (int i = from; i < to; i++) {
                 history[historyPos] = in[i];
@@ -303,12 +313,13 @@ public class OggOpusStreamDecoder {
                     } else if (y < -32768) {
                         y = -32768;
                     }
-                    out.write(y & 0xFF);
-                    out.write((y >> 8) & 0xFF);
+                    out[bytes++] = (byte) y;
+                    out[bytes++] = (byte) (y >> 8);
                     nextCenter += factor;
                 }
                 inputCount++;
             }
+            return bytes;
         }
 
         /** Q15 Blackman-windowed sinc low-pass at the output Nyquist, DC-normalized. */
