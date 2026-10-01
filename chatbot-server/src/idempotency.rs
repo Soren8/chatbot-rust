@@ -1,6 +1,6 @@
 //! HTTP transport for transaction-owned operation receipts.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex, Weak},
 };
 
@@ -48,21 +48,72 @@ pub fn replay(receipt: &Receipt) -> Result<Response<Body>, HttpError> {
         .expect("valid receipt response"))
 }
 
+/// Receipts kept per owner in each RAM receipt map; the owner's oldest is
+/// evicted beyond this. Clients retry an operation within seconds and keep at
+/// most a few in flight (generation admission is serialized per owner, voice
+/// turns are sequential), so 64 is far above legitimate use while bounding
+/// what one owner (including a guest replaying stale `/chat` 409s) can hold.
+pub(crate) const MAX_RECEIPTS_PER_OWNER: usize = 64;
+/// Minimum spacing of the sweep that drops expired receipts of idle owners.
+const IDLE_OWNER_SWEEP_SECS: u64 = 60;
+
+/// Owner-scoped RAM receipts in insertion order. Each insert prunes that
+/// owner's expired receipts and evicts its oldest beyond the cap; idle owners
+/// are swept at most once per `IDLE_OWNER_SWEEP_SECS`, so lookups never scan
+/// other owners.
+pub(crate) struct OwnerReceipts<T> {
+    owners: HashMap<String, VecDeque<(Receipt, T)>>,
+    next_sweep: u64,
+}
+impl<T> Default for OwnerReceipts<T> {
+    fn default() -> Self {
+        Self { owners: HashMap::new(), next_sweep: 0 }
+    }
+}
+impl<T> OwnerReceipts<T> {
+    pub(crate) fn get(&self, owner: &str, id: &OperationId, now: u64) -> Option<&(Receipt, T)> {
+        self.owners
+            .get(owner)?
+            .iter()
+            .find(|(receipt, _)| &receipt.operation_id == id && !receipt.expired(now))
+    }
+
+    pub(crate) fn insert(&mut self, owner: &str, receipt: Receipt, value: T) {
+        let now = receipt.created_at;
+        if now >= self.next_sweep {
+            self.owners.retain(|_, receipts| {
+                receipts.retain(|(receipt, _)| !receipt.expired(now));
+                !receipts.is_empty()
+            });
+            self.next_sweep = now + IDLE_OWNER_SWEEP_SECS;
+        }
+        let receipts = self.owners.entry(owner.to_owned()).or_default();
+        receipts.retain(|(old, _)| old.operation_id != receipt.operation_id && !old.expired(now));
+        receipts.push_back((receipt, value));
+        while receipts.len() > MAX_RECEIPTS_PER_OWNER {
+            receipts.pop_front();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stored(&self, owner: &str) -> usize {
+        self.owners.get(owner).map_or(0, VecDeque::len)
+    }
+}
+
 /// RAM-only STT transcripts and per-operation admission serialization.
 #[derive(Default)]
 pub(crate) struct SttReceipts {
-    receipts: Mutex<HashMap<(String, String), Receipt>>,
+    receipts: Mutex<OwnerReceipts<()>>,
     pub(crate) voice_operations: InFlightOperations,
 }
 impl SttReceipts {
     pub(crate) fn replay(&self, owner: &str, operation: &OperationRequest) -> Result<Option<Response<Body>>, HttpError> {
         use chatbot_core::operation_receipt::{ReceiptClock, SystemReceiptClock};
-        let mut receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
-        let now = SystemReceiptClock.now_secs();
-        receipts.retain(|_, receipt| !receipt.expired(now));
-        match receipts.get(&(owner.into(), operation.id.as_str().into())) {
-            Some(receipt) if !receipt.matches(operation) => Err(reused()),
-            Some(receipt) => replay(receipt).map(Some),
+        let receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
+        match receipts.get(owner, &operation.id, SystemReceiptClock.now_secs()) {
+            Some((receipt, _)) if !receipt.matches(operation) => Err(reused()),
+            Some((receipt, _)) => replay(receipt).map(Some),
             None => Ok(None),
         }
     }
@@ -71,8 +122,12 @@ impl SttReceipts {
         use chatbot_core::operation_receipt::{ReceiptClock, ReceiptOutcome, SystemReceiptClock};
         let outcome = if status.is_success() { ReceiptOutcome::Applied } else { ReceiptOutcome::Rejected };
         let receipt = Receipt::new(operation, outcome, status.as_u16(), serde_json::to_vec(&value).expect("receipt"), SystemReceiptClock.now_secs());
-        self.receipts.lock().unwrap_or_else(|e| e.into_inner())
-            .insert((owner.into(), operation.id.as_str().into()), receipt);
+        self.receipts.lock().unwrap_or_else(|e| e.into_inner()).insert(owner, receipt, ());
+    }
+
+    #[cfg(test)]
+    fn stored(&self, owner: &str) -> usize {
+        self.receipts.lock().unwrap().stored(owner)
     }
 }
 
@@ -98,5 +153,31 @@ impl InFlightOperations {
             }
         };
         lock.lock_owned().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chatbot_core::operation_receipt::OperationId;
+    use serde_json::json;
+
+    fn op(i: usize) -> OperationRequest {
+        OperationRequest::new(OperationId::parse(&format!("op-{i:016}")).unwrap(), "/stt", &json!({}))
+    }
+
+    #[test]
+    fn stt_receipts_are_capped_per_owner_without_touching_other_owners() {
+        let receipts = SttReceipts::default();
+        receipts.record("guest:other", &op(0), StatusCode::OK, json!({"text":"kept"}));
+        for i in 0..10_000 {
+            receipts.record("guest:flood", &op(i), StatusCode::OK, json!({"text":i}));
+        }
+        assert!(receipts.stored("guest:flood") <= MAX_RECEIPTS_PER_OWNER);
+        assert_eq!(receipts.stored("guest:other"), 1);
+        assert!(receipts.replay("guest:other", &op(0)).unwrap().is_some());
+        let latest = receipts.replay("guest:flood", &op(9_999)).unwrap().expect("latest replays");
+        assert_eq!(latest.status(), StatusCode::OK);
+        assert!(receipts.replay("guest:flood", &op(0)).unwrap().is_none(), "oldest was evicted");
     }
 }

@@ -149,7 +149,7 @@ impl Generation {
 
 pub(crate) struct GenerationRegistry {
     entries: Mutex<HashMap<String, Arc<Generation>>>,
-    receipts: Mutex<HashMap<(String, String), Receipt>>,
+    receipts: Mutex<crate::idempotency::OwnerReceipts<()>>,
     admission: Mutex<HashMap<String, std::sync::Weak<AsyncMutex<()>>>>,
     pub timing: GenerationTiming,
 }
@@ -157,7 +157,7 @@ impl Default for GenerationRegistry {
     fn default() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
-            receipts: Mutex::new(HashMap::new()),
+            receipts: Mutex::default(),
             admission: Mutex::new(HashMap::new()),
             timing: GenerationTiming::default(),
         }
@@ -186,12 +186,10 @@ impl GenerationRegistry {
         owner: &str,
         operation: &chatbot_core::operation_receipt::OperationRequest,
     ) -> Result<Option<Response<Body>>, HttpError> {
-        let mut receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
-        let now = SystemReceiptClock.now_secs();
-        receipts.retain(|_, receipt| !receipt.expired(now));
-        match receipts.get(&(owner.into(), operation.id.as_str().into())) {
-            Some(receipt) if !receipt.matches(operation) => Err(crate::idempotency::reused()),
-            Some(receipt) => crate::idempotency::replay(receipt).map(Some),
+        let receipts = self.receipts.lock().unwrap_or_else(|e| e.into_inner());
+        match receipts.get(owner, &operation.id, SystemReceiptClock.now_secs()) {
+            Some((receipt, _)) if !receipt.matches(operation) => Err(crate::idempotency::reused()),
+            Some((receipt, _)) => crate::idempotency::replay(receipt).map(Some),
             None => Ok(None),
         }
     }
@@ -217,7 +215,11 @@ impl GenerationRegistry {
         self.receipts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((owner.into(), operation.id.as_str().into()), receipt);
+            .insert(owner, receipt, ());
+    }
+    #[cfg(test)]
+    fn stored(&self, owner: &str) -> usize {
+        self.receipts.lock().unwrap().stored(owner)
     }
     fn owned(&self, owner: &str, id: &str) -> Result<Arc<Generation>, HttpError> {
         self.entries
@@ -639,6 +641,29 @@ mod tests {
             state.events.push_back(Event { generation_id: "g".into(), seq, kind: "delta".into(), channel: "answer".into(), text: seq.to_string() });
         }
         state
+    }
+
+    fn op(i: usize) -> chatbot_core::operation_receipt::OperationRequest {
+        chatbot_core::operation_receipt::OperationRequest::new(
+            chatbot_core::operation_receipt::OperationId::parse(&format!("op-{i:016}")).unwrap(),
+            "/chat",
+            &json!({}),
+        )
+    }
+
+    #[test]
+    fn generation_receipts_are_capped_per_owner_without_touching_other_owners() {
+        let registry = GenerationRegistry::default();
+        registry.record("user:other", &op(0), StatusCode::ACCEPTED, json!({"generation_id":"g"}));
+        for i in 0..10_000 {
+            registry.record("guest:flood", &op(i), StatusCode::CONFLICT, json!({"error":"version_conflict"}));
+        }
+        assert!(registry.stored("guest:flood") <= crate::idempotency::MAX_RECEIPTS_PER_OWNER);
+        assert_eq!(registry.stored("user:other"), 1);
+        assert!(registry.replay("user:other", &op(0)).unwrap().is_some());
+        let latest = registry.replay("guest:flood", &op(9_999)).unwrap().expect("latest replays");
+        assert_eq!(latest.status(), StatusCode::CONFLICT);
+        assert!(registry.replay("guest:flood", &op(0)).unwrap().is_none(), "oldest was evicted");
     }
 
     #[test]

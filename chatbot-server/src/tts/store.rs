@@ -104,7 +104,7 @@ pub(crate) enum BeginOutcome<'a> {
 /// the lock only for its own arbitration; no lock is held across synthesis.
 pub(crate) struct PendingTtsStore {
     map: RwLock<HashMap<String, PendingTts>>,
-    receipts: RwLock<HashMap<(String, String), (chatbot_core::operation_receipt::Receipt, String)>>,
+    receipts: RwLock<crate::idempotency::OwnerReceipts<String>>,
     pub(crate) operations: crate::idempotency::InFlightOperations,
 }
 
@@ -112,7 +112,7 @@ impl PendingTtsStore {
     pub(crate) fn new() -> Self {
         Self {
             map: RwLock::new(HashMap::new()),
-            receipts: RwLock::new(HashMap::new()),
+            receipts: RwLock::default(),
             operations: crate::idempotency::InFlightOperations::default(),
         }
     }
@@ -123,9 +123,8 @@ impl PendingTtsStore {
         operation: &chatbot_core::operation_receipt::OperationRequest,
     ) -> Result<Option<String>, crate::http_error::HttpError> {
         use chatbot_core::operation_receipt::{ReceiptClock, SystemReceiptClock};
-        let mut receipts = self.receipts.write().expect("tts receipts");
-        receipts.retain(|_, (receipt, _)| !receipt.expired(SystemReceiptClock.now_secs()));
-        let Some((receipt, token)) = receipts.get(&(owner.into(), operation.id.as_str().into())) else {
+        let receipts = self.receipts.read().expect("tts receipts");
+        let Some((receipt, token)) = receipts.get(owner, &operation.id, SystemReceiptClock.now_secs()) else {
             return Ok(None);
         };
         if !receipt.matches(operation) {
@@ -148,10 +147,15 @@ impl PendingTtsStore {
             Vec::new(),
             SystemReceiptClock.now_secs(),
         );
-        self.receipts.write().expect("tts receipts").insert(
-            (owner.into(), operation.id.as_str().into()),
-            (receipt, token.into()),
-        );
+        self.receipts
+            .write()
+            .expect("tts receipts")
+            .insert(owner, receipt, token.into());
+    }
+
+    #[cfg(test)]
+    fn stored_receipts(&self, owner: &str) -> usize {
+        self.receipts.read().unwrap().stored(owner)
     }
 
     /// Admit a fresh token. Returns false when full with nothing safe to
@@ -918,5 +922,28 @@ mod tests {
             matches!(first.begin("token"), BeginOutcome::Begin { .. }),
             "admission must stay visible in its own store"
         );
+    }
+
+    fn op(i: usize) -> chatbot_core::operation_receipt::OperationRequest {
+        chatbot_core::operation_receipt::OperationRequest::new(
+            chatbot_core::operation_receipt::OperationId::parse(&format!("op-{i:016}")).unwrap(),
+            "/tts",
+            &serde_json::json!({}),
+        )
+    }
+
+    #[test]
+    fn tts_receipts_are_capped_per_owner_without_touching_other_owners() {
+        let store = PendingTtsStore::new();
+        insert_text(&store, "other-token", "kept");
+        store.record_admission("user:other", &op(0), "other-token");
+        for i in 0..10_000 {
+            store.record_admission("guest:flood", &op(i), &format!("flood-{i}"));
+        }
+        insert_text(&store, "flood-9999", "latest");
+        assert!(store.stored_receipts("guest:flood") <= crate::idempotency::MAX_RECEIPTS_PER_OWNER);
+        assert_eq!(store.stored_receipts("user:other"), 1);
+        assert_eq!(store.replay_admission("user:other", &op(0)).unwrap().as_deref(), Some("other-token"));
+        assert_eq!(store.replay_admission("guest:flood", &op(9_999)).unwrap().as_deref(), Some("flood-9999"));
     }
 }
