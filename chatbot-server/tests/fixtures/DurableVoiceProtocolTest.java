@@ -16,6 +16,14 @@ public final class DurableVoiceProtocolTest {
             return ttsKeys.size() == 2 ? "expired" : "renewed";
         }, token -> "expired".equals(token) ? null : token, ms -> {});
         if (!"renewed".equals(renewed) || !ttsKeys.equals(java.util.Arrays.asList("sentence-key", "sentence-key", "sentence-key"))) throw new AssertionError("TTS body loss and token renewal preserve identity");
+        final int[] expiredAdmissions = {0};
+        final java.util.List<Long> renewalSleeps = new java.util.ArrayList<>();
+        Object neverOpened = DurableVoiceProtocol.openTts("expired-key", key -> {
+            if (++expiredAdmissions[0] > 50) throw new AssertionError("unbounded TTS token renewal");
+            return "expired";
+        }, token -> null, renewalSleeps::add);
+        if (neverOpened != null || expiredAdmissions[0] < 2 || expiredAdmissions[0] > 5) throw new AssertionError("expired TTS tokens renew a bounded number of times, got " + expiredAdmissions[0]);
+        if (renewalSleeps.size() != expiredAdmissions[0] - 1 || renewalSleeps.stream().anyMatch(ms -> ms <= 0)) throw new AssertionError("TTS token renewal backs off between admissions: " + renewalSleeps);
         if (DurableVoiceProtocol.selectSet(new String[]{"first", "default", "selected"}, new boolean[]{false, true, false}, "selected") != 2) throw new AssertionError("selected WebView set");
         if (DurableVoiceProtocol.selectSet(new String[]{"first", "default"}, new boolean[]{false, true}, "missing") != 1) throw new AssertionError("default fallback");
         if (!DurableVoiceProtocol.refreshRejectedVersion(409, "version_conflict") || DurableVoiceProtocol.refreshRejectedVersion(503, "version_conflict") || DurableVoiceProtocol.refreshRejectedVersion(409, "generation_active")) throw new AssertionError("only explicit version rejection changes intent");

@@ -129,3 +129,10 @@ N01 files (activity, secure key, logger plugin, util except `FileLogger`) and th
 - PERF-009 split: the receipt sweep folds into R-PERF-1; the user-store reopen is rejected — O(1) per request (four `exists`, two verifier reads, one HMAC) on low-frequency endpoints (one long-lived events stream, status on EOF, activity on recover).
 - Weak lock maps (`generations.rs` admission, `idempotency.rs` in-flight, `set_privacy_coordinator.rs`) prune dead entries on every acquire. TTS token store is capped at 128 with a 10-minute TTL.
 - Correctness note for a later pass (not performance): a retried `/chat` whose generation was removed more than 120 s after settling gets 404 instead of its recorded descriptor (`generations.rs:326`).
+
+## Batch PERF-H — Android Auto failure bounds (N-PERF-4, 7, 8, 9, 16)
+
+- New pure `car/CarVoicePolicy.java` (capture-read classification, one-in-flight/one-pending turn slot, buffer-bounded drain) runs under `javac` in `car_voice_failure_modes`; `VoiceScreen.java` wiring is source-pinned there because the car library has no stubs. Negative reads stop capture through a local recorder reference; empty reads sleep one frame with rate-limited logging; the drain waits only for `min(bytes written, track buffer)`; screen destroy clears pending main callbacks, stops capture and shuts down both executors (`shutdown`, so the queued explicit Stop still runs). A turn slot drops the pending utterance once capture has stopped; capture never restarts on the same screen.
+- `DurableVoiceProtocol.openTts` renews an expired stream at most `MAX_TTS_OPENS = 3` times with the admission backoff, then takes the existing no-TTS path.
+- Red: `20261001T020010-28ee8bace8db` (unbounded renewal), `20261001T020304-4adaa0c20b43` (policy missing, 2/2 failed). Green: `car_voice_failure_modes` 2/2 (`20261001T020700-5c2f969efad1`), `tts_download_queue` 3/3 (`…020834-a5bb409fe446`), `distribution` 21/21 (`…021041-3655935cf1ac`). `VoiceScreen.java` compiles only in the APK build gate.
+- Noted, unchanged: `onDestroy` does not abandon audio focus; `retryAdmission` stays unbounded on `IOException` with backoff that stops with the session.

@@ -174,6 +174,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 **Goal**: App appears on AA head unit as a voice-only interface.
 
 **Done:** native `CarAppService` / `VoiceSession` / `VoiceScreen`, RMS voice path, REST chat/TTS, DHU/emulator testing path.  
+**Failure bounds** (pure decisions in `car/CarVoicePolicy`, run under `javac` by `car_voice_failure_modes`): a negative `AudioRecord.read` stops capture and empty reads back off one frame with rate-limited logging; one turn runs at a time with at most one pending utterance (newer speech replaces it); the TTS drain waits only for audio still inside the `AudioTrack` buffer; expired `/tts_stream` tokens renew at most `MAX_TTS_OPENS` times with backoff; screen destroy stops capture and shuts down both executors.  
 **Not done for production:** `HostValidator` is still `ALLOW_ALL_HOSTS_VALIDATOR` (local/DHU only); real AA requires Play-trusted install + production host allowlist (see distribution section below).
 
 1. Implement `CarAppService` in Java:

@@ -17,20 +17,28 @@ public final class DurableVoiceProtocol {
         while (true) {
             try { return admission.send(key); }
             catch (IOException lost) {
-                sleeper.sleep(Math.min(30000L, 500L << Math.min(attempt++, 6)));
+                sleeper.sleep(backoffMs(attempt++));
             }
         }
     }
 
+    private static long backoffMs(int attempt) {
+        return Math.min(30000L, 500L << Math.min(attempt, 6));
+    }
+
     public interface TokenStream<T> { T open(String token) throws IOException; }
 
-    /** A null stream denotes an expired token; renew the same sentence receipt. */
+    static final int MAX_TTS_OPENS = 3;
+
+    /** A null stream denotes an expired token; renew the same sentence receipt, with backoff, a bounded number of times. */
     public static <T> T openTts(String key, Admission<String> admission, TokenStream<T> stream, Sleeper sleeper) throws IOException {
-        while (true) {
+        for (int expired = 0; ; ) {
             String token = retryAdmission(key, admission, sleeper);
             if (token == null) return null;
             T opened = stream.open(token);
             if (opened != null) return opened;
+            if (++expired >= MAX_TTS_OPENS) return null;
+            sleeper.sleep(backoffMs(expired - 1));
         }
     }
 

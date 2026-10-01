@@ -19,6 +19,8 @@ import androidx.car.app.model.Pane;
 import androidx.car.app.model.PaneTemplate;
 import androidx.car.app.model.Row;
 import androidx.car.app.model.Template;
+import androidx.lifecycle.DefaultLifecycleObserver;
+import androidx.lifecycle.LifecycleOwner;
 
 import com.chatbot.app.R;
 import com.chatbot.app.audio.OggOpusStreamDecoder;
@@ -39,6 +41,7 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class VoiceScreen extends Screen {
@@ -63,11 +66,12 @@ public class VoiceScreen extends Screen {
     private final AudioManager audioManager;
     private final AtomicBoolean captureRunning = new AtomicBoolean(false);
     private final AtomicBoolean ttsPlaying = new AtomicBoolean(false);
+    private final CarVoicePolicy.TurnSlot<byte[]> turns = new CarVoicePolicy.TurnSlot<>();
 
     private volatile DurableVoiceProtocol generation;
     private volatile String generationOrigin;
     private volatile AudioTrack activeTrack;
-    private AudioRecord audioRecord;
+    private volatile AudioRecord audioRecord;
     private AudioFocusRequest audioFocusRequest;
     private boolean hasAudioFocus = false;
     private String statusText = "Initializing…";
@@ -81,6 +85,16 @@ public class VoiceScreen extends Screen {
         Log.i(TAG, "VoiceScreen created with server: " + serverUrl());
         FileLogger.log(TAG, "VoiceScreen created, serverUrl=" + serverUrl());
         mainHandler.postDelayed(this::startCapture, 500);
+        getLifecycle().addObserver(new DefaultLifecycleObserver() {
+            @Override
+            public void onDestroy(@NonNull LifecycleOwner owner) {
+                FileLogger.log(TAG, "VoiceScreen destroyed");
+                mainHandler.removeCallbacksAndMessages(null);
+                stopCapture();
+                executor.shutdown();
+                captureExecutor.shutdown();
+            }
+        });
     }
 
     /**
@@ -226,11 +240,23 @@ public class VoiceScreen extends Screen {
         boolean inSpeech = false;
         long speechStartMs = 0;
         long lastLogMs = 0;
+        AudioRecord record = audioRecord;
+        CarVoicePolicy.CaptureReads reads = new CarVoicePolicy.CaptureReads();
 
-        while (captureRunning.get() && audioRecord != null) {
-            int read = audioRecord.read(frame, 0, FRAME_SAMPLES);
-            if (read <= 0) {
-                FileLogger.log(TAG, "audioRecord.read returned " + read);
+        while (captureRunning.get() && record != null) {
+            int read = record.read(frame, 0, FRAME_SAMPLES);
+            int action = reads.onRead(read);
+            if (action == CarVoicePolicy.CaptureReads.STOP) {
+                FileLogger.log(TAG, "audioRecord.read returned " + read + ", stopping capture");
+                if (captureRunning.get()) {
+                    setStatus("Audio recording failed");
+                    mainHandler.post(this::stopCapture);
+                }
+                break;
+            }
+            if (action == CarVoicePolicy.CaptureReads.BACK_OFF) {
+                if (reads.logIdle()) FileLogger.log(TAG, "audioRecord.read returned " + read);
+                try { Thread.sleep(FRAME_MS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                 continue;
             }
             // While TTS is playing, drain mic but don't classify (rely on AEC, but be safe)
@@ -295,40 +321,53 @@ public class VoiceScreen extends Screen {
      */
     private void handleUtterance(byte[] pcm) {
         FileLogger.log(TAG, "handleUtterance bytes=" + pcm.length);
-        executor.execute(() -> {
-            String turnUrl = serverUrl();
-            try {
-                setStatus("Transcribing…");
-                refreshIdentity(turnUrl);
-                resolveSet(turnUrl);
-                String text = postStt(turnUrl, pcm);
-                if (text == null || text.trim().isEmpty()) {
-                    setStatus("Listening…");
-                    return;
-                }
-                lastTranscription = text;
-                mainHandler.post(this::invalidate);
+        byte[] start = turns.offer(pcm);
+        if (start == null) {
+            FileLogger.log(TAG, "turn in flight, utterance held as the pending turn");
+            return;
+        }
+        try {
+            executor.execute(() -> {
+                for (byte[] next = start; next != null && captureRunning.get(); next = turns.finish()) runTurn(next);
+            });
+        } catch (RejectedExecutionException e) {
+            FileLogger.log(TAG, "handleUtterance after screen destroyed");
+        }
+    }
 
-                setStatus("Thinking…");
-                String response = postChat(turnUrl, text);
-                if (response == null || response.isEmpty()) {
-                    setStatus("Listening…");
-                    return;
-                }
-
-                setStatus("Speaking…");
-                ttsPlaying.set(true);
-                try {
-                    playTts(turnUrl, response);
-                } finally {
-                    ttsPlaying.set(false);
-                }
+    private void runTurn(byte[] pcm) {
+        String turnUrl = serverUrl();
+        try {
+            setStatus("Transcribing…");
+            refreshIdentity(turnUrl);
+            resolveSet(turnUrl);
+            String text = postStt(turnUrl, pcm);
+            if (text == null || text.trim().isEmpty()) {
                 setStatus("Listening…");
-            } catch (Exception e) {
-                FileLogger.log(TAG, "ERROR handleUtterance", e);
-                setStatus("Listening…");
+                return;
             }
-        });
+            lastTranscription = text;
+            mainHandler.post(this::invalidate);
+
+            setStatus("Thinking…");
+            String response = postChat(turnUrl, text);
+            if (response == null || response.isEmpty()) {
+                setStatus("Listening…");
+                return;
+            }
+
+            setStatus("Speaking…");
+            ttsPlaying.set(true);
+            try {
+                playTts(turnUrl, response);
+            } finally {
+                ttsPlaying.set(false);
+            }
+            setStatus("Listening…");
+        } catch (Exception e) {
+            FileLogger.log(TAG, "ERROR handleUtterance", e);
+            setStatus("Listening…");
+        }
     }
 
     private String csrfToken = "";
@@ -605,10 +644,10 @@ public class VoiceScreen extends Screen {
         }
         FileLogger.log(TAG, "playTts wrote bytes=" + total);
         try {
-            // Wait for buffered audio to drain — simple sleep based on bytes
-            long durationMs = (total / 2 * 1000L) / sampleRate; // 16-bit mono
+            // Blocking writes return once all but the last buffer's worth has played
+            long durationMs = CarVoicePolicy.drainMs(total, track.getBufferSizeInFrames() * 2, sampleRate);
             FileLogger.log(TAG, "playTts waiting drain " + durationMs + "ms");
-            Thread.sleep(Math.min(durationMs, 30000));
+            Thread.sleep(durationMs);
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
