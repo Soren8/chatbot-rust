@@ -42,8 +42,6 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.concurrent.atomic.AtomicLong;
 
 @CapacitorPlugin(
@@ -63,8 +61,6 @@ public class NativeMicPlugin extends Plugin {
     }
 
     private static final int SAMPLE_RATE = 16000;
-    /** Fixed 20 ms frames for steady JS consumption (320 samples * 2 bytes). */
-    private static final int CHUNK_SAMPLES = 320;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
 
@@ -235,29 +231,15 @@ public class NativeMicPlugin extends Plugin {
             recording.startRecording();
             isRecording = true;
 
+            final int readSamples = NativeMicCapture.readSamples(bufferSize);
             recordingThread = new Thread(() -> {
-                short[] readBuffer = new short[bufferSize];
-                short[] chunkBuffer = new short[CHUNK_SAMPLES];
-                int chunkFill = 0;
-                while (isRecording && audioRecord == recording) {
-                    int read = recording.read(readBuffer, 0, bufferSize);
-                    if (read <= 0) {
-                        continue;
-                    }
-                    int offset = 0;
-                    while (offset < read) {
-                        int toCopy = Math.min(CHUNK_SAMPLES - chunkFill, read - offset);
-                        System.arraycopy(readBuffer, offset, chunkBuffer, chunkFill, toCopy);
-                        chunkFill += toCopy;
-                        offset += toCopy;
-                        if (chunkFill == CHUNK_SAMPLES) {
-                            notifyAudioData(shortArrayToByteArray(chunkBuffer, CHUNK_SAMPLES), generation);
-                            chunkFill = 0;
-                        }
-                    }
-                }
-                if (chunkFill > 0) {
-                    notifyAudioData(shortArrayToByteArray(chunkBuffer, chunkFill), generation);
+                int readError = NativeMicCapture.run(
+                        (buffer, offset, length) -> recording.read(buffer, offset, length),
+                        readSamples,
+                        () -> isRecording && audioRecord == recording,
+                        pcm -> notifyAudioData(pcm, generation));
+                if (readError < 0) {
+                    onCaptureReadError(readError, generation);
                 }
             });
             recordingThread.start();
@@ -790,10 +772,15 @@ public class NativeMicPlugin extends Plugin {
         }
     }
 
-    private byte[] shortArrayToByteArray(short[] shorts, int count) {
-        byte[] bytes = new byte[count * 2];
-        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(shorts, 0, count);
-        return bytes;
+    /** A failed read leaves the recorder unusable: release it rather than hold a deaf mic. */
+    private void onCaptureReadError(int readError, long generation) {
+        mainHandler.post(() -> {
+            if (generation == recordingGeneration.get()) {
+                FileLogger.log(TAG, "AudioRecord.read failed error=" + readError);
+                ClientLogReporter.report("VOICE-ERROR", "voice: mic read failed error=" + readError);
+                stopRecording();
+            }
+        });
     }
 
     private void notifyAudioData(byte[] pcmData, long generation) {
