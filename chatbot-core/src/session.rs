@@ -93,6 +93,8 @@ pub struct ChatContext {
     pub send_thoughts: bool,
     /// Immutable prepare snapshot for authenticated durable commits.
     pub prepare_capture: Option<PrepareCapture>,
+    /// Resolves stored image refs in `history` for the model prompt.
+    pub image_resolver: Option<crate::chat_images::ImageResolver>,
 }
 
 pub struct ChatPrepareResult {
@@ -815,18 +817,45 @@ impl ChatService {
         set_name: &str,
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, PrepareHistoryError> {
+        // Ref-shaped: images stay `[IMAGE:img:…]` until the prompt resolves
+        // only the renditions it sends.
         let hs = self.history_for_prepare()?;
-        if let Some(id) = set_id {
-            return hs.load(username, id, key).map_err(map_history_to_prepare);
-        }
-        match hs.find_by_display_name(username, set_name, key) {
-            Ok(Some(snap)) => Ok(snap),
-            Ok(None) if set_name == "default" => hs
-                .ensure_default_set(username, key)
-                .map_err(map_history_to_prepare),
-            Ok(None) => Err(history_not_found()),
-            Err(err) => Err(map_history_to_prepare(err)),
-        }
+        let id = match set_id {
+            Some(id) => id,
+            None => {
+                let want = set_name.trim();
+                let found = hs
+                    .list_sets(username, key)
+                    .map_err(map_history_to_prepare)?
+                    .into_iter()
+                    .find(|summary| summary.display_name == want);
+                match found {
+                    Some(summary) => summary.set_id,
+                    None if set_name == "default" => hs
+                        .ensure_default_set_id(username, key)
+                        .map_err(map_history_to_prepare)?,
+                    None => return Err(history_not_found()),
+                }
+            }
+        };
+        hs.load_logical(username, id, key).map_err(map_history_to_prepare)
+    }
+
+    fn image_resolver(
+        &self,
+        username: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> crate::chat_images::ImageResolver {
+        let service = self.clone();
+        let username = username.to_owned();
+        let key = key.clone();
+        crate::chat_images::ImageResolver::new(move |image_id, fidelity| {
+            service
+                .history()
+                .ok()?
+                .stored_image_data_url(&username, set_id, image_id, fidelity, &key)
+        })
     }
 
     /// Guest-only session bootstrap. Authenticated users always load via HistoryService.
@@ -907,6 +936,7 @@ impl ChatService {
         let mut set_id = None;
         let mut set_version = None;
         let mut display_set_name = set_name.to_owned();
+        let mut image_resolver = None;
 
         if data.requires_cipher {
             let key = self.require_encryption_key(session.username.as_deref(), encryption_key)?;
@@ -934,6 +964,7 @@ impl ChatService {
 
             set_id = Some(snapshot.set_id);
             set_version = Some(snapshot.version);
+            image_resolver = Some(self.image_resolver(username, snapshot.set_id, key));
             prepare_capture = Some(PrepareCapture::from_snapshot(&snapshot));
         } else if !data.initialised {
             self.initialise_session_data(&mut data, session, set_name, None)?;
@@ -984,6 +1015,7 @@ impl ChatService {
             test_chunks,
             send_thoughts: request.send_thoughts,
             prepare_capture,
+            image_resolver,
         })
     }
 
@@ -1303,6 +1335,7 @@ impl ChatService {
         let memory_text: String;
         let system_prompt: String;
         let mut display_set_name = set_name.to_owned();
+        let mut durable_owner = None;
 
         if data.requires_cipher {
             let key = self.require_encryption_key(session.username.as_deref(), encryption_key)?;
@@ -1315,6 +1348,7 @@ impl ChatService {
                 request.system_prompt,
                 key,
             )?;
+            durable_owner = Some((username, snapshot.set_id, key));
             display_set_name = snapshot.display_name.clone();
             data.memory = snapshot.memory.clone();
             data.system_prompt = snapshot.system_prompt.clone();
@@ -1380,10 +1414,16 @@ impl ChatService {
         };
 
         let effective_user = if insertion_index < full_history.len() {
-            crate::chat_images::coalesce_edit_user_message(
-                request.message,
-                &full_history[insertion_index].0,
-            )
+            // Coalesce against the stored full images, as the edited pair is
+            // the only one whose image is resent at full resolution.
+            let stored = match durable_owner {
+                Some((username, set_id, key)) => self
+                    .history_for_prepare()?
+                    .materialize_message(username, set_id, &full_history[insertion_index].0, key)
+                    .map_err(map_history_to_prepare)?,
+                None => full_history[insertion_index].0.clone(),
+            };
+            crate::chat_images::coalesce_edit_user_message(request.message, &stored)
         } else {
             request.message.to_owned()
         };
@@ -1423,6 +1463,8 @@ impl ChatService {
             test_chunks,
             send_thoughts: request.send_thoughts,
             prepare_capture,
+            image_resolver: durable_owner
+                .map(|(username, set_id, key)| self.image_resolver(username, set_id, key)),
         };
 
         Ok((context, Some(insertion_index)))

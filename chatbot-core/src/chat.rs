@@ -1,6 +1,6 @@
 use crate::chat_images::{
-    self, approximate_content_tokens, has_image, prepare_history_images, reserve_full_image_slots,
-    MAX_FULL_RES_IMAGES,
+    self, approximate_content_tokens, finish_planned_thumbnails, has_image,
+    plan_images_for_context, reserve_full_image_slots, ImageResolver, MAX_FULL_RES_IMAGES,
 };
 use crate::session::ChatContext;
 use once_cell::sync::Lazy;
@@ -148,6 +148,17 @@ pub fn prepare_prompt_messages(
     input: &PromptInput,
     new_user_message: &str,
 ) -> PreparedChatMessages {
+    prepare_prompt_messages_with(input, new_user_message, None)
+}
+
+/// [`prepare_prompt_messages`] for histories holding stored `img:` refs,
+/// which `resolve` turns into data URLs. Truncation runs before any
+/// thumbnail is produced, so dropped pairs cost no image work.
+pub fn prepare_prompt_messages_with(
+    input: &PromptInput,
+    new_user_message: &str,
+    resolve: Option<&ImageResolver>,
+) -> PreparedChatMessages {
     let context_size = input.context_size;
 
     // Limit system prompt and memory to 20% of context size each.
@@ -181,26 +192,36 @@ pub fn prepare_prompt_messages(
         .floor()
         .max(0.0) as usize;
 
-    // Strip think tags only when the model must not see them; otherwise
-    // borrow the caller's history slice directly with no copy.
-    let stripped_history: Vec<(String, String)>;
-    let history_view: &[(String, String)] = if input.send_thoughts {
-        input.history
+    // One working copy; think tags are stripped only when the model must not see them.
+    let mut planned: Vec<(String, String)> = if input.send_thoughts {
+        input.history.to_vec()
     } else {
-        stripped_history = input
+        input
             .history
             .iter()
             .map(|(u, a)| (u.clone(), strip_think_tags(a)))
-            .collect();
-        &stripped_history
+            .collect()
     };
 
     // Full-res image slots: newest content first (new turn, then history newest→oldest).
     let mut full_slots = MAX_FULL_RES_IMAGES;
     reserve_full_image_slots(new_user_message, &mut full_slots);
-    let history_images = prepare_history_images(history_view, &mut full_slots);
+    let mut pending: Vec<Vec<String>> = vec![Vec::new(); planned.len()];
+    for i in (0..planned.len()).rev() {
+        if has_image(&planned[i].0) {
+            planned[i].0 = plan_images_for_context(&planned[i].0, &mut full_slots, resolve, &mut pending[i]);
+        }
+    }
 
-    let truncated_history = truncate_history(&history_images, history_budget);
+    let mut truncated_history = truncate_history(&planned, history_budget);
+    // Truncation keeps a chronological suffix and never cuts a user text
+    // holding an image tag, so pending markers survive intact.
+    let offset = planned.len() - truncated_history.len();
+    for (pair, originals) in truncated_history.iter_mut().zip(&pending[offset..]) {
+        if !originals.is_empty() {
+            pair.0 = finish_planned_thumbnails(&pair.0, originals, resolve);
+        }
+    }
 
     let original_pairs = input.history.len();
     let truncated_pairs = truncated_history.len();
@@ -271,7 +292,7 @@ pub fn prepare_chat_messages(
         send_thoughts: context.send_thoughts,
         context_size,
     };
-    prepare_prompt_messages(&input, new_user_message)
+    prepare_prompt_messages_with(&input, new_user_message, context.image_resolver.as_ref())
 }
 
 pub fn strip_think_tags(content: &str) -> String {
@@ -371,6 +392,7 @@ mod tests {
             test_chunks: None,
             send_thoughts: false,
             prepare_capture: None,
+            image_resolver: None,
         }
     }
 
@@ -584,5 +606,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stored_image_refs_resolve_only_the_renditions_kept_pairs_send() {
+        use crate::chat_images::{ImageFidelity, ImageResolver};
+        use crate::history::ImageId;
+        use std::sync::{Arc, Mutex};
+        const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aenQAAAAASUVORK5CYII=";
+        let ids: Vec<ImageId> = (0..3).map(|_| ImageId::new()).collect();
+        let tag = |id: &ImageId| format!("[IMAGE:img:{}]", id.as_hyphenated());
+        let history = vec![
+            (format!("dropped {}", tag(&ids[0])), "a".into()),
+            ("long".into(), "z".repeat(40_000)),
+            (format!("older {}", tag(&ids[1])), "b".into()),
+            (format!("newest {}", tag(&ids[2])), "c".into()),
+        ];
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let log = calls.clone();
+        let resolver = ImageResolver::new(move |id, fidelity| {
+            log.lock().unwrap().push((id, fidelity));
+            Some(PNG.to_owned())
+        });
+        let mut context = mock_context(history, "");
+        context.image_resolver = Some(resolver);
+
+        let prepared = prepare_chat_messages(&context, "and now?");
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(ids[2], ImageFidelity::Full), (ids[1], ImageFidelity::Thumb)],
+            "the dropped pair's image must never be read"
+        );
+        let users: Vec<&str> = prepared.messages.iter()
+            .filter(|m| m.role == ChatMessageRole::User).map(|m| m.content.as_str()).collect();
+        assert!(!users.iter().any(|u| u.contains("dropped")), "{users:?}");
+        assert!(users.iter().any(|u| u.contains("older") && u.contains(PNG)), "{users:?}");
+        assert!(users.iter().any(|u| u.contains("newest") && u.contains(PNG)), "{users:?}");
+        assert!(!users.iter().any(|u| u.contains("img:") || u.contains('\u{0}')), "{users:?}");
     }
 }

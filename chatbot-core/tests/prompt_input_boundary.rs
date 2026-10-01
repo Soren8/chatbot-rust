@@ -55,6 +55,7 @@ fn test_context(
         test_chunks: None,
         send_thoughts,
         prepare_capture: None,
+        image_resolver: None,
     }
 }
 

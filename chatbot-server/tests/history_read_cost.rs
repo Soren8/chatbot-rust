@@ -1,4 +1,4 @@
-//! Privacy checks read the set's policy, not its materialized history.
+//! Request paths decrypt only the history blobs they need.
 //!
 //! Counts come from the thread-local history blob counters, so every request
 //! here runs on the test's `current_thread` runtime.
@@ -155,5 +155,34 @@ async fn chat_privacy_binding_adds_no_history_materialization() {
     assert_eq!(response.status(), StatusCode::OK);
     let opens = take_blob_opens();
     assert!(opens.images <= IMAGES, "prepare may materialize the set once; the privacy binding must not add another: {opens:?}");
+    to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_prompt_decrypts_only_the_full_resolution_image() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    take_blob_opens();
+    let response = app.clone().oneshot(json_request(&session, "/chat", json!({"message":"next","set_id":set_id}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let opens = take_blob_opens();
+    assert_eq!(opens.images, 1, "only the newest image is sent at full resolution: {opens:?}");
+    assert_eq!(opens.thumbs, IMAGES - 1, "older images come from stored thumbnails: {opens:?}");
+    to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn regenerate_prompt_decrypts_only_the_edited_pair_image() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    let last = IMAGES - 1;
+    take_blob_opens();
+    let response = app.clone().oneshot(json_request(&session, "/regenerate", json!({
+        "message": format!("picture {last} [IMAGE:{PNG}]"), "set_id": set_id, "pair_index": last,
+    }))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let opens = take_blob_opens();
+    assert_eq!(opens.images, 1, "the edited pair's stored image is the only full-resolution read: {opens:?}");
+    assert_eq!(opens.thumbs, IMAGES - 1, "the history prefix uses stored thumbnails: {opens:?}");
     to_bytes(response.into_body(), 64 * 1024).await.unwrap();
 }

@@ -3,6 +3,7 @@
 //! All HTTP handlers and session orchestration must go through [`HistoryService`].
 //! redb handles, raw keys, and free-form blob writes are not exposed.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -15,7 +16,8 @@ use super::cache::SetCache;
 use super::migration;
 use super::ops::{self, OpsError};
 use super::store::{RedbHistoryStore, StoreError};
-use super::types::{LogicalSnapshot, PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
+use super::types::{ImageId, LogicalSnapshot, PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
+use crate::chat_images::{collect_image_refs, encode_data_url, materialize_full, ImageFidelity};
 use crate::config::app_config;
 use crate::config::PrivacyLevel;
 use crate::enc_key::EncryptionKey;
@@ -708,11 +710,17 @@ impl HistoryService {
         user: &str,
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, HistoryError> {
+        let set_id = self.ensure_default_set_id(user, key)?;
+        self.load(user, set_id, key)
+    }
+
+    /// The user's default set, created when missing, without loading it.
+    pub fn ensure_default_set_id(&self, user: &str, key: &EncryptionKey) -> Result<SetId, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
         for summary in self.list_sets(&user, key)? {
             if summary.is_default || summary.display_name == "default" {
-                return self.load(&user, summary.set_id, key);
+                return Ok(summary.set_id);
             }
         }
         let summary = self.store.create_set(
@@ -723,7 +731,50 @@ impl HistoryService {
             true,
             key,
         )?;
-        self.load(&user, summary.set_id, key)
+        Ok(summary.set_id)
+    }
+
+    /// One stored image as a data URL for a model prompt; a missing
+    /// thumbnail falls back to the full image. `None` when absent or unreadable.
+    pub fn stored_image_data_url(
+        &self,
+        user: &str,
+        set_id: SetId,
+        image_id: ImageId,
+        fidelity: ImageFidelity,
+        key: &EncryptionKey,
+    ) -> Option<String> {
+        let user = normalise_user(user).ok()?;
+        if fidelity == ImageFidelity::Thumb {
+            if let Ok(Some((mime, bytes))) = self.store.load_thumb_by_id(&user, set_id, image_id, key) {
+                return Some(encode_data_url(&mime, &bytes));
+            }
+        }
+        let image = self.store.load_image_by_id(&user, set_id, image_id, key).ok()??;
+        Some(encode_data_url(&image.mime, &image.bytes))
+    }
+
+    /// Replace `[IMAGE:img:…]` refs in one stored message with full-resolution
+    /// data URLs (missing images become `[IMAGE:unavailable]`).
+    pub fn materialize_message(
+        &self,
+        user: &str,
+        set_id: SetId,
+        text: &str,
+        key: &EncryptionKey,
+    ) -> Result<String, HistoryError> {
+        let refs = collect_image_refs(text);
+        if refs.is_empty() {
+            return Ok(text.to_owned());
+        }
+        let user = normalise_user(user)?;
+        let mut images = HashMap::new();
+        for id in refs {
+            if let Some(image) = self.store.load_image_by_id(&user, set_id, id, key)? {
+                images.insert(id, (image.mime, image.bytes));
+            }
+        }
+        Ok(materialize_full(text, &images))
     }
 
     pub fn rename_set(

@@ -181,6 +181,110 @@ pub fn prepare_history_images(
     pairs
 }
 
+/// Which rendition of a stored image a model prompt needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageFidelity {
+    Full,
+    Thumb,
+}
+
+/// Resolves a stored `img:` reference to a data URL for the model prompt.
+#[derive(Clone)]
+pub struct ImageResolver(std::sync::Arc<dyn Fn(ImageId, ImageFidelity) -> Option<String> + Send + Sync>);
+
+impl ImageResolver {
+    pub fn new(resolve: impl Fn(ImageId, ImageFidelity) -> Option<String> + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(resolve))
+    }
+
+    pub fn resolve(&self, image_id: ImageId, fidelity: ImageFidelity) -> Option<String> {
+        (self.0)(image_id, fidelity)
+    }
+}
+
+impl std::fmt::Debug for ImageResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ImageResolver")
+    }
+}
+
+/// Stand-in payload for a thumbnail not yet produced. Short, so token
+/// estimates treat it exactly like the thumbnail it will become.
+const PENDING_THUMB: &str = "\u{0}thumb";
+
+/// Plan one history user message for the prompt without thumbnailing:
+/// full-resolution slots are resolved now (so their size counts toward the
+/// budget); every other image becomes a pending thumbnail whose original
+/// payload is pushed to `pending` in tag order.
+pub fn plan_images_for_context(
+    text: &str,
+    full_slots: &mut usize,
+    resolve: Option<&ImageResolver>,
+    pending: &mut Vec<String>,
+) -> String {
+    rewrite_image_payloads(text, |payload| {
+        if *full_slots > 0 {
+            *full_slots -= 1;
+            match parse_image_ref(payload) {
+                Some(id) => resolve
+                    .and_then(|resolver| resolver.resolve(id, ImageFidelity::Full))
+                    .unwrap_or_else(|| IMAGE_UNAVAILABLE.to_owned()),
+                None => payload.to_owned(),
+            }
+        } else {
+            pending.push(payload.to_owned());
+            PENDING_THUMB.to_owned()
+        }
+    })
+}
+
+/// Replace the pending thumbnails of a planned message, in order, with
+/// thumbnails (stored references use their stored thumbnail as the source)
+/// or the omitted-image placeholder.
+pub fn finish_planned_thumbnails(
+    text: &str,
+    pending: &[String],
+    resolve: Option<&ImageResolver>,
+) -> String {
+    let mut originals = pending.iter();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(IMAGE_TAG_PREFIX) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + IMAGE_TAG_PREFIX.len()..];
+        let Some(end) = rest.find(IMAGE_TAG_SUFFIX) else {
+            out.push_str(IMAGE_TAG_PREFIX);
+            out.push_str(rest);
+            return out;
+        };
+        let payload = &rest[..end];
+        rest = &rest[end + 1..];
+        let original = (payload == PENDING_THUMB).then(|| originals.next()).flatten();
+        let Some(original) = original else {
+            out.push_str(IMAGE_TAG_PREFIX);
+            out.push_str(payload);
+            out.push(IMAGE_TAG_SUFFIX);
+            continue;
+        };
+        let thumb = match parse_image_ref(original) {
+            Some(id) => resolve
+                .and_then(|resolver| resolver.resolve(id, ImageFidelity::Thumb))
+                .and_then(|source| thumbnail_payload(&source)),
+            None => thumbnail_payload(original),
+        };
+        match thumb {
+            Some(thumb) => {
+                out.push_str(IMAGE_TAG_PREFIX);
+                out.push_str(&thumb);
+                out.push(IMAGE_TAG_SUFFIX);
+            }
+            None => out.push_str(IMAGE_OMITTED_PLACEHOLDER),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Build a compact `data:image/jpeg;base64,...` payload from a stored image tag body.
 fn thumbnail_payload(payload: &str) -> Option<String> {
     thumbnail_payload_with(payload, THUMB_MAX_EDGE, THUMB_JPEG_QUALITY)
@@ -483,7 +587,7 @@ pub fn coalesce_edit_user_message_refs(incoming: &str, stored: &str) -> String {
     })
 }
 
-fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
+pub(crate) fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", STANDARD.encode(bytes))
 }
 
