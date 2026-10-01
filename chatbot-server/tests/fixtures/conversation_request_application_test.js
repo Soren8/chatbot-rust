@@ -1005,6 +1005,68 @@ async function scenarioVoiceSttReplay() {
   assert.equal(w.fetchCalls.filter(call => call.url === '/chat').length, 1, 'whole voice flow submits one chat turn');
 }
 
+// A burst of streamed chunks renders the bubble's Markdown once per
+// animation frame, and the final text is flushed at stream end.
+async function streamBurst(w, stream, words) {
+  const enc = new TextEncoder();
+  for (let i = 0; i < words; i++) {
+    stream.pending[i].resolve({ done: false, value: enc.encode('word' + i + ' ') });
+    await flush();
+  }
+  return Array.from({ length: words }, (_, i) => 'word' + i + ' ').join('');
+}
+
+function installFrames(w) {
+  const frames = [];
+  w.ctx.requestAnimationFrame = (fn) => { frames.push(fn); return frames.length; };
+  w.ctx.cancelAnimationFrame = (id) => { frames[id - 1] = () => {}; };
+  return () => frames.splice(0).forEach((fn) => fn());
+}
+
+async function scenarioChatRenderCoalescing() {
+  const w = makeWorld();
+  const runFrames = installFrames(w);
+  w.userInput._val = 'hi';
+  vm.runInContext('sendMessage({ message: "hi" })', w.ctx);
+  await flush();
+  const call = lastFetch(w);
+  const stream = w.makeStream(call);
+  call.resolve({ status: 200, ok: true, body: stream.body });
+  await flush();
+  const text = await streamBurst(w, stream, 20);
+  assert.equal(w.textFake.calls.html.length, 0, 'chat-render: chunks wait for a frame');
+  runFrames();
+  assert.deepEqual(w.textFake.calls.html, [text], 'chat-render: one frame renders the burst once');
+  stream.pending[20].resolve({ done: false, value: new TextEncoder().encode('tail.') });
+  await flush();
+  stream.pending[21].resolve({ done: true, value: new TextEncoder().encode('') });
+  await flush();
+  assert.deepEqual(w.textFake.calls.html, [text, text + 'tail.'], 'chat-render: stream end flushes the pending render');
+  runFrames();
+  assert.equal(w.textFake.calls.html.length, 2, 'chat-render: a flushed frame never renders again');
+}
+
+async function scenarioRegenRenderCoalescing() {
+  const w = makeWorld();
+  const runFrames = installFrames(w);
+  w.ctx.__ai = w.aiFake;
+  w.ctx.__utext = 'q';
+  w.ctx.__pair = 0;
+  vm.runInContext('performRegeneration(__ai, __utext, __pair)', w.ctx);
+  await flush();
+  const call = w.fetchCalls[0];
+  const stream = w.makeStream(call);
+  call.resolve({ status: 200, ok: true, body: stream.body });
+  await flush();
+  const text = await streamBurst(w, stream, 20);
+  assert.equal(w.textFake.calls.html.length, 0, 'regen-render: chunks wait for a frame');
+  stream.pending[20].resolve({ done: true, value: new TextEncoder().encode('') });
+  await flush();
+  assert.deepEqual(w.textFake.calls.html, [text], 'regen-render: stream end renders the burst once');
+  runFrames();
+  assert.equal(w.textFake.calls.html.length, 1, 'regen-render: a flushed frame never renders again');
+}
+
 (async () => {
   const cases = [
     ['voice-stt-replay', scenarioVoiceSttReplay],
@@ -1015,6 +1077,8 @@ async function scenarioVoiceSttReplay() {
     ['chat-autoplay-timer', scenarioChatAutoplayTimer],
     ['regen-autoplay-timer', scenarioRegenAutoplayTimer],
     ['regen-replacement', scenarioRegenReplacement],
+    ['chat-render-coalescing', scenarioChatRenderCoalescing],
+    ['regen-render-coalescing', scenarioRegenRenderCoalescing],
     ['memory-retry', scenarioMemoryRetry],
     ['prompt-retry', scenarioSystemPromptRetry],
     ['memory-error-ui', scenarioMemoryErrorUi],

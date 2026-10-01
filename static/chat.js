@@ -1918,6 +1918,32 @@ function combinedAiOriginal(fullVisibleText, fullThinkingText) {
   return fullVisibleText + (fullThinkingText ? '<think>' + fullThinkingText + '</think>' : '');
 }
 
+// Streaming bubbles re-render their whole text, so coalesce renders to one
+// per animation frame (immediate where frames are unavailable). flush()
+// renders a pending frame now; cancel() drops it.
+function createFrameRenderer(render) {
+  let handle = null;
+  function run() { handle = null; render(); }
+  function cancel() {
+    if (handle === null) return;
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle);
+    handle = null;
+  }
+  return {
+    request() {
+      if (handle !== null) return;
+      if (typeof requestAnimationFrame !== 'function') { render(); return; }
+      handle = requestAnimationFrame(run);
+    },
+    flush() {
+      if (handle === null) return;
+      cancel();
+      render();
+    },
+    cancel,
+  };
+}
+
 /**
  * Plain text for an element matching TreeWalker / Range offset math.
  * Must use textContent (NOT innerText): innerText inserts layout newlines
@@ -2404,12 +2430,21 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     let fullThinkingText = '';
     let wasSearching = false;
     let wasRateLimited = false;
+    let visibleDirty = false;
+    let thinkingDirty = false;
+    const frame = createFrameRenderer(function () {
+      if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
+      if (visibleDirty) $msgText.html(renderMarkdown(fullVisibleText));
+      if (thinkingDirty) $thinkingContent.text(fullThinkingText);
+      visibleDirty = thinkingDirty = false;
+    });
 
     function appendVisible(content) {
       if (!content) return;
       if (!isLiveConversation(regenBinding)) return;
       fullVisibleText += content;
-      $msgText.html(renderMarkdown(fullVisibleText));
+      visibleDirty = true;
+      frame.request();
       hasWrittenToDOM = true;
       if (wasSearching) {
           const $toggle = $target.find('.toggle-thinking');
@@ -2447,7 +2482,8 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
           }
       }
 
-      $thinkingContent.text(fullThinkingText);
+      thinkingDirty = true;
+      frame.request();
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
       $target.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
       publishMessagePlaybackText($target, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
@@ -2462,10 +2498,12 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
             function read() {
           reader.read().then(({done, value}) => {
             if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) {
+              frame.cancel();
               try { if (typeof reader.cancel === 'function') swallowCancel(reader.cancel()); } catch (e) {}
               return;
             }
             if (done) {
+              frame.flush();
               // Regenerate does not flush: the residual stays dropped.
               const finalAiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
               $target.attr('data-original', finalAiOriginal);
@@ -2491,6 +2529,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
             read();
           }).catch(err => {
             if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
+            frame.flush();
             try {
               $target.find('.regenerate-button').prop('disabled', false);
               const playBtn = $target.find('.play-button').prop('disabled', false);
@@ -3742,12 +3781,21 @@ $(document).ready(function() {
         let fullThinkingText = '';
         let wasSearching = false;
         let wasRateLimited = false;
+        let visibleDirty = false;
+        let thinkingDirty = false;
+        const frame = createFrameRenderer(function () {
+          if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
+          if (visibleDirty) $messageTextElement.html(renderMarkdown(fullVisibleText));
+          if (thinkingDirty) $thinkingContentElement.text(fullThinkingText);
+          visibleDirty = thinkingDirty = false;
+        });
 
         function appendVisible(content) {
           if (!content) return;
           if (!isLiveConversation(chatBinding)) return;
           fullVisibleText += content;
-          $messageTextElement.html(renderMarkdown(fullVisibleText));
+          visibleDirty = true;
+          frame.request();
           hasWrittenToDOM = true;
           if (wasSearching) {
               const $toggle = $targetElement.find('.toggle-thinking');
@@ -3785,7 +3833,8 @@ $(document).ready(function() {
               }
           }
 
-          $thinkingContentElement.text(fullThinkingText);
+          thinkingDirty = true;
+          frame.request();
           if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
           $targetElement.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
           publishMessagePlaybackText($targetElement, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
@@ -3807,11 +3856,13 @@ $(document).ready(function() {
         function readStream() {
           return reader.read().then(({ done, value }) => {
             if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) {
+              frame.cancel();
               try { if (typeof reader.cancel === 'function') swallowCancel(reader.cancel()); } catch (e) {}
               return;
             }
             if (done) {
               flushStreamRemainder();
+              frame.flush();
               
               const finalAiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
               $targetElement.attr('data-original', finalAiOriginal);
@@ -3846,6 +3897,7 @@ $(document).ready(function() {
             const errText = err && err.message ? err.message : String(err);
             flushStreamRemainder();
             appendVisible('\n[Error] The response stream was interrupted.');
+            frame.flush();
             if (activitySync.interrupted()) paintFailedAiTurn($pendingUserMessage, errText);
             finishChatRequest(seq);
             finishMessagePlayback($targetElement);

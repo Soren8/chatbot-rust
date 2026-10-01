@@ -61,7 +61,7 @@ function desktopDrive(steps, opts) {
   const settled = !!opts.settled;
   const state = {
     raw: opts.initialRaw || '', generating: true, played: [], preloaded: [],
-    completed: 0, timers: [], observer: null, live: true,
+    completed: 0, timers: [], delays: [], observer: null, live: true,
   };
   const chatRequests = conversationState.createChatRequestTracker();
   let liveSeq = chatRequests.begin();
@@ -84,14 +84,14 @@ function desktopDrive(steps, opts) {
       state.completed++; state.live = false;
     },
     source: source,
-    split: voiceText.splitSentences,
+    split: opts.split || voiceText.splitSentences,
     terminator: voiceText.sentenceEndsWithTerminator,
     preload: (sessionId, text) => { state.preloaded.push(String(text)); },
     playOne: (sessionId, text) => { state.played.push(String(text)); return Promise.resolve(true); },
     reportVoice: () => {},
     appendMessage: () => {},
     logError: () => {},
-    setTimeout: (fn) => { state.timers.push(fn); return state.timers.length; },
+    setTimeout: (fn, ms) => { state.timers.push(fn); state.delays.push(ms); return state.timers.length; },
     clearTimeout: () => {},
     isVoiceModeActive: () => false,
     observeChanges: (cb) => { state.observer = cb; return () => { state.observer = null; }; },
@@ -141,7 +141,7 @@ function nativeDrive(steps, opts) {
   const enqueued = [];
   const state = {
     raw: opts.initialRaw || '', ended: 0, finished: 0,
-    observer: null, listener: null,
+    observer: null, listener: null, delays: [],
   };
   const chatRequests = conversationState.createChatRequestTracker();
   let liveSeq = chatRequests.begin();
@@ -166,7 +166,7 @@ function nativeDrive(steps, opts) {
   };
   const deps = {
     voiceLifecycle: lifecycle,
-    split: voiceText.splitSentences,
+    split: opts.split || voiceText.splitSentences,
     terminator: voiceText.sentenceEndsWithTerminator,
     sanitize: voiceText.sanitizeForTTS,
     source: source,
@@ -195,7 +195,7 @@ function nativeDrive(steps, opts) {
     reportVoice: () => {},
     appendMessage: () => {},
     logError: () => {},
-    setTimeout: () => 1,
+    setTimeout: (fn, ms) => { state.delays.push(ms); return 1; },
     clearTimeout: () => {},
     isVoiceModeActive: () => false,
     getSessionPromise: () => sessionPromise,
@@ -367,8 +367,46 @@ async function checkStop() {
   assert(!d.state.played.some((t) => t.includes('Stopped')), 'no [Stopped] may reach speech');
 }
 
+async function checkIncremental() {
+  // Sentence discovery scans only unconsumed text: a long streamed reply
+  // costs split work linear in its length, and still speaks every sentence
+  // once in order on both queues.
+  const sentences = Array.from({ length: 200 }, (_, i) => 'Sentence number ' + i + ' is here.');
+  const steps = sentences.map((_, i) => ({ text: sentences.slice(0, i + 1).join(' '), generating: i < sentences.length - 1 }));
+  const finalLength = steps[steps.length - 1].text.length;
+  for (const [name, drive] of [['desktop', desktopDrive], ['native', nativeDrive]]) {
+    let scanned = 0;
+    const split = (text) => { scanned += text.length; return voiceText.splitSentences(text); };
+    const d = drive(steps, { split });
+    await d.run();
+    const spoken = name === 'desktop' ? d.state.played : d.posts.map((p) => p.text);
+    assert(spoken.length > 0, name + ' speaks');
+    assert.deepEqual(spoken, sentences.slice(0, spoken.length), name + ' speaks each sentence once in order');
+    if (name === 'desktop') assert.equal(spoken.length, sentences.length, 'desktop speaks the whole reply');
+    assert(scanned <= 20 * finalLength, name + ' split scanned ' + scanned + ' chars for a ' + finalLength + '-char reply');
+  }
+
+  // While generating with nothing new to speak, the idle desktop queue
+  // relies on source notifications; its timer is only a slow backstop.
+  const idle = desktopDrive([{ text: 'Only sentence.', generating: true }]);
+  await flush();
+  idle.state.raw = 'Only sentence.';
+  await flush();
+  for (let i = 0; i < 3; i++) {
+    idle.state.timers.splice(0).forEach((fn) => fn());
+    await flush();
+  }
+  assert(idle.state.delays.length > 0, 'idle generating queue keeps a backstop timer');
+  assert(idle.state.delays.every((ms) => ms >= 1000), 'idle backstop polls at most once a second: ' + JSON.stringify(idle.state.delays));
+
+  const native = nativeDrive([{ text: 'Only sentence.', generating: true }]);
+  for (let i = 0; i < 3; i++) await flush();
+  assert(native.state.delays.length > 0, 'generating native queue keeps a backstop timer');
+  assert(native.state.delays.every((ms) => ms >= 1000), 'native backstop polls at most once a second: ' + JSON.stringify(native.state.delays));
+}
+
 (async () => {
-  const checks = { parity: checkParity, thinking: checkThinking, hold: checkHold, fixed: checkFixed, historical: checkHistorical, stop: checkStop };
+  const checks = { parity: checkParity, thinking: checkThinking, hold: checkHold, fixed: checkFixed, historical: checkHistorical, stop: checkStop, incremental: checkIncremental };
   const names = scenario === 'all' ? Object.keys(checks) : [scenario];
   const failures = [];
   for (const name of names) {

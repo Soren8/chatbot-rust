@@ -444,6 +444,9 @@
     var observeChanges = deps.observeChanges;
 
     var consumedLen = 0;
+    // Start of the last queued sentence: text before it is never re-split,
+    // so discovery cost tracks unconsumed text, not the whole reply.
+    var windowStart = 0;
     var queue = [];
     var running = false;
     var disconnectObserver = null;
@@ -459,9 +462,13 @@
       if (cancelled || !isLive(sessionId)) return;
       var full = getText();
       if (!full || full.length <= consumedLen) return;
-      var sentences = split(full);
+      if (windowStart > full.length) windowStart = 0;
+      var base = windowStart;
+      var sentences = split(base ? full.slice(base) : full);
       for (var i = 0; i < sentences.length; i++) {
         var s = sentences[i];
+        s.start += base;
+        s.end += base;
         if (s.end <= consumedLen) continue;
         if (consumedLen > s.start) {
           var spoken = full.slice(s.start, consumedLen);
@@ -472,6 +479,7 @@
         if (isTrailingFragment && !terminator(s.text) && isGenerating()) break;
         queue.push(s.text);
         consumedLen = s.end;
+        windowStart = s.start;
       }
       if (queue.length > 0) {
         preload(sessionId, queue[0]);
@@ -528,12 +536,13 @@
       }
       if (running || queue.length) return;
       if (isGenerating()) {
+        // Source notifications wake the queue; the timer is a backstop.
         pollTimer = setTimeoutFn(function () {
           pollTimer = null;
           if (cancelled || !isLive(sessionId)) return;
           discoverAbsolute();
           pump();
-        }, 60);
+        }, disconnectSource ? 1000 : 60);
         return;
       }
       discoverAbsolute();
@@ -686,6 +695,8 @@
     var pendingNativeTtsTokens = new Set();
     var stopped = false;
     var consumedSentences = 0;
+    var consumedTotal = 0;
+    var windowStart = 0;
     var sentenceQueue = [];
     var endRequested = false;
     var inFlightSentences = 0;
@@ -725,13 +736,24 @@
       if (!live() || isFixedList) return;
       var fullText = getText();
       if (!fullText) return;
-      var parts = split(fullText);
+      if (windowStart > fullText.length) { windowStart = 0; consumedSentences = consumedTotal; }
+      var base = windowStart;
+      var parts = split(base ? fullText.slice(base) : fullText);
+      var last = null;
       for (var i = consumedSentences; i < parts.length; i++) {
         var part = parts[i];
         var isTrailingFragment = (i === parts.length - 1);
         if (isTrailingFragment && !terminator(part.text) && isGenerating()) break;
         sentenceQueue.push(part.text);
         consumedSentences++;
+        consumedTotal++;
+        last = part;
+      }
+      // Splitters reporting offsets let the next pass start at the last
+      // queued sentence (index 0 of the new window); otherwise count from the top.
+      if (last && typeof last.start === 'number') {
+        windowStart = base + last.start;
+        consumedSentences = 1;
       }
     }
 
@@ -953,10 +975,11 @@
         if (text) queueSentence(text);
       }
       if (!isFixedList && isGenerating()) {
+        // Source notifications and clip consumption wake the queue; the timer is a backstop.
         if (!pollTimer) pollTimer = setTimeoutFn(function () {
           pollTimer = null;
           pump();
-        }, 80);
+        }, disconnectSource ? 1000 : 80);
       } else if (sentenceQueue.length === 0 && pendingEnqueues === 0) {
         teardownObserver();
         markEndOfQueue();

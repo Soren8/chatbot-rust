@@ -318,8 +318,10 @@ fn queues_consume_explicit_source_with_unchanged_bounds() {
         );
     }
     assert!(
-        playback.contains("}, 60);") && playback.contains("}, 80);"),
-        "desktop (60 ms) and native (80 ms) poll fallbacks stay as they were"
+        playback.contains("}, disconnectSource ? 1000 : 60);")
+            && playback.contains("}, disconnectSource ? 1000 : 80);"),
+        "desktop (60 ms) and native (80 ms) polls remain the fallback without a source \
+         subscription; subscribed queues keep only a 1 s backstop"
     );
     let desktop = function_body(playback, "discoverAbsolute")
         .expect("owned desktop queue must contain discoverAbsolute");

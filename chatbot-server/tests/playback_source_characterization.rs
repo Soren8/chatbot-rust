@@ -62,6 +62,11 @@ fn playback_stop_suffix_not_spoken() {
     run_scenario("stop");
 }
 
+#[test]
+fn playback_sentence_discovery_scans_only_unconsumed_text() {
+    run_scenario("incremental");
+}
+
 /// Regression: retargeting a finished (historical) source to a replacement
 /// sequence must atomically restart it — bound sequence, cleared text,
 /// unfinished, single notify — so a fresh autoplay queue neither completes
