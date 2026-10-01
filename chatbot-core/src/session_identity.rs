@@ -89,9 +89,28 @@ impl HttpSessionStore {
         &STORE
     }
 
+    fn is_live(&self, record: &HttpSessionRecord, now: Instant) -> bool {
+        now.duration_since(record.last_used) <= self.timeout
+    }
+
+    /// Live record for `cookie_value`, touched. Expired records read as
+    /// absent; the background purge removes them.
+    fn live_record<'a>(
+        &self,
+        sessions: &'a mut HashMap<String, HttpSessionRecord>,
+        cookie_value: &str,
+        now: Instant,
+    ) -> Option<&'a mut HttpSessionRecord> {
+        let record = sessions.get_mut(cookie_value)?;
+        if !self.is_live(record, now) {
+            return None;
+        }
+        record.last_used = now;
+        Some(record)
+    }
+
     fn clean_expired(&self, sessions: &mut HashMap<String, HttpSessionRecord>, now: Instant) {
-        let timeout = self.timeout;
-        sessions.retain(|_, record| now.duration_since(record.last_used) <= timeout);
+        sessions.retain(|_, record| self.is_live(record, now));
     }
 
     /// Owned purge hook. Public so composed servers can purge the same
@@ -103,6 +122,11 @@ impl HttpSessionStore {
         let before = sessions.len();
         self.clean_expired(&mut sessions, now);
         before.saturating_sub(sessions.len())
+    }
+
+    /// Test instrumentation: number of stored records, expired or not.
+    pub fn record_count(&self) -> usize {
+        self.sessions.lock().unwrap().len()
     }
 
     fn new_record(&self, now: Instant) -> (String, HttpSessionRecord) {
@@ -128,10 +152,10 @@ impl HttpSessionStore {
         now: Instant,
     ) -> (String, bool) {
         if let Some(cookie_value) = extract_session_cookie(cookie_header) {
-            if let Some(record) = sessions.get_mut(&cookie_value) {
-                record.last_used = now;
+            if self.live_record(sessions, &cookie_value, now).is_some() {
                 return (cookie_value, false);
             }
+            sessions.remove(&cookie_value);
         }
 
         let (cookie_value, mut record) = self.new_record(now);
@@ -160,7 +184,6 @@ impl HttpSessionStore {
     ) -> Result<HomeBootstrap, SessionError> {
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
-        self.clean_expired(&mut sessions, now);
 
         let (cookie_value, _) = self.ensure_record(&mut sessions, cookie_header, now);
         let snapshot = sessions
@@ -202,11 +225,9 @@ impl HttpSessionStore {
 
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
-        self.clean_expired(&mut sessions, now);
 
         if let Some(cookie_value) = extract_session_cookie(cookie_header) {
-            if let Some(record) = sessions.get_mut(&cookie_value) {
-                record.last_used = now;
+            if let Some(record) = self.live_record(&mut sessions, &cookie_value, now) {
                 return Ok(constant_time_eq(
                     record.csrf_token.as_bytes(),
                     token.as_bytes(),
@@ -217,26 +238,29 @@ impl HttpSessionStore {
         Ok(false)
     }
 
+    /// Read-only lookup. Without a live record the caller gets an ephemeral
+    /// guest context that is not stored: no Set-Cookie follows this call, so
+    /// a stored record would be unreachable.
     pub fn session_context(
         &self,
         cookie_header: Option<&str>,
     ) -> Result<SessionContext, SessionError> {
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
-        self.clean_expired(&mut sessions, now);
 
-        let (cookie_value, _) = self.ensure_record(&mut sessions, cookie_header, now);
-        let snapshot = sessions
-            .get(&cookie_value)
-            .expect("session record should exist")
-            .clone();
+        if let Some(cookie_value) = extract_session_cookie(cookie_header) {
+            if let Some(record) = self.live_record(&mut sessions, &cookie_value, now) {
+                return Ok(SessionContext {
+                    session_id: session_identifier(record),
+                    username: record.username.clone(),
+                });
+            }
+        }
         drop(sessions);
 
-        let session_id = session_identifier(&snapshot);
-
         Ok(SessionContext {
-            session_id,
-            username: snapshot.username.clone(),
+            session_id: format!("{SESSION_GUEST_PREFIX}{}", random_token(GUEST_TOKEN_BYTES)),
+            username: None,
         })
     }
 
@@ -247,7 +271,11 @@ impl HttpSessionStore {
     pub fn rate_limit_identity(&self, cookie_header: Option<&str>) -> Option<String> {
         let cookie_value = extract_session_cookie(cookie_header)?;
         let sessions = self.sessions.lock().unwrap();
-        if let Some(record) = sessions.get(&cookie_value) {
+        let now = Instant::now();
+        if let Some(record) = sessions
+            .get(&cookie_value)
+            .filter(|record| self.is_live(record, now))
+        {
             if let Some(username) = record.username.as_deref() {
                 return Some(format!("user:{username}"));
             }
@@ -264,7 +292,6 @@ impl HttpSessionStore {
     ) -> Result<LoginFinalize, SessionError> {
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
-        self.clean_expired(&mut sessions, now);
 
         if let Some(cookie_value) = extract_session_cookie(cookie_header) {
             sessions.remove(&cookie_value);
@@ -293,7 +320,6 @@ impl HttpSessionStore {
     ) -> Result<LogoutFinalize, SessionError> {
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
-        self.clean_expired(&mut sessions, now);
 
         if let Some(cookie_value) = extract_session_cookie(cookie_header) {
             sessions.remove(&cookie_value);
@@ -418,4 +444,67 @@ pub fn logout_user(cookie_header: Option<&str>) -> Result<LogoutFinalize, Sessio
 /// Crate-visible purge hook for the composed [`crate::session::purge_expired_sessions`].
 pub(crate) fn purge_expired_http_sessions() -> usize {
     HttpSessionStore::global().purge_expired()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_record(store: &HttpSessionStore, cookie: &str, username: Option<&str>, age: Duration) -> String {
+        let (_, mut record) = store.new_record(Instant::now());
+        record.username = username.map(str::to_string);
+        record.last_used = Instant::now() - age;
+        let csrf = record.csrf_token.clone();
+        store.sessions.lock().unwrap().insert(cookie.to_string(), record);
+        csrf
+    }
+
+    #[test]
+    fn expired_record_is_rejected_on_lookup_without_global_sweep() {
+        let store = HttpSessionStore::new(60);
+        let expired = Duration::from_secs(120);
+        let csrf = insert_record(&store, "expired", Some("alice"), expired);
+        insert_record(&store, "other-expired", Some("bob"), expired);
+        let header = Some("session=expired");
+
+        assert!(!store.validate_csrf_token(header, Some(&csrf), true).unwrap());
+        assert!(store.session_context(header).unwrap().username.is_none());
+        assert_eq!(store.rate_limit_identity(header).as_deref(), Some("guest:expired"));
+        assert!(store.sessions.lock().unwrap().contains_key("other-expired"));
+
+        assert_eq!(store.purge_expired(), 2);
+        assert_eq!(store.record_count(), 0);
+    }
+
+    #[test]
+    fn live_record_still_resolves_and_validates() {
+        let store = HttpSessionStore::new(60);
+        let csrf = insert_record(&store, "live", Some("alice"), Duration::from_secs(1));
+        let header = Some("session=live");
+
+        assert!(store.validate_csrf_token(header, Some(&csrf), true).unwrap());
+        assert_eq!(store.session_context(header).unwrap().username.as_deref(), Some("alice"));
+        assert_eq!(store.rate_limit_identity(header).as_deref(), Some("user:alice"));
+    }
+
+    #[test]
+    fn home_bootstrap_replaces_expired_record() {
+        let store = HttpSessionStore::new(60);
+        insert_record(&store, "expired", Some("alice"), Duration::from_secs(120));
+
+        let bootstrap = store.prepare_home_context(Some("session=expired"), true).unwrap();
+        assert!(bootstrap.username.is_none());
+        assert!(!bootstrap.set_cookie.starts_with("session=expired;"));
+    }
+
+    #[test]
+    fn session_context_without_valid_cookie_persists_nothing() {
+        let store = HttpSessionStore::new(60);
+        let first = store.session_context(None).unwrap();
+        let unknown = store.session_context(Some("session=unknown")).unwrap();
+
+        assert!(first.username.is_none() && first.session_id.starts_with(SESSION_GUEST_PREFIX));
+        assert!(unknown.username.is_none() && unknown.session_id.starts_with(SESSION_GUEST_PREFIX));
+        assert_eq!(store.record_count(), 0);
+    }
 }

@@ -62,7 +62,8 @@ pub fn get_ip(headers: &HeaderMap, extensions: &Extensions) -> String {
 ///
 /// Preserves the data-route order: key selection (`X-Enc-Key` / account /
 /// generic via the existing key-cookie module) first, then
-/// `session_context` with its create-on-lookup guest semantics. No key
+/// `session_context`, which yields an unstored guest context when no live
+/// session cookie is presented. No key
 /// validation here: direct routes use [`DataRequestContext::require_authenticated`],
 /// chat/regenerate use [`DataRequestContext::into_unverified_parts`] and rely
 /// on core prepare validation later.
