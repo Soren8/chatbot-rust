@@ -233,3 +233,16 @@ No lead in config/logging, persistence/legacy migration (one-time), rate limiter
 - `chat.js` chat and regenerate streams mark `data-original` dirty per chunk; the frame renderer writes it, publishes to the playback source, renders and pins to the bottom once per frame (one stick sample per frame instead of per reader chunk). Done and error paths flush first, and a hidden page flushes per chunk because it gets no animation frames, so background voice playback still receives text. `playback-source.js` caches the speakable projection until the published text changes, so TTS queue reads stop re-projecting the whole reply (`tts-playback.js` and `voice-text.js` unchanged).
 - Recovered/reattached activity paints once per frame; `error` and `saved` paint immediately, and a switch of generation or an interruption flushes the pending paint. Replace-mode set loads build bubbles in a fragment and mount once with one stick sample.
 - Fixtures `conversation_request_application_test.js` (counter bounds plus final DOM text parity) and `playback_source_characterization_test.js` (projection cached, same sentences). No red job: the stopped worker's partial fix was already in the tree and first runs passed; review added the missing visible-chunk dirty flag and the hidden-page flush. Green: `conversation_request_application` 1/1 (`20261001T051144-66f674e697ff`), `playback_source_characterization` 10/10 (`…050403-d74564d24296`), `js_syntax` 11/11 (`…051204-417ba83d053e`).
+
+## Batch PERF-R — shared provider HTTP client (S-PERF-1)
+
+- `providers::shared_client` keeps one `reqwest::Client` per request timeout (the builder's only input) for the process; OpenAI and xAI providers take it instead of building a client per turn, so `/chat` and `/regenerate` reuse pooled connections. Timeouts are unchanged; the old builders set no headers.
+- `llm_client_reuse.rs` (two real `/chat` turns against a keep-alive upstream): red `20261001T045920-5dde8087e8cf` (2 connections) → green `…050305-6040291c2b38` (1). Regression: server `--lib` 88/88 (`…050503-da53aaeb0f3b`), `chat` 2/2, `regenerate` 3/3, `generation_dispatch` 15/15 (`…051007-9b5d9507c9aa`).
+- S-PERF-10 (search-turn payload clones in `providers/generation.rs`) not attempted; retained.
+
+## Batch PERF-T — auth hashing, log sweeps and stream budget (S-PERF-3, 4, 12)
+
+- Login runs bcrypt verify, PBKDF2 derivation and the key-verifier write in one `spawn_blocking`; signup runs its bcrypt hash there. Responses and error mapping are unchanged. `auth_hash_offload.rs` 2/2 (`20261001T045749-3b3ee1e8be48`).
+- `RequestIdentity::has_live_session` (used by `/client_logs`) no longer purges the session store; the rate-limit identity is already expiry-aware. `client_logs_session_sweep` 1/1 (`…050041-4e937e4cb681`), `http_session_store_growth` 1/1 (`…051107-254d34bc7f57`).
+- `/tts_stream/{token}` GET and DELETE leave the rate-limited path list (the token is the bearer credential); `/tts` admission still counts and the budget is unchanged. `tts_stream_rate_budget`: red `…045412-8240986a994c` (429 at the 20th request) → green `…045646-8a0c3070cb8a`.
+- No red for the hashing and sweep halves: the stopped worker's fixes were already in the tree. Regression: `login` 8/8, `signup` 2/2, `credential_metadata` 7/7, `rate_limit` 2/2 (`…050957-c9644811d4f8`).

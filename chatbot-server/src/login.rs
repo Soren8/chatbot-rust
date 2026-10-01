@@ -8,7 +8,7 @@ use axum::{
 };
 use chatbot_core::{
     account_service::AccountService, config_source::ConfigSource, remember_store,
-    user_store::normalise_username,
+    user_store::{normalise_username, UserStoreError},
 };
 use minijinja::{context, AutoEscape, Environment};
 use serde_json::json;
@@ -113,30 +113,44 @@ pub async fn handle_login_post(
         map_user_store_err(err, "login::post", "Unable to log in")
     })?;
 
-    let valid = store
-        .validate_user(&username, password)
-        .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?;
+    // bcrypt verify and PBKDF2 derivation take ~100-300 ms of CPU; keep them
+    // off the async worker so streams sharing it keep flowing.
+    let blocking_username = username.clone();
+    let blocking_password = password.to_owned();
+    let supplied_key = storage_key.map(|key| key.as_bytes().to_vec());
+    let verified = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, UserStoreError> {
+        let username = blocking_username;
+        let password = blocking_password.as_str();
+        if !store.validate_user(&username, password)? {
+            return Ok(None);
+        }
 
-    if !valid {
+        // An absent or empty storage key means the same thing: derive it from
+        // the password. Only a non-empty supplied key is used as-is.
+        let encryption_key = match supplied_key {
+            Some(key) if !key.is_empty() => key,
+            _ => store.derive_encryption_key(&username, password)?,
+        };
+
+        store.ensure_key_verifier(&username, &encryption_key)?;
+        Ok(Some(encryption_key))
+    })
+    .await
+    .map_err(|err| {
+        log_and_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unable to log in",
+            "login::post::verify",
+            err,
+        )
+    })?
+    .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?;
+
+    let Some(encryption_key) = verified else {
         let ip = crate::request_context::get_ip(&headers, &parts.extensions);
         tracing::info!(username = %username, ip = %ip, "Login failed");
         return invalid_credentials();
-    }
-
-    // An absent or empty storage key means the same thing: derive it from
-    // the password. Only a non-empty supplied key is used as-is.
-    let encryption_key = match storage_key {
-        Some(key) if !key.is_empty() => key.as_bytes().to_vec(),
-        _ => {
-            store
-                .derive_encryption_key(&username, password)
-                .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?
-        }
     };
-
-    store
-        .ensure_key_verifier(&username, &encryption_key)
-        .map_err(|err| map_user_store_err(err, "login::post", "Unable to log in"))?;
 
     let finalize = identity
         .finalize_login(cookie_header.as_deref(), &username)

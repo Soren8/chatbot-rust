@@ -182,8 +182,8 @@ impl RequestIdentity {
     }
 
     /// Check for a live HTTP session without bootstrapping one. The rate-limit
-    /// identity uses `guest:{cookie}` only for unknown cookies; expire records
-    /// before consulting it because rate-limit lookups do not expire records.
+    /// identity is expiry-aware and uses `guest:{cookie}` only for unknown or
+    /// expired cookies, so no store sweep is needed here.
     pub fn has_live_session(&self, cookie_header: Option<&str>) -> bool {
         let cookie = cookie_header.and_then(|header| {
             header.split(';').map(str::trim).find_map(|part| {
@@ -191,7 +191,6 @@ impl RequestIdentity {
             })
         });
         let Some(cookie) = cookie else { return false };
-        self.purge_http_for_background();
         self.rate_limit_identity(cookie_header)
             .is_some_and(|identity| identity != format!("guest:{cookie}"))
     }

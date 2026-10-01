@@ -89,14 +89,27 @@ pub async fn handle_signup_post(
         }
     };
 
-    let hashed = hash(password, DEFAULT_COST).map_err(|err| {
-        log_and_api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Unable to create user",
-            "signup::post::hash",
-            err,
-        )
-    })?;
+    // bcrypt at DEFAULT_COST is ~100-300 ms of CPU; keep it off the async
+    // worker so streams sharing it keep flowing.
+    let blocking_password = password.to_owned();
+    let hashed = tokio::task::spawn_blocking(move || hash(blocking_password, DEFAULT_COST))
+        .await
+        .map_err(|err| {
+            log_and_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to create user",
+                "signup::post::hash",
+                err,
+            )
+        })?
+        .map_err(|err| {
+            log_and_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to create user",
+                "signup::post::hash",
+                err,
+            )
+        })?;
 
     let mut store = accounts.users().map_err(|err| {
         map_user_store_err(err, "signup::post", "Unable to create user")

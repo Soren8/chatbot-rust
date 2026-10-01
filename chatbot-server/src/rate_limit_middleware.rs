@@ -20,7 +20,6 @@ const LIMITED_PATHS: &[&str] = &[
     "/generations",
     "/regenerate",
     "/tts",
-    "/tts_stream",
     "/stt",
     "/client_logs",
     "/signup",
