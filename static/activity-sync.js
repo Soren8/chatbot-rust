@@ -250,7 +250,8 @@
       if (recovery) return recovery;
       recovery = Promise.resolve().then(async function () {
         state('reconnecting');
-        await deps.refreshSession();
+        // An expired session surfaces as 401 and send() refreshes once; refreshing
+        // here would rotate the remember token on every focus or resume.
         retryWaiters.forEach(function (wake) { wake(); });
         // Requests already retry with their original identity; join them before discovery.
         await mutationTail;
@@ -258,6 +259,8 @@
         if (!res.ok) { state('needs-action'); return; }
         var data = await res.json();
         if (data.generations.length && (!view || view.detached)) attach(data.generations[0]).catch(function () { state('needs-action'); });
+        // Always compare the durable set version: another device may have saved
+        // while this page was asleep, even when no generation is still running.
         if (deps.reconcile) await deps.reconcile(setId);
         if (!view) state('idle');
       }).finally(function () { recovery = null; });

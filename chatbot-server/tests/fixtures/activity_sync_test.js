@@ -138,8 +138,45 @@ const delta = (seq, text) => ({ seq, type: 'delta', text });
   h = harness(async url => { order.push(url); return response(200, { generations: [] }); }, { refreshSession: async () => { order.push('refresh'); return true; }, reconcile: async () => { order.push('reconcile'); } });
   h.sync.navigate('s');
   await Promise.all([h.sync.recover(), h.sync.recover(), h.sync.recover()]);
-  assert.deepEqual(order, ['refresh', '/activity?set_id=s', 'reconcile']);
+  assert.deepEqual(order, ['/activity?set_id=s', 'reconcile']);
   console.log('PASS recovery triggers coalesce and order');
+
+  // Resume cost: refresh and reconcile issue real requests through the same fetch.
+  function resumeHarness(route) {
+    const fetched = [];
+    let refreshes = 0, reconciles = 0;
+    const fetchImpl = async (url, init) => { fetched.push(url); return route(url, init); };
+    const rh = harness(fetchImpl, {
+      response401Kind: async () => 'session',
+      refreshSession: async () => { refreshes++; await fetchImpl('/login'); await fetchImpl('/login/remember', { method: 'POST' }); return true; },
+      reconcile: async (set) => { reconciles++; await rh.sync.request('/load_set', { method: 'POST', body: JSON.stringify({ set_id: set }) }); }
+    });
+    rh.sync.navigate('s');
+    return { rh, fetched, refreshes: () => refreshes, reconciles: () => reconciles };
+  }
+  let resume = resumeHarness(async url => url === '/load_set' ? response(200, {}) : response(200, { generations: [] }));
+  await resume.rh.sync.recover(); await tick();
+  assert.deepEqual(resume.fetched, ['/activity?set_id=s', '/load_set'], 'idle resume checks set version without refreshing the session');
+  assert.equal(resume.refreshes(), 0);
+  assert.equal(resume.reconciles(), 1, 'idle resume reconciles in case another device completed a turn');
+  console.log('PASS idle resume reconciles without refreshing session');
+
+  let activityCalls = 0;
+  resume = resumeHarness(async url => url.startsWith('/activity') && ++activityCalls === 1 ? response(401, {}) : response(200, { generations: [] }));
+  await resume.rh.sync.recover(); await tick();
+  assert.equal(resume.refreshes(), 1, 'expired session refreshes once');
+  assert.deepEqual(resume.fetched, ['/activity?set_id=s', '/login', '/login/remember', '/activity?set_id=s', '/load_set'], 'refresh then a single retry and version reconciliation');
+  assert.equal(resume.rh.states.at(-1), 'idle');
+  console.log('PASS expired session on resume refreshes once and retries');
+
+  resume = resumeHarness(async url => url.startsWith('/activity') ? response(200, { generations: [{ generation_id: 'live' }] })
+    : url === '/load_set' ? response(200, {}) : response(200, null, frames([delta(1, 'r'), { seq: 2, type: 'saved' }])));
+  await resume.rh.sync.recover(); await tick();
+  assert.ok(!resume.fetched.some(u => u.startsWith('/login')), 'live session never touches the remember token');
+  assert.equal(resume.fetched.filter(u => u === '/generations/live/events?after=0').length, 1, 'active generation reattaches');
+  assert.deepEqual(resume.rh.events.map(e => e.type), ['delta', 'saved']);
+  assert.equal(resume.reconciles(), 2, 'discovery and saved both reconcile when a generation is reported');
+  console.log('PASS resume with active generation reattaches and reconciles');
 
   let releaseWait, sends = 0;
   h = harness(async url => {
