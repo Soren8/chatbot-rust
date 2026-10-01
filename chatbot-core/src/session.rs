@@ -2097,12 +2097,11 @@ impl ChatService {
         set_name: &str,
         key: &EncryptionKey,
     ) -> Result<SetId, MutationMirrorError> {
-        match history.find_by_display_name(username, set_name, key) {
-            Ok(Some(snap)) => Ok(snap.set_id),
+        match history.find_summary_by_display_name(username, set_name, key) {
+            Ok(Some(summary)) => Ok(summary.set_id),
             Ok(None) if set_name == "default" => history
-                .ensure_default_set(username, key)
-                .map_err(MutationMirrorError::History)
-                .map(|snap| snap.set_id),
+                .ensure_default_set_id(username, key)
+                .map_err(MutationMirrorError::History),
             Ok(None) => Err(MutationMirrorError::SetNotFound),
             Err(err) => Err(MutationMirrorError::History(err)),
         }
@@ -2338,12 +2337,11 @@ impl ChatService {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .unwrap_or("default");
-            match history.find_by_display_name(username, name, key) {
-                Ok(Some(snap)) => snap.set_id,
+            match history.find_summary_by_display_name(username, name, key) {
+                Ok(Some(summary)) => summary.set_id,
                 Ok(None) if name == "default" => history
-                    .ensure_default_set(username, key)
-                    .map_err(|_| MutationMirrorError::SetNotFound)?
-                    .set_id,
+                    .ensure_default_set_id(username, key)
+                    .map_err(|_| MutationMirrorError::SetNotFound)?,
                 Ok(None) => return Err(MutationMirrorError::SetNotFound),
                 Err(_) => return Err(MutationMirrorError::SetNotFound),
             }

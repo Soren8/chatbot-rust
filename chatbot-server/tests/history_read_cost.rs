@@ -12,7 +12,7 @@ use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
     account_service::AccountService,
     enc_key::EncryptionKey,
-    history::{cost::take_blob_opens, SetId, SetVersion},
+    history::{cost::{take_blob_opens, take_policy_opens}, SetId, SetVersion},
     session::{ChatService, ChatSessionStore},
     session_identity::HttpSessionStore,
     user_store::UserStore,
@@ -221,4 +221,92 @@ async fn a_history_pair_decrypts_only_that_pair() {
     assert_eq!(response.status(), StatusCode::OK);
     let opens = take_blob_opens();
     assert_eq!((opens.pairs, opens.images), (1, 1), "one pair and its image: {opens:?}");
+}
+
+const EXTRA_SETS: usize = 50;
+
+async fn seed_sets(app: &Router, session: &Session) {
+    for i in 0..EXTRA_SETS {
+        let response = app.clone().oneshot(json_request(session, "/create_set", json!({"set_name":format!("extra {i}")}))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bound_tts_admission_opens_one_set_policy_not_every_set() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    seed_sets(&app, &session).await;
+    take_policy_opens();
+    let response = app.clone().oneshot(json_request(&session, "/tts", json!({"text":"One sentence.","set_id":set_id}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let opens = take_policy_opens();
+    assert!(opens <= 2, "a bound sentence reads only its own set's policy, not all {EXTRA_SETS} others: {opens}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn name_only_set_listing_decrypts_no_history_images() {
+    let _guard = lock();
+    let (_workspace, app, session, _set_id) = fixture().await;
+    seed_sets(&app, &session).await;
+    take_blob_opens();
+    let response = app.clone().oneshot(Request::builder().uri("/get_sets").header(header::COOKIE, &session.cookie).header("X-Enc-Key", &session.key).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let opens = take_blob_opens();
+    assert_eq!(opens.images, 0, "name-only listing should not open history images: {opens:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bound_stt_opens_one_set_policy_not_every_set() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    seed_sets(&app, &session).await;
+    let body = format!("--cost\r\ncontent-disposition: form-data; name=\"audio\"; filename=\"a.webm\"\r\ncontent-type: audio/webm\r\n\r\nfakeaudio\r\n--cost\r\ncontent-disposition: form-data; name=\"set_id\"\r\n\r\n{set_id}\r\n--cost--\r\n");
+    take_policy_opens();
+    let response = app.clone().oneshot(Request::builder().method(Method::POST).uri("/stt")
+        .header(header::COOKIE, &session.cookie).header("X-CSRF-Token", &session.csrf).header("X-Enc-Key", &session.key)
+        .header(header::CONTENT_TYPE, "multipart/form-data; boundary=cost")
+        .body(Body::from(body)).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let opens = take_policy_opens();
+    assert!(opens <= 2, "transcription reads only its own set's policy, not all {EXTRA_SETS} others: {opens}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_binding_opens_one_set_policy_not_every_set() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    seed_sets(&app, &session).await;
+    take_policy_opens();
+    let response = app.clone().oneshot(json_request(&session, "/chat", json!({"message":"next","set_id":set_id}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let opens = take_policy_opens();
+    assert!(opens <= 2, "binding a turn reads only its own set's policy, not all {EXTRA_SETS} others: {opens}");
+    to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rename_set_by_id_decrypts_no_history_images() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    take_blob_opens();
+    let response = app.clone().oneshot(json_request(&session, "/rename_set", json!({"set_id":set_id,"new_name":"renamed"}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(body["status"], "success", "{body}");
+    let opens = take_blob_opens();
+    assert_eq!(opens.images, 0, "a rename needs the set's name, version and default flag only: {opens:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn delete_set_by_id_decrypts_no_history_images() {
+    let _guard = lock();
+    let (_workspace, app, session, set_id) = fixture().await;
+    take_blob_opens();
+    let response = app.clone().oneshot(json_request(&session, "/delete_set", json!({"set_id":set_id}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(body["status"], "success", "{body}");
+    let opens = take_blob_opens();
+    assert_eq!(opens.images, 0, "a delete needs the set's version and default flag only: {opens:?}");
 }

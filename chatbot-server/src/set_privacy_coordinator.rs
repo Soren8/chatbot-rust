@@ -61,15 +61,16 @@ pub fn resolve_content_set(
 ) -> Result<SetId, HistoryError> {
     if let Some(raw) = set_id.filter(|id| !id.trim().is_empty()) {
         let id = SetId::parse(raw).map_err(|_| HistoryError::InvalidInput("invalid set_id"))?;
-        if !history.list_sets(user, key)?.iter().any(|summary| summary.set_id == id) {
-            return Err(HistoryError::NotFound);
-        }
-        return Ok(id);
+        return match history.ensure_owned(user, id, key) {
+            Ok(()) => Ok(id),
+            Err(HistoryError::Forbidden) => Err(HistoryError::NotFound),
+            Err(err) => Err(err),
+        };
     }
     let name = set_name.map(str::trim).filter(|name| !name.is_empty()).unwrap_or("default");
-    match history.list_sets(user, key)?.into_iter().find(|summary| summary.display_name == name) {
+    match history.find_summary_by_display_name(user, name, key)? {
         Some(summary) => Ok(summary.set_id),
-        None if name == "default" => Ok(history.ensure_default_set(user, key)?.set_id),
+        None if name == "default" => Ok(history.ensure_default_set_id(user, key)?),
         None => Err(HistoryError::NotFound),
     }
 }

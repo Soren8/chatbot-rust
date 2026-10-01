@@ -93,6 +93,7 @@ pub fn open_policy_v1(
     aad.extend_from_slice(set_id.as_bytes());
     aad.push(0xff);
     aad.extend_from_slice(POLICY_AAD_KIND);
+    super::cost::policy_opened();
     let plain = aead_open(&aad, blob, key)?;
     let policy: SetPolicyV1 = serde_json::from_slice(&plain)?;
     if policy.format_version != 1 {

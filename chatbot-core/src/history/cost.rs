@@ -9,6 +9,7 @@ thread_local! {
     static PAIRS: Cell<u64> = const { Cell::new(0) };
     static IMAGES: Cell<u64> = const { Cell::new(0) };
     static THUMBS: Cell<u64> = const { Cell::new(0) };
+    static POLICIES: Cell<u64> = const { Cell::new(0) };
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -27,6 +28,11 @@ pub fn take_blob_opens() -> BlobOpens {
     }
 }
 
+/// Return this thread's sealed set-policy opens since the last call and reset.
+pub fn take_policy_opens() -> u64 {
+    POLICIES.with(|c| c.replace(0))
+}
+
 pub(crate) fn pair_opened() {
     PAIRS.with(|c| c.set(c.get() + 1));
 }
@@ -37,4 +43,8 @@ pub(crate) fn image_opened() {
 
 pub(crate) fn thumb_opened() {
     THUMBS.with(|c| c.set(c.get() + 1));
+}
+
+pub(crate) fn policy_opened() {
+    POLICIES.with(|c| c.set(c.get() + 1));
 }

@@ -353,53 +353,80 @@ impl HistoryService {
         let ids = self.store.list_set_ids(&user)?;
         let mut out = Vec::with_capacity(ids.len());
         for (set_id, updated_at) in ids {
-            let (meta, privacy_level) = match self.store.load_meta_policy(&user, set_id, key) {
-                Ok(value) => value,
-                Err(StoreError::Forbidden) => continue,
-                Err(err) => return Err(err.into()),
-            };
-            if let Some(summary) =
-                self.cache
-                    .get_summary_if_version(&user, set_id, meta.version, updated_at)
-            {
+            if let Some(summary) = self.summary_of(&user, set_id, Some(updated_at), key)? {
                 out.push(summary);
-                continue;
             }
-            let display_name = match self.store.load_display_name(&user, set_id, key) {
-                Ok(name) => name,
-                Err(StoreError::NotFound) => {
-                    // Pre-name-row sets: decrypt the snapshot once and persist the name.
-                    match self.store.load_snapshot(&user, set_id, key) {
-                        Ok(snap) => {
-                            if let Err(err) =
-                                self.store
-                                    .put_display_name(&user, set_id, &snap.display_name, key)
-                            {
-                                return Err(err.into());
-                            }
-                            snap.display_name
-                        }
-                        Err(StoreError::DecryptFailed) => return Err(HistoryError::DecryptFailed),
-                        Err(StoreError::Forbidden) => continue,
-                        Err(err) => return Err(err.into()),
-                    }
-                }
-                Err(StoreError::DecryptFailed) => return Err(HistoryError::DecryptFailed),
-                Err(StoreError::Forbidden) => continue,
-                Err(err) => return Err(err.into()),
-            };
-            let summary = SetSummary {
-                set_id,
-                version: meta.version,
-                display_name,
-                updated_at,
-                is_default: meta.is_default,
-                privacy_level,
-            };
-            self.cache.put_summary(&user, &summary);
-            out.push(summary);
         }
         Ok(out)
+    }
+
+    /// One owned set's summary from its meta, policy and name rows; history is
+    /// opened only to backfill a missing name row. `None` for a foreign set.
+    fn summary_of(
+        &self,
+        user: &str,
+        set_id: SetId,
+        updated_at: Option<u64>,
+        key: &EncryptionKey,
+    ) -> Result<Option<SetSummary>, HistoryError> {
+        let (meta, privacy_level) = match self.store.load_meta_policy(user, set_id, key) {
+            Ok(value) => value,
+            Err(StoreError::Forbidden) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let updated_at = updated_at.unwrap_or(meta.updated_at);
+        if let Some(summary) =
+            self.cache
+                .get_summary_if_version(user, set_id, meta.version, updated_at)
+        {
+            return Ok(Some(summary));
+        }
+        let display_name = match self.store.load_display_name(user, set_id, key) {
+            Ok(name) => name,
+            Err(StoreError::NotFound) => {
+                // Pre-name-row sets: decrypt the snapshot once and persist the name.
+                match self.store.load_snapshot(user, set_id, key) {
+                    Ok(snap) => {
+                        if let Err(err) =
+                            self.store
+                                .put_display_name(user, set_id, &snap.display_name, key)
+                        {
+                            return Err(err.into());
+                        }
+                        snap.display_name
+                    }
+                    Err(StoreError::DecryptFailed) => return Err(HistoryError::DecryptFailed),
+                    Err(StoreError::Forbidden) => return Ok(None),
+                    Err(err) => return Err(err.into()),
+                }
+            }
+            Err(StoreError::DecryptFailed) => return Err(HistoryError::DecryptFailed),
+            Err(StoreError::Forbidden) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let summary = SetSummary {
+            set_id,
+            version: meta.version,
+            display_name,
+            updated_at,
+            is_default: meta.is_default,
+            privacy_level,
+        };
+        self.cache.put_summary(user, &summary);
+        Ok(Some(summary))
+    }
+
+    /// Summary of one owned set, read without loading its history.
+    pub fn set_summary(
+        &self,
+        user: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<SetSummary, HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        self.summary_of(&user, set_id, None, key)?
+            .ok_or(HistoryError::Forbidden)
     }
 
     pub fn load(
@@ -413,6 +440,19 @@ impl HistoryService {
         // Cache holds logical (ref) snapshots; materialize a copy for compat readers.
         let logical = self.load_snapshot_cached(&user, set_id, key)?;
         Ok(self.store.materialize_snapshot(&user, &logical, key)?)
+    }
+
+    /// Ownership check from the set's plaintext meta row; opens nothing.
+    pub fn ensure_owned(
+        &self,
+        user: &str,
+        set_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<(), HistoryError> {
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        self.store.load_meta(&user, set_id)?;
+        Ok(())
     }
 
     /// Durable privacy policy of an owned set, read without loading its history.
@@ -434,10 +474,43 @@ impl HistoryService {
         display_name: &str,
         key: &EncryptionKey,
     ) -> Result<Option<SetSnapshot>, HistoryError> {
+        match self.find_summary_by_display_name(user, display_name, key)? {
+            Some(summary) => Ok(Some(self.load(user, summary.set_id, key)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Resolve display name → summary without loading any set's history.
+    pub fn find_summary_by_display_name(
+        &self,
+        user: &str,
+        display_name: &str,
+        key: &EncryptionKey,
+    ) -> Result<Option<SetSummary>, HistoryError> {
         let want = display_name.trim();
-        for summary in self.list_sets(user, key)? {
-            if summary.display_name == want {
-                return Ok(Some(self.load(user, summary.set_id, key)?));
+        let user = normalise_user(user)?;
+        self.ensure_migrated(&user, key)?;
+        for (set_id, updated_at) in self.store.list_set_ids(&user)? {
+            let name = match self.store.load_display_name(&user, set_id, key) {
+                Ok(name) => name,
+                Err(StoreError::NotFound) => {
+                    // Older rows have no separate name record; preserve their
+                    // migration/backfill behavior before continuing the scan.
+                    let Some(summary) = self.summary_of(&user, set_id, Some(updated_at), key)? else {
+                        continue;
+                    };
+                    if summary.display_name == want {
+                        return Ok(Some(summary));
+                    }
+                    continue;
+                }
+                Err(StoreError::Forbidden) => continue,
+                Err(err) => return Err(err.into()),
+            };
+            if name == want {
+                if let Some(summary) = self.summary_of(&user, set_id, Some(updated_at), key)? {
+                    return Ok(Some(summary));
+                }
             }
         }
         Ok(None)

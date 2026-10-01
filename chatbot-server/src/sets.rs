@@ -925,18 +925,19 @@ fn resolve_set(
     set_id: Option<&str>,
     set_name: Option<&str>,
     key: &chatbot_core::enc_key::EncryptionKey,
-) -> Result<chatbot_core::history::SetSnapshot, &'static str> {
+) -> Result<chatbot_core::history::SetSummary, &'static str> {
     if let Some(id_str) = set_id.filter(|s| !s.trim().is_empty()) {
         let id = SetId::parse(id_str).map_err(|_| "invalid set_id")?;
         return history
-            .load(username, id, key)
+            .set_summary(username, id, key)
             .map_err(|_| "set not found");
     }
     let name = set_name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("default");
-    match history.find_by_display_name(username, name, key) {
-        Ok(Some(snap)) => Ok(snap),
+    match history.find_summary_by_display_name(username, name, key) {
+        Ok(Some(summary)) => Ok(summary),
         Ok(None) if name == "default" => history
-            .ensure_default_set(username, key)
+            .ensure_default_set_id(username, key)
+            .and_then(|id| history.set_summary(username, id, key))
             .map_err(|_| "set not found"),
         Ok(None) => Err("set not found"),
         Err(_) => Err("set not found"),
