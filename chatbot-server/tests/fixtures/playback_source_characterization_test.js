@@ -66,11 +66,15 @@ function desktopDrive(steps, opts) {
   const chatRequests = conversationState.createChatRequestTracker();
   let liveSeq = chatRequests.begin();
   const source = playbackSource.createMessageSource({
-    sanitize: voiceText.sanitizeForTTS,
+    sanitize: opts.sanitize || voiceText.sanitizeForTTS,
     isTrackerGenerating: () => chatRequests.isGenerating(),
     isTrackerLive: (s) => chatRequests.isLive(s),
     boundSeq: liveSeq,
   });
+  if (opts.onGetText) {
+    const getText = source.getText;
+    source.getText = () => { opts.onGetText(); return getText(); };
+  }
   function publish() {
     source.publish({ original: state.raw, fallbackVisible: '' });
   }
@@ -146,11 +150,15 @@ function nativeDrive(steps, opts) {
   const chatRequests = conversationState.createChatRequestTracker();
   let liveSeq = chatRequests.begin();
   const source = playbackSource.createMessageSource({
-    sanitize: voiceText.sanitizeForTTS,
+    sanitize: opts.sanitize || voiceText.sanitizeForTTS,
     isTrackerGenerating: () => chatRequests.isGenerating(),
     isTrackerLive: (s) => chatRequests.isLive(s),
     boundSeq: liveSeq,
   });
+  if (opts.onGetText) {
+    const getText = source.getText;
+    source.getText = () => { opts.onGetText(); return getText(); };
+  }
   function publish() {
     source.publish({ original: state.raw, fallbackVisible: '' });
   }
@@ -374,16 +382,30 @@ async function checkIncremental() {
   const sentences = Array.from({ length: 200 }, (_, i) => 'Sentence number ' + i + ' is here.');
   const steps = sentences.map((_, i) => ({ text: sentences.slice(0, i + 1).join(' '), generating: i < sentences.length - 1 }));
   const finalLength = steps[steps.length - 1].text.length;
+  // Speakable projection (think-strip plus sanitizer) runs once per
+  // published text, however many times the queue, its pump, and the
+  // observer backstop read it.
+  const publishedChars = steps.reduce((n, step) => n + step.text.length, 0);
   for (const [name, drive] of [['desktop', desktopDrive], ['native', nativeDrive]]) {
     let scanned = 0;
+    let sanitizedChars = 0;
+    let sanitizeCalls = 0;
+    let getTextCalls = 0;
     const split = (text) => { scanned += text.length; return voiceText.splitSentences(text); };
-    const d = drive(steps, { split });
+    const sanitize = (text) => { sanitizeCalls++; sanitizedChars += String(text).length; return voiceText.sanitizeForTTS(text); };
+    const d = drive(steps, { split, sanitize, onGetText: () => { getTextCalls++; } });
     await d.run();
     const spoken = name === 'desktop' ? d.state.played : d.posts.map((p) => p.text);
     assert(spoken.length > 0, name + ' speaks');
     assert.deepEqual(spoken, sentences.slice(0, spoken.length), name + ' speaks each sentence once in order');
     if (name === 'desktop') assert.equal(spoken.length, sentences.length, 'desktop speaks the whole reply');
     assert(scanned <= 20 * finalLength, name + ' split scanned ' + scanned + ' chars for a ' + finalLength + '-char reply');
+    assert(getTextCalls > steps.length, name + ' reads text more often than it is published (' + getTextCalls + ' reads)');
+    assert(
+      sanitizeCalls <= steps.length + 1 && sanitizedChars <= publishedChars,
+      name + ' projected ' + sanitizeCalls + ' times / ' + sanitizedChars + ' chars for ' + steps.length
+        + ' publishes / ' + publishedChars + ' chars (' + getTextCalls + ' reads)'
+    );
   }
 
   // While generating with nothing new to speak, the idle desktop queue

@@ -48,6 +48,8 @@ const slices = [
   ['function currentSetId() {', 'function currentSetIdentity() {'],
   ['let loadedPrivacy = null;', 'function refreshPrivacyControls() {'],
   ['async function response401Message(response) {', 'function logoutThisComputer() {'],
+  ['function mountChatMessage(hostEl, mountOpts) {', 'function appendSetsLoadError(errorText) {'],
+  ['var recoveredActivity = null;', 'function recoverActivity() {'],
   ['function fetchHistoryPair(pairIndex, extra) {', 'function sizeEditTextarea(textarea) {'],
   ['function beginChatRequest() {', '// Sanitize raw markdown text for TTS'],
   ['function combinedAiOriginal(fullVisibleText, fullThinkingText) {', 'function getDomPlainText(element) {'],
@@ -149,6 +151,7 @@ function makeFake(tag) {
     append(v) { el.calls.append.push(v); return el; },
     remove() { return el; },
     empty() { return el; },
+    trigger() { return el; },
   };
   return el;
 }
@@ -1067,6 +1070,210 @@ async function scenarioRegenRenderCoalescing() {
   assert.equal(w.textFake.calls.html.length, 1, 'regen-render: a flushed frame never renders again');
 }
 
+// Stream bookkeeping for the K-chunk coalescing scenarios: data-original
+// writes, playback publishes, stick-to-bottom samples (layout reads) and
+// bottom pins (a scrollTop write plus two frames each).
+function trackStreamSinks(w) {
+  const t = { sticks: 0, pins: 0 };
+  w.ctx.shouldStickChatToBottom = () => { t.sticks++; return true; };
+  w.ctx.scrollToBottom = () => { t.pins++; };
+  t.reset = () => {
+    t.sticks = 0;
+    t.pins = 0;
+    w.aiFake.calls.attrSet.length = 0;
+    w.playback.publishes.length = 0;
+  };
+  t.originals = () => w.aiFake.calls.attrSet.filter(([k]) => k === 'data-original').map(([, v]) => v);
+  return t;
+}
+
+async function checkOriginalCoalescing(w, label, words, endStream) {
+  const runFrames = installFrames(w);
+  const t = trackStreamSinks(w);
+  return {
+    t,
+    async run(stream) {
+      t.reset();
+      const text = await streamBurst(w, stream, words);
+      assert.deepEqual(t.originals(), [], label + ': data-original waits for a frame');
+      assert.equal(w.playback.publishes.length, 0, label + ': playback publish waits for a frame');
+      assert.equal(t.pins, 0, label + ': no per-chunk bottom pin');
+      runFrames();
+      assert.deepEqual(t.originals(), [text], label + ': one frame writes data-original once');
+      assert.deepEqual(w.playback.publishes, [[text, text]], label + ': one frame publishes once');
+      assert.equal(t.sticks, 1, label + ': one frame samples stick-to-bottom once');
+      assert.equal(t.pins, 1, label + ': one frame pins once');
+      const final = await endStream(text);
+      runFrames();
+      const originals = t.originals();
+      assert.equal(originals[originals.length - 1], final, label + ': final data-original is the whole reply');
+      assert.deepEqual(w.playback.publishes[w.playback.publishes.length - 1], [final, final], label + ': final publish is the whole reply');
+      assert(w.playback.publishes.length <= 2, label + ': ' + w.playback.publishes.length + ' publishes for ' + words + ' chunks');
+      const bytes = originals.reduce((n, v) => n + v.length, 0);
+      assert(originals.length <= 3 && bytes <= 3 * final.length,
+        label + ': ' + originals.length + ' data-original writes / ' + bytes + ' bytes for ' + words + ' chunks');
+      assert(t.sticks <= 2 && t.pins <= 2, label + ': ' + t.sticks + ' stick samples / ' + t.pins + ' pins for ' + words + ' chunks');
+    },
+  };
+}
+
+async function scenarioChatOriginalCoalescing() {
+  const w = makeWorld();
+  w.userInput._val = 'hi';
+  vm.runInContext('sendMessage({ message: "hi" })', w.ctx);
+  await flush();
+  const call = lastFetch(w);
+  const stream = w.makeStream(call);
+  const c = await checkOriginalCoalescing(w, 'chat-original', 20, async (text) => {
+    stream.pending[20].resolve({ done: false, value: new TextEncoder().encode('tail.') });
+    await flush();
+    stream.pending[21].resolve({ done: true, value: new TextEncoder().encode('') });
+    await flush();
+    return text + 'tail.';
+  });
+  call.resolve({ status: 200, ok: true, body: stream.body });
+  await flush();
+  await c.run(stream);
+  assert.equal(w.playback.finishes.length > 0, true, 'chat-original: stream end settles playback');
+}
+
+async function scenarioRegenOriginalCoalescing() {
+  const w = makeWorld();
+  w.ctx.__ai = w.aiFake;
+  w.ctx.__utext = 'q';
+  w.ctx.__pair = 0;
+  vm.runInContext('performRegeneration(__ai, __utext, __pair)', w.ctx);
+  await flush();
+  const call = w.fetchCalls[0];
+  const stream = w.makeStream(call);
+  const c = await checkOriginalCoalescing(w, 'regen-original', 20, async (text) => {
+    stream.pending[20].resolve({ done: false, value: new TextEncoder().encode('tail.') });
+    await flush();
+    stream.pending[21].resolve({ done: true, value: new TextEncoder().encode('') });
+    await flush();
+    return text + 'tail.';
+  });
+  call.resolve({ status: 200, ok: true, body: stream.body });
+  await flush();
+  await c.run(stream);
+}
+
+// A stream error mid-frame still writes and publishes the pending text plus
+// the error suffix before playback settles.
+async function scenarioChatOriginalErrorFlush() {
+  const w = makeWorld();
+  installFrames(w);
+  const t = trackStreamSinks(w);
+  w.userInput._val = 'hi';
+  vm.runInContext('sendMessage({ message: "hi" })', w.ctx);
+  await flush();
+  const call = lastFetch(w);
+  const stream = w.makeStream(call);
+  call.resolve({ status: 200, ok: true, body: stream.body });
+  await flush();
+  t.reset();
+  const text = await streamBurst(w, stream, 3);
+  stream.pending[3].reject(new Error('net down'));
+  await flush();
+  const final = text + '\n[Error] The response stream was interrupted.';
+  const originals = t.originals();
+  assert.equal(originals[originals.length - 1], final, 'chat-original-error: data-original carries the error suffix');
+  assert.deepEqual(w.playback.publishes, [[final, final]], 'chat-original-error: one terminal publish');
+  assert(w.playback.finishes.length > 0, 'chat-original-error: playback settles');
+}
+
+// A reattach replays many generation events; Markdown renders once per frame
+// and terminal events paint the exact final state.
+async function scenarioRecoveredActivityCoalescing() {
+  const w = makeWorld();
+  const runFrames = installFrames(w);
+  let renders = 0;
+  w.ctx.renderMarkdown = (t) => { renders++; return t; };
+  let frames = 0;
+  const frameRun = () => { frames++; runFrames(); };
+  const ev = (type, text) => vm.runInContext('renderRecoveredActivity(__ev)', Object.assign(w.ctx, { __ev: { generation_id: 'g1', type, text } }));
+  let visible = '';
+  ev('thinking', 'pondering');
+  for (let i = 0; i < 100; i++) {
+    ev('delta', 'w' + i + ' ');
+    visible += 'w' + i + ' ';
+    if (i === 49) frameRun();
+  }
+  assert(renders <= frames, 'recovered: replayed deltas render once per frame (' + renders + ' renders / ' + frames + ' frames)');
+  ev('saved');
+  assert(renders <= frames + 1, 'recovered: ' + renders + ' renders for 100 replayed deltas over ' + frames + ' frames');
+  assert.equal(w.textFake.calls.html[w.textFake.calls.html.length - 1], visible, 'recovered: saved paints the whole reply');
+  assert.equal(w.aiFake._attrs['data-original'], visible + '<think>pondering</think>', 'recovered: saved writes the final data-original');
+  const before = renders;
+  runFrames();
+  assert.equal(renders, before, 'recovered: a terminal paint leaves no pending frame');
+
+  // Error after pending deltas: the bubble keeps the synced data-original
+  // and its children become the error chrome.
+  const w2 = makeWorld();
+  installFrames(w2);
+  const replaced = [];
+  w2.ctx.replaceChildrenNative = (host, node) => { replaced.push(node); };
+  const ev2 = (type, text) => vm.runInContext('renderRecoveredActivity(__ev)', Object.assign(w2.ctx, { __ev: { generation_id: 'g2', type, text } }));
+  ev2('delta', 'partial ');
+  ev2('delta', 'answer');
+  ev2('error', 'boom');
+  assert.equal(w2.aiFake._attrs['data-original'], 'partial answer', 'recovered-error: data-original synced before error chrome');
+  assert.deepEqual(replaced[replaced.length - 1], { msg: 'boom' }, 'recovered-error: error chrome replaces the bubble');
+}
+
+// A replace-mode set load builds the page off-DOM and mounts it once: one
+// stick sample and one pin, not one per bubble.
+async function scenarioHistoryReplaceMount() {
+  const w = makeWorld();
+  const t = trackStreamSinks(w);
+  const chatEl = {
+    children: [],
+    appends: 0,
+    appendChild(n) {
+      chatEl.appends++;
+      if (n && n.isFrag) chatEl.children.push(...n.children.splice(0));
+      else chatEl.children.push(n);
+      return n;
+    },
+    insertBefore(n) { return chatEl.appendChild(n); },
+  };
+  const $chat = makeFake('#chat-content');
+  $chat[0] = chatEl;
+  const baseDollar = w.ctx.$;
+  w.ctx.$ = (sel) => {
+    if (sel === '#chat-content') return $chat;
+    if (sel === '<div>') { const f = makeFake('div'); f[0] = { tag: 'div' }; return f; }
+    return baseDollar(sel);
+  };
+  w.ctx.document = {
+    getElementById: (id) => (id === 'chat-content' ? chatEl : null),
+    createDocumentFragment: () => ({ isFrag: true, children: [], appendChild(n) { this.children.push(n); return n; } }),
+    querySelectorAll: () => [],
+  };
+  w.ctx.appendMessage = (m, c, p, opts) => {
+    const host = { role: c, text: m };
+    w.ctx.mountChatMessage(host, opts);
+    const f = makeFake('appended'); f[0] = host; return f;
+  };
+  w.ctx.buildAiHistoryChildren = () => ({});
+  w.ctx.formatAiMessage = (x) => x;
+  w.ctx.ensureLoadOlderBar = () => null;
+  w.ctx.updateLoadOlderBar = () => {};
+  w.ctx.startDeferredThumbs = () => {};
+  const history = Array.from({ length: 40 }, (_, i) => ['u' + i, 'a' + i]);
+  w.ctx.__page = { history, history_start: 0, history_total: 40, has_more: false };
+  vm.runInContext('applyHistoryPage(__page, "replace")', w.ctx);
+  assert.equal(chatEl.children.length, 80, 'history-replace: every bubble mounts');
+  assert.deepEqual(chatEl.children.filter((n) => n.role === 'user-message').map((n) => n.text), history.map((h) => h[0]),
+    'history-replace: user bubbles in order');
+  assert.equal(chatEl.children[0].role, 'user-message', 'history-replace: pairs interleave user first');
+  assert.equal(chatEl.appends, 1, 'history-replace: ' + chatEl.appends + ' live-container appends for 40 pairs');
+  assert(t.sticks <= 1 && t.pins <= 1, 'history-replace: ' + t.sticks + ' stick samples / ' + t.pins + ' pins for 40 pairs');
+  w.fireTimers();
+  assert(t.pins >= 1, 'history-replace: the deferred pin still lands');
+}
+
 (async () => {
   const cases = [
     ['voice-stt-replay', scenarioVoiceSttReplay],
@@ -1079,6 +1286,11 @@ async function scenarioRegenRenderCoalescing() {
     ['regen-replacement', scenarioRegenReplacement],
     ['chat-render-coalescing', scenarioChatRenderCoalescing],
     ['regen-render-coalescing', scenarioRegenRenderCoalescing],
+    ['chat-original-coalescing', scenarioChatOriginalCoalescing],
+    ['regen-original-coalescing', scenarioRegenOriginalCoalescing],
+    ['chat-original-error-flush', scenarioChatOriginalErrorFlush],
+    ['recovered-activity-coalescing', scenarioRecoveredActivityCoalescing],
+    ['history-replace-mount', scenarioHistoryReplaceMount],
     ['memory-retry', scenarioMemoryRetry],
     ['prompt-retry', scenarioSystemPromptRetry],
     ['memory-error-ui', scenarioMemoryErrorUi],

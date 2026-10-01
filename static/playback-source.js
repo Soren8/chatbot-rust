@@ -16,7 +16,8 @@
   // generating. retarget() restarts sequence, text, and finished flag
   // atomically with a single notify. projectSpeakableText() strips think
   // blocks, falls back to visible text, sanitizes, and silences
-  // Thinking.../Error placeholders. No DOM access.
+  // Thinking.../Error placeholders; getText() caches it until the text
+  // changes. No DOM access.
 
   function projectSpeakableText(original, fallbackVisible, sanitize) {
     var full = original || '';
@@ -41,11 +42,13 @@
     var original = '';
     var fallbackVisible = '';
     var finished = false;
+    var projected = null;
     var boundSeq = (deps.boundSeq != null) ? deps.boundSeq : null;
     var listeners = [];
 
     function getText() {
-      return projectSpeakableText(original, fallbackVisible, sanitize);
+      if (projected === null) projected = projectSpeakableText(original, fallbackVisible, sanitize);
+      return projected;
     }
 
     // Event-fed progress: terminal once finished, otherwise live only while
@@ -82,8 +85,11 @@
     // Text event from a producing/updating site.
     function publish(next) {
       next = next || {};
+      var prevOriginal = original;
+      var prevFallback = fallbackVisible;
       if (next.original !== undefined) original = next.original || '';
       if (next.fallbackVisible !== undefined) fallbackVisible = next.fallbackVisible || '';
+      if (original !== prevOriginal || fallbackVisible !== prevFallback) projected = null;
       notify();
     }
 
@@ -103,6 +109,7 @@
       text = text || {};
       original = text.original || '';
       fallbackVisible = text.fallbackVisible || '';
+      projected = null;
       finished = false;
       notify();
     }

@@ -291,28 +291,43 @@ var activitySync = ChatActivitySync.createActivitySync({
 });
 window.activitySync = activitySync;
 var recoveredActivity = null;
-function renderRecoveredActivity(event) {
-  if (!recoveredActivity || recoveredActivity.id !== event.generation_id) {
-    appendMessage('', 'ai-message');
-    recoveredActivity = { id: event.generation_id, host: $('.ai-message:last-child'), visible: '', thinking: '' };
-  }
-  var recovered = recoveredActivity;
-  if (event.type === 'delta') recovered.visible += event.text;
-  if (event.type === 'thinking') recovered.thinking += event.text;
+function paintRecoveredActivity(recovered) {
   recovered.host.find('.ai-message-text').html(renderMarkdown(recovered.visible));
   if (recovered.thinking) {
     recovered.host.find('.thinking-container').show();
     recovered.host.find('.thinking-content').text(recovered.thinking);
   }
   recovered.host.attr('data-original', combinedAiOriginal(recovered.visible, recovered.thinking));
+}
+// A reattach can replay thousands of events: paint once per frame, and
+// paint terminal events (error, saved) immediately.
+function renderRecoveredActivity(event) {
+  if (!recoveredActivity || recoveredActivity.id !== event.generation_id) {
+    if (recoveredActivity) recoveredActivity.frame.flush();
+    appendMessage('', 'ai-message');
+    var created = { id: event.generation_id, host: $('.ai-message:last-child'), visible: '', thinking: '' };
+    created.frame = createFrameRenderer(function () { paintRecoveredActivity(created); });
+    recoveredActivity = created;
+  }
+  var recovered = recoveredActivity;
+  if (event.type === 'delta') recovered.visible += event.text;
+  if (event.type === 'thinking') recovered.thinking += event.text;
+  if (event.type !== 'error' && event.type !== 'saved') {
+    recovered.frame.request();
+    return;
+  }
+  recovered.frame.cancel();
+  paintRecoveredActivity(recovered);
   if (event.type === 'error') {
     replaceChildrenNative(recovered.host[0], buildAiErrorChildren(event.text || 'Generation failed. Retry to send again.'));
     return;
   }
-  if (event.type === 'saved') { recoveredActivity = null; $('#set-selector').trigger('change'); }
+  recoveredActivity = null;
+  $('#set-selector').trigger('change');
 }
 function renderInterruptedActivity() {
   if (recoveredActivity) {
+    recoveredActivity.frame.flush();
     replaceChildrenNative(recoveredActivity.host[0], buildAiErrorChildren('Generation interrupted after server restart. Retry to send again.'));
     recoveredActivity = null;
   } else {
@@ -321,6 +336,7 @@ function renderInterruptedActivity() {
 }
 function discoverActivity(setId, loadGen) {
   if (!historyWindow.isLiveGen(loadGen)) return Promise.resolve();
+  if (recoveredActivity) recoveredActivity.frame.cancel();
   recoveredActivity = null;
   return activitySync.recover().catch(function () {});
 }
@@ -1498,9 +1514,17 @@ function applyHistoryPage(data, mode) {
   liveStreamPlaybackSource = null;
   $chat.empty();
   ensureLoadOlderBar();
+  // Build the page off-DOM and mount it once: one stick sample and one pin
+  // instead of a layout read and pin per bubble.
+  var follow = shouldStickChatToBottom();
+  var pageFrag = document.createDocumentFragment();
   for (var j = 0; j < pairs.length; j++) {
-    appendHistoryPair(pairs[j][0], pairs[j][1], start + j, { thumbnail: true, deferSrc: true });
+    appendHistoryPair(pairs[j][0], pairs[j][1], start + j, {
+      thumbnail: true, deferSrc: true, fragment: pageFrag, skipScroll: true
+    });
   }
+  if ($chat[0]) $chat[0].appendChild(pageFrag);
+  if (follow) scrollToBottom();
   updateLoadOlderBar();
   setTimeout(function() {
     scrollToBottom();
@@ -2432,11 +2456,21 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
     let wasRateLimited = false;
     let visibleDirty = false;
     let thinkingDirty = false;
+    let originalDirty = false;
+    // One frame writes data-original, publishes to playback, renders, and
+    // pins to the bottom once for every chunk since the last frame.
     const frame = createFrameRenderer(function () {
       if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
+      const nearBottom = shouldStickChatToBottom();
+      if (originalDirty) {
+        const aiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
+        $target.attr('data-original', aiOriginal);
+        publishMessagePlaybackText($target, aiOriginal, fullVisibleText);
+      }
       if (visibleDirty) $msgText.html(renderMarkdown(fullVisibleText));
       if (thinkingDirty) $thinkingContent.text(fullThinkingText);
-      visibleDirty = thinkingDirty = false;
+      visibleDirty = thinkingDirty = originalDirty = false;
+      if (nearBottom) scrollToBottom();
     });
 
     function appendVisible(content) {
@@ -2457,8 +2491,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
              $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
           }
       }
-      $target.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
-      publishMessagePlaybackText($target, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
+      originalDirty = true;
     }
     function appendThinking(content) {
       if (!content) return;
@@ -2485,8 +2518,7 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       thinkingDirty = true;
       frame.request();
       if (!hasWrittenToDOM) { $msgText.text(''); hasWrittenToDOM = true; }
-      $target.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
-      publishMessagePlaybackText($target, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
+      originalDirty = true;
     }
     function processBuffer(chunk) {
       ChatStreamDecoder.pushChunk(streamState, chunk, {
@@ -2521,11 +2553,10 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
               return;
             }
             const chunk = decoder.decode(value, {stream:true});
-            const nearBottom = shouldStickChatToBottom();
             processBuffer(chunk);
-            if (nearBottom) {
-              scrollToBottom();
-            }
+            // Hidden pages get no animation frames; publish per chunk so
+            // background voice playback still receives text.
+            if (typeof document !== 'undefined' && document.hidden) frame.flush();
             read();
           }).catch(err => {
             if (!isLiveChatRequest(seq) || !isLiveConversation(regenBinding)) return;
@@ -3783,11 +3814,21 @@ $(document).ready(function() {
         let wasRateLimited = false;
         let visibleDirty = false;
         let thinkingDirty = false;
+        let originalDirty = false;
+        // One frame writes data-original, publishes to playback, renders, and
+        // pins to the bottom once for every chunk since the last frame.
         const frame = createFrameRenderer(function () {
           if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
+          const nearBottom = shouldStickChatToBottom();
+          if (originalDirty) {
+            const aiOriginal = combinedAiOriginal(fullVisibleText, fullThinkingText);
+            $targetElement.attr('data-original', aiOriginal);
+            publishMessagePlaybackText($targetElement, aiOriginal, fullVisibleText);
+          }
           if (visibleDirty) $messageTextElement.html(renderMarkdown(fullVisibleText));
           if (thinkingDirty) $thinkingContentElement.text(fullThinkingText);
-          visibleDirty = thinkingDirty = false;
+          visibleDirty = thinkingDirty = originalDirty = false;
+          if (nearBottom) scrollToBottom();
         });
 
         function appendVisible(content) {
@@ -3808,8 +3849,7 @@ $(document).ready(function() {
                  $toggle.html('<i class="bi bi-caret-right-fill"></i> Show Thinking');
               }
           }
-          $targetElement.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
-          publishMessagePlaybackText($targetElement, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
+          originalDirty = true;
         }
         function appendThinking(content) {
           if (!content) return;
@@ -3836,8 +3876,7 @@ $(document).ready(function() {
           thinkingDirty = true;
           frame.request();
           if (!hasWrittenToDOM) { $messageTextElement.text(''); hasWrittenToDOM = true; }
-          $targetElement.attr('data-original', combinedAiOriginal(fullVisibleText, fullThinkingText));
-          publishMessagePlaybackText($targetElement, combinedAiOriginal(fullVisibleText, fullThinkingText), fullVisibleText);
+          originalDirty = true;
         }
         function processChunk(chunk) {
           ChatStreamDecoder.pushChunk(streamState, chunk, {
@@ -3880,11 +3919,10 @@ $(document).ready(function() {
               return;
             }
             const chunk = decoder.decode(value, { stream: true });
-            const nearBottom = shouldStickChatToBottom();
             processChunk(chunk);
-            if (nearBottom) {
-              scrollToBottom();
-            }
+            // Hidden pages get no animation frames; publish per chunk so
+            // background voice playback still receives text.
+            if (typeof document !== 'undefined' && document.hidden) frame.flush();
             return readStream();
           }).catch(err => {
             if (!isLiveChatRequest(seq) || !isLiveConversation(chatBinding)) return;
