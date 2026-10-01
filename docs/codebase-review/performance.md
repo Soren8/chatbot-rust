@@ -88,3 +88,44 @@ Full suite on the batch C+D tree: `20261001T012601-5c7fd5fd9bbc`, 1,087 passed, 
 ## Batch PERF-F — windowed page and pair reads (PERF-001 read path)
 
 - PERF-001 read path fixed: `load_page` and `load_pair` go through `load_chunked_window`, which decrypts only the pairs in the requested range and returns the manifest from the same read transaction; `load_logical_chunked` delegates with the full range. New `a_history_page_decrypts_only_its_pairs` and `a_history_pair_decrypts_only_that_pair` in `history_read_cost.rs`: red (`20261001T014110-e289e9eea01f`, a one-pair page opened all 3 pairs) → green (`20261001T014236-b6dee07320d8`, 8/8). Out-of-range and `usize::MAX` pair indexes clamp to an empty window and still return `InvalidInput`; page bounds, `has_more` and `history_total` are unchanged. Regression jobs (worker-run, all green): `history_robustness` 21/21 (`20261001T015308-9dc3863b7ead`), core `--lib history` 88/88 (`…015400-5437d0835f91`), `load_set_history` 4/4, `conversation_state` 12/12, `activity_sync` 2/2, `prompt_input_boundary` 7/7, `history_snapshot_boundary` 7/7, `chat_service_lazy_history` 3/3, `history_cache_key` 1/1, `chat_service_test_chunks_isolation` 6/6.
+
+## Session 085 — Android inventory (N01–N03, leads)
+
+Every production file in N01–N03 read 1→EOF (6,915 lines, worker read, primary-reviewed). Leads, with the measurement each needs:
+
+| Lead | Location | Cost | Disposition |
+|---|---|---|---|
+| N-PERF-1 | `NativeMicPlugin.java:238–262, 793–809` | Per 20 ms frame: new buffer, main-looper post, JSObject, ~856-char Base64, `evaluateJavascript`; JS decodes again. 50 wakeups/s for the whole session, also while JS drops frames. | Batch PERF-G (measured fixture or recorded design). |
+| N-PERF-2 | `NativeMicPlugin.java:200, 239, 243` | `getMinBufferSize` bytes used as a sample count: reads block for twice the intended time, frames arrive in bursts. | Batch PERF-G. |
+| N-PERF-3 | `NativeMicPlugin.java:242–246` | `read <= 0` → `continue` with no backoff; error codes spin a core. | Batch PERF-G. |
+| N-PERF-4 | `car/VoiceScreen.java:230–235` | The same spin plus a file log per iteration; recorder released on main while read. | Batch PERF-H. |
+| N-PERF-5 | `VoiceScreen.java:296–313, 342–363, 439–463` | Car turn: GET `/`, `/get_sets` twice, `/stt`, `/chat` serially. | Deferred: car protocol/transport repair is user-deferred. |
+| N-PERF-6 | `VoiceScreen.java:313–322, 484–537` | Car TTS waits for the saved generation and synthesizes the whole reply at once. | Deferred with N-PERF-5. |
+| N-PERF-7 | `VoiceScreen.java:553, 607–611` | Drain sleeps for total duration, ignoring audio already played through blocking writes (up to ~8 s mic-deaf). | Batch PERF-H. |
+| N-PERF-8 | `VoiceScreen.java:60, 274–298` | Utterances (≤ ~480 KB) queue without bound while a turn runs. | Batch PERF-H. |
+| N-PERF-9 | `car/DurableVoiceProtocol.java:77–84` | `openTts` loops with no backoff when the stream opens to 404. | Batch PERF-H. |
+| N-PERF-10 | `audio/OggOpusStreamDecoder.java:98–138, 209, 228–231, 306–307` | Uncompacted staging copied per feed and page; per-packet PCM arrays; per-sample synchronized writes. | Batch PERF-I. |
+| N-PERF-11 | `audio/TtsBodyInputStream.java:17–47` | Cancelled watchdog tasks stay queued 15 s; queue depth equals recent reads. | Batch PERF-I. |
+| N-PERF-12 | `NativeVoiceTtsPlugin.java:270–399` | 3–4 PCM copies per clip. | Retained: bounded by per-sentence clips the server muxes whole. |
+| N-PERF-13 | `NativeVoiceTtsPlugin.java:54, 197–225` | Worker polls every 100 ms while waiting. | Retained: 10 wakeups/s only during active TTS sessions. |
+| N-PERF-14 | `VoiceModeForegroundService.java:32–47, 221–273` | 15 s keep-alive resumes the renderer; untimed partial wake lock. | Retained: keep-alive is the designed background-voice contract; renderer cost is device-only. |
+| N-PERF-15 | `util/FileLogger.java:50–90` | Formatter allocated per line; synchronous open/append/close; no size cap. | Batch PERF-I. |
+| N-PERF-16 | `VoiceScreen.java:60–61, 718–744` | Two executors never shut down per Auto session. | Batch PERF-H. |
+| N-PERF-17 | `VoiceModeSessionCoordinator.java:332–354` | Lock-screen Stop joins TTS/mic threads on main (≤ ~2 s). | Retained: rare user action; real durations device-only. |
+
+N01 files (activity, secure key, logger plugin, util except `FileLogger`) and the remaining audio state machines carry no lead: per-session or per-action work only.
+
+## Session 085 — server in-memory stores (leads)
+
+| Lead | Location | Cost | Disposition |
+|---|---|---|---|
+| R-PERF-1 | `generations.rs` receipts, `idempotency.rs` `SttReceipts`, `tts/store.rs` admissions | 24 h retention, no per-owner cap; full `retain` sweep per replay under one mutex. Stale-version `/chat` records receipts without a provider call. | Batch PERF-J. |
+| R-PERF-2 | `session_identity.rs:92–97, 220–240`; `request_context.rs:113–115`; `rate_limit_middleware.rs:18–28` | Every session lookup sweeps all sessions; cookieless lookups mint orphaned records; `/activity` unlimited. | Batch PERF-K. |
+| R-PERF-3 | `history/cache.rs:20–21, 67–89, 190–219` | Entry-count cap over decrypted snapshots; expired entries resident; every hit deep-clones. | Batch PERF-L. |
+| R-PERF-4 | `generations.rs:139–145, 330, 504` | Concurrency capped per (owner, set), not per owner; buffer budget counts text only (~5.5 MiB real ceiling per generation). | Retained as a policy choice; per-owner concurrency is a product decision. |
+| R-PERF-5 | `connection_receipts.rs:19–35` | Each write decrypts the writer's rows to expire them; other owners' expired rows linger. | Rejected: allowlisted, rare writers, bounded at 24 h. |
+
+- PERF-008 rejected: per-chunk events are a constant factor capped at 8,192 events / 4 MiB per generation, and the client's `seq` gap check is per line, so coalescing changes the protocol for no measurable gain.
+- PERF-009 split: the receipt sweep folds into R-PERF-1; the user-store reopen is rejected — O(1) per request (four `exists`, two verifier reads, one HMAC) on low-frequency endpoints (one long-lived events stream, status on EOF, activity on recover).
+- Weak lock maps (`generations.rs` admission, `idempotency.rs` in-flight, `set_privacy_coordinator.rs`) prune dead entries on every acquire. TTS token store is capped at 128 with a 10-minute TTL.
+- Correctness note for a later pass (not performance): a retried `/chat` whose generation was removed more than 120 s after settling gets 404 instead of its recorded descriptor (`generations.rs:326`).
