@@ -210,12 +210,22 @@ fn chat_feeds_source_at_all_message_transition_sites() {
         src.contains("bindMessagePlaybackSource($targetElement[0],"),
         "a new stream must bind its bubble before text or autoplay arrives"
     );
-    // Text publishes at every stream append in both generation paths.
-    let publishes = src.match_indices("publishMessagePlaybackText($target").count()
-        + src.match_indices("publishMessagePlaybackText($targetElement,").count();
+    // Text publishes from each generation path's frame renderer, and every
+    // visible and thinking append marks it dirty for the next frame.
+    let frame_publishes = src
+        .match_indices("publishMessagePlaybackText($target, aiOriginal, fullVisibleText)")
+        .count()
+        + src
+            .match_indices("publishMessagePlaybackText($targetElement, aiOriginal, fullVisibleText)")
+            .count();
+    assert_eq!(
+        frame_publishes, 2,
+        "both generation paths must publish from their frame renderer"
+    );
+    let dirty_marks = src.match_indices("originalDirty = true;").count();
     assert!(
-        publishes >= 4,
-        "both visible and thinking appends in both paths must publish; found {publishes}"
+        dirty_marks >= 4,
+        "visible and thinking appends in both paths must schedule a publish; found {dirty_marks}"
     );
     // Terminal settles: both done handlers, both read-error catches, both
     // abort/error catches, the voice-interrupt gate, and failed turns.
