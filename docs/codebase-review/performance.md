@@ -194,3 +194,24 @@ Every `static/*.js` module, the templates, both stylesheets and `chatbot-cuda/sr
 | B-PERF-15 | `enc-key.js:62–74, 210–230, 522` | Three IndexedDB opens (never closed) and two readwrite deletes per page load. | Batch PERF-Q. |
 
 No lead in `login.js`, `tt.js`, `native-bridge.js`, login/signup templates, `opencode-theme.css`, `conversation-state.js`, `voice-lifecycle.js`, `voice-events.js`, `stream-decoder.js`, `credential-crypto.js`, `credential-metadata.js`, `agent-connections.js`, `settings.py`. Desktop hover highlight, the scroll-time hover clear and the settings resize handler are rAF-coalesced or trivial. Correctness note for a later pass: concurrent tabs rotating the shared remember cookie on focus may race.
+
+## Session 085 — remaining server and core inventory
+
+C01, C03, C05, C07, C08, P01, S02, S03, S04, S06, S08, S09, S11, S12 and R01 read 1→EOF (14,544 lines; `openai.rs` and `tts/text.rs` test modules scanned by name). Leads:
+
+| Lead | Location | Cost | Disposition |
+|---|---|---|---|
+| S-PERF-1 | `generation_deps.rs:273–293`; `providers/openai.rs:81–86`, `xai.rs:65–70`, `generation.rs:186` | A new `reqwest::Client` per `/chat` and `/regenerate` turn: no connection pool, so DNS + TCP + TLS before every first token. | Batch PERF-R. |
+| S-PERF-2 | `set_privacy_coordinator.rs:62–66` (from `chat.rs`, `regenerate.rs`, `stt.rs`, `tts.rs`) | Set membership via `list_sets`: one policy open per user set on every turn and every spoken sentence. | Batch PERF-S. |
+| S-PERF-3 | `rate_limit_middleware.rs:18–28`; `lib.rs:373–377` | `/tts`, `/tts_stream/{token}` and cancel each spend the per-user budget, so short-sentence replies can hit 429 mid-playback. | Batch PERF-T (budget size untouched). |
+| S-PERF-4 | `login.rs:116–135`; `signup.rs:147` | bcrypt and PBKDF2 run inline on a runtime worker. | Batch PERF-T. |
+| S-PERF-5 | `user_store.rs:479–532` | Whole `users.json` parsed per call; rewritten with fsync per preference save. | Retained at household scale; mtime-keyed cache if users grow. |
+| S-PERF-6 | `sets.rs:922–936`; `api.rs:431` | Rename/delete and name-only lookups materialize every image to read metadata. | Batch PERF-S. |
+| S-PERF-7 | `lib.rs:387–431`; `tower-http` without compression | No response compression or precompressed static files. | Open: depends on whether the host reverse proxy compresses (not visible from the sandbox). NDJSON events must stay uncompressed for per-event flushing. |
+| S-PERF-8 | `lib.rs:387–388` | Cross-origin isolation layer is applied before any route, so COOP/COEP are likely never sent and threaded ORT stays single-threaded. | Open for the user: enabling COEP `require-corp` changes every subresource load. |
+| S-PERF-9 | `openai.rs:566–591`; `xai.rs:246–269` | Per SSE line, the buffer remainder is moved; quadratic only within one large read. | Retained: bounded by read size. |
+| S-PERF-10 | `generation.rs:148–204`; `search.rs:160–161` | Search turns clone the payload about three times, including an eager fallback stream. | Batch PERF-R if small, else retained. |
+| S-PERF-11 | `remember_store.rs:242–330` | Remember issue scans every family file twice. | Retained: login-rate only, capped families, background purge. |
+| S-PERF-12 | `identity.rs:187–197` | `/client_logs` runs a full session sweep per POST (PERF-K residual). | Batch PERF-T. |
+
+No lead in config/logging, persistence/legacy migration (one-time), rate limiter, names/Fernet, core agent connectivity, TTS text normalization, TTS backend (shared client), server agent connections (allowlisted, ≤ 16 records). Correctness findings for a later pass (not performance): split multi-byte UTF-8 across SSE reads becomes U+FFFD (`openai.rs:283, 405`; `xai.rs:191`); `search.rs:220` byte-slices a result and can panic on a non-char boundary; `user_store.rs:182–209, 414–451` read-modify-write `users.json` without a lock, so concurrent signup and preference saves can lose writes.
