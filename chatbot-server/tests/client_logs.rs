@@ -175,6 +175,7 @@ async fn client_logs_reject_unknown_sessions() {
     let app = build_router(resolve_static_root());
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -190,6 +191,25 @@ async fn client_logs_reject_unknown_sessions() {
         response.status(),
         StatusCode::UNAUTHORIZED,
         "no session cookie -> reject; do not accept anonymous log spam"
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/client_logs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, "session=unknown-session-cookie")
+                .body(Body::from(r#"{"lines":["hello"]}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /client_logs with unknown session cookie");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "unknown session cookie -> reject; do not accept logs from unknown sessions"
     );
 }
 

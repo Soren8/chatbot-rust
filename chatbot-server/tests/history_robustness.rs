@@ -1625,10 +1625,8 @@ async fn mutating_other_set_does_not_pollute_session_cache() {
     chat(&app, &auth, "alpha", "alpha-only", None).await;
     chat(&app, &auth, "beta", "beta-only", None).await;
 
-    // Session cache now mirrors beta (last chat). Mutate alpha history on durable store.
-    let alpha = load_set_by_name(&app, &auth, "alpha").await;
-    assert_eq!(alpha["history"].as_array().unwrap().len(), 1);
-
+    // Session cache still mirrors beta (last chat). Mutate alpha history on durable store
+    // directly without loading it, which would switch the session mirror to alpha.
     let res = app
         .clone()
         .oneshot(

@@ -313,11 +313,13 @@ async fn legacy_binary_verifier_still_validates_and_migrates() {
         .await
         .expect("POST /load_set with legacy verifier");
 
-    assert_ne!(
-        response.status(),
-        StatusCode::UNAUTHORIZED,
-        "legacy verifier must still unlock data"
-    );
+    assert_eq!(response.status(), StatusCode::OK, "legacy verifier must still unlock data");
+    let body = to_bytes(response.into_body(), 512 * 1024)
+        .await
+        .expect("loaded set body");
+    let loaded: serde_json::Value = serde_json::from_slice(&body).expect("loaded set json");
+    assert_eq!(loaded["name"], "default");
+    assert!(loaded["history"].is_array(), "loaded set must include history");
     assert!(json_path.exists(), "legacy verifier must migrate to json");
     assert!(!legacy_path.exists(), "legacy verifier file must be removed");
 }
@@ -364,11 +366,13 @@ async fn expired_verifier_json_still_validates() {
         .await
         .expect("POST /load_set with expired-field verifier");
 
-    assert_ne!(
-        response.status(),
-        StatusCode::UNAUTHORIZED,
-        "data-key verifier must not expire"
-    );
+    assert_eq!(response.status(), StatusCode::OK, "data-key verifier must not expire");
+    let body = to_bytes(response.into_body(), 512 * 1024)
+        .await
+        .expect("loaded set body");
+    let loaded: serde_json::Value = serde_json::from_slice(&body).expect("loaded set json");
+    assert_eq!(loaded["name"], "default");
+    assert!(loaded["history"].is_array(), "loaded set must include history");
     assert!(json_path.exists(), "verifier must not be deleted on use");
 }
 
@@ -562,11 +566,17 @@ async fn load_set_accepts_enc_key_cookie_without_header() {
         .await
         .expect("POST /load_set with enc cookie");
 
-    assert_ne!(
+    assert_eq!(
         response.status(),
-        StatusCode::UNAUTHORIZED,
+        StatusCode::OK,
         "HttpOnly enc_key cookie must unlock data without X-Enc-Key"
     );
+    let body = to_bytes(response.into_body(), 512 * 1024)
+        .await
+        .expect("loaded set body");
+    let loaded: serde_json::Value = serde_json::from_slice(&body).expect("loaded set json");
+    assert_eq!(loaded["name"], "default");
+    assert!(loaded["history"].is_array(), "loaded set must include history");
 }
 
 #[tokio::test]
@@ -673,9 +683,15 @@ async fn load_set_accepts_account_enc_key_cookie_without_last_used() {
         .await
         .expect("POST /load_set with account enc cookie");
 
-    assert_ne!(
+    assert_eq!(
         response.status(),
-        StatusCode::UNAUTHORIZED,
+        StatusCode::OK,
         "enc_key-{{user}} must unlock data without last-used enc_key or X-Enc-Key"
     );
+    let body = to_bytes(response.into_body(), 512 * 1024)
+        .await
+        .expect("loaded set body");
+    let loaded: serde_json::Value = serde_json::from_slice(&body).expect("loaded set json");
+    assert_eq!(loaded["name"], "default");
+    assert!(loaded["history"].is_array(), "loaded set must include history");
 }

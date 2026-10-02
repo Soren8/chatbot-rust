@@ -26,12 +26,23 @@ llms:
     let _workspace = common::TestWorkspace::with_config(config);
 
     let bootstrap = session::prepare_home_context(None).expect("bootstrap session");
-    let _ = session::session_history(&bootstrap.session_id);
+    let active_history = vec![("active user".to_string(), "active assistant".to_string())];
+    session::update_session_history(&bootstrap.session_id, &active_history);
+    assert_eq!(
+        session::session_history(&bootstrap.session_id),
+        active_history,
+        "seeded active chat history must exist before purge"
+    );
 
     let stats = session::purge_expired_sessions();
     assert_eq!(
         stats.chat_sessions_removed, 0,
         "active chat session should not be purged: {stats:?}"
+    );
+    assert_eq!(
+        session::session_history(&bootstrap.session_id),
+        active_history,
+        "active chat history must remain unchanged after purge"
     );
 }
 
