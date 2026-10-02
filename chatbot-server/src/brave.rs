@@ -21,6 +21,8 @@ struct GroundingItem {
     snippets: Vec<String>,
 }
 
+const LLM_CONTEXT_URL: &str = "https://api.search.brave.com/res/v1/llm/context";
+
 static HTTP_CLIENT: OnceCell<Client> = OnceCell::new();
 
 fn http_client() -> &'static Client {
@@ -36,6 +38,7 @@ pub struct BraveClient {
     /// env-stub-first ordering.
     fake_results: Option<String>,
     is_owned: bool,
+    endpoint: String,
 }
 
 impl BraveClient {
@@ -44,6 +47,7 @@ impl BraveClient {
             api_key,
             fake_results: None,
             is_owned: false,
+            endpoint: LLM_CONTEXT_URL.to_owned(),
         }
     }
 
@@ -52,7 +56,14 @@ impl BraveClient {
             api_key,
             fake_results,
             is_owned: true,
+            endpoint: LLM_CONTEXT_URL.to_owned(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_endpoint(mut self, endpoint: String) -> Self {
+        self.endpoint = endpoint;
+        self
     }
 
     pub async fn search(&self, query: &str) -> Result<String> {
@@ -66,7 +77,7 @@ impl BraveClient {
         }
 
         let resp: LlmContextResponse = http_client()
-            .get("https://api.search.brave.com/res/v1/llm/context")
+            .get(&self.endpoint)
             .query(&[("q", query)])
             .header("X-Subscription-Token", &self.api_key)
             .header("Accept", "application/json")
@@ -135,4 +146,94 @@ pub fn brave_client_with_key_and_fake(
 /// The underlying HTTP connection pool (`http_client()`) is still a singleton.
 pub fn brave_client() -> Option<BraveClient> {
     brave_client_with_key(std::env::var("BRAVE_API_KEY").ok().as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BraveClient;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::oneshot,
+    };
+
+    async fn spawn_mock(status: &str, body: &'static str) -> (String, oneshot::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let addr = listener.local_addr().expect("mock address");
+        let (request_tx, request_rx) = oneshot::channel();
+        let status = status.to_owned();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut bytes = Vec::new();
+            loop {
+                let mut chunk = [0; 1024];
+                let count = stream.read(&mut chunk).await.expect("read request");
+                assert_ne!(count, 0, "request ended before headers");
+                bytes.extend_from_slice(&chunk[..count]);
+                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(bytes).expect("request headers are UTF-8");
+            let _ = request_tx.send(request);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.expect("write response");
+        });
+        (format!("http://{addr}/res/v1/llm/context"), request_rx)
+    }
+
+    fn client(endpoint: String) -> BraveClient {
+        BraveClient::new_owned("test-key".into(), None).with_endpoint(endpoint)
+    }
+
+    #[tokio::test]
+    async fn formats_grounding_and_sends_expected_request() {
+        let body = r#"{"grounding":{"generic":[{"title":"First","url":"https://one.test","snippets":["alpha","beta"]},{"title":"Second","url":"https://two.test","snippets":["gamma"]},{"title":null,"url":"https://three.test","snippets":["delta"]},{"title":"Empty","url":"https://empty.test","snippets":[]}]}}"#;
+        let (endpoint, request_rx) = spawn_mock("200 OK", body).await;
+        let result = client(endpoint).search("cats & dogs").await.unwrap();
+        assert_eq!(
+            result,
+            "## First\nhttps://one.test\nalpha\nbeta\n\n## Second\nhttps://two.test\ngamma\n\nhttps://three.test\ndelta"
+        );
+
+        let request = request_rx.await.expect("mock captured request");
+        let request_line = request.lines().next().expect("request line");
+        assert!(request_line.contains("q=cats+%26+dogs"), "{request_line}");
+        let headers = request.split("\r\n\r\n").next().unwrap();
+        assert!(headers.lines().skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("x-subscription-token") && value.trim() == "test-key"
+            })
+        }));
+        assert!(headers.lines().skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("accept") && value.trim() == "application/json"
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn empty_and_missing_grounding_return_no_results() {
+        for body in [r#"{"grounding":{"generic":[]}}"#, "{}"] {
+            let (endpoint, _) = spawn_mock("200 OK", body).await;
+            assert_eq!(client(endpoint).search("query").await.unwrap(), "No results found.");
+        }
+    }
+
+    #[tokio::test]
+    async fn non_success_status_returns_contextual_error() {
+        let (endpoint, _) = spawn_mock("500 Internal Server Error", "{}").await;
+        let error = client(endpoint).search("query").await.unwrap_err();
+        assert!(format!("{error:#}").contains("Brave LLM Context returned error status"));
+    }
+
+    #[tokio::test]
+    async fn malformed_json_returns_contextual_error() {
+        let (endpoint, _) = spawn_mock("200 OK", "not json").await;
+        let error = client(endpoint).search("query").await.unwrap_err();
+        assert!(format!("{error:#}").contains("failed to parse Brave LLM Context response"));
+    }
 }

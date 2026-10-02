@@ -2,7 +2,7 @@
 
 ## Session 087 — Phase 6 completion
 
-Phase 6 (test coverage and quality) is complete with bounded remediation; the T column evidence is the static mapping in [test-quality.md](test-quality.md) (no instrumentation is available). Findings TQ-001–TQ-027 are fixed, characterized or rejected there, with TQ-015, TQ-021, TQ-022 and TQ-025 awaiting a decision. Final full suite `20261002T025223-b438f47546c8` passed (1222 tests).
+Phase 6 (test coverage and quality) is complete with bounded remediation; the T column evidence is the static mapping in [test-quality.md](test-quality.md) (no instrumentation is available). Findings TQ-001–TQ-027 are fixed, characterized or rejected there, with TQ-021, TQ-022 and TQ-025 awaiting a decision. Final full suite `20261002T025223-b438f47546c8` passed (1222 tests).
 
 ## Session 085 — Phase 5 completion accepted
 
