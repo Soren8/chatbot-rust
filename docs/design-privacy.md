@@ -147,7 +147,7 @@ A compromised origin (XSS that runs) can still read decrypted chat in the DOM. C
 
 ## Current Architecture Status
 
-Saved chats currently have selectable **Private / Standard / Non-private** modes with per-request keying. Neither Recoverable/server-key storage nor selectable Ephemeral chats exist. Coding-agent execution is not implemented. See [the staged plan](privacy-and-agent-connections-plan.md) for the intended scope beyond Stages A1–A5.
+Saved chats currently have selectable **Private / Standard / Non-private** modes with per-request keying. Neither Recoverable/server-key storage nor selectable Ephemeral chats exist. Coding-agent execution is not implemented.
 
 1.  **Authenticated Users:**
     *   Durable chat sets live in **redb** as AEAD (AES-256-GCM + HKDF) ciphertext via `HistoryService` (see [design-history-store.md](design-history-store.md)). Display names and the authoritative versioned `SETS_POLICY` mode are encrypted; legacy sets without a policy row read as Private, and newly created sets write Private. Forks inherit source mode. Listing projects mode without decrypting history; regular history edits cannot change it.
@@ -164,6 +164,12 @@ Saved chats currently have selectable **Private / Standard / Non-private** modes
 
 2.  **Anonymous Users:**
     *   Guests have RAM-only application history (no redb or `X-Enc-Key` requirement), not selectable Ephemeral mode or an upstream-retention guarantee.
+
+### User-owned coding-agent connections
+
+Connections are encrypted per-user settings, fixed as `non_private`, and independent of the selected chat. Their URLs and Basic credentials are encrypted with the user's data key; the service requires a valid key verifier and exposes redacted records. Deployment policy gates eligible accounts and destinations separately. Explicit checks request only authenticated service health metadata (no prompts, chat names/history, or files); results are bounded, sanitized reachability observations, not lasting authorization. Deleting a local record does not revoke remote credentials. Routes: `GET/POST /agent_connections`, `PATCH/DELETE /agent_connections/{id}`, and `POST /agent_connections/{id}/check`.
+
+Coding-agent execution remains unimplemented. Intended scope: require an owned connection and authorized Non-private set for submission; expose only owned remote sessions and filtered events; recover activity and support cancellation; do not expose native session/config/auth/file APIs as an arbitrary proxy.
 
 ## Roadmap
 

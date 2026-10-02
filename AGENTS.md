@@ -4,7 +4,7 @@ Project-specific agent instructions for chatbot-rust.
 
 Cross-project direction for privacy-aware chat, agents, and workspaces lives in the sibling `../ai-platform-design/design.md`; implementation details remain in this repository.
 
-The staged implementation plan for per-chat privacy and external coding-agent connections is [docs/privacy-and-agent-connections-plan.md](docs/privacy-and-agent-connections-plan.md).
+Current privacy and agent-connection behavior: [docs/design-privacy.md](docs/design-privacy.md).
 
 ## Running tests
 
