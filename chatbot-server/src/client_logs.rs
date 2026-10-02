@@ -1,6 +1,6 @@
 use axum::{
     body::{self, Body},
-    http::{Method, Request, Response, StatusCode},
+    http::{Request, Response, StatusCode},
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -76,10 +76,6 @@ struct ClientLogPayload {
 }
 
 pub async fn handle_client_logs(request: Request<Body>) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let identity = RequestIdentity::from_extensions(&parts.extensions);
     let cookie_header = crate::request_context::extract_cookie(&parts.headers);

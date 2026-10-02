@@ -1,7 +1,7 @@
 use axum::{
     body::{self, Body},
     extract::{Extension, Path},
-    http::{header, Method, Request, Response, StatusCode},
+    http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::{account_service::AccountService, config::TtsAccess};
 use once_cell::sync::Lazy;
@@ -50,10 +50,6 @@ struct ApiTtsRequest {
 }
 
 pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -435,10 +431,6 @@ pub async fn handle_tts_cancel(
     Path(token): Path<String>,
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::DELETE {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only DELETE allowed"));
-    }
-
     let (parts, _body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();

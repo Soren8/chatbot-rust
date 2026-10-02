@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::{
     body::Body,
     extract::{FromRequest, Multipart},
-    http::{header, Method, Request, Response, StatusCode},
+    http::{header, Request, Response, StatusCode},
 };
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -26,10 +26,6 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
 });
 
 pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -300,7 +296,7 @@ fn extract_error(status: reqwest::StatusCode, body: &[u8]) -> String {
 mod filename_log_tests {
     use std::{io::Write, sync::{Arc, Mutex}};
 
-    use axum::http::header;
+    use axum::http::{header, Method};
     use chatbot_core::{config_source::ConfigSource, session_identity::HttpSessionStore};
 
     use super::*;

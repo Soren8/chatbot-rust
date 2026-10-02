@@ -94,7 +94,6 @@ fn map_mutation_mirror_error(err: MutationMirrorError) -> Result<Response<Body>,
 pub async fn handle_update_memory(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    ensure_post(&request)?;
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -175,7 +174,6 @@ pub async fn handle_update_memory(
 pub async fn handle_update_system_prompt(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    ensure_post(&request)?;
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -261,7 +259,6 @@ pub async fn handle_update_system_prompt(
 pub async fn handle_delete_message(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    ensure_post(&request)?;
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -401,13 +398,6 @@ pub async fn handle_delete_message(
     history.remove(pair_index);
     chat.update_session_history(&session_id, &history);
     build_json_response(StatusCode::OK, json!({"status": "success"}))
-}
-
-fn ensure_post(request: &Request<Body>) -> Result<(), HttpError> {
-    if request.method() != axum::http::Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-    Ok(())
 }
 
 fn validate_csrf(

@@ -27,10 +27,6 @@ struct ResetChatRequest {
 pub async fn handle_reset_chat(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != axum::http::Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();

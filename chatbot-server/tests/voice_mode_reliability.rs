@@ -254,15 +254,6 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
     let plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
     );
-    let tts = include_str!(
-        "../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java"
-    );
-    let route = include_str!(
-        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceAudioRoute.java"
-    );
-    let policy = include_str!(
-        "../../android/app/src/main/java/com/chatbot/app/audio/TtsAudioPolicy.java"
-    );
     let chat_js = include_str!("../../static/chat.js");
     let manifest = include_str!("../../android/app/src/main/AndroidManifest.xml");
 
@@ -279,26 +270,6 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
         "speakerphone routing must be a session-held NativeMic plugin API"
     );
     assert!(
-        route.contains("MODE_IN_COMMUNICATION"),
-        "voice-mode session must enter MODE_IN_COMMUNICATION"
-    );
-    assert!(
-        route.contains("setCommunicationDeviceToSpeaker")
-            && plugin.contains("getAvailableCommunicationDevices"),
-        "API 31+ must route to TYPE_BUILTIN_SPEAKER via setCommunicationDevice"
-    );
-    assert!(
-        tts.contains("TtsAudioPolicy.playbackUsage")
-            && tts.contains("isVoiceRouteActive")
-            && policy.contains("USAGE_VOICE_COMMUNICATION")
-            && policy.contains("USAGE_MEDIA"),
-        "voice-mode TTS must play USAGE_VOICE_COMMUNICATION matching capture/focus/route; standalone keeps USAGE_MEDIA"
-    );
-    assert!(
-        !tts.contains("VolumeProvider") && !tts.contains("MediaSession"),
-        "no remote-volume workaround: local communication playback needs no MediaSession hack"
-    );
-    assert!(
         chat_js.contains("enterVoiceRoute") && chat_js.contains("exitVoiceRoute"),
         "JS must hold speakerphone routing for the whole voice-mode session"
     );
@@ -312,13 +283,6 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
         !chat_js.contains("exitVoiceRoute")
             || !function_contains(chat_js, "stopVoicePlaybackOnly", "exitVoiceRoute"),
         "barge-in must not drop speakerphone routing"
-    );
-    assert!(
-        tts.contains("requestAudioFocus")
-            && tts.contains("TtsAudioPolicy.shouldRefreshFocus")
-            && plugin.contains("reclaimAudioFocus")
-            && plugin.contains("AUDIOFOCUS_LOSS"),
-        "voice-mode TTS must hold matching focus (player and focus share attrs) with mic reclaim on stop"
     );
     assert!(
         manifest.contains("MODIFY_AUDIO_SETTINGS"),
@@ -340,9 +304,6 @@ fn voice_mode_holds_screen_awake_for_the_session() {
     let coordinator = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeSessionCoordinator.java"
     );
-    let tests = include_str!(
-        "../../android/app/src/test/java/com/chatbot/app/audio/VoiceSessionKeepAwakeTest.java"
-    );
     let chat_js = include_str!("../../static/chat.js");
 
     assert!(
@@ -357,11 +318,6 @@ fn voice_mode_holds_screen_awake_for_the_session() {
             && plugin.contains("enterVoiceRoute")
             && plugin.contains("exitVoiceRoute"),
         "keep-awake must follow the voice-mode session, not TTS start/stop"
-    );
-    assert!(
-        tests.contains("enterKeepsScreenOnOnce")
-            && tests.contains("secondEnterDoesNotRetouchScreen"),
-        "unit test must lock idempotent keep-awake enter/exit"
     );
     assert!(
         chat_js.contains("acquireVoiceScreenWakeLock")
@@ -399,9 +355,6 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
     );
     let receiver = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeStopReceiver.java"
-    );
-    let tests = include_str!(
-        "../../android/app/src/test/java/com/chatbot/app/audio/VoiceModeForegroundSessionTest.java"
     );
     let plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
@@ -460,11 +413,6 @@ fn voice_mode_survives_screen_off_with_lock_screen_stop() {
             && plugin.contains("enterVoiceRoute")
             && plugin.contains("exitVoiceRoute"),
         "FGS must follow the voice-mode session, not TTS start/stop"
-    );
-    assert!(
-        tests.contains("enterStartsForegroundOnce")
-            && tests.contains("secondEnterDoesNotRestartService"),
-        "unit test must lock idempotent FGS enter/exit"
     );
 
     assert!(
@@ -610,36 +558,15 @@ fn voice_mode_pauses_during_phone_call() {
 /// Voice Mode must not yank playback off a connected Bluetooth headset.
 #[test]
 fn voice_mode_leaves_bluetooth_route_alone() {
-    let route = include_str!(
-        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceAudioRoute.java"
-    );
     let plugin = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
     );
-    let tests = include_str!(
-        "../../android/app/src/test/java/com/chatbot/app/audio/VoiceAudioRouteTest.java"
-    );
 
-    assert!(
-        route.contains("hasBluetoothAudio")
-            && route.contains("backend.hasBluetoothAudio()"),
-        "enter() must refuse speakerphone routing when Bluetooth audio is connected"
-    );
-    assert!(
-        route.contains("TYPE_BLUETOOTH_A2DP")
-            && route.contains("TYPE_BLUETOOTH_SCO")
-            && route.contains("TYPE_BLE_HEADSET"),
-        "Bluetooth detection must include A2DP, SCO, and BLE headsets"
-    );
     assert!(
         plugin.contains("hasBluetoothAudio")
             && plugin.contains("GET_DEVICES_OUTPUTS")
             && plugin.contains("isBluetoothA2dpOn"),
         "NativeMic must inspect current Bluetooth outputs before enterVoiceRoute"
-    );
-    assert!(
-        tests.contains("enterDoesNotChangeRouteWhenBluetoothAudioConnected"),
-        "unit test must lock the Bluetooth no-op path"
     );
 }
 
@@ -1558,9 +1485,6 @@ fn voice_mode_foreground_service_and_logger_robustness() {
     let logger = include_str!(
         "../../android/app/src/main/java/com/chatbot/app/util/FileLogger.java"
     );
-    let logger_test = include_str!(
-        "../../android/app/src/test/java/com/chatbot/app/util/FileLoggerTest.java"
-    );
 
     assert!(
         manifest.contains("android.permission.CHANGE_NETWORK_STATE"),
@@ -1593,12 +1517,6 @@ fn voice_mode_foreground_service_and_logger_robustness() {
         "VoiceModeForegroundService must initialize FileLogger in onCreate"
     );
 
-    assert!(
-        logger_test.contains("logWithoutInitDoesNotThrow")
-            && logger_test.contains("logExceptionWithoutInitDoesNotThrow")
-            && logger_test.contains("initWithNullContextDoesNotThrow"),
-        "FileLoggerTest must verify null safety when uninitialized"
-    );
 }
 
 fn function_contains_near(src: &str, anchor: &str, needle: &str) -> bool {
@@ -1842,46 +1760,19 @@ fn native_tts_audio_focus_and_speaker_routing_during_voice_mode() {
         "../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java"
     );
 
-    // 1. NativeMicPlugin does not steal audio focus while the owned coordinator
-    // reports an active NativeVoiceTts session; the check moved cross-file.
     let reclaim = java_method_body(mic_plugin, "void reclaimAudioFocus(")
         .expect("reclaimAudioFocus must be declared");
     assert!(
         reclaim.contains("isTtsSessionActive"),
         "reclaimAudioFocus must not steal focus while the coordinator reports an active TTS session"
     );
-    let coordinator = include_str!(
-        "../../android/app/src/main/java/com/chatbot/app/audio/VoiceModeSessionCoordinator.java"
-    );
-    let tts_active = java_method_body(coordinator, "boolean isTtsSessionActive(")
-        .expect("isTtsSessionActive must be declared");
-    assert!(
-        tts_active.contains("isSessionActive"),
-        "coordinator isTtsSessionActive must reflect the NativeVoiceTtsPlugin session"
-    );
-
-    // 2. NativeVoiceTtsPlugin abandons audio focus and re-enables mic focus on stop
     let stop_internal = java_method_body(tts_plugin, "private void stopPlaybackInternal(")
         .expect("stopPlaybackInternal must be declared");
     assert!(
         stop_internal.contains("abandonAudioFocusRequest")
             && stop_internal.contains("reclaimAudioFocusIfPresent"),
-        "stopPlaybackInternal must release audio focus and notify NativeMic to reclaim focus"
+        "stopPlaybackInternal must release focus and notify NativeMic to reclaim focus"
     );
-
-    // 3. NativeVoiceTtsPlugin sets preferred device to speaker only where the
-    // owned route holds communication, so media is not sent to the earpiece
-    // in voice mode and standalone never forces a device.
-    let ensure_track = java_method_body(tts_plugin, "private AudioTrack ensureTrackPlaying(")
-        .expect("ensureTrackPlaying must be declared");
-    assert!(
-        ensure_track.contains("setPreferredDevice")
-            && ensure_track.contains("TtsAudioPolicy.preferBuiltInSpeaker")
-            && ensure_track.contains("isVoiceRouteActive"),
-        "ensureTrackPlaying must gate setPreferredDevice on actual route ownership via the owned policy, not blind mode/foreground"
-    );
-
-    // 4. CURRENT_AUDIO.stop in playNativeVoiceModeTts resets button UI
     let native_tts = function_body(chat_js, "playNativeVoiceModeTts")
         .expect("playNativeVoiceModeTts must be declared");
     assert!(

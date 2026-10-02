@@ -1,6 +1,6 @@
 use axum::{
     body::{self, Body},
-    http::{header, Method, Request, Response, StatusCode},
+    http::{header, Request, Response, StatusCode},
 };
 use chatbot_core::{
     config::PrivacyLevel,
@@ -85,10 +85,6 @@ struct SetPrivacyRequest {
 }
 
 pub async fn handle_set_privacy(request: Request<Body>) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -145,10 +141,6 @@ pub async fn handle_set_privacy(request: Request<Body>) -> Result<Response<Body>
 pub async fn handle_get_sets(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::GET {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only GET allowed"));
-    }
-
     let services = AppServices::from_extensions(request.extensions());
     let identity = services.identity().clone();
     let chat = services.chat().clone();
@@ -195,10 +187,6 @@ pub async fn handle_get_sets(
 pub async fn handle_create_set(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -275,10 +263,6 @@ pub async fn handle_create_set(
 pub async fn handle_delete_set(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -359,10 +343,6 @@ pub async fn handle_delete_set(
 pub async fn handle_rename_set(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -459,10 +439,6 @@ pub async fn handle_rename_set(
 pub async fn handle_load_set(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -568,10 +544,6 @@ pub async fn handle_load_set(
 pub async fn handle_history_pair(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();
@@ -672,10 +644,6 @@ pub async fn handle_history_pair(
 pub async fn handle_history_image(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::GET {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only GET allowed"));
-    }
-
     let path = request.uri().path();
     let (set_id, _version, pair_index, image_index) = match parse_history_image_path(path) {
         Some(parts) => parts,
@@ -814,10 +782,6 @@ fn resolve_set_id(
 pub async fn handle_fork_set(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let identity = services.identity().clone();

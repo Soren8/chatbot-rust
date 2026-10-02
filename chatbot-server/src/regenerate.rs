@@ -63,10 +63,6 @@ pub async fn handle_regenerate(request: Request<Body>) -> Result<Response<Body>,
 pub(crate) async fn handle_regenerate_legacy(
     request: Request<Body>,
 ) -> Result<Response<Body>, HttpError> {
-    if request.method() != axum::http::Method::POST {
-        return Err(api_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST allowed"));
-    }
-
     let (parts, body) = request.into_parts();
     let services = AppServices::from_extensions(&parts.extensions);
     let feedback = parts.extensions.get::<crate::generations::GenerationFeedback>().cloned();
