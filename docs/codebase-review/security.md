@@ -1,135 +1,51 @@
-# Security / privacy review (Phase 4)
+# Security review (Phase 4)
 
-Scope (user-authorized 2026-09-29): fresh repository-wide Sec inventory, behavior-tightening fixes allowed with red-first regressions, deferred items fixed if they fit this phase else deferred to owning pass, targeted `testctl` per batch plus final full suite + APK build.
+Scope: repository-wide security/privacy review with bounded remediation; Phase 4 is complete for the reviewed scope. Static, JVM, APK, host and deployment evidence limits are distinguished below; this is not a claim of device, vehicle, biometric-hardware or GPU validation.
 
-## Session 075 — fresh Sec inventory, 2026-09-29
+## Findings
 
-Four research-only workers inventoried exclusive partitions at `main@400631b` after reading `docs/design.md`, `docs/design-privacy.md`, `findings.md` (SEC-001, DOC-001) and `modularity.md` cross-pass table (SEC-002/003, COR-001/002, DOC-002/003, PERF-001, TEST-002-005, OPS-001). No edits in this session.
+| ID | Location | Finding | Final disposition |
+| --- | --- | --- | --- |
+| SEC-001 | `chatbot-server/src/lib.rs`; proxy ingress | Forwarding headers affect cookie transport classification and `Secure` removal. | Open: establish the ingress/proxy-trust contract and validate supported LAN/native behavior before changing compatibility. |
+| SEC-002 | `chatbot-server/src/client_logs.rs`, `identity.rs` | Client-log upload had an incorrect live-session gate. | Fixed with live-session and presented-CSRF validation; regressions passed. |
+| SEC-003 | Android `NativeSecureKeyPlugin.java` | Native bridge exposed cached credentials through a key-returning interface. | Fixed: removed JS-callable key export and required authentication-bound keystore unlock; JVM/APK verification passed. Physical-device flows remain unverified. |
+| SEC-004 | `chatbot-core/src/history/api.rs`, `history/cache.rs` | Warm history-cache reads did not authenticate the supplied key. | Fixed: warm hits authenticate against the sealed version-bound manifest; wrong-key warm/cold regressions passed. |
+| SEC-005 | `chatbot-server/src/client_logs.rs`, identity/CSRF handling | Client-log authorization and caller-supplied `source` were insufficiently constrained. | Fixed and hardened: live session is required with or without CSRF; any presented token must validate; source is sanitized. |
+| SEC-006 | Provider/search/TTS logging | Logs could expose prompts, upstream error bodies, search queries, or submitted speech. | Fixed: sensitive bodies/text replaced by status, lengths/counts or fixed diagnostics; sentinel regressions passed. |
+| SEC-007 | `chatbot-server/src/tts.rs` | Privacy permit ended before TTS token insertion, allowing a mode-change race. | Fixed: admission holds the permit through insertion; barrier regression passed. |
+| SEC-008 | Browser login/forget and privacy selector | Retry could retain a stale key; forget could claim success before revocation; Standard-mode copy/selection diverged. | Fixed after review: clear key per attempt, gate success on forget response, and restore Standard as selectable with corrected copy and eligibility behavior. Executed browser regressions passed. |
+| SEC-009 | Android Auto `VoiceScreen.java` | Car-turn logs included sensitive content and tokens. | Fixed: removed content/token file logging while retaining status codes. JVM/distribution and APK checks passed; reachability of historical external logs needs device proof. |
+| SEC-010 | Android `NativeSecureKeyPlugin.java`, `NativeUnlockGate` | Key export and fail-open cached-login/keystore fallback weakened the unlock boundary. | Fixed: removed export and rejected unavailable authentication or non-auth-bound wrapping keys; JVM/APK checks passed. Loaded-page bridge reachability and on-device unavailable-gate flow remain unverified. |
+| SEC-011 | `deploy/helm/chatbot` secret environment values | Literal secret values could be rendered into chart resources. | Fixed: chart supports `valueFrom.secretKeyRef` and rejects literals; Helm lint/render sentinel checks passed. Operators must create referenced Secrets before installation. |
+| SEC-012 | OpenAI-compatible SSE error mapping | In-band upstream errors could expose upstream text in logs or client streams. | Fixed: redact to a status-only message at construction; direct and tool-aware sentinel regressions passed. |
 
-### Core (`chatbot-core/src`)
-- CONFIRMED warm-cache key bypass: `history/api.rs:189–211,214–226` returns cached plaintext after user-ownership/version check only; `history/cache.rs:65–88` never authenticates the supplied key. Cold reads decrypt with the key. Conflicts with per-request verifier-before-decrypt (`design-privacy.md:67–72,90–94`). Sec fix: yes → SEC-004.
-- Remember-family secret not authenticated: `remember_store.rs:114–156` rotates/peeks/revokes on family ownership without secret check vs `resume` at `:177–205` which hashes/compares. Fix only after caller-level red shows unauthorized rotation/revocation.
-- Verifier/salt creation race: `user_store.rs:302–323,386–397` read-then-write without exclusion. Needs dynamic proof; red-first synchronized first-enrollment/salt test.
-- COR-001 (`user_store.rs:187–209,419–445,494–526`), DOC-002 (`history/cache.rs:20–29,73–89,118–123,190–219` vs wipe-after-TTL promise), COR-003 (`history/store/chunks.rs:51–95,118–153`, `store/mod.rs:358–385`): confirmed by source, owning pass unless explicitly pulled into Sec.
-- Privacy enforcement point is at dispatch/permit callers, not core prepare (`config.rs:96–111`, `config_source.rs:43–69`, `session.rs:911–947` verify key/tier only). Needs caller-level transmission regression before claiming leak.
-- No new violation in HMAC-secret/per-request zeroization paths inspected (`user_store.rs:250–256`, `session.rs:731–755`, `enc_key.rs:5–9`, `account_service.rs:11–14`); transient derived-buffer erasure (`history/crypto.rs:188–233`) is hardening proposal only.
+## Cross-pass items
 
-### Server (`chatbot-server/src`)
-- SEC-001 proxy trust: `lib.rs:198–239` trusts client-supplied forwarding headers, `:241–269` strips `Secure` from all cookies; data key in those cookies (`enc_key_cookies.rs:118–128`). Needs ingress contract + dynamic proof; do not remove LAN compat on source alone.
-- SEC-002 confirmed: `client_logs.rs:88–104` claims live-session gate but uses `rate_limit_identity`; `identity.rs:174–181` accepts unknown cookies. Fix → SEC-005.
-- Client-log `source` unsanitized: `client_logs.rs:113–126` logs caller `source` verbatim; scrubber `:25–61` heuristic. Fix → SEC-005.
-- xAI content logging confirmed: `providers/xai.rs:159–160,190–194` logs request body + raw chunks; error-body previews `providers/openai.rs:569–580`, `providers/xai.rs:205–210` may echo prompts/keys. Fix → SEC-006.
-- Brave query logging confirmed: `search.rs:68–79` logs model query verbatim. Fix → SEC-006.
-- TTS privacy-mode race confirmed: `tts.rs:158–179` checks mode under permit, drops permit before insert `:218–226`; `/set_privacy` invalidates under its own permit (`sets.rs:114–134`); delayed GET checks captured requirement (`tts.rs:282–355`, `tts/store.rs:38–64`). Fix: hold permit through insert → SEC-007.
-- `GET /logout` without CSRF (`lib.rs:362`, `logout.rs:10–25`): defer contract decision; method change breaks switch-account flow.
-- Login key buffer (`login.rs:126–139,231–249`): zeroizing-owner hardening proposal; characterize both key paths.
+| ID | Owner |
+| --- | --- |
+| COR-001, COR-002, COR-003 | [findings.md](findings.md) (correctness follow-ups) |
+| DOC-001, DOC-002, DOC-003 | [documentation.md](documentation.md) |
+| PERF-001 | [performance.md](performance.md) |
+| TEST-002, TEST-003, TEST-004, TEST-005 | [test-quality.md](test-quality.md) |
+| OPS-001 | [boundaries.md](boundaries.md) |
 
-### Browser (`static/*`)
-- Stale `storage_key` on retry: `static/login.js:86–93,360–398,405–441` removes hidden key only after successful derivation; fallback can submit prior attempt's key. Fix → SEC-008.
-- Forget claims success pre-revocation: `static/login.js:302–321`, `static/chat.js:649–667` ignore `/login/forget` status. Fix → SEC-008.
-- Standard offered as selectable: `static/templates/chat.html:110–123`, `static/chat.js:1128–1135,3066–3082` vs planned-not-selectable (`design-privacy.md:13–15,146–161`). Fix → SEC-008.
-- Trusted Types identity policies (`static/tt.js:6–13`, CSP in `home.rs:17`) match documented trade-off (`design-privacy.md:140–144`); hardening needs sink review — defer.
-- Legacy PRF unwrap (`static/enc-key.js:210–230,406–465`): defer pending legacy-support decision.
-- Checked clean: set-name `.text()` (`chat.js:3146–3154`), message text nodes (`chat-renderer.js:105–179`), guest Temporary label (`chat.html:230`).
+## Decisions
 
-### Native + GPU + infra
-- SEC-003 confirmed interface: `NativeSecureKeyPlugin.java:41,218–229,346–415` exposes `getKey`, caches `unlockedKeys` on cached login; uncached path also returns key (`:248–273`). Bridge reachability needs APK proof. Fix → SEC-010.
-- Keystore fallback (`:577–590,658–695`, `:280–285`): explicit fail-open; decide fail-closed → part of SEC-010 decision.
-- Resume/overview edges (`MainActivity.java:50–58,169–211,366–385,476–480,525–535`): needs device proof; do not claim leaks statically.
-- Auto `ALLOW_ALL_HOSTS_VALIDATOR` (`car/ChatbotCarAppService.java:28–32`, DHU-only per `mobile-apps.md`) + unauthenticated car posts (`car/VoiceScreen.java:330–426`): defer host allowlist; red-first protected-server test for transport.
-- COR-002 TTS exhaustion (`NativeVoiceTtsPlugin.java:197–267`): settle pipeline contract first.
-- Car content/token file logging confirmed: `car/VoiceScreen.java:298–309,391–417` → `util/FileLogger.java:24–67`, crash bundle includes lines (`util/ClientLogReporter.java:95–97,119–140`). Fix → SEC-009.
-- Voice backend unauth (`chatbot-cuda/src/main.py:90–164`) matches internal-API intent (`design.md:209`) on isolated Compose net (`docker-compose.yml:4–40`); defer pending topology proof.
-- DNS no-auth upstream (`dns/forwarder.py:173–344`): defer unless adversarial resolver in scope.
-- Helm `secretEnv` literal (`deploy/helm/chatbot/values.yaml:21–27`, `templates/webserver-deployment.yaml:39–44`): fix → SEC-011 (chart-render regression; operator coordination for migration).
+- Do not alter cookie transport behavior based on source inspection alone; ingress trust and supported direct HTTP/LAN/native behavior must be established first.
+- Preserve the GET logout/switch-account flow until its method/CSRF contract is decided.
+- Preserve existing compatibility unless a security boundary and regression justify changing it; distinguish static/JVM/APK proof from live-device and topology proof.
+- Keep server-side data-key use explicit: disk encryption does not imply the server cannot access request-time plaintext.
 
-## Triaged batches
-- SEC-004: warm-cache key authentication (core history/api + cache).
-- SEC-005: SEC-002 live-session gate + client-log `source` sanitization.
-- SEC-006: provider/search content-log redaction (xAI, OpenAI error preview, Brave query).
-- SEC-007: TTS admission permit held through token insertion.
-- SEC-008: browser login stale-key clear + forget-then-claim + Standard-mode label.
-- SEC-009: car voice content/token file-log removal.
-- SEC-010: SEC-003 `getKey` export removal + keystore fail-closed decision (needs APK bridge proof).
-- SEC-011: Helm secret-reference support (chart-render regression).
-- Deferred with rationale above: SEC-001 ingress contract, logout GET contract, legacy PRF, Auto host allowlist, voice-backend auth, DNS transport, DOC-001/002 wording (DOC pass), COR-001/002/003 (separate correctness follow-ups outside the seven passes, as in phases 1–3), PERF-001 (Perf pass).
+## Open items
 
-## Sessions 076–078 — implementation, 2026-09-29
+- SEC-001 waits on the ingress/proxy-trust contract and dynamic validation of direct HTTP, TLS termination, contradictory/untrusted forwarded headers, and native/LAN requirements.
+- Logout GET/CSRF waits on a switch-account contract decision.
+- Legacy PRF unwrap waits on a legacy-support decision.
+- Android Auto waits on supported host allowlisting and transport/authentication contract; no vehicle validation is claimed.
+- Voice-backend authentication waits on proof of deployment topology; DNS upstream authentication waits on adversarial-resolver scope.
+- Historical car-log reachability, loaded-page native bridge reachability, and unavailable-authentication login behavior wait on physical-device verification.
+- COR-001–003, DOC-001–003, PERF-001 and TEST-002–005 remain with their owning passes above.
 
-All batches below carried red-first regressions and targeted green gates; workers did not commit. Primary reviewed each diff and committed.
+## Completion
 
-- SEC-004 `f205030`: warm history-cache hit authenticates the request key against the sealed version-bound manifest (`history/api.rs:199–205`); new `history_cache_key.rs` (wrong key fails warm + cold). Red job `20260929T005221-25e21083f71e` (1 failed); green `20260929T005428-4dcbe5d9797c` (1), snapshot `20260929T005554-ed9a416963f4` (7), history lib `20260929T005601-84845156c434` (87).
-- SEC-005 `137d79e`: client-log upload without CSRF requires live session (`client_logs.rs`, `identity.rs:has_live_session`); `source` sanitized before logging. New `client_logs.rs` regressions (6). Approved update of `router_identity_isolation.rs` pinning (unknown cookie 401; rate-limit fallback still 401,401→429). Green `20260929T010056-ae549d4f06bd` (6), `20260929T010107-ca79859bb989` (6).
-- SEC-006 `32b1f6d`: xAI request-body/raw-chunk logs removed; OpenAI/xAI error bodies replaced with status-only errors; Brave query no longer logged. New `provider_log_privacy.rs` sentinel regressions (2). Approved update of two OpenAI unit assertions to status-without-body. Green `20260929T010305-cc8de5a42d1d` (2), openai `20260929T010357-5d6b0af3708e` (12), xai `20260929T010410-b3ef3aa433e6` (4).
-- SEC-007 `4df1041`: `POST /tts` holds the admission content permit through token insertion (`tts.rs`), dropping only once the token is visible to mode-change invalidation. New `voice_privacy.rs` barrier regression. Red `20260929T010721-d068052e4d8d` (delayed GET 200 instead of 404); green `20260929T010844-6ea70fc24c89` (1), voice_privacy `20260929T010937-c32df4edb5e4` (10), tts `20260929T011034-725a2bbde1f0` (15).
-- SEC-008 `d812d3f`: login clears stale `storage_key` per attempt; both forget flows require successful `/login/forget` before claiming revocation; privacy selector offers Private/Non-private only with corrected copy. New `sec008_browser_ui.rs` (4). Red `20260929T010643-dfc0acd56ea4` (4 failed); green `20260929T010806-5284c808ca75` (4), js_syntax 11, client_derivation 3, remember_login 28, set_privacy 1.
-- SEC-009 `307230b`: car-turn `FileLogger` content/token calls removed from `VoiceScreen.java` (transcription, response/excerpt, TTS text, token, bodies); status codes kept. Rust distribution source pin added. Red `20260929T011456-bea12dd3eecd` (1 failed); distribution `20260929T011601-326bb2a794c9` (13); APK `20260929T011644-f084209b301a` (72 tasks). Backup/external-storage reachability of historical logs needs physical-device proof.
-- SEC-010 `9f663ec`: JS-callable `getKey` export and its wrapped-key reader removed; cached login rejects when biometric/device-credential unlock is unavailable; wrapping-key creation no longer falls back to non-auth-bound keys. Caller grep found no in-repo production JS/Android caller (`enc-key.js` matches are separate functions). Approved update of `credential_sealed_storage.rs` legacy-API pin. Red `20260929T012033-bccf03b4e028` (1 failed); distribution `20260929T012205-c3b45563c749` (15); credential `20260929T012245-0ac180fafc4c` (3); APK `20260929T012301-cf905498007b` (72 tasks). Loaded-page bridge reachability + unavailable-gate login flow need physical-device proof.
-- SEC-011 Helm `secretEnv` literals: DEFERRED — `helm` unavailable in sandbox and no repo-runnable chart render test exists; no chart changes made (worker stop-report). Concrete regression proposed for a Helm host: `secretEnv` accepts `valueFrom.secretKeyRef`, literal secrets rejected; render asserts Deployment/ConfigMap contain the ref and never the literal `SEC011_LITERAL_SENTINEL`; log under `temp/test-logs/sec011-*.log`. Operator migration of existing literal values required before deploying such a change.
-
-## Final gate, 2026-09-29
-
-SEC-005 follow-up updated `router_resource_isolation.rs` + `tts_rate_policy_isolation.rs` (unknown-cookie 204→401, 429 shapes unchanged): green `20260929T013446-80d0e63fc223` (4), `20260929T013555-b7e32f2884c5` (9). First full workspace suite on that tree (`077ca9e`): job `20260929T013620-393dd3eca2bc`, exit 0, untruncated. APK compile proven on SEC-009 (`20260929T011644-f084209b301a`, 72 tasks) and SEC-010 (`20260929T012301-cf905498007b`, 72 tasks) trees.
-
-## Sessions 079–080 — larger-model rework, 2026-09-29
-
-The completion review found a Standard-mode regression, a CSRF-config bypass, missed TTS text logs, string-only verification, and open race/Helm dispositions. All five reworked with red-first regressions; workers did not commit, primary reviewed each diff.
-
-- SEC-008 rework `6d043a1`: Standard restored as selectable (template option, `SELECTABLE_PRIVACY_LEVELS`, per-level confirmation copy) with the eligibility lattice unchanged; stale `storage_key`/forget gates kept. `design-privacy.md` Standard lines corrected to implemented behavior. Source-position tests replaced with Node-executed regressions (`fixtures/sec008_browser_ui.js` on `vm`: login retry, forget failure, logout, privacy selection). Red `20260929T020245-d2b95d5feb72` (1 failed on missing Standard); green `20260929T021131-ee930c5283b7` (4), js_syntax 11.
-- SEC-005 hardening `b5bf0f7`: `/client_logs` requires a live session with or without a CSRF header; a presented token must also validate (`client_logs.rs`). New `csrf:false` bypass regressions. Red `20260929T020009-388f9d0d75ac` (3 failed, bypass observed 204); green client_logs `20260929T020942-1a38de2f3432` (7) plus identity/resource/rate-policy targets 6/4/9 with no existing-test changes.
-- SEC-006 follow-up `983932c`: `tts/text.rs` content logs replaced with lengths/counts; in-file tracing regression with sentinel speech/URL/number. Red `20260929T020251-9da9114180c3` (1 failed); green `20260929T020547-9fbb4ba4a544` (1), lib `20260929T021023-fc9cfe989704` (79).
-- Native executing verification `3102f59`: framework-free `NativeUnlockGate.canPrompt` extracted and executed on JVM (`NativeUnlockGateTest` via javac/java); store harness now compiles the real `CredentialCookies` and executes selection/purge/expiry. Per-pin accounting in worker return; `SealedCredentialPayload` codec, key-return absence, and full prompt flow remain source-level + APK. Green distribution `20260929T020258-f30634a3fbca` (16), credential `20260929T020501-2a354b4efabf` (3), APK `20260929T020635-9a542a4afebd` (72 tasks).
-- Races closed `fbf0f6d`: remember rotation/peek/both revocations require the current bearer secret (forged-cookie red first); verifier/salt first-enrollment is first-wins via atomic `publish_once` (hard-link). New `remember_family_authorization.rs` (3) + `user_store_first_enrollment.rs` (2); lib 185/185, account_store_inputs 5/5.
-- SEC-011 `4ac64e1`: `secretEnv` renders `valueFrom.secretKeyRef` and fails on literals (Helm v3.17.3 downloaded to sandbox); lint + reference-render + `SEC011_LITERAL_SENTINEL` rejection green (`sec011-final.log`). Operator must create the referenced Secret before installing.
-
-## Final gate, 2026-09-29 (rework tree)
-
-Full workspace suite on the closing tree (`4ac64e1`): job `20260929T021608-ac28509ccdcd`, exit 0, untruncated, 127 ok suites, 1018 passed / 0 failed; log `temp/test-logs/phase4-final-20260929.log`. APK compile proven on the SEC-009/010 and rework trees (72 tasks each); Rust production changes after the last APK build are remember/user-store, client_logs, tts/text (server, covered by the suite) — no new native code paths except `NativeUnlockGate` (pure Java, JVM-executed). Device-proof limits stand: car-log historical reachability, loaded-page bridge reachability, on-device unavailable-gate login. Static assets need a host webserver rebuild/restart to deploy. Open leads remaining: SEC-001 ingress contract, logout-GET contract, legacy PRF decision, Auto host allowlist, voice-backend topology, DNS transport, COR-001/002/003 (separate correctness follow-ups), DOC wording (DOC pass), PERF-001 (Perf pass). Phase 4 implementation is ready for re-review.
-
-## Sessions 081 — second rework + ledger reconciliation, 2026-09-29
-
-- Remember coherence `3e058bb`: `resume()` returns Invalid on secret mismatch with no family deletion (the old theft-revocation deleted via unauthenticated `GET /`); `revoke_if_username()` accepts current or previous-generation secret so rotation-then-forget succeeds; module docs updated; two stale `revokes_family` test names renamed to the fail-closed behavior. Supersedes the session-075 C03 replay-policy note above. Red `20260929T023605-9b8770dbeac0` / `20260929T023652-ca65e0e55272`; green core `20260929T023836-0a9a09fc8247` (4), server `20260929T023920-466e3c0aa198` (31), lib 13.
-- Unlock execution `7b1eac4` + `8045092`: the real `NativeSecureKeyPlugin.unlockCachedLogin` runs on JVM against fake Activity/BiometricPrompt/CookieManager/keystore — unavailable/cancelled/failed auth rejects with no decrypt or injection; success injects four HttpOnly cookies with `unlocked:true` and no key field; tampered payload rejects. `org.json` runs as a documented flat-map stand-in (real JCE AES-GCM). Trivial equality fixture replaced. Green distribution `20260929T023910-da8da5138885` (16), credential targets, APK `20260929T024043-ff2c39e9e1ef`.
-- Ledger: Sec column filled per unit in `coverage.md` (R: C07/S11/T03/W02/W03; B: V01/S07/N04/O03/D01/D02/R00; rest P with exact scope). Two read-only workers supplied per-file evidence and named backlog candidates with prerequisites; hardware/topology proofs recorded as accepted limits.
-
-## Final gate, 2026-09-29 (sessions 081 tree)
-
-Full workspace suite on the closing tree (`8045092` + ledger docs): job `20260929T024231-e9b69ff2ef81`, exit 0, untruncated, 127 ok suites, 1022 passed / 0 failed (panics in the log are `should_panic` config tests); log `temp/test-logs/phase4-final2-20260929.log`. Ready for re-review.
-
-## Sessions 082 — gap closure round 2 + SEC-012, 2026-09-29
-
-- SEC-012 `883e419`: OpenAI-compatible in-band SSE errors (HTTP 200) redacted to `HTTP 200 OK: upstream stream error` at construction, so neither logs (`search.rs` fallback `warn!`) nor client streams carry upstream text; no equivalent xAI path found. Sentinel regression covers direct + tool-aware streams. Red `20260929T031002-1312eb955d36` (1 failed); green provider `20260929T031133-5b47af34c4da` (3), openai `20260929T031214-04a12184c826` (12), xai `20260929T031227-605d98b3ec7b` (4). This also closes the S04 in-band-error candidate raised during the same round.
-- Generic-cookie forget `570c2e2`: forget-only `peek_username_for_forget` accepts current-or-previous secret, matching revocation; strict `peek_username` kept for login/enc-key callers per audit. Route regression uses only the rotated-out generic cookie (`revoked:true`, family gone, clear-cookies emitted); forged generic cookie stays `revoked:false` with the family intact. Red `20260929T025843-881fda671a76` (1 failed); green remember_login `20260929T025946-bc307cccab5a` (33), family `20260929T030133-2e7121cb9120` (4), lib 13.
-- Gap closure reads (read-only, no new batches): browser round closed W01 (sink-driven + earlier reads), W04 (all templates/styles/substitutions), W05 (four remaining modules + nine earlier reads) to R; native round closed N01/N02/N03/T04-test-scope to R with switch-concurrency, enqueue-origin, and resume-lock backlog items; verification round closed R01/C01–C06/C08/C09/P01/S04/S08/X01/G01/O01/O02 to R with complete 1→EOF accounting, and mapped every Phase-4 fix to its regression body (T01/T02 stay P for assertion-level scope). New backlog candidates recorded in the coverage note above.
-
-## Final gate, 2026-09-29 (sessions 082 tree)
-
-Full workspace suite on the closing tree (`e2c66af`): job `20260929T031346-2a1c5b00855f`, exit 0, untruncated, 127 ok suites, 1025 passed / 0 failed; log `temp/test-logs/phase4-final3-20260929.log`. Ready for re-review.
-
-## Sessions 083 — resume-lock, token-log fixes + ledger completion, 2026-09-29
-
-- Resume lock `1ef1eb0`: `promptResumeUnlock` routes unavailable authentication through the JVM-tested `NativeUnlockGate` — logs and stays locked with the retry overlay instead of `unlockApp()`; first-run/no-session path unchanged. JVM-executed unavailable/cancelled/failed/success cases (`ResumeUnlockGateTest`) + routing pins. Red `20260929T032632-313e05fba8f7` (2 ran); green distribution `20260929T032848-007b5801bde8` (19); APK `20260929T032942-e1643b9c3b2d`.
-- Token-log fixes `1ef1eb0`/`a63c3b6`: TTS playback logs code-only (no URL); 5xx middleware uses prefix-scoped `sanitize_log_path` (`/tts_stream/{token}` → `[REDACTED]`, other paths byte-identical); STT INFO log drops the caller filename, keeping bytes/content-type/compressed telemetry. Captured-log regressions with sentinels for allowed + denied uploads. Red `20260929T032750-aee8dbd7bb08` / `20260929T032811-4d4089aa6599`; green sanitizer `20260929T032936-7b28af09f7b7` (2), sttname `20260929T032901-ab9c5c0c4206` (1).
-- Ledger: the 16 remaining `P` application units advanced to `R` on completed reads (S01/S02/S03/S05/S06/S09/S10/S12, W01/W04/W05, N01/N02/N03, O01/O02); per-unit ranges in the coverage note above. Sec `R` now covers every application unit except T01/T02/T04 (security-regression bodies; assertion audit is test-quality scope).
-
-## Session 084 — primary completion review, 2026-09-29
-
-**Phase 4 is complete for the authorized repository-wide security/privacy review with bounded remediation.** This verdict supersedes the pending completion records above. The primary reviewed the accumulated inventory and coverage dispositions, the remember-secret/forget chain, session-083 production changes and regressions, and the closing diffs. An independent read-only review found two additional gaps in the native fixes; both were reproduced and corrected before closure. This is a completion review of the recorded repository-wide work, not a new exhaustive audit of every unchanged line.
-
-The intermittent speech-log regression was a tracing callsite-registration race: ordinary sanitizer tests could first-register a callsite with no thread-local subscriber while the capture test was running. The shared capture lock did not cover those ordinary callers, and a one-time interest-cache rebuild did not prevent later registration. The regression now runs in an exact-selected child test process; the parent requires success and one passing test. Speech/URL/number sentinel assertions remain, and all five pipeline log sites must be captured. Prior failures remain in the `lib-flake*`/`lib-diag*` logs; four additional pre-isolation runs happened to pass. Twelve consecutive parallel server-lib runs after isolation each passed all 82 tests, jobs `20260929T041837-214c87d703b8` through `20260929T042007-5eee1ee24e83`. No production tracing behavior changed.
-
-The locked overlay's Switch Account button previously called `unlockApp()` before navigating, bypassing the unavailable-authentication guard. Both overlay buttons now use the same biometric callback path; switching unlocks and navigates only after successful authentication. The new JVM regression compiles the shipped overlay construction, prompt methods and unlock method with the real `NativeUnlockGate` and fake Android collaborators. Reversing only the production fix produced the behavioral failure `switch_unavailable before callback unlocked or navigated without authentication`, job `20260929T042817-6d59332c1bd4`. The fixture also covers cancellation, failure, authenticated switching and ordinary unlocking. The earlier session-083 `ResumeUnlockGateTest` simulated the surrounding activity behavior; it was not execution of `MainActivity` itself.
-
-Native TTS retry, queue and playback-loop errors still passed raw throwables to Android logging after the status-message redaction. These three logs now retain fixed diagnostics/attempt numbers without throwable messages or causes. A JVM fixture executes the shipped retry and worker methods with URL-bearing I/O, execution and runtime exceptions, checking sentinel absence, retained diagnostics, retry count and failed-clip consumption. The sentinel leaked on the original code in job `20260929T042323-fcd5f418eb40`. Final distribution verification passed all 21 tests in `20260929T042913-d35690e4617c`; follow-up review accepted both fixes.
-
-### Final verified gate
-
-Full workspace job `20260929T043340-482ba1a11f9d` passed, exit 0, untruncated: 127 Rust result blocks, **1,033 passed / 0 failed / 0 ignored**, including provider-configuration validation, the isolated speech-log regression and the 21-test distribution target. The voice-service target additionally executed **64 Python tests**, all passing. Log: `temp/test-logs/phase4-completion-full-final-20260929.log`. The earlier `phase4-completion-full-20260929.log` was interrupted by the tool timeout and is not completion evidence.
-
-Physical-debug APK job `20260929T044047-c48de723468d` passed, exit 0, untruncated, 72 Gradle tasks executed. The suite and APK used the identical 497-file snapshot `068676457cacc9061f8c7e5785416f20a5c984b6f10fe6414a9400ccbe70ef14`. Artifact: `temp/test-logs/phase4-completion-physical-debug.apk`, 12,538,790 bytes, SHA-256 `f97457e3bcdf5c693ed1319a0c16dd45ea8dc4d2cb75de9b171ebe26273f2df0`. Only documentation was added after these gates.
-
-### Completion boundaries
-
-SEC-004–012, remember-family authorization/coherence, first-enrollment races, and the native/logging follow-ups have implementation and regression dispositions. SEC-001 still needs an explicit ingress/proxy-trust contract; logout's GET contract, legacy PRF support, Auto transport/host validation, voice-backend topology/authentication and DNS transport retain their recorded follow-up prerequisites. COR-001–003 remain separately scoped correctness work, PERF-001 belongs to performance, and broad test-quality/documentation audits remain later phases. The unbatched coverage-ledger candidates remain investigation leads rather than silently closed findings.
-
-JVM tests use fake Android services and, for the new activity/TTS fixtures, extracted shipped methods; APK compilation is not phone, vehicle, biometric-hardware or GPU validation. No deployment occurred. Applying Phase 4 requires installing the updated APK and rebuilding/restarting webserver on the host for server code and baked assets. Helm operators must migrate literal `secretEnv` values to existing Secret references before installing the updated chart. Phases 5–7 have not started.
+Phase 4 completion review: session 084, 2026-09-29. Final full-suite job `20260929T043340-482ba1a11f9d`: exit 0, 127 Rust result blocks, 1,033 passed / 0 failed / 0 ignored, plus 64 Python tests passed. Physical-debug APK job `20260929T044047-c48de723468d`: exit 0, 72 Gradle tasks; the prior gate records its APK SHA-256. Device/topology limits remain as stated above.
