@@ -4524,6 +4524,9 @@ $(document).ready(function() {
         await ensureNativeMicPermission();
         if (window.NativeMic && window.NativeMic.enterVoiceRoute) {
           const routeRes = await window.NativeMic.enterVoiceRoute();
+          if (routeRes && routeRes.focusDenied) {
+            throw new Error('Audio focus denied');
+          }
           reportVoice('VOICE', 'enterVoiceRoute ok active=' + (routeRes && routeRes.active)
             + ' bluetooth=' + (routeRes && routeRes.bluetooth)
             + ' foreground=' + (routeRes && routeRes.foreground)
@@ -4620,7 +4623,8 @@ $(document).ready(function() {
         if (nativeMicBridge === failedBridge) nativeMicBridge = null;
       }
       const permissionDenied = /permission/i.test(msg);
-      if (!permissionDenied && attempt < 5 && voiceModeWanted()) {
+      const focusDenied = /audio focus denied/i.test(msg);
+      if (!permissionDenied && !focusDenied && attempt < 5 && voiceModeWanted()) {
         setTimeout(function () {
           if (sessionGeneration !== voiceModeSessionGeneration || !voiceModeWanted()) return;
           startVoiceMode(attempt + 1);

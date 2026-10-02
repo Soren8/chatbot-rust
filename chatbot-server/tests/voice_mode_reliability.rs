@@ -303,6 +303,12 @@ fn handheld_voice_mode_uses_speakerphone_communication_path() {
         "JS must hold speakerphone routing for the whole voice-mode session"
     );
     assert!(
+        function_contains(chat_js, "startVoiceMode", "routeRes.focusDenied")
+            && function_contains(chat_js, "startVoiceMode", "Audio focus denied")
+            && function_contains(chat_js, "startVoiceMode", "!focusDenied"),
+        "denied native audio focus must abort voice mode without retrying"
+    );
+    assert!(
         !chat_js.contains("exitVoiceRoute")
             || !function_contains(chat_js, "stopVoicePlaybackOnly", "exitVoiceRoute"),
         "barge-in must not drop speakerphone routing"

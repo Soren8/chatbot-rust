@@ -104,18 +104,20 @@ public final class VoiceModeSessionCoordinator {
         public final boolean applied;
         public final boolean active;
         public final boolean bluetooth;
+        public final boolean focusDenied;
         public final boolean keepAwake;
         public final boolean keepAwakeActive;
         public final boolean foreground;
         public final boolean foregroundActive;
         public final boolean foregroundConfirmed;
 
-        public EnterResult(boolean applied, boolean active, boolean bluetooth,
+        public EnterResult(boolean applied, boolean active, boolean bluetooth, boolean focusDenied,
                 boolean keepAwake, boolean keepAwakeActive,
                 boolean foreground, boolean foregroundActive, boolean foregroundConfirmed) {
             this.applied = applied;
             this.active = active;
             this.bluetooth = bluetooth;
+            this.focusDenied = focusDenied;
             this.keepAwake = keepAwake;
             this.keepAwakeActive = keepAwakeActive;
             this.foreground = foreground;
@@ -242,19 +244,20 @@ public final class VoiceModeSessionCoordinator {
 
     /**
      * Holds speakerphone + keep-screen-on + microphone FGS for the session.
-     * Always runs platform hooks, even when already active.
+     * Focus denial aborts resource acquisition; platform hooks still run.
      */
     public EnterResult enterVoiceSession() {
         boolean bluetooth = hasBluetoothAudio();
         boolean applied = route != null && route.enter(routeBackend);
-        boolean keepAwakeEntered = keepAwake != null && keepAwake.enter(keepAwakeBackend);
-        boolean foregroundEntered = foreground != null && foreground.enter(foregroundBackend);
+        boolean focusDenied = route != null && route.lastEnterFocusDenied();
+        boolean keepAwakeEntered = !focusDenied && keepAwake != null && keepAwake.enter(keepAwakeBackend);
+        boolean foregroundEntered = !focusDenied && foreground != null && foreground.enter(foregroundBackend);
         if (platform != null) {
             platform.requestBatteryExemption();
             platform.keepWebViewAlive();
         }
         return new EnterResult(applied,
-                isRouteActive(), bluetooth,
+                isRouteActive(), bluetooth, focusDenied,
                 keepAwakeEntered, isKeepAwakeActive(),
                 foregroundEntered, isForegroundActive(), isForegroundConfirmed());
     }

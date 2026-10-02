@@ -61,16 +61,23 @@ public final class VoiceAudioRoute {
     private boolean previousSpeakerphone;
     private Object previousCommunicationDevice;
     private boolean communicationDeviceTouched;
+    private boolean lastEnterFocusDenied;
 
     public synchronized boolean isActive() {
         return active;
     }
 
+    public synchronized boolean lastEnterFocusDenied() {
+        return lastEnterFocusDenied;
+    }
+
     /**
      * Apply speakerphone routing once. Returns false when already active, {@code backend} is null,
-     * or Bluetooth audio is connected (caller must not mutate {@link AudioManager} in that case).
+     * Bluetooth audio is connected, or communication focus is denied. On focus denial, no routing
+     * state is changed; {@link #lastEnterFocusDenied()} distinguishes that outcome.
      */
     public synchronized boolean enter(Backend backend) {
+        lastEnterFocusDenied = false;
         if (active || backend == null || backend.hasBluetoothAudio()) {
             return false;
         }
@@ -80,7 +87,10 @@ public final class VoiceAudioRoute {
         communicationDeviceTouched = false;
         previousCommunicationDevice = null;
 
-        backend.requestCommunicationFocus();
+        if (!backend.requestCommunicationFocus()) {
+            lastEnterFocusDenied = true;
+            return false;
+        }
         backend.setMode(AudioManager.MODE_IN_COMMUNICATION);
         backend.setSpeakerphoneOn(true);
         if (backend.supportsCommunicationDevice()) {

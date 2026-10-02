@@ -50,6 +50,7 @@ public final class VoiceModeSessionCoordinatorTest {
     private static final class FakeRouteBackend implements VoiceAudioRoute.Backend {
         final SharedLog log;
         boolean bluetooth;
+        boolean focusGranted = true;
         int mode = AudioManager.MODE_NORMAL;
         boolean speakerphone;
         Object commDevice;
@@ -84,7 +85,7 @@ public final class VoiceModeSessionCoordinatorTest {
         @Override
         public boolean requestCommunicationFocus() {
             log.add("route.focus.request");
-            return true;
+            return focusGranted;
         }
 
         @Override
@@ -607,6 +608,30 @@ public final class VoiceModeSessionCoordinatorTest {
         check(f.foreground.isActive(), "foreground must be active");
     }
 
+    private static void enterWithDeniedFocusLeavesResourcesUntouched() {
+        Fixture f = new Fixture();
+        f.routeBackend.mode = 7;
+        f.routeBackend.speakerphone = true;
+        f.routeBackend.commDevice = "headset";
+        f.routeBackend.focusGranted = false;
+
+        VoiceModeSessionCoordinator.EnterResult result = f.coordinator.enterVoiceSession();
+
+        check(result.focusDenied, "denied focus must be reported");
+        check(!result.applied && !result.active, "denied focus must leave route inactive");
+        check(f.routeBackend.mode == 7, "denied focus must preserve mode");
+        check(f.routeBackend.speakerphone, "denied focus must preserve speakerphone");
+        check("headset".equals(f.routeBackend.commDevice), "denied focus must preserve communication device");
+        check(!f.route.isActive(), "denied focus must not activate route");
+        check(!result.keepAwake && !result.keepAwakeActive, "denied focus must not enter keep-awake");
+        check(!result.foreground && !result.foregroundActive, "denied focus must not enter foreground");
+        check(countPrefix(f.log, "route.setMode:") == 0, "denied focus must not set mode");
+        check(countPrefix(f.log, "route.speaker:") == 0, "denied focus must not set speakerphone");
+        check(countPrefix(f.log, "route.comm.") == 0, "denied focus must not touch communication device");
+        check(f.keepAwakeBackend.calls == 0, "denied focus must not request keep-awake");
+        check(f.foregroundBackend.startCalls == 0, "denied focus must not start foreground");
+    }
+
     private static void enterWithForegroundFailureKeepsPartialEnter() {
         Fixture f = new Fixture();
         f.foregroundBackend.available = false;
@@ -1008,6 +1033,7 @@ public final class VoiceModeSessionCoordinatorTest {
         audioRouteChangedPausesInCallAndResumesAfter();
         audioRouteChangedOffCallWhenIdleIsNoop();
         enterWithBluetoothSkipsRouteButHoldsKeepAwakeAndForeground();
+        enterWithDeniedFocusLeavesResourcesUntouched();
         enterWithForegroundFailureKeepsPartialEnter();
         exitFailureKeepsSessionMarkedActive();
         exitClearsPauseSetByPhoneCall();

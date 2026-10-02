@@ -291,16 +291,19 @@ public class NativeMicPlugin extends Plugin {
                 sessionCoordinator.enterVoiceSession();
         FileLogger.log(TAG, "enterVoiceRoute applied=" + entered.applied
                 + " active=" + entered.active + " bluetooth=" + entered.bluetooth
+                + " focusDenied=" + entered.focusDenied
                 + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
                 + " foregroundConfirmed=" + entered.foregroundConfirmed);
         ClientLogReporter.report("VOICE", "voice: enterVoiceRoute applied=" + entered.applied
                 + " active=" + entered.active + " bluetooth=" + entered.bluetooth
+                + " focusDenied=" + entered.focusDenied
                 + " keepAwake=" + entered.keepAwake + " foreground=" + entered.foreground
                 + " foregroundConfirmed=" + entered.foregroundConfirmed);
         JSObject result = new JSObject();
         result.put("applied", entered.applied);
         result.put("active", entered.active);
         result.put("bluetooth", entered.bluetooth);
+        result.put("focusDenied", entered.focusDenied);
         result.put("keepAwake", entered.keepAwake);
         result.put("keepAwakeActive", entered.keepAwakeActive);
         result.put("foreground", entered.foreground);
