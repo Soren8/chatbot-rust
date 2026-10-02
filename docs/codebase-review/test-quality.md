@@ -56,8 +56,8 @@ Rejected leads: unknown/foreign generation status, events and stop are covered b
 
 TQ-001–TQ-005 were red-first regressions or characterization of defects handed over from Phase 5; three needed production fixes (SSE UTF-8 decoding, search truncation boundary, `users.json` write lock). TQ-006–TQ-024 add characterization or test-hygiene changes only. TQ-027 is closed by a guard test. TQ-015 was closed afterwards with a test-only endpoint seam.
 
-TQ-026 is recorded only. Follow-up batch: TQ-021, TQ-022 and TQ-025 were closed as above, and all eleven unreachable handler method guards (TQ-012) were removed because every route is registered for a single method.
+TQ-026 is recorded only, and TEST-001 stays open as an isolation hazard. Follow-up batch: TQ-021, TQ-022 and TQ-025 were closed as above, and all eleven unreachable handler method guards (TQ-012) were removed because every route is registered for a single method.
 
-Final gate at `d074d9f`, after the follow-up batch: full suite `20261002T045842-d3567b3fe1b5` passed (155 test binaries, 1169 tests, 0 failed). An earlier gate's "1222" count was inflated by a duplicated log segment.
+Final gate at `d074d9f`, after the follow-up batch: full suite `20261002T045842-d3567b3fe1b5` passed (155 test binaries, 1169 tests, 0 failed). An earlier gate's "1222" count was inflated by a duplicated log segment. The TEST-002/003/005 follow-up then passed full suite `20261002T061504-afeafe0db3d6` at `2412b78` (152 test binaries, 1167 tests, 0 failed): the drop of two is the three removed Rust re-implementation tests plus the one new search test.
 
-Applying Phase 6 requires a host rebuild/restart of the server for the provider, search and user-store fixes.
+Applying Phase 6 requires a host rebuild/restart of the server (provider, search and user-store fixes) and of the Android app (audio-focus abort, keep-alive fix), plus the static assets (`chat.js` focus-denial handling).

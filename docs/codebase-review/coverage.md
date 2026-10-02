@@ -67,5 +67,5 @@ Protected `.config.yml`, `.env` and runtime `data/` contents are not read withou
 - **Phase 3 — [abstractions](abstractions.md):** accepted within agreed moderate scope, ABS-001–012; final suite `20260928T225818-53da7826b56a` (122 suites / 997 passed, plus 64 nested Python). Android compiled; JS/DNS/CUDA deployment requires host rebuilds.
 - **Phase 4 — [security](security.md):** complete for reviewed scope and accepted exclusions; final suite `20260929T043340-482ba1a11f9d` (1,033 Rust + 64 Python passed). Device/topology limits remain.
 - **Phase 5 — [performance](performance.md):** complete; final suite `20261001T052944-8b04233f9f0f` (146 test binaries) and physical-debug APK built. Device/GPU/host-proxy cost limits remain.
-- **Phase 6 — [test quality](test-quality.md):** complete with bounded remediation; final suite `20261002T045842-d3567b3fe1b5` (1,169 tests, 0 failed). TQ-026 is recorded only; see phase record for scope limits.
-- **Phase 7 — [documentation](documentation.md):** in progress; no completion gate yet.
+- **Phase 6 — [test quality](test-quality.md):** complete with bounded remediation; final suite `20261002T061504-afeafe0db3d6` (1,167 tests, 0 failed). TEST-001 is open and TQ-026 recorded only; see phase record for scope limits.
+- **Phase 7 — [documentation](documentation.md):** complete. Mismatches are recorded, not fixed, per the user's decision; three completed plans were retired and the ledger condensed. Documentation-only, so it rests on the same suite gate.

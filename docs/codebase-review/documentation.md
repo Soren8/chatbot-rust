@@ -56,3 +56,17 @@ Not findings: `docs/mobile-apps.md:394–406` and `docs/audio-decoder-check.md:9
 | DOC-C10 | `chatbot-core/src/config.rs:136–141` | WRONG: `rate_limit_retries` "Defaults to 1"; `rate_limit_max_wait_secs` "Defaults to 5" | The defaults applied are `DEFAULT_RATE_LIMIT_RETRIES = 5` (`chatbot-server/src/providers/openai.rs:22`) and a 30 s wait cap (`openai.rs:26`), matching `.config.yml.example:65–66` and `docs/design.md`. | Medium |
 
 Coverage: every non-test comment block was extracted with its following code (core 516, server 352, browser JS 425, Android 256, Python 83). All were read by a reviewer, and the claims were spot-checked against the source. A deterministic pass also checked every backtick-quoted identifier in a comment against the code (one miss, DOC-C06) and swept for history wording. An itemized rerun listed about 300 server claims checked, prioritizing auth, cookies, CSRF, privacy and providers, and found nothing new. The Android and Python reviewer listed 112 Android and 47 Python claims it checked. The JS reviewer reported no problems, but its line citations were unreliable, so that clean result rests on the deterministic checks.
+
+## Decisions for the user
+
+Each finding above leaves both the doc and the code unchanged. For each one, decide which side is right:
+
+- **Privacy wording (DOC-001, DOC-002), Medium:** "end-to-end encrypted" and "wiped after the idle TTL" overstate what the code does. Either reword the docs, or change the code: add a timed sweep and zeroization to `SetCache`.
+- **Stale status and wrong statements in living docs:** DOC-004 and DOC-005 (`design.md` still describes two privacy modes), DOC-006 (README says sessions are encrypted on disk), DOC-007 (provider-docs checkbox unchecked), DOC-010 (VAD location in `mobile-apps.md`), DOC-003 (history-store API sketches beside an "Implemented" status), DOC-012 to DOC-015 (history-store schema version, "Phase 2 started", Phase 1 overview, "source of truth until code lands"). All are likely doc-side fixes.
+- **Operator and agent instructions:** DOC-008 (README points at `cargo test`), DOC-009 (`AGENTS.md` `temp/todo.md` instruction), DOC-011 (compose rebuild step not marked host-only), DOC-016 (config example omits `allowed_providers` and `request_timeout`).
+- **Wrong comments:** DOC-C08 (voice-service stream error shape) and DOC-C10 (rate-limit defaults 1/5 vs actual 5/30). DOC-C09 is accurate for ordinary exceptions; decide whether the `BaseException` case matters.
+- **History-narration comments:** DOC-C01 to DOC-C07 break the project's no-history-comments rule. Deleting or rewording them is mechanical once approved.
+
+## Completion
+
+Phase 7 covered the 26 tracked prose files, every non-test code comment (about 1,600 blocks across Rust, JS, Java and Python), and configuration and deployment comments. Three completed plans were folded into living docs and deleted: `privacy-and-agent-connections-plan.md`, `tts-streaming.txt` and `design-history-chunks.md`. The review ledger was condensed from 2,289 to about 560 lines. All relative links and anchors resolve. This was a documentation-only pass; the suite gate is `20261002T061504-afeafe0db3d6` at `2412b78` (1,167 tests, 0 failed).
