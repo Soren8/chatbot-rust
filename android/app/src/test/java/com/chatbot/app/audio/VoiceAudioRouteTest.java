@@ -92,6 +92,24 @@ public class VoiceAudioRouteTest {
     }
 
     @Test
+    public void enterDoesNotChangeRouteWhenCommunicationFocusIsDenied() {
+        backend.mode = AudioManager.MODE_NORMAL;
+        backend.speakerphoneOn = false;
+        backend.focusGranted = false;
+
+        assertFalse(route.enter(backend));
+
+        assertFalse(route.isActive());
+        assertTrue(route.lastEnterFocusDenied());
+        assertEquals(AudioManager.MODE_NORMAL, backend.mode);
+        assertFalse(backend.speakerphoneOn);
+        assertEquals(0, backend.setModeCount);
+        assertEquals(0, backend.setSpeakerphoneCount);
+        assertEquals(1, backend.focusRequests);
+        assertFalse(backend.speakerDeviceSet);
+    }
+
+    @Test
     public void enterDoesNotChangeRouteWhenBluetoothAudioConnected() {
         backend.bluetoothAudio = true;
         backend.mode = AudioManager.MODE_NORMAL;
@@ -130,6 +148,7 @@ public class VoiceAudioRouteTest {
         boolean communicationDeviceCleared;
         Object communicationDevice;
         boolean bluetoothAudio;
+        boolean focusGranted = true;
 
         @Override
         public int getMode() {
@@ -156,7 +175,7 @@ public class VoiceAudioRouteTest {
         @Override
         public boolean requestCommunicationFocus() {
             focusRequests++;
-            return true;
+            return focusGranted;
         }
 
         @Override
