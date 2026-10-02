@@ -157,6 +157,20 @@ function feedAll(vad, frames) {
   const speech = noisyVowel(200.0, 1200, FRAME * 40, SR, 0.35);
   const speechFrames = framesOf(speech, FRAME);
   const hey = speechFrames.slice(0, 10);
+
+  check('high-energy non-speech after utterance reaches end-of-speech', () => {
+    let ended = 0;
+    const vad = new capture.NativeMicUtteranceVAD(
+      makeHost(makeLifecycle(false), { onUtteranceEnd: () => { ended++; } }), () => {});
+    vad.isRecording = true;
+    feedAll(vad, framesOf(noisyVowel(200.0, 1200, FRAME * 30, SR, 0.35), FRAME));
+    assert(vad.inSpeech, 'speech fixture must start an utterance');
+    const hiss = sineFrame(4000, 4000, FRAME, SR);
+    const endFrames = Math.ceil(NativeAudio.SPEECH_END_SILENCE_MS / FRAME_MS);
+    for (let i = 0; i < endFrames; i++) vad._onNativePcm(hiss);
+    assert.equal(ended, 1, 'sustained high-RMS hiss must not keep silence at zero forever');
+    assert.equal(vad.inSpeech, false, 'utterance should end after non-speech silence threshold');
+  });
   check('noisy table vowel frames are speech-like', () => {
     for (const frame of hey) assert(NativeAudio.pcm16IsSpeechLike(frame), 'hey frame must start recording');
   });

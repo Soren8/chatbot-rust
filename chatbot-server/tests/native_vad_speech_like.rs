@@ -516,38 +516,6 @@ fn shipped_native_vad_dual_invariant_on_real_capture() {
     );
 }
 
-#[test]
-fn high_energy_non_speech_after_utterance_still_reaches_end_of_speech() {
-    let capture_js = include_str!("../../static/voice-capture.js");
-    assert!(
-        !capture_js.contains(
-            "} else if (rms > host.nativeAudio.SPEECH_RMS_THRESHOLD) {\n      this.silenceMs = 0;"
-        ),
-        "high-RMS non-speech must not reset end-of-speech or count as active speech"
-    );
-    let t = load_thresholds();
-    const SR: f64 = 16_000.0;
-    const FRAME: usize = 320;
-
-    let speech = noisy_vowel(200.0, 1200, FRAME * 12, SR, 0.35);
-    let hiss = sine_frame(4000.0, 4000, FRAME, SR);
-    let mut vad = NativeVadSim::new(false);
-
-    for frame in speech.chunks(FRAME) {
-        vad.feed(frame, &t);
-    }
-    assert!(vad.in_speech, "speech fixture must start an utterance");
-
-    for _ in 0..t.end_silence_frames() {
-        vad.feed(&hiss, &t);
-    }
-
-    assert!(
-        vad.ended,
-        "sustained high-RMS hiss must not keep silence at zero forever"
-    );
-}
-
 /// Both sides in this function: fail if coughs barge in OR if noisy sustained
 /// speech never barges in. Do not split into two tests.
 #[test]
