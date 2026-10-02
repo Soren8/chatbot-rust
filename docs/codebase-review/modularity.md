@@ -1,318 +1,47 @@
-# Modularity pass
-
-**Current disposition (session 052):** phase 1 is complete for the authorized modularity scope after implementing and verifying the four session-046 follow-ups. Main-model completion review at `d55ee5d` is recorded in README session 052. Android Auto protocol and native key-export repairs remain deferred; later review passes are unstarted.
-
-## Sessions 047–052 — verified follow-up dispositions
-
-MOD-009-A is implemented in `819c8ee` and `d55ee5d`; MOD-009-B in `917577f`; MOD-015-A in `b98a41d`; MOD-012-A in `9ad5a52`. README sessions 047–051 retain each batch's behavioral red, final full-suite green, main-review corrections and native artifact evidence. The main-model gate additionally caught queued successful headers clearing a new conversation's draft and stale autoplay callbacks; session 051 closes those continuations before the completion verdict.
-
-Conversation binding spans request/retry identity, pre-read re-entry, rendered/version/accounting updates and delayed UI work. Desktop cancellation settles clips and disposes queue subscriptions/observers/timers through both composed and direct lifecycle stops. Production full TTS/STT jobs retain their resources until worker cleanup, with one bounded off-loop shutdown deadline. Android stop failure is propagated rather than fabricated; platform start/stop serialization and token reconciliation protect newer ownership. CPU fake-I/O regressions and Android compilation establish these boundaries, not device/GPU runtime behavior. COR-003 retains its separate scope decision.
-
-## Session 046 — fresh-review follow-ups
-
-Historical evidence revision: `d5fef483b8b0c75d6857880c461febb079e8b21c`. At session 046 all four findings were source-confirmed, unimplemented and not newly dynamically reproduced. The original traces and correction requirements below are retained; current dispositions are above and in README session 052.
-
-### MOD-009-A — requests lack initiating-conversation ownership
-
-**Priority:** P1. **Disposition:** confirmed. **Confidence:** high for the source-level failure paths.
-
-**Evidence:** `static/chat.js:2927–2980` changes `APP_DATA` and advances the history-window generation on set switch, without invalidating/binding the outstanding chat request. At `3284–3292`, chat response handling appends its bubble into the current container without checking the initiating set. At `3372–3390`, stream completion updates the current history window and bumps the current set version. Regenerate's successful read/completion path (`2134–2160`) likewise lacks the stale guard used in its catch path. `saveMemoryNow` (`3142–3172`) rebuilds `activeSetPayload` on retry rather than retaining the initial target. `conversation-state.js` separately owns history generation and request sequence; its fixture tests them independently, not these composed flows.
-
-**Consequence:** a response for A arriving after a switch to B can render in B's view or update B's client-side accounting. A memory save for A that receives 401 and retries after a switch to B can send A's memory text against B. Checking only whether a controller is current does not establish conversation ownership.
-
-**Bounded correction:** retain initiating set identity/generation across requests and retries, and fence response application against that identity. Keep selected DOM state a view of the active conversation rather than the retry target. Preserve guest behavior, legitimate set switching, stop/partial persistence and existing CAS/401 policy.
-
-**Verification required:** delayed chat headers/chunks/completion after A→B; replacement regeneration with stale callbacks; memory/prompt retry during A→B; same-set valid completion and retry. Exercise the real state owner together with production request/application adapters, not separate counter-only tests. Check pagination settlement against set generation while tracing callers, without bundling unrelated pagination changes.
-
-### MOD-009-B — desktop playback cancellation lacks complete disposal ownership
-
-**Priority:** P2. **Disposition:** confirmed. **Confidence:** high for the missing settlement/disposal path.
-
-**Evidence:** `static/voice-lifecycle.js:103–130` clears audio callbacks and pauses/resets the element on stop. `static/tts-playback.js:170–260` resolves the clip promise via callbacks installed on that same element. Its queue (`335–489`) separately owns the source subscription, DOM observer and timers but exposes no cancellation/disposal handle. `static/chat.js:1882–1913,1940–1964` wires the modules without one. The playback characterization fixture substitutes immediately successful `playOne` (`fixtures/playback_source_characterization_test.js:90`), so it does not establish active-audio cancellation behavior.
-
-**Consequence:** stopping after audio has started can clear the only completion callbacks without settling the clip promise. The queue remains waiting; a settled historical message with no subsequent source/DOM event need not release its subscription/observer. Stale guards suppress work but do not dispose it.
-
-**Bounded correction:** give the playback session an explicit cancellation path that settles the active clip and disposes queue-owned subscriptions, observers and timers. Preserve sentence order, retry policy, shared desktop/native source semantics and barge-in timing; do not introduce a second playback pipeline.
-
-**Verification required:** compose the actual lifecycle, desktop clip pipeline and message queue over fake audio; start playback successfully, stop mid-clip with no later text/media events, and assert settlement plus disposal. Also cover replacement playback and cancellation during retry/backoff so stale completion cannot disturb the replacement.
-
-### MOD-015-A — normal TTS/STT jobs bypass the inference shutdown owner
-
-**Priority:** P2. **Disposition:** confirmed. **Confidence:** high for untracked work and cancellation/file-lifetime mismatch; no GPU reproduction.
-
-**Evidence:** Rust `chatbot-server/src/tts/backend.rs:207–224` calls `/v1/tts/kokoro`, not the streaming endpoint. Python `chatbot-cuda/src/main.py:91–105` launches that synthesis with `asyncio.to_thread`; STT does the same at `161–171` and unlinks its staging file in the awaiting coroutine's `finally`. `service.py:309–345` tracks/joins only streaming producers. Full synthesis (`228–240`) and transcription (`421–435`) do not register or check the shutdown flag. Existing stream lifecycle tests establish only the streaming contract; STT route tests cover ordinary completion/error, not cancellation with a still-running worker.
-
-**Consequence:** ordinary production TTS/STT work is outside the explicit service shutdown accounting/admission contract. Cancelling the awaiting coroutine does not stop a running thread. STT cancellation can unlink the path while its worker still needs it. This does not assert that every client disconnect automatically cancels a non-streaming ASGI handler.
-
-**Bounded correction:** extend inference-job ownership to the production non-streaming operations, retaining resource/file ownership until workers actually finish. Define admission and shutdown behavior coherently with streaming. Cooperative cancellation is sufficient; do not promise forced interruption of in-flight GPU inference or change the public audio protocol.
-
-**Verification required:** event-gated fake full synthesis/transcription through real service/route paths; cancel the awaiting task while work is blocked; staging file remains usable until worker completion then is removed; shutdown accounts for live jobs and prevents new admission. Preserve streaming buffer/order/error/cancel regressions and the bounded off-loop shutdown policy.
-
-### MOD-012-A — production foreground stop adapter fabricates success
-
-**Priority:** P2. **Disposition:** confirmed. **Confidence:** high for the exception path; no device execution.
-
-**Evidence:** `android/app/src/main/java/com/chatbot/app/audio/VoiceModeForegroundService.java:87–97` catches platform stop exceptions and returns void. `NativeMic/NativeMicPlugin.java:670–682` then returns true. `audio/VoiceModeForegroundSession.java:128–149` treats that as success and clears requested/confirmed state. The Java fixture's fake backend (`VoiceModeSessionCoordinatorTest.java:194–203`) can return false correctly, unlike this real adapter; `native_voice_coordinator.rs` compiles the pure collaborators, not the Android service/plugin adapter.
-
-**Consequence:** a failed platform stop can leave the service/resources alive while application state reports stopped. The startup confirmation correction does not close this stop-result boundary.
-
-**Bounded correction:** propagate an honest stop outcome through the real adapter, distinguish already-stopped from failure, and reconcile state with the owning generation. Preserve late-start/destroy protection, native cleanup without JS acknowledgement, event deduplication and confirmed-only biometric bypass.
-
-**Verification required:** platform stop throws/fails, already-stopped behavior, successful stop/destroy, and stale stop versus a newer generation. Exercise the adapter failure propagation as well as the pure session. Run the full trusted suite and rebuild the physical-debug APK after implementation; compilation remains distinct from device validation.
-
-### Separate correctness lead
-
-COR-003 (history metadata/payload read-snapshot consistency) is recorded in `findings.md`. It needs its own scope decision and deterministic regression; it is not an extra modularity batch by default.
-
-Review revision: `7dc8a23` (application source unchanged from `4cda303`). Primary reviewer performed the analysis directly. This report records responsibility, dependency, representation, and lifecycle boundaries; it does not claim completion of the security, performance, testing, or documentation passes. Proposed changes below remain recommendations pending remediation-batch selection.
-
-**Status:** first modularity pass complete for handwritten application code and test boundaries, subject to the explicitly scoped external/generated/protected materials in [coverage.md](coverage.md). No runtime tests were executed during the static review.
-
-**Remediation update (session 003):** MOD-004 is verified; MOD-011 has a verified speech-text extraction and remains in progress overall. Other findings retain their recorded dispositions. See the [current checkpoint](README.md#session-003--first-remediation-batch-2026-09-16) for the implementation commit title and passing baseline/final executor jobs. Original source evidence below refers to the review revision, not the refactored line numbers.
-
-**Remediation update (session 004):** MOD-010 has a verified browser-side extraction; MOD-016 is partially improved via the same seam. `static/stream-decoder.js` owns incremental decoding and whole-text projection behind one tested API; `static/chat.js` keeps explicit adapters for the preserved divergences (chat strips console detail and flushes at EOF, regenerate does not) with no wire-contract change. `chatbot-server/tests/stream_decoder.rs` plus `fixtures/stream_decoder_test.js` exercise the shared unit as a stable import (no source slicing) alongside packaging/wiring pins. Rust `strip_think_tags`, server TTS normalization, TTS text selection and thinking-toggle labels remain separate callers; typed wire events remain a separately approved change. See the [session 004 checkpoint](README.md#session-004--shared-stream-decoder-2026-09-16).
-
-## Overall assessment
-
-**Core transport update (session 030):** `ServiceResponse` and serialized error parsing are removed. Core prepare/session/mirror operations return typed errors; canonical finalization returns typed persistence outcomes. Server mapping/rendering owns HTTP and stream output. Legacy finalizer string APIs remain explicit compatibility adapters. Primary reviewed all migrated callers and passing full-suite evidence; see sessions 029–030.
-
-The existing crate/process split is broadly sensible. The largest problems are inside components and at lifecycle boundaries, rather than a need for more services or crates. Preserve the private redb implementation, pure history operations, shared browser UI, codec helpers, and small Android policy helpers. Extract cohesive owners from the orchestration code instead of distributing its mutable globals across more files.
-
-MOD-001 and MOD-002 remain in [findings.md](findings.md). Their supporting review now includes the complete session implementation, both generation handlers, stream guards, and all history/memory/reset/preference handlers. The following findings extend that analysis. All MOD entries below are **confirmed structural findings**, **P2**, with **high source-based confidence**, unless stated otherwise. They are not verified fixes or dynamic bug reproductions.
-
-## MOD-003 — Process-global state bypasses application composition
-
-**Request configuration and fake inputs (session 039):** `ConfigSource` and expanded `GenerationDeps` complete this batch's explicit route-policy and provider-input ownership. Scoped identity, cookies, home, STT and health use the injected configuration; owned providers ignore ambient fake inputs, verified with poisoned-environment router tests. Live compatibility retains original lookup timing and coherent home capture. Browser rendering/playback/capture and flavor-origin ownership are also implemented; see session 039 for evidence and the user-approved Android Auto protocol deferral. Overall phase completion still requires the separate completion review.
-
-**Policy handles (session 037):** `policy.rs` owns separate `RatePolicy` and `TtsPolicy` behind optional-`Arc` handles, carried by `AppServices` with `with_rate_policy`/`with_tts_policy`. TTS access/codec/coherent synthesis inputs/endpoints and rate budgets resolve through the router policy; counters stay in the limiter dimension. Global handles construct config-free and delegate per operation at the original sites; production keeps the live path with no snapshot or schema change. Nine tests (5 live characterization plus 4 per-router isolation) pass with the full suite; see the [session 037 checkpoint](README.md#session-037--owned-tts-and-rate-policies-2026-09-18). Other route/config policies remain ambient; this is partial, not total, config isolation.
-
-**Generation config (session 036):** `GenerationDeps` owns the per-router provider map/default, thought defaults and Brave key behind one optional-`Arc` handle, carried by `AppServices` and used by chat/regenerate/dispatch. The global handle constructs config-free and delegates per operation at the original sites; owned handles never read ambient config/env. Compatibility constructors keep the global-live handle with no config-schema change. Other route/config policies and provider env-chunk/test-fake inputs remain ambient; this is partial, not total, config isolation.
-
-**Service composition (sessions 023–028):** production now composes owned HTTP identity, chat/session/history, TTS tokens, rate counters and account root/verifier/remember dependencies. Chat leases bind the service; deep health and background purge resolve the same owners. Lazy history retains retryable per-request failures. Explicit constructors and independent-router tests exercise real password cookies, durable history and remember rotation. Existing constructors preserve global compatibility. Live provider/config policy and fake-provider environment inputs remain open; this is not yet complete application isolation. Full reviewed suites pass; checkpoints and evidence are in README sessions 023–028.
-
-**Router composition (session 021):** production owns one HTTP identity store shared by request injection and purge. All handlers/middleware and account-cookie selection resolve that identity. Compatibility constructors remain lazy-global; seven new tests prove the scoped identity boundary. Chat/history, counters, user/remember stores and config remain open.
-
-**Partial remediation (session 020):** owned `HttpSessionStore` accepts explicit timeout/CSRF inputs; independent instances are lifecycle-isolated. Compatibility delegates retain one lazy production instance, including early-return initialization timing. Five new tests and full suites pass. Router-level ownership, history/chat composition and ambient storage/config remain open.
-
-**Evidence:** `build_router` accepts only a static path. Core session stores capture config independently (`session.rs:153–163,471–481`); `HistoryService::global` captures storage/config separately (`history/api.rs:95–119`); config itself can reset (`config.rs:208–213`). `UserStore::new` and `RememberStore::new` independently read `HOST_DATA_DIR`; Brave reads its environment at each construction despite an `AppConfig.brave_api_key` field. TTS pending state and several HTTP clients have separate static owners.
-
-**Consequence:** constructing a router does not construct an isolated application. Runtime initialization, configuration, shutdown, and test isolation depend on first-use order and ambient process state. Resetting config does not reset services already derived from it. This strengthens TEST-001 without asserting that every test is currently failing.
-
-**Correction boundary:** introduce an explicitly owned application-services value at server construction, incrementally giving stateful session/history/token services a lifetime and resolved configuration. Reuse concrete services where practical; do not add traits for every helper. Preserve one production service instance and existing store locking. Move only dependencies required by each operation.
-
-**Verification/dependencies:** two independently configured application instances must not share sessions, roots, pending tokens, or fake provider behavior. Preserve normal startup/defaults, cleanup, and single-node redb ownership. Needs test-fixture review and coordination with MOD-002/008/015.
-
-## MOD-004 — Migration-only storage owns live domain rules and crypto helpers
-
-**Evidence:** `persistence.rs` is a compatibility alias for `LegacySetsStore`. `history/mod.rs:30–39` forwards live name validation to that store, returning its persistence error. Live session sealing uses its static Fernet helpers (`session.rs:580–630`). Server memory/reset routes therefore import legacy persistence errors. The legacy store also defines a separate username regex (`legacy_sets_json/store.rs:23–26,132–172`) alongside `user_store::normalise_username`.
-
-**Consequence:** the legacy format is not a one-way migration adapter. Changing a migration helper can change active HTTP naming policy or session encryption. The public history facade hides rather than removes this dependency.
-
-**Correction boundary:** move shared name/identity validation and reusable Fernet operations to narrow current-domain/crypto modules, with legacy readers depending on them. Preserve permanent migration support and old-format decoding. Do not remove the migration module. The unattached `legacy_sets_json/migrate.rs` file is a separate simplicity lead, not justification for deleting the real orchestrator.
-
-**Verification:** identical accepted/rejected names and HTTP responses; Fernet compatibility with both supported base64 forms; legacy import/idempotency and current session sealing. Coordinate type changes with MOD-001.
-
-**Remediation — verified:** `chatbot-core/src/names.rs` owns the shared naming rules and typed `UsernameError`/`SetNameError`; `user_store` preserves its string-error API, and the history facade exports domain validation. `fernet_crypto.rs` is a private core module used directly by session sealing and history crypto. Legacy store wrappers delegate to these helpers and map errors back to their existing variants. Server memory/reset handlers consume `SetNameError` and retain HTTP 400 `invalid set name`. Sixteen pre-extraction characterization tests and seven direct helper tests pass with the full migration/session/HTTP suite. Both base64 alphabets, an independent fixed Fernet token, wrong/malformed keys and plaintext compatibility are covered. The dead unattached migration file remains outside this correction.
-
-## MOD-005 — History facade exposes bypasses and ambiguous snapshot representations
-
-**Representation remediation (session 019):** with explicit user approval, chunked warm-cache snapshots now use the same normalized image references as durable reads. Private store-produced `LogicalSnapshot` gates cache insertion; public materialization creates an owned copy. Commit returns its already-normalized output, preserving CAS and IDs without reloading. Seven new boundary tests and the full suite pass. Public `SetSnapshot` remains a compatibility DTO and prepare captures remain materialized; no layered-cache or projection-cost optimization is claimed.
-
-**Evidence:** `history/mod.rs:16–28` re-exports cache and storage-format payload types along with public operations. `HistoryService::commit_snapshot` (`api.rs:668–682`) accepts arbitrary public `SetSnapshot` fields and goes directly to the store, bypassing named operation validation/name uniqueness in the service. `SetSnapshot` represents both logical image references and materialized data URLs (`api.rs:185–223,377–388`); `remember_committed` caches its incoming shape rather than a distinct normalized type. Session prepare loads materialized snapshots; chunk commits normalize again (`store/chunks.rs:611–668`).
-
-**Consequence:** the advertised invariant-enforcing facade depends on caller discipline. The same type can mean a storage working representation, an HTTP-compatible read, or a prepare/commit capture. Internal schema changes leak into non-storage callers and create uncertainty about what belongs in cache.
-
-**Correction boundary:** identify actual external consumers, narrow generic commit/cache/schema visibility, and separate logical storage snapshots from client/model projections where that enforces a real invariant. Prefer named mutations and captures with explicit ownership. Keep version and stable pair/image IDs aligned. Do not invent a generic storage trait or expose redb.
-
-**Verification:** validate all mutation entry points, default-set/name policy, image edit/append/fork fidelity, cache cold/warm equivalence, and conflict handling. The dedicated security pass must examine whether cached reads rely on prior key verification outside the facade. The performance pass must measure projection/clone costs rather than assume savings.
-
-**Remediation — facade narrowed (session 010):** removed the unused service-level generic snapshot writer, cache export and two unused cache methods, plus seven storage-format exports with no repository consumers. Named service mutations retain internal CAS writes; domain types and the migration-tested `SetPayloadV1` export remain. Existing tests were unchanged and both full suites passed with no new warnings. Logical/materialized snapshot separation and cache normalization remain open; this closes only the unused public bypass/export portion.
-
-## MOD-006 — Generation and mutation lifecycles have multiple owners
-
-**Typed settlement (session 029):** production lease completion returns a typed persistence outcome and server rendering owns error chunks. Legacy string finalizers remain compatibility-only. Eight before/after characterizations, eight typed core cases and five renderer cases pass with the full suite. Mutation-plus-mirror policy, expiry/recreation and pre-prepare error-turn unlock behavior remain open; no correction to those policies is claimed.
-
-**Partial remediation (session 034, committed as `ca4fd8f`):** `ChatService` owns durable-then-mirror application operations (`apply_memory_update`, `apply_system_prompt_update`, `apply_delete_pair`, `apply_reset_history`, `apply_load_set`) returning `AppliedMutation` or `MutationMirrorError`, with key validation, set-address resolution, durable CAS write, then mirror and no rollback. Existing post-durable seal-error behavior is preserved (swallow on active-set mismatch, propagate on matching set); guest load keeps the exact 401. Twenty new core/server tests pass with the combined full suite.
-
-**Partial remediation (session 022):** production prepares return a non-cloneable, session-bound lease. Stream completion owns its lease-capturing persistence closure; compatibility finalizers retain the existing ID-lookup persistence/unlock path. Eight before/after route characterizations and six new core tests pass. Expiry/recreation and pre-prepare error-turn unlock semantics remain explicit unresolved correctness boundaries; typed persistence outcomes and durable/mirror policy remain open.
-
-**Evidence:** core prepare acquires an `AtomicBool` generation lock; server `ChatLockGuard` stores only a session ID and releases by looking up current global state (`chat_utils.rs:234–263`); core finalizers also unlock (`session.rs:1051,1455`); `StreamCompletionGuard` marks the server guard released after a closure calls the core finalizer (`chat_utils.rs:265–368`). Core finalizers return rendered stream-error strings rather than a typed commit outcome. Memory/reset/delete handlers separately perform a durable operation then update the session mirror (`memory.rs:130–150,240–265,372–391`; `reset_chat.rs:113–132`).
-
-**Consequence:** acquiring, committing, mirroring, and releasing are not one owned operation. Routes must know when a core function implicitly unlocks, and a mirror-update failure can become an error response after the durable write succeeded. Expiry/recreation during a live stream needs a focused correctness investigation: an ID-based release is not the same as releasing the originally acquired entry.
-
-**Correction boundary:** return an owned generation lease/capture from prepare and let one application operation produce a typed persistence outcome and settle that lease. Keep HTTP/stream rendering in the server. Encapsulate durable mutation plus mirror synchronization policy; do not silently change whether stopped partial responses persist.
-
-**Verification:** cancellation before first poll and mid-stream, provider error, successful completion, setup failure, expiry/recreation, concurrent set switch, and post-commit mirror failure. Preserve captured-set writes and one effective unlock. Depends on MOD-001/002, not on a provider rewrite.
-
-## MOD-007 — Route handlers own provider dispatch and search policy
-
-**Evidence:** both `chat.rs:123–145,207–356` and `regenerate.rs:127–145,192–348` define dispatch decisions, instantiate concrete providers, select native versus Brave search, and implement fallback. Both translate core messages into DTOs defined under `providers::openai::messages`; XAI and search depend on those OpenAI-owned types. `providers/mod.rs` only exports concrete modules; there is no common provider interface in the inspected implementation.
-
-**Consequence:** a provider or search-policy change must be coordinated across two HTTP handlers. Provider-specific transport shapes are the shared application interface. The docs' claimed trait-based provider abstraction is not what is implemented.
-
-**Correction boundary:** establish one generation backend entry point for shared dispatch/search policy and provider-neutral message types at the boundary. An enum is sufficient for a closed provider set; do not require a trait hierarchy merely to satisfy documentation. Keep request validation and append-versus-replace semantics distinct.
-
-**Verification:** chat/regenerate parity for each provider, direct response versus tool call, fallback only at permitted stages, retry/cancellation behavior, multimodal messages, and XAI retention/search settings. Preserve tests of real HTTP adapter behavior as well as application-level fakes.
-
-**Remediation — scoped dispatch verified (session 007):** `chatbot-server/src/providers/generation.rs` owns the closed `GenerationProvider` enum, `build_provider`, `map_core_messages` and search-gated `dispatch_stream`; `chat.rs`/`regenerate.rs` keep validation with the unsupported guard earlier, construction timing, saved-turn rendering with append (`None`) versus replace (`insertion_index`), capture-derived versus payload user text, guards/finalizers and response building. Provider-specific construction errors, exact search gating and the three fallback warnings are preserved verbatim with only the tracing target following the new module. The existing OpenAI-owned message DTO remains the shared shape (later scope); no traits, global DI, or lease rewrite. Verified by 15 new handler-level characterization tests plus the full executor suite (see session 007).
-
-**Remediation — message ownership extracted (session 008):** `chatbot-server/src/providers/messages.rs` now owns `ContentPart`/`ImageUrlPart`/`ChatMessageContent`/`ChatMessagePayload` and the four constructors verbatim; `generation.rs`, `message_utils.rs`, `xai.rs`, `search.rs`, the OpenAI internals and `payload::ChatCompletionRequest` all resolve through the neutral module. `providers::openai::messages` remains as a re-export so existing paths keep compiling; no existing tests were modified and no traits or schema redesign were introduced. Serialization is unchanged (OpenAI-compatible wire shape, `None` omission, XAI `input_text`/`input_image` mapping); a comprehensive provider-neutral domain redesign remains open. Verified by 4 new `provider_messages` upstream-capture characterization tests plus the full executor suite (see session 008).
-
-## MOD-008 — Request identity, key validation and cookie policy lack a clear adapter
-
-**Data adapter (session 031):** guest-capable resolution and a privately constructed borrowed verified identity/key context now serve chat/regenerate, set/history, memory and reset routes. Route CSRF and validation order remain explicit. Preferences keep their different session-first policy; client logs and TTS/STT/login retain distinct access rules. Fourteen new tests plus the reviewed full suite pass. SEC-002 remains a separate authorization finding.
-
-**Further partial remediation (session 014):** shared raw Cookie/CSRF/IP extraction now lives in `request_context.rs`, with equivalent handler/middleware parsing migrated and `chat_utils::get_ip` compatibility retained. Eighteen new tests and the reviewed full suite pass. Identity creation/lookup and route policy remain separate; authenticated request-context ownership is still open.
-
-**Evidence:** routes repeatedly parse cookies/CSRF, call `session_context`, extract a key, validate it, and translate `ServiceResponse`. `chat_utils.rs:59–232` mixes credential cookies/account promotion and proxy-IP handling with streaming guards and history errors. Cookie constructors are spread across core session, core remember store, server chat utilities, login, and native secure storage. `client_logs.rs:98–102` uses `rate_limit_identity` as an authorization predicate even though that helper explicitly accepts unknown cookie values (`session.rs:350–365`).
-
-**Consequence:** helpers with different guarantees look interchangeable; “identity usable for throttling” is already being consumed as “valid session.” Protected route setup and account-cookie policy have no narrow common owner. This is more consequential than repeated header extraction.
-
-**Correction boundary:** introduce explicit request-context adapters for guest-capable and authenticated/key-verified operations; distinguish non-creating valid-session lookup from bootstrap and throttling identity. Move cookie transport/account policy out of generic chat utilities. Preserve route-specific access rules, including pre-signed TTS and the native log reporter's no-CSRF-header contract.
-
-**Verification:** session/key/account combinations, expired/unknown cookies, CSRF rejection, safe read endpoints, guest routes, remember rotation and account switching. Record and reproduce the log-authorization defect separately (SEC-002); do not hide a behavior fix inside extraction.
-
-**Remediation — cookie transport extracted (session 009):** `enc_key_cookies.rs` owns encryption-key extraction, naming, construction and verified account-cookie promotion; `chat_utils` re-exports preserve existing callers. Seventeen new pre-extraction characterization tests and both full suites pass. The implementation moved verbatim. Request-context adapters, session/remember-cookie ownership and the separately tracked SEC-002 predicate mismatch remain open.
-
-## MOD-009 — Browser application state is coupled to DOM and global initialization
-
-**Partial remediation (session 018):** shared `voice-text.js` owns pure sentence/normalization/utterance operations with explicit inputs. Desktop/native queues import the same behavior through chat adapters. Approved test-seam migrations retain sentence/exhaustion scenarios and add direct module coverage. Mutable conversation/voice ownership remains open.
-
-**Partial remediation (session 035, committed as `04e079e`):** `static/session-client.js` owns the single shared bootstrap attempt, the 401 fetch interceptor behind one allowlist, generate/CSRF/voice HTTP helpers and retry eligibility. `chat.js` supplies explicit DOM callbacks and keeps rendering; exception texts and guest/native compatibility are preserved. Stable-import tests pin the allowlist owner and delegation; voice reliability tests import the owner. Python inference ownership is session 033 only; browser/native voice lifecycle and distribution remain open.
-
-**Partial remediation (session 032, committed as `94fd1fa`):** shared `conversation-state.js` owns set-version transitions, set-identity payloads, retry-once decisions, request-sequence plus set-generation fencing, ghost-turn routing, history-window offsets/pagination and the three abort behaviors behind one tested API. `static/chat.js` holds one history window plus one request tracker and keeps DOM rendering, option syncing and voice routing callbacks; `window.APP_DATA` stays the single version store. TTS sentence/exhaustion/queue fixtures drive generating state through the real tracker. Review fixes applied: voice interrupt bumps only when active, user stop and voice interrupt abort uncaught (begin/quiet catch), no null-controller fallback, test-only APIs removed, delete branches kept separate, idle-interrupt and abort-throw regressions added. Voice lifecycle, inference settings and distribution ownership remain open.
-
-**Partial remediation (session 038, pending as `Own voice lifecycle and credential boundaries`):** `static/voice-lifecycle.js` owns the single browser TTS flags/cooldown/barge/session/audio lifecycle with explicit callbacks and no `window`/`document` reach; `chat.js` keeps queue/VAD orchestration with exact error/order flags. Review fixed gate error/ordering/exception. Rendering/queue/VAD behavior stays in `chat.js`; see session 038 checkpoint for evidence.
-
-**Evidence:** all 6,355 lines of `static/chat.js` were read. It initializes config/native bridges and patches global fetch (79–354), owns history/version state (544–765), renders messages (959–1401,1968–2067), owns generation (2069–2159,3182–3393,4384–4695), implements TTS (1442–1612,2161–3149,5317–5652), and owns VAD/voice lifecycle (4869–6304). The main ready closure exports selected functions to `window` while other helpers reference outer mutable state.
-
-**Consequence:** state ownership depends on lexical scope and document-ready timing. Request/version logic reads selected DOM options; playback determines whether generation continues from the last AI node, button disabled state, and a global abort controller. Splitting the file without replacing those implicit dependencies would preserve the coupling.
-
-**Correction boundary:** introduce owned conversation/request state, an HTTP/session client, rendering functions, and a voice coordinator incrementally. Feed playback explicit message-text/progress events instead of observing rendered markdown. Keep browser and Capacitor on shared policy with small recording/playback adapters. Start with pure protocol/sentence utilities and explicit inputs; no framework migration or build-system change is required.
-
-**Verification:** logged-in/guest bootstrap, set-switch races, pagination/edit/fork, stale stream callbacks, stop/retry, rendering safety, and desktop/native voice parity. Tests must import stable units or drive behavior rather than depend on the original monolithic source layout (MOD-016).
-
-## MOD-010 — Stream protocol interpretation has multiple independent owners
-
-**Evidence:** providers encode reasoning/search/retry information as `<think>` text; server handlers add `[Error]` and `[ConsoleError]` markers. Browser history formatting (`chat.js:1351–1401`), regeneration (`3281–3376`) and chat (`4544–4663`) independently parse this protocol. The chat path strips console-detail markers and flushes the residual buffer at EOF; the regeneration path lacks the corresponding handling. UI status labels inspect English content such as “Searching” and “rate limited.”
-
-**Consequence:** protocol fixes can reach one consumer but not another. Rendering, user text, progress, and errors share an untyped channel; text content also controls application behavior.
-
-**Correction boundary:** first centralize incremental decoding and final-history projection behind one tested API while preserving the current wire contract. Only propose typed wire events as a separately approved protocol change with migration handling; do not bundle them into a modularity extraction.
-
-**Verification:** arbitrary byte/chunk splits across all markers and Unicode, EOF in each parser state, identical chat/regenerate/history projection, console-only detail, and TTS receiving visible answer text only. The observed parser differences require behavior regressions before correction.
-
-**Remediation — browser extraction verified, cross-language work open:** `static/stream-decoder.js` centralizes incremental `pushChunk`/`flushRemainder` and whole-text `decodeComplete` for the browser channel with the wire contract unchanged. `formatAiMessage` delegates projection; regenerate pushes with `stripConsoleDetail:false` and drops the residual at EOF; chat pushes with console stripping plus console logging and flushes at EOF/interrupt. Segments emit in wire order as found, with no iteration cap. Split console-detail across chunks is emitted, not retracted; status labels, TTS selection and Rust `strip_think_tags`/TTS normalization are unchanged callers. A mixed-order regression guards the callback sequence. Verified by the new stable-import decoder suite plus the full executor suite (see session 004).
-
-## MOD-011 — TTS token lifecycle, synthesis, text processing and HTTP are interleaved
-
-**Evidence:** `tts.rs` owns token admission/cache/replay/cancel (182–505), access policy (589–630), multiple backend clients (507–558,632–720,1488–1505), a large pure language-normalization pipeline (39–155,722–1118), and WAV/Opus response construction (1507–1610). `handle_tts_stream` calls a synthesis function returning an Axum `Response`, consumes its body back into bytes, caches it, and reconstructs the response (384–423). The browser independently normalizes speech text before sending it (`chat.js:2162–2284`).
-
-**Consequence:** changing a backend, token policy, or pronunciation rule touches the same module; internal synthesis is unnecessarily expressed as HTTP. Cross-language text transformations have an implicit ordering contract. `tts_opus.rs` is already a useful isolated codec boundary.
-
-**Correction boundary:** keep the public POST-token/GET-audio API; separate token-session state, pure speech-text transformation, backend PCM results, codec conversion, and final HTTP rendering. Assign the authoritative normalization stages explicitly. Do not remove the browser stage or add another native pipeline without examining incremental sentence requirements.
-
-**Verification:** replay budget, queue capacity, canceled/in-flight generation, empty sanitized text, backend failures, codec/rate contracts, and sentence boundaries. Preserve access/CSRF policy and captured wire bytes for replays.
-
-**Remediation — in progress:** the pure transformation pipeline and its 28 existing tests now live in private `chatbot-server/src/tts/text.rs`; only `sanitize_text` is visible to the parent. Transformation logic/order and test assertions were preserved by direct source comparison, with the final full suite passing.
-
-**Remediation — backend-result boundary extracted (session 005):** private `chatbot-server/src/tts/backend.rs` owns provider synthesis and returns owned PCM plus sample rate (`synthesize_pcm` → `SynthesizedPcm`), never an Axum response. It holds the provider request shapes, the shared provider HTTP client, WAV parsing, per-provider fade (legacy at 25.2 kHz, kokoro at the voice-service rate, none on the fish path), the silence fallback, and backend error mapping with the existing `HttpError` adapter. The parent keeps token admission/cache/replay/cancel, access policy, codec conversion, HTTP rendering, and the encoded-size cache cap: oversize encoded clips are rejected with the same 400 `Invalid request body` status/message and `tts::stream::cache` context with the generating flag reset, so the token stays retryable. Provider requests, default rates, fade differences, error statuses/messages and log contexts are preserved verbatim; only the tracing target of the moved log calls changes with the module path (as with the earlier text extraction). HTTP/token/backend/codec code is now split along this seam; assigning a longer-lived token-session owner remains open. Normalization debug calls use the child module's tracing target, `chatbot_server::tts::text`; synthesis calls use `chatbot_server::tts::backend`.
-
-**Remediation — token-store boundary extracted (session 006):** private `chatbot-server/src/tts/store.rs` owns the token-session lifecycle (`PendingTtsStore` over an `RwLock` map): admission with prune/evict-or-reject, `begin` arbitration into cached audio, first generation with a lease, busy, missing or exhausted, `cancel`, and a `GenerationLease` (`complete`/`fail`/drop) that releases the generating flag. The parent keeps one global `Lazy` store plus token minting, access policy, codec conversion, the encoded-size cap with retry reset, and HTTP rendering; handlers hold no map accesses and no lock across synthesis. TTL (10m), cap (128), oldest-cached-then->=60s-ungenerated-nongenerating eviction, three cached replays, statuses/messages/headers, the 8 MiB cap, missing-cancel 204, the invalid-token debug log, and token-collision overwrite are preserved verbatim. Poison behavior is unchanged: store operations panic with `tts lock` exactly where the parent expected, while lease drop stays best-effort. The single process-global store remains a MOD-003 composition lead, and browser sentence policy stays a separate earlier stage.
-
-## MOD-012 — Android voice lifecycle is coordinated through plugin cross-calls and duplicate event paths
-
-**Evidence:** `NativeMicPlugin` owns recording, permissions, route/focus, service startup, keep-awake, phone-call transitions and WebView keepalive. It calls `NativeVoiceTtsPlugin` statics, while TTS calls microphone statics for Bluetooth/focus (`NativeMicPlugin.java:340–362,569–636`; `NativeVoiceTtsPlugin.java:583–603,774–791`). Phone-call/notification transitions use both `notifyListeners` and injected JavaScript (`NativeMicPlugin.java:582–636`), while `chat.js:6026–6034` also handles those events. The foreground helper's backend returns success after `VoiceModeForegroundService.start`, whose implementation catches failures internally (service 41–57; plugin 677–707).
-
-**Consequence:** no single component owns a session's lifecycle or delivery semantics. A transition can reach JS through two channels, and “foreground active” reflects requested startup rather than confirmed service state. This can affect privacy-resume decisions too (`MainActivity.java:151–162`).
-
-**Correction boundary:** keep the existing small `VoiceAudioRoute`, `VoiceSessionKeepAwake`, `VoiceModeForegroundSession`, decoder and download queue units. Extract a session coordinator from the microphone plugin, with explicit resource ownership, generation-aware commands/events, and truthful platform-operation results. Preserve native stop when JS is unavailable; unify event delivery rather than removing necessary background safeguards.
-
-**Partial remediation (session 038, pending as `Own voice lifecycle and credential boundaries`):** `VoiceModeSessionCoordinator` owns route/keep-awake/FGS/phone/notification composition with mic plugin hooks and no new locks (call-time static TTS compatibility, TTS plugin unchanged; dual-event and FGS semantics unchanged). Review fixed a new native lock risk and an abandoned-rendezvous lifecycle risk. See session 038 checkpoint for evidence.
-
-**Verification:** phone call, notification stop, permission/start failure, activity/WebView replacement, Bluetooth routing, in-flight download/capture teardown, and exact-once effective transitions. Retain the dual barge-in invariant without retuning thresholds.
-
-## MOD-013 — Android Auto screen implements a separate product workflow
-
-**Evidence:** all three `car/` classes were read. `VoiceScreen` implements recording/VAD, STT multipart requests, chat HTTP, manual JSON parsing, token requests, decoding/playback, audio focus and UI in one class. Its `postStt`, `postChat` and `/tts` requests (305–390) do not bootstrap/send the server session/CSRF contract; compare current server CSRF checks. It reads whole chat responses and implements its own playback rather than using the handheld session policy. Executors/capture are started by screen construction, with cleanup tied to the Exit action (72–79,583–592).
-
-**Consequence:** UI constraints legitimately differ for Android Auto, but server protocol and lifecycle handling have drifted. Changes to codecs/auth/streaming must be independently applied to a second implementation. This is not evidence that its native car UI should be replaced by a WebView.
-
-**Correction boundary:** decide the supported Auto contract, then extract reusable native transport/playback/session components from UI adapters and supply the same server auth/protocol semantics. Keep car-specific UI and unavoidable audio constraints explicit. Missing CSRF/session handling is a separately testable integration defect, not a reason to disable CSRF.
-
-**Verification:** protected server integration, authenticated/guest ownership, stop/disconnect while network work is queued, lifecycle destruction without Exit, codec fallback and response parsing. No vehicle/emulator validation was performed in this audit.
-
-## MOD-014 — Credential-cache APIs retain obsolete key-returning responsibilities
-
-**Evidence:** `enc-key.js` now stores account metadata and makes async key getters return null (227–279,486–498,586–595), but retains key wrapping/PRF enrollment and a synchronous cached-key getter. `login.js` independently implements PBKDF2. `NativeSecureKeyPlugin` contains both legacy `storeKey/getKey` and current sealed-cookie login APIs; `unlockCachedLogin` inserts the current data key into `unlockedKeys` (335–345), which `getKey` can return (159–169). Current login flow uses `unlockCachedLogin`, not `getKey`.
-
-**Consequence:** the module/interface suggests both HttpOnly-cookie credentials and JS-readable key storage are supported responsibilities. Dormant or compatibility APIs obscure the intended privacy boundary; hiding a button does not narrow the native plugin surface.
-
-**Correction boundary:** enumerate actual callers and required migration paths, then separate account-cache metadata, login derivation and native sealed-credential storage. Remove obsolete callable key-export interfaces only after compatibility decisions; retain migration of necessary stored records. Evaluate the key-return path as a security finding before treating this as cosmetic cleanup.
-
-**Partial remediation (session 038, pending as `Own voice lifecycle and credential boundaries`):** `credential-metadata.js` + `credential-crypto.js` own real slot policy/algorithms behind required UMD imports before `enc-key.js`; `CredentialCookies` + `SealedCredentialPayload` own names/parsing/builders and the `org.json` codec, preserving keystore/biometric and the legacy export surface with no security fix. Review rejected custom JSON. MOD-014 legacy export and SEC-003 stay deferred with behavior unchanged. See session 038 checkpoint for evidence.
-
-**Verification:** remembered/unchecked login, multi-account forget/rotation, native keystore migration, device-lock fallback and JS-accessible plugin methods. Do not lose cached accounts or change derivation parameters during extraction.
-
-## MOD-015 — Voice-service configuration and inference lifetimes are ambient
-
-**Evidence:** Rust resolves configuration through environment/YAML substitution, while `chatbot-cuda/start.sh:9–26` and `src/models.py:27–38` independently read raw YAML/defaults. Python selects device/provider at import and stores loaded models in globals; FastAPI health reads private flags. Streaming synthesis launches a daemon thread feeding an unbounded async queue without consumer-cancellation ownership (`models.py:123–158`). `main.py` does isolate HTTP from model calls and audio conversion, which is worth preserving.
-
-**Consequence:** the same documented configuration can resolve differently across processes; inference work and resources are not owned by the request/service lifecycle. “Loaded” state is accessed across the module's nominal private interface.
-
-**Correction boundary:** resolve one explicit voice-service settings object per process, document its relationship to Rust settings, and construct an owned inference service in FastAPI lifespan. Give background synthesis a cancellation/backpressure contract and an explicit readiness API. Separate Kokoro/Parakeet adapters only if it clarifies independent lifetimes; no extra process is indicated.
-
-**Partial remediation (session 033, committed as `c3d4cdd`):** one `VoiceSettings` per process (raw YAML, no substitution) and one lifespan-owned `InferenceService` shared via `app.state`; `models.py` globals removed; shipped app constructed after route registration. Thirty-eight Python CPU tests over real HTTP with injected fakes plus the `voice_service_lifecycle.rs` gate pass with the combined full suite. Streaming stays an unbounded thread→queue bridge with no cancellation/backpressure contract; GPU/device behavior is unmeasured.
-
-**Verification:** config parity for supported overrides/substitution, startup failure/readiness, client disconnect, shutdown, concurrent inference and bounded buffering. GPU-runtime behavior remains unmeasured. Coordinate with MOD-003 and operational settings ownership.
-
-## MOD-016 — Tests are forced across source/layout boundaries instead of stable units
-
-**Further partial remediation (session 018):** sentence and exhaustion fixtures import `voice-text.js` instead of slicing language-helper bodies. Existing behavioral scenarios remain; queue bodies are still source-extracted, and structural assertions were relocated to the actual owner under explicit user approval.
-
-**Evidence:** `voice_mode_reliability.rs` checks exact Java/JS source strings and method positions; `tts_sentence_boundaries.rs:43–165` pins regex spelling and helper names even alongside behavioral tests. Node fixtures extract function source by indentation/sentinel strings and provide many ambient globals (`fixtures/tts_sentence_boundary_test.js:19–34,55–72,108–149`; `native_tts_queue_test.js:5–8,26–70`). `js_syntax.rs` mixes real parsing with application behavior asserted through source spelling. Rust production exposes `test_instrumentation`, provider environment stubs, and an image fixture helper. Shared test support mostly owns filesystem/environment setup while login/bootstrap helpers are repeated in test files.
-
-**Consequence:** moving a function into a coherent module, renaming a private helper, or making an equivalent expression fails tests without changing behavior. Other checks can pass merely because a string occurs in dead code/comments. The suite's dependence on source layout will obstruct the modularity work unless test seams improve first.
-
-**Correction boundary:** retain real syntax/packaging/static-policy checks where source is the actual contract. Move behavior tests to importable JS units, native pure collaborators, or actual handler/platform boundaries. Preserve existing regression scenarios when replacing structural assertions. Centralize narrow fixture operations only when it reduces setup ambiguity; avoid a universal test harness with hidden defaults.
-
-**Verification:** demonstrate that representative behavior-preserving module moves do not require rewritten assertions, while broken ordering/cancellation/permissions still fail. Keep actual cross-runtime queue tests. Full test-quality/coverage judgments remain for pass six. Basis: Software Engineering at Google Ch.12, test public behavior and avoid implementation-detail coupling; confidence high, static audit only.
-
-**Remediation — partial (stream-decoder seam only):** `tests/stream_decoder.rs` plus `fixtures/stream_decoder_test.js` require the new shared unit directly (no indentation/sentinel slicing, minimal ambient globals) with explicit literal expectations, including exact mixed visible/thinking callback order; packaging/wiring assertions are limited to the real load-order/delegation contract. Existing source-spelling suites were left untouched and still pass. Broader `voice_mode_reliability`, TTS structural pins, fixture deduplication and harness consolidation remain open for pass six.
-
-**Further evidence:** the complete `voice_mode_reliability.rs` review found mutually inconsistent stated contracts: `native_voice_tts_streams_wav_instead_of_buffering_the_clip` (1006–1031) forbids full buffering by searching for selected words, while `native_voice_tts_queues_audio_ahead_without_skipping_sentences` (1563–1601) requires a complete-clip queue. Both can pass against the same full-buffering implementation because neither observes playback timing. The downloader retry test at 1871–1885 explicitly wants skipping after exhaustion, whereas JS exhaustion tests want fail-stop. Resolve the intended contracts before changing these tests.
-
-## MOD-017 — Distribution settings and generated build inputs have several owners
-
-**Evidence:** native origin is specified in both `capacitor.config.json` and Android flavor resources (`android/app/build.gradle:30–39`). MainActivity and secure storage prefer the Bridge URL, while `VoiceScreen` and `ClientLogReporter` use the resource URL. Generated Gradle settings point into `../node_modules/@capacitor/android`, but root npm manifests/lockfiles are ignored and absent from the tracked inventory (`.gitignore:20–29`). The Helm sample has a separate embedded provider config and a `voiceService.enabled` value with no voice-service template; readiness nevertheless probes voice. Rust configuration also accepts `stt_enabled`, while the inspected STT route/router do not gate registration or calls on it.
-
-**Consequence:** application topology/settings are reconstructed independently by packaging and consumers. Changing an origin can split browser traffic, credentials, Auto and telemetry across endpoints. Building a new checkout depends on external/generated inputs whose owner/version are not declared by the tracked npm build configuration. Sample deployment knobs can suggest unsupported composition.
-
-**Correction boundary:** define one resolved native origin per build/runtime and a shared native accessor; explicitly own and version the Capacitor generation inputs. Distinguish application settings, sample deployment settings and externally provided voice service. Either implement or clearly mark unsupported sample options, without adding a voice deployment merely because a value exists. No cache relocation, toolchain upgrade, or host rollout is authorized by this finding.
-
-**Verification:** emulator/physical URL consistency across Bridge, cookies, Auto and logs; reproducible clean-checkout input manifest; rendered Helm topology/readiness for supported options; STT enable/disable contract. Separate behavior fixes and operator-facing changes from code extraction.
-
-## Cross-pass observations requiring separate follow-up
-
-These are not extra modularity refactors and must not be silently bundled into them.
-
-| ID | Evidence and bounded question | Disposition |
-| --- | --- | --- |
-| COR-001 | `UserStore::create_user` and `update_user_preferences` each perform unlocked whole-file read/modify/write; `save_users` atomically renames only the final file. Two callers can read the same old map and overwrite each other's successful changes. Existing `user_store_atomicity.rs` checks torn JSON, not preservation of concurrent updates. Reproduce concurrent signup/preferences with deterministic synchronization before fixing. | Source-supported lost-update risk; provisional P1 |
-| SEC-002 | `client_logs.rs:101` accepts `rate_limit_identity(...).is_some()`, while `session.rs:364` returns an identity for any nonempty unknown session cookie. That does not establish the “live session” contract in the handler comment. The limiter also keys unknown cookies independently. Add endpoint and rate-limit regressions; assess impact separately from account-data access. | Confirmed predicate mismatch by source; dynamic regression pending |
-| SEC-003 | Current native cached login populates `unlockedKeys`, and exposed `getKey(account)` returns it without prompting when cached (`NativeSecureKeyPlugin.java:159–169,335–345`). This contradicts the intended no-page-JS-data-key boundary. Validate bridge reachability in the actual native context; do not claim HttpOnly alone protects a key also exported by a plugin. | High-confidence interface exposure; native execution pending |
-| DOC-002 | Privacy docs promise timed plaintext wiping, but `SetCache` has lazy expiry checks/capacity eviction and ordinary string/Arc removal, not a timer or zeroization (`cache.rs:72–93,145–222`). `EncryptionKey` zeroization does not imply snapshot wiping. Audit the exact guarantee and remedy. | Confirmed documentation/implementation mismatch in inspected scope |
-| PERF-001 | `load_page`/`load_pair` load every logical pair before slicing (`store/chunks.rs:261–265,319–325`); session prepare materializes full history before prompt-image packing. Chunking reduces image transfer but does not make these reads proportional to requested text. Measure before changing storage APIs. | Confirmed call-path cost; magnitude unmeasured |
-| COR-002 | Native TTS download exhaustion logs and continues, emits `clipConsumed` even on `ExecutionException`, and turns 401/403/404 into null clips (`NativeVoiceTtsPlugin.java:193–215,233–303`); JS fail-stop tests exercise enqueue/token failure, not that worker path. Determine intended whole-pipeline failure contract and reproduce. | High-confidence cross-layer policy mismatch; no runtime test yet |
-| DOC-003 | Provider trait claims do not match concrete dispatch; chunking design is labeled Draft despite partially implemented chunk paths; old history design mixes implemented summaries with stale proposed interfaces. Reconcile implemented/partial/planned sections in documentation pass. | Confirmed textual/structural mismatch; full docs audit pending |
-| TEST-002 | `native_audio_wav.rs:3–91` tests a local Rust WAV/ADTS implementation instead of executing the shipped JS. `native_vad_speech_like.rs` similarly simulates VAD in Rust; its `feed` (479–487) accumulates the start frame again, unlike JS `_onNativePcm`'s `!started` guard. A JS behavior change can leave these tests green. Preserve the dual cough/hey/sustained-speech scenarios but exercise actual JS. | Confirmed test/production separation; high-confidence oracle risk (Ch.12 behavior/oracle) |
-| TEST-003 | `session_purge.rs:28–35` only reads missing chat history, which does not insert a chat entry (`session.rs:1633–1642`); asserting zero removals therefore does not prove that an active chat survives. `client_logs_reject_unknown_sessions` sends no cookie, so it misses SEC-002. | Confirmed local scenario mismatch; surrounding coverage still to audit |
-| TEST-004 | Android `ExampleUnitTest` asserts `2+2`; `ExampleInstrumentedTest` expects `com.getcapacitor.app`, unlike app ID `com.chatbot.app`. These are template artifacts, not useful application coverage. | Confirmed local mismatch by source; instrumented suite not run |
-| TEST-005 | `tests/search.rs:294–324` claims search results reach the model but asserts only fixed stub output and a status marker, never the augmented request. Several key-cookie tests (`enc_key_auth.rs:316–319,367–370,565–569,676–680`) accept any status except 401. `history_robustness.rs:1614–1667` loads alpha before mutating it, thereby changing the session mirror it claims still points at beta. Preserve these scenarios but strengthen their independent behavioral observations in pass six. | Confirmed local assertion/scenario weaknesses; static review, not mutation-tested |
-| OPS-001 | The tracked `.devcontainer/agent-container.sh:97–108` mounts a host engine socket, and reusable templates install engine access/named caches; the active review environment instead uses a separate executor boundary. Treat these as a distinct legacy distribution surface and audit their claimed secret isolation before recommending reuse. | Repository-template observation only; no claim about current host deployment and no rollout attempted |
-
-## Remediation ordering
-
-First reproduce the concrete correctness/security leads and decide whether any warrants expedited remediation. For structural work, establish behavioral test seams, then extract the shared stream decoder and pure text helpers; separate server request context/errors and legacy-owned live helpers; centralize generation dispatch and lease ownership; finally tackle browser/native voice ownership and owned application services in bounded steps. Storage representation tightening and Auto integration require their own focused designs and tests.
-
-Do not execute this as a single cross-repository rewrite. Each batch needs an invariant list, exclusive worker file ownership, primary-reviewer diff review, appropriate full-suite verification, documentation updates and a local commit.
+# Modularity review (Phase 1)
+
+Scope: ownership and lifecycle boundaries across handwritten application code and test boundaries. Phase 1 is complete for the authorized scope; generated, protected and external materials retain the exclusions in [coverage.md](coverage.md).
+
+## Findings
+
+| ID | Location | Finding | Final disposition |
+| --- | --- | --- | --- |
+| MOD-001 | `chatbot-core` session/history; [findings.md](findings.md) | Session operations and history persistence have coupled ownership boundaries. | Remains tracked in [findings.md](findings.md); no final disposition recorded here. |
+| MOD-002 | Application composition; [findings.md](findings.md) | Application state and dependencies have multiple owners. | Remains tracked in [findings.md](findings.md); no final disposition recorded here. |
+| MOD-003 | `chatbot-server` services/configuration | Process-global state bypassed application composition. | Partially remedied through owned `AppServices`, account/chat/session/history/token/rate services, `ConfigSource` and generation/policy dependencies; other route/config policies and fake inputs remain ambient. |
+| MOD-004 | `chatbot-core/src/names.rs`, `fernet_crypto.rs`, `legacy_sets_json/` | Migration-only storage owned live naming and crypto rules. | Fixed: shared naming and Fernet helpers moved to current-domain modules; legacy compatibility remains. |
+| MOD-005 | `chatbot-core/src/history/` | History facade exposed bypasses and ambiguous logical/materialized snapshots. | Facade exports/writer/cache bypasses narrowed; private `LogicalSnapshot` now normalizes cache representation. Public `SetSnapshot` remains a compatibility DTO. |
+| MOD-006 | `chatbot-core` session and history mutation paths | Generation settlement and durable/mirror mutation lifecycles had multiple owners. | Leases, typed finalization, and owned durable-then-mirror operations implemented; expiry/recreation and selected pre-prepare error-turn semantics remain unchanged/open. |
+| MOD-007 | `chatbot-server/src/providers/` | Route handlers owned provider dispatch and search policy. | Shared closed-enum dispatch and provider-neutral message module implemented; comprehensive provider-neutral redesign remains open. |
+| MOD-008 | `chatbot-server/src/request_context.rs`, `enc_key_cookies.rs` | Request identity, key validation and cookie policy lacked clear adapters. | Raw request and encryption-cookie adapters implemented; guest-capable verified data context added. Session/remember ownership remains distinct; SEC-002 is separate. |
+| MOD-009 | `static/` browser request, playback, voice and credential modules | Browser application state was coupled to DOM/global initialization and lifecycle responsibilities. | Implemented across conversation/session/voice-text/voice-lifecycle/playback and credential modules; follow-ups MOD-009-A/B verified in sessions 047–048 and completion review 052. |
+| MOD-010 | Browser stream decoder; server protocol consumers | Stream protocol interpretation had multiple independent owners. | Browser incremental decoder/projection centralized with existing wire behavior; cross-language text/status/TTS consumers and typed wire events remain separate. |
+| MOD-011 | `chatbot-server/src/tts/` | TTS token lifecycle, synthesis, text processing and HTTP were interleaved. | Text, backend PCM and token-store boundaries extracted; HTTP/access/codec remain in parent. |
+| MOD-012 | Android voice lifecycle and foreground service | Android voice lifecycle crossed plugins and duplicate event paths. | Session coordinator and truthful serialized stop outcomes implemented; device validation is not claimed (MOD-012-A verified in session 052). |
+| MOD-013 | `android/app/.../car/` | Android Auto implemented a separate workflow with divergent server protocol/lifecycle. | Deferred pending a supported Auto contract; protocol/session/CSRF repair is not part of the completed modularity scope. |
+| MOD-014 | `enc-key.js`, Android credential plugin | Credential-cache APIs retained obsolete key-returning responsibilities. | Metadata/crypto and sealed-cookie codec boundaries extracted; legacy key export and SEC-003 remain deferred without security-behavior change. |
+| MOD-015 | `chatbot-cuda/src/` | Voice-service settings and inference lifetimes were ambient. | Settings and lifespan-owned inference service implemented; non-streaming job/resource ownership verified in session 052. Streaming cancellation/backpressure and GPU/device behavior remain unverified. |
+| MOD-016 | Rust/JS/native test boundaries | Tests depended on source/layout rather than stable behavior boundaries. | Stable-unit and behavior seams partially added; broader source-pinned suites and harness consolidation remain for Phase 6. |
+| MOD-017 | Native origin, build inputs, deployment configuration | Distribution settings and generated build inputs had several owners. | Flavor-origin ownership is established; clean-checkout generation inputs, Helm/readiness and STT-setting alignment are not recorded as fully resolved. |
+
+## Cross-pass items
+
+Owned elsewhere: COR-001, COR-002, COR-003 and SEC-002, SEC-003 in [findings.md](findings.md); DOC-002, DOC-003 in [documentation.md](documentation.md); PERF-001 in [performance.md](performance.md); TEST-001, TEST-002, TEST-003, TEST-004, TEST-005 in [test-quality.md](test-quality.md); OPS-001 in [boundaries.md](boundaries.md).
+
+## Decisions
+
+- Keep compatibility surfaces such as public `SetSnapshot`, legacy APIs and provider DTO re-exports when they preserve callers/contracts.
+- Prefer cohesive owners and explicit dependencies; do not add traits/frameworks or services solely to satisfy abstraction goals.
+- Keep route-specific saved-turn/append-versus-replace behavior, privacy and error ordering, and desktop/native policy distinctions explicit.
+- File size alone does not justify splitting; preserve migration support and established storage/protocol contracts.
+
+## Open items
+
+- MOD-001/002 remain in [findings.md](findings.md); this ledger records no later final disposition.
+- MOD-003 retains ambient route/config inputs; MOD-006 retains expiry/recreation and selected settlement semantics; MOD-007 retains broader domain redesign; MOD-013 waits on an Android Auto contract.
+- MOD-014 legacy key export awaits its security decision; MOD-015 streaming cancellation/backpressure and runtime behavior are unverified; MOD-016 broader test-quality work is deferred; MOD-017's generation/deployment mismatches await their owning follow-up.
+- Cross-pass items above remain with their owning review files; COR-003, Android Auto protocol repair and legacy key export are not silently included in modularity work.
+
+## Completion
+
+Phase 1 completion review: session 052, reviewed at `d55ee5d`; four follow-ups MOD-009-A/B, MOD-015-A and MOD-012-A verified. Final full suite: job `20260919T202846-0908e2daba66`, exit 0, untruncated; exact counts are not recorded in this file's latest completion section. Recorded 2026-09-19. No phone, vehicle or GPU runtime validation claimed.
