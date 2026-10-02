@@ -8,7 +8,45 @@ use chatbot_core::{
 };
 use chatbot_server::idempotency::{operation_request, replay, InFlightOperations};
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use once_cell::sync::Lazy;
+use regex::Regex;
+use axum::{body::Body, http::{header, Method, Request}};
+use chatbot_server::{build_router, resolve_static_root};
+use tower::ServiceExt;
+
+mod common;
+
+static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).unwrap());
+
+fn test_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[tokio::test]
+async fn stt_rejects_invalid_idempotency_keys_over_http() {
+    let _guard = test_mutex().lock().unwrap_or_else(|p| p.into_inner());
+    let _workspace = common::TestWorkspace::with_openai_provider();
+    std::env::set_var("SECRET_KEY", "operation_receipt_transport_secret");
+    let app = build_router(resolve_static_root());
+    let home = app.clone().oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+    let cookie = common::extract_cookie(home.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap());
+    let bytes = to_bytes(home.into_body(), 256 * 1024).await.unwrap();
+    let csrf = CSRF_META_RE.captures(std::str::from_utf8(&bytes).unwrap()).unwrap()[1].to_owned();
+    let keys = vec![String::new(), "short".to_owned(), "a".repeat(129), "invalid/key-value".to_owned()];
+    for key in keys {
+        let form = "--boundary\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"voice.webm\"\r\nContent-Type: audio/webm\r\n\r\naudio\r\n--boundary--\r\n";
+        let response = app.clone().oneshot(Request::builder().method(Method::POST).uri("/stt")
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=boundary")
+            .header(header::COOKIE, &cookie).header("X-CSRF-Token", &csrf).header("Idempotency-Key", key)
+            .body(Body::from(form)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(body.as_ref(), br#"{"error":"invalid_operation_id"}"#);
+    }
+}
+
 
 #[test]
 fn header_transport_is_optional_and_rejects_duplicates() {
