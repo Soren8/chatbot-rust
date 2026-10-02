@@ -598,6 +598,62 @@ mod tests {
         });
     }
 
+    fn expire_token(store: &RememberStore, token: &str) {
+        let (family, _) = parse_token(Some(token)).expect("token");
+        let path = store.family_path(&to_hex(&family));
+        let contents = fs::read_to_string(&path).expect("read record");
+        let mut record: RememberRecord = serde_json::from_str(&contents).expect("parse record");
+        record.expires = unix_now().saturating_sub(1);
+        fs::write(path, serde_json::to_string(&record).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn peek_username_rejects_expired_token() {
+        with_temp_store(|store, _| {
+            let token = store.issue("alice").expect("issue");
+            expire_token(store, &token);
+            assert_eq!(store.peek_username(Some(&token)), None);
+        });
+    }
+
+    #[test]
+    fn peek_username_for_forget_accepts_current_and_previous_generation() {
+        with_temp_store(|store, _| {
+            let first = store.issue("alice").expect("issue");
+            assert_eq!(store.peek_username_for_forget(Some(&first)), Some("alice".into()));
+            let second = match store.resume(Some(&first)).expect("resume") {
+                ResumeOutcome::Authenticated { replacement_token, .. } => replacement_token,
+                ResumeOutcome::Invalid => panic!("valid token rejected"),
+            };
+            assert_eq!(store.peek_username_for_forget(Some(&second)), Some("alice".into()));
+            assert_eq!(store.peek_username_for_forget(Some(&first)), Some("alice".into()));
+            let third = match store.resume(Some(&second)).expect("resume") {
+                ResumeOutcome::Authenticated { replacement_token, .. } => replacement_token,
+                ResumeOutcome::Invalid => panic!("valid token rejected"),
+            };
+            assert_eq!(store.peek_username_for_forget(Some(&first)), None);
+            assert_eq!(store.peek_username_for_forget(Some("forged-token")), None);
+            expire_token(store, &third);
+            assert_eq!(store.peek_username_for_forget(Some(&third)), None);
+        });
+    }
+
+    #[test]
+    fn purge_expired_removes_only_expired_records_and_skips_malformed_files() {
+        with_temp_store(|store, dir| {
+            let expired = store.issue("expired").expect("issue");
+            let live = store.issue("live").expect("issue");
+            expire_token(store, &expired);
+            let malformed = dir.join(TOKENS_DIR).join("malformed.json");
+            fs::write(&malformed, b"not json").unwrap();
+
+            assert_eq!(store.purge_expired(), 1);
+            assert_eq!(store.peek_username(Some(&live)), Some("live".into()));
+            assert!(!store.family_path(&to_hex(&parse_token(Some(&expired)).unwrap().0)).exists());
+            assert!(malformed.exists());
+        });
+    }
+
     #[test]
     fn expired_token_rejected_and_removed() {
         with_temp_store(|store, dir| {

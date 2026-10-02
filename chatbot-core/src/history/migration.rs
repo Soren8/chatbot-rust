@@ -333,6 +333,24 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_legacy_sets_json_fails_without_marking_migrated() {
+        let data = tempfile::tempdir().unwrap();
+        let redb_path = data.path().join("history").join("redb");
+        let key = key();
+        let user = "corruptlegacy";
+        let user_dir = data.path().join("user_sets").join(user);
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let sets_path = user_dir.join("sets.json");
+        std::fs::write(&sets_path, b"{\"default\":").unwrap();
+
+        let store = RedbHistoryStore::open(&redb_path).unwrap();
+        let err = ensure_user_migrated(&store, data.path(), "sys", user, &key).unwrap_err();
+        assert!(matches!(err, StoreError::DecryptFailed));
+        assert!(sets_path.exists());
+        assert!(!store.is_user_migrated(user).unwrap());
+    }
+
+    #[test]
     fn migration_adds_default_when_legacy_has_only_custom_sets() {
         let data = tempfile::tempdir().unwrap();
         let redb_path = data.path().join("history").join("redb");

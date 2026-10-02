@@ -1503,6 +1503,21 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "rate_limit_retries must be at most")]
+    fn refuses_excessive_rate_limit_retries() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    rate_limit_retries: 11\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let _ = app_config();
+    }
+
+    #[test]
     #[should_panic(expected = "request_timeout must be a positive finite number")]
     fn refuses_negative_request_timeout() {
         let _lock = test_lock();

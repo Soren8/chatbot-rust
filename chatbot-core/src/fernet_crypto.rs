@@ -100,6 +100,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_utf8_and_truncated_tokens() {
+        assert!(matches!(
+            decrypt_bytes(&[0xff, 0xfe], URL_SAFE_KEY.as_bytes()).unwrap_err(),
+            FernetError::Utf8(_)
+        ));
+        let sealed = encrypt_bytes(b"secret", URL_SAFE_KEY.as_bytes()).unwrap();
+        let truncated = &sealed[..sealed.len() - 4];
+        assert!(matches!(
+            decrypt_bytes(truncated, URL_SAFE_KEY.as_bytes()).unwrap_err(),
+            FernetError::DecryptionFailed
+        ));
+    }
+
+    #[test]
     fn wrong_key_malformed_key_and_garbage_token_fail() {
         let sealed = encrypt_bytes(b"secret", URL_SAFE_KEY.as_bytes()).unwrap();
 

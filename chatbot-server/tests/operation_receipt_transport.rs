@@ -65,6 +65,29 @@ fn encrypted_receipts_bind_owner_and_operation() {
     .is_err());
 }
 
+#[test]
+fn receipt_open_reports_truncated_framing_and_tampered_ciphertext() {
+    let key = EncryptionKey::from_header_value("test-user-data-key").unwrap();
+    let request = OperationRequest::new(
+        OperationId::parse("operation-request-123").unwrap(),
+        "/fork_set",
+        &json!({"pair_index":1}),
+    );
+    let receipt = Receipt::new(&request, ReceiptOutcome::Applied, 200, b"body".to_vec(), 10);
+    let sealed = receipt.seal("alice", &key).unwrap();
+
+    assert_eq!(
+        Receipt::open("alice", &request.id, &sealed[..27], &key).unwrap_err(),
+        "receipt framing"
+    );
+    let mut tampered = sealed;
+    tampered[12] ^= 1;
+    assert_eq!(
+        Receipt::open("alice", &request.id, &tampered, &key).unwrap_err(),
+        "receipt decryption"
+    );
+}
+
 #[tokio::test]
 async fn replay_preserves_status_and_body() {
     let request = OperationRequest::new(

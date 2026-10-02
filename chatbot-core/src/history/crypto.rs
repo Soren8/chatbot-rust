@@ -695,6 +695,46 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_or_truncated_blob_formats() {
+        let key = test_key();
+        let set_id = SetId::new();
+        let short = vec![0; NONCE_LEN + 15];
+        assert!(matches!(
+            open_blob("alice", set_id, SetVersion(1), BlobFormat::AeadV1, &short, &key),
+            Err(CryptoError::Framing)
+        ));
+        assert!(matches!(
+            open_blob("alice", set_id, SetVersion(1), BlobFormat::AeadChunkedV2, &[], &key),
+            Err(CryptoError::Framing)
+        ));
+    }
+
+    #[test]
+    fn decode_media_plaintext_checks_framing_and_utf8() {
+        for input in [&[][..], &[1][..], &[2, 0, b'x'][..], &[1, 0, 0xff][..]] {
+            assert!(matches!(decode_media_plaintext(input), Err(CryptoError::Framing)));
+        }
+        assert_eq!(
+            decode_media_plaintext(&encode_media_plaintext("image/png", &[1, 2, 3]).unwrap())
+                .unwrap(),
+            ("image/png".to_owned(), vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn authenticated_non_json_payload_returns_json_error() {
+        let key = test_key();
+        let set_id = SetId::new();
+        let version = SetVersion(1);
+        let aad = build_aad("alice", set_id, BlobFormat::AeadV1, version);
+        let blob = aead_seal(&aad, b"not json", &key).unwrap();
+        assert!(matches!(
+            open_payload_v1("alice", set_id, version, &blob, &key),
+            Err(CryptoError::Json(_))
+        ));
+    }
+
+    #[test]
     fn aead_rejects_tampered_nonce_or_ciphertext() {
         let key = test_key();
         let set_id = SetId::new();
