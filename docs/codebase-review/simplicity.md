@@ -34,4 +34,4 @@ No Phase 2 finding remains open. SIM-003's initial fixture deficiency was resolv
 
 ## Completion
 
-Phase 2 completion verdict recorded on `refactor@40ac92f` in [README.md](README.md#overall-phase-status-and-review-gate), after SIM-001–012 and review fixes. Latest full-suite gate: session 062, job `20260928T080643-0e0c1b195846`, exit 0, untruncated: 121 suites / 992 passed / 0 failed, plus 63 embedded Python passed. Recorded 2026-09-28. Physical-debug APK job `20260928T080346-6397cd35a892` succeeded (72 tasks).
+Phase 2 completion verdict recorded on `refactor@40ac92f` in [README.md](README.md#passes-and-status), after SIM-001–012 and review fixes. Latest full-suite gate: session 062, job `20260928T080643-0e0c1b195846`, exit 0, untruncated: 121 suites / 992 passed / 0 failed, plus 63 embedded Python passed. Recorded 2026-09-28. Physical-debug APK job `20260928T080346-6397cd35a892` succeeded (72 tasks).
