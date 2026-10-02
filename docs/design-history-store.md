@@ -10,7 +10,7 @@ Commits return their normalized snapshot from the existing image-normalization p
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` sync-and-retry (no page reload). Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). **Phase 2 chunked blobs:** see [design-history-chunks.md](design-history-chunks.md). |
+| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` sync-and-retry (no page reload). Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). **Chunked storage layout:** see [Chunked storage layout](#chunked-storage-layout). |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 
@@ -599,11 +599,25 @@ Details:
 6. **Rollback:** keep `.migrated.bak` until a later cleanup PR; document operator restore procedure (reverse import tool optional, not Phase 1 required).
 7. **Tests:** extend `set_privacy.rs`, `sets.rs`, `memory.rs` fixtures to seed legacy format and assert post-migration: no plaintext names in redb keys/files; history intact.
 
+## Chunked storage layout
+
+Chunked sets use redb schema 3 and `BlobFormat::AeadChunkedV2`. `SETS_META` keeps plaintext ownership, timestamps, default flag, CAS version, format, and format-2 `header_generation` / `pair_count` (the latter is only a hint). `SETS_HEADER` and `SETS_MANIFEST` use `set_id` keys; `PAIR_BLOBS`, `IMAGE_BLOBS`, and `THUMB_BLOBS` use `set_id || stable UUID` keys. `SETS_NAME` separately seals the display name; `SETS_POLICY` seals the canonical privacy level (format-versioned policy record). Legacy `SETS_BLOB` remains readable for formats 0/1 and is removed when the set becomes chunked.
+
+The sealed header contains memory and system prompt. The sealed manifest contains ordered pair IDs, pair generations, and each pair’s image IDs. Each pair blob contains user/assistant text, with image references rather than embedded image bytes; image and thumbnail blobs hold MIME plus raw bytes. Image/thumb plaintext uses `u16` little-endian MIME length, MIME UTF-8, then bytes; all ciphertext is nonce (12 bytes) plus AES-GCM ciphertext/tag. Format-2 pair writes normalize image payloads to references; image thumbs are generated at write time (384px maximum edge, JPEG quality 70).
+
+AAD binds user, set, blob kind, and stable identity: header uses header generation; manifest uses the full little-endian `u64` set version; pairs use pair ID and generation; images and thumbnails use image ID. Names and policies have distinct AAD kinds. HKDF-SHA256 derives the AES-256-GCM key from the request key. Set mutations use CAS on `SETS_META.version`; a successful mutation advances it and re-seals the manifest, while unchanged pair/image ciphertext is retained. Header edits advance header generation. Format 0 (Fernet) and 1 (whole-set AEAD) remain readable for migration; new sets are initially format 1 and migrate lazily.
+
+The first authenticated payload operation on a format-0/1 set takes its per-set migration lock, reads and splits `SETS_BLOB`, then writes header, manifest, pair/image/thumb rows, format-2 metadata, and removes `SETS_BLOB` atomically in one redb write transaction. Listing sets does not trigger this migration. Failure leaves the old representation intact. New data is chunked by subsequent mutations.
+
+Chunked `load_page` opens header, manifest, and only the requested pair range. `limit`/`before` use the shared history-page rules (default 40, maximum 200); `history_total` comes from the manifest. With thumbnails enabled, pair images are deferred for the client’s thumbnail requests; otherwise full images for the page are materialized. `load_pair` opens one pair and its image payloads; `/history_pair` can also request an individual image. `/history_image/{set}/{version}/{pair}/{image}` loads one image, or `?size=thumb` loads the stored thumbnail (falling back to resizing the full image if the thumb row is absent). The URL version is a browser cache key, not CAS. Materialization replaces missing image references with `[IMAGE:unavailable]`, never exposing internal `img:` references on the wire. Compatibility `load()` materializes the full history; guests remain RAM-only.
+
+Pair removal and replacement delete media rows referenced by the prior manifest; set deletion attempts a set-prefix range cleanup after removing the set metadata. There is no separate background orphan collector, and the post-delete range cleanup is best-effort.
+
 ### Versioning & schema evolution
 
 - redb `META["schema"] = 1`
 - Payload `blob_format` for crypto/layout upgrades
-- **Phase 2 (started):** split `SETS_BLOB` into a sealed header + manifest, per-pair text, and extracted image/thumb blobs so load/decrypt is proportional to the page or image requested. See [design-history-chunks.md](design-history-chunks.md).
+- **Phase 2 (started):** split `SETS_BLOB` into a sealed header + manifest, per-pair text, and extracted image/thumb blobs so load/decrypt is proportional to the page or image requested. See [Chunked storage layout](#chunked-storage-layout).
 
 ---
 
