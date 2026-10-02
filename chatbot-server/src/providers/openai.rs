@@ -267,6 +267,7 @@ impl OpenAiProvider {
             let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
+            let mut pending_utf8 = Vec::new();
             let mut body_stream = response.bytes_stream();
 
             let mut currently_thinking = false;
@@ -274,8 +275,7 @@ impl OpenAiProvider {
 
             while let Some(chunk) = body_stream.next().await {
                 let bytes = chunk.context("LLM stream read error")?;
-                let piece = String::from_utf8_lossy(&bytes);
-                buffer.push_str(&piece);
+                super::push_utf8(&mut buffer, &mut pending_utf8, &bytes);
 
                 let outcome = extract_sse_payloads(
                     &mut buffer,
@@ -295,6 +295,7 @@ impl OpenAiProvider {
                 }
             }
 
+            super::flush_utf8(&mut buffer, &mut pending_utf8);
             if !buffer.is_empty() {
                 buffer.push('\n');
                 let outcome = extract_sse_payloads(
@@ -388,6 +389,7 @@ impl OpenAiProvider {
             let response = check_openai_response(response).await?;
 
             let mut buffer = String::new();
+            let mut pending_utf8 = Vec::new();
             let mut body_stream = response.bytes_stream();
             let mut currently_thinking = false;
             let mut has_sent_any_content = false;
@@ -396,7 +398,7 @@ impl OpenAiProvider {
 
             while let Some(chunk) = body_stream.next().await {
                 let bytes = chunk.context("LLM tool-aware stream read error")?;
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                super::push_utf8(&mut buffer, &mut pending_utf8, &bytes);
 
                 let outcome = extract_sse_payloads(
                     &mut buffer,
@@ -421,6 +423,7 @@ impl OpenAiProvider {
                 }
             }
 
+            super::flush_utf8(&mut buffer, &mut pending_utf8);
             if !buffer.is_empty() {
                 buffer.push('\n');
                 let outcome = extract_sse_payloads(

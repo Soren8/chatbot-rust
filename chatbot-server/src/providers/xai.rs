@@ -181,12 +181,12 @@ impl XaiProvider {
 
             if response.status().is_success() {
                 let mut buffer = String::new();
+                let mut pending_utf8 = Vec::new();
                 let mut body_stream = response.bytes_stream();
 
                 while let Some(chunk) = body_stream.next().await {
                     let bytes = chunk.context("LLM stream read error")?;
-                    let piece = String::from_utf8_lossy(&bytes);
-                    buffer.push_str(&piece);
+                    super::push_utf8(&mut buffer, &mut pending_utf8, &bytes);
 
                     let outcome = extract_sse_payloads(&mut buffer)?;
                     for chunk in outcome.chunks {

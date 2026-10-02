@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
+        Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -24,7 +25,9 @@ use crate::{config, fernet_crypto::constant_time_eq};
 
 pub const DEFAULT_TIER: &str = "free";
 /// Monotonic suffix so concurrent saves never share a temp file.
-static SAVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);const SALT_LEN: usize = 16;
+static SAVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static USERS_FILE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+const SALT_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const PBKDF2_ITERATIONS: u32 = 100_000;
 const KEY_VERIFIER_LABEL: &[u8] = b"chatbot-enc-key-v1";
@@ -179,12 +182,21 @@ impl UserStore {
         Ok(store)
     }
 
+    fn users_file_lock(&self) -> Arc<Mutex<()>> {
+        let path = fs::canonicalize(&self.users_file).unwrap_or_else(|_| self.users_file.clone());
+        let locks = USERS_FILE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(locks.entry(path).or_insert_with(|| Arc::new(Mutex::new(()))))
+    }
+
     pub fn create_user(
         &mut self,
         username: &str,
         hashed_password: &str,
     ) -> Result<CreateOutcome, UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let file_lock = self.users_file_lock();
+        let _guard = file_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut users = self.load_users()?;
         if users.contains_key(&normalised) {
             return Ok(CreateOutcome::AlreadyExists);
@@ -422,6 +434,8 @@ impl UserStore {
         voice_mode: Option<bool>,
     ) -> Result<(), UserStoreError> {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
+        let file_lock = self.users_file_lock();
+        let _guard = file_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut users = self.load_users()?;
 
         if let Some(record) = users.get_mut(&normalised) {

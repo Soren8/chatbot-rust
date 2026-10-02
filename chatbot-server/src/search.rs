@@ -13,6 +13,36 @@ use crate::providers::openai::{OpenAiProvider, ToolStreamChunk};
 
 const MAX_SEARCH_RESULT_LEN: usize = 8_000;
 
+fn truncate_search_result(result: String) -> String {
+    if result.len() > MAX_SEARCH_RESULT_LEN {
+        let mut boundary = MAX_SEARCH_RESULT_LEN;
+        while !result.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        format!("{}...[truncated]", &result[..boundary])
+    } else {
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_search_result;
+
+    #[test]
+    fn truncating_multibyte_results_preserves_characters_and_marks_clipping() {
+        let result = format!("{}{}", "a".repeat(7_999), "é".repeat(10));
+        let truncated = truncate_search_result(result);
+        assert!(truncated.starts_with(&"a".repeat(7_999)));
+        assert!(truncated.ends_with("...[truncated]"));
+    }
+
+    #[test]
+    fn long_ascii_results_include_truncation_marker() {
+        assert!(truncate_search_result("a".repeat(8_010)).ends_with("...[truncated]"));
+    }
+}
+
 pub async fn search_augmented_stream(
     provider: &OpenAiProvider,
     messages: Vec<ChatMessagePayload>,
@@ -79,11 +109,7 @@ pub async fn search_augmented_stream(
                 format!("Search failed: {e}")
             });
 
-            let truncated = if result.len() > MAX_SEARCH_RESULT_LEN {
-                format!("{}...[truncated]", &result[..MAX_SEARCH_RESULT_LEN])
-            } else {
-                result
-            };
+            let truncated = truncate_search_result(result);
 
             // Inject results as a user message — universally compatible with all
             // models, unlike the OpenAI tool-role format which many local models
