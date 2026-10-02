@@ -609,4 +609,75 @@ mod tests {
             "final page must set EOS"
         );
     }
+
+    #[test]
+    fn long_clips_never_continue_packets_across_pages() {
+        // Full-scale deterministic noise drives Opus toward its largest packets.
+        let mut state = 0x1234_5678_u32;
+        let pcm: Vec<i16> = (0..(120 * 24_000))
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 16) as i16
+            })
+            .collect();
+        let ogg = encode_pcm_to_opus_ogg(&pcm, 24_000).expect("encode must succeed");
+
+        let mut pos = 0usize;
+        let mut page_index = 0usize;
+        let mut max_packet_size = 0usize;
+        let mut max_segments = 0usize;
+        let mut pending_packet_size = 0usize;
+        let mut recent_packet_sizes: Vec<usize> = Vec::new();
+        while pos < ogg.len() {
+            assert!(ogg.len() - pos >= 27, "truncated page header at {pos}");
+            assert_eq!(&ogg[pos..pos + 4], b"OggS", "page magic at {pos}");
+            let header_type = ogg[pos + 5];
+            let seg_count = ogg[pos + 26] as usize;
+            max_segments = max_segments.max(seg_count);
+            assert!(ogg.len() - pos >= 27 + seg_count, "truncated lacing at {pos}");
+            let lacing = &ogg[pos + 27..pos + 27 + seg_count];
+            let body_len: usize = lacing.iter().map(|&seg| seg as usize).sum();
+            let page_len = 27 + seg_count + body_len;
+            assert!(ogg.len() - pos >= page_len, "truncated page body at {pos}");
+
+            let mut page_packet_sizes = Vec::new();
+            for &seg in lacing {
+                pending_packet_size += seg as usize;
+                if seg < 255 {
+                    max_packet_size = max_packet_size.max(pending_packet_size);
+                    recent_packet_sizes.push(pending_packet_size);
+                    page_packet_sizes.push(pending_packet_size);
+                    pending_packet_size = 0;
+                }
+            }
+            let mut nearby = recent_packet_sizes
+                .iter()
+                .rev()
+                .take(3)
+                .copied()
+                .collect::<Vec<_>>();
+            nearby.reverse();
+            if pending_packet_size != 0 {
+                nearby.push(pending_packet_size);
+            }
+            let context = format!("page {page_index}, nearby packet sizes {nearby:?}");
+            assert_eq!(
+                header_type & 0x01,
+                0,
+                "continued packet unsupported: {context}"
+            );
+            assert_ne!(
+                lacing.last().copied(),
+                Some(255),
+                "page lacing ends in 255 (packet spills): {context}"
+            );
+
+            pos += page_len;
+            page_index += 1;
+        }
+        assert_eq!(pending_packet_size, 0, "packet must complete by EOS");
+        eprintln!(
+            "long Ogg stats: max Opus packet={max_packet_size} bytes, pages={page_index}, max segments/page={max_segments}"
+        );
+    }
 }
