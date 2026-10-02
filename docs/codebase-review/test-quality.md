@@ -1,25 +1,19 @@
 # Test coverage and quality review (Phase 6)
 
-## Session 086 — scope and method, 2026-10-01
+## Scope
 
 Baseline: `refactor@46b0841` (Phase 5 complete).
-
-### Scope
 
 - Whole-repository T column in [coverage.md](coverage.md): every production unit is mapped to the tests that exercise it, and every test unit (T01–T04, `chatbot-cuda/tests`, `dns/tests`, the Node-vm and JVM fixtures under `chatbot-server/tests/fixtures`) is assessed for quality.
 - Priority: **behavioral gaps on risk paths** (chat admission/settlement, history persistence and encryption, authentication/session/remember, privacy policy, voice/TTS token lifecycle), then **brittle or low-value tests** (source-spelling pins, implementation mirrors, sleeps and timing races, shared mutable fixtures), then redundancy.
 - Remediation: add missing behavioral tests; replace source-text pins with behavioral assertions where a behavioral seam exists; consolidate redundant tests. Per the program's testing authorization, tests may be modified, consolidated, replaced or removed when the review justifies it, but never changed to make broken application code pass. A test that exposes an application bug becomes a red-first regression with a bounded fix.
 - Correctness findings handed over from Phase 5 (SSE UTF-8 split in `openai.rs`/`xai.rs`, the `search.rs:82–83` slicing panic (recorded in Phase 5 as `:220`), the `users.json` read-modify-write race) are in scope as red-first regressions.
 
-### Evidence standard
+## Evidence standard
 
 The executor offers only the `cargo test` workspace suite (Node-vm, JVM fixture and Python tests run from Rust test binaries); no line/branch coverage instrumentation is available. Coverage is therefore a static mapping from each production module's public behavior and failure paths to the tests that exercise them, recorded per unit. Coverage numbers are not claimed. A gap becomes a finding only when a reviewer has read the production path and confirmed no test exercises it. A brittleness finding cites the assertion and the change that would break it without changing behavior.
 
-## Session 086 — inventory (leads)
-
-Four read-only inventories (core, server Rust, browser JS, Python/Android/support) produced leads by name-grep and partial reads; the primary reviewer confirmed the entries marked **confirmed** by reading the production path and searching every test root.
-
-### Confirmed gaps and defects
+## Findings
 
 | ID | Path | Finding | Disposition |
 | --- | --- | --- | --- |
@@ -50,10 +44,15 @@ Four read-only inventories (core, server Rust, browser JS, Python/Android/suppor
 | TQ-025 | `android_volume.rs:21–32, 58–67, 82–89`; `voice_mode_reliability.rs:253–325, 1830–1887, 1956–2016` | Source-text pins of voice routing/focus/no-volume-write wiring that the executed Java fixtures already assert (`native_tts_communication.rs` `voice_tts_uses_communication_in_voice_mode_and_media_standalone`, `voice_tts_platform_adapter_builds_matching_attributes`). A rename or restructure of the Java sources breaks them with no behavior change. | Fixed (user-approved): the duplicated pins and the pins on Android test-source text were removed; the sole-check pins (NativeMic volume writes, `MainActivity`, JS wiring, manifest) stay (`voice_mode_reliability` `20261002T045602-58f69b87274e`, `android_volume` `20261002T045024-bd041301a6b7`). |
 | TQ-026 | `client_logs_session_sweep.rs:61–67` | Sleeps `TIMEOUT_SECS + 1` (61 s) to pass a real session expiry; correct but the slowest single wait in the suite. No clock seam exists. | Recorded only |
 | TQ-027 | `OggOpusStreamDecoder.java:169–173`, `tts_opus.rs:118–160` | The phone decoder rejects any packet continued across Ogg pages (`continued Ogg packet unsupported`). The server muxes with `ogg::PacketWriter` using `NormalPacket`, and its own framing test reassembles continuations (`tts_opus.rs:438`). If the writer splits a packet when a page's lacing table fills, a long clip would fail on the phone. Not reproduced. | Rejected with a guard: `long_clips_never_continue_packets_across_pages` encodes 120 s of full-scale noise; at the 16 kbps target the largest packet is 71 bytes (one lacing segment), so pages close on packet boundaries and no page sets the continuation flag (`20261002T031528-0e59f2b6939c`). |
+| TEST-001 | `chatbot-test-support/src/lib.rs:61–98`; `chatbot-core/src/history/api.rs:103–129`; `session.rs:350–355`; `session_identity.rs:84–87` (Phase 1 lead) | `TestWorkspace` resets config and rate limits, but `HistoryService::global()`, the chat session store and the HTTP session store capture the first workspace's data root and timeouts for the life of the test binary. Binaries that build several workspaces (e.g. `history_robustness.rs`, 21) keep durable history in the first root. No test currently depends on the second root. | Open: move multi-workspace binaries to owned composition (`ChatService::with_storage` / an explicit `HistoryService`) and add a two-root isolation regression. Resetting process globals is not the fix. |
+| TEST-002 | `native_audio_wav.rs`, `native_vad_speech_like.rs` (Phase 1 lead) | WAV/ADTS encoding and the post-utterance hiss scenario were tested against Rust re-implementations, not the shipped JS. | Fixed: `fixtures/native_audio_wav_test.js` holds `native-audio.js` to the same contracts (`20261002T060902-c97f99124b47`), and `voice_capture_test.js` drives the hiss scenario through the shipped VAD (`20261002T061237-d0713588073f`). The Rust re-implementations were removed. Other Rust VAD-threshold model tests remain as supplements. |
+| TEST-003 | `session_purge.rs`, `client_logs.rs` (Phase 1 lead) | The purge test never created an active chat; the unknown-session test sent no cookie. | Fixed: the purge test seeds history and asserts it survives (`20261002T054844-788184ac1a8b`); an unknown session cookie is rejected with 401 (`20261002T054944-9d844b1afb74`). |
+| TEST-004 | Android template tests (Phase 1 lead) | `ExampleUnitTest` and `ExampleInstrumentedTest` were Capacitor templates. | Fixed: deleted (`c1ed793`). |
+| TEST-005 | `search.rs`, `enc_key_auth.rs`, `history_robustness.rs` (Phase 1 lead) | Search injection was never observed; four enc-key loads accepted any non-401 status; the mirror test loaded alpha first, so it never proved the mirror stayed on beta. | Fixed: `search_result_is_sent_in_real_openai_followup_request` captures the follow-up request over a mock server (`20261002T055959-12d257b375bc`); enc-key loads assert 200 with the set body (`20261002T055000-14f59eea6fea`); the mirror test deletes alpha without loading it (`20261002T055149-fdc2b3a41d7f`). |
 
 Rejected leads: unknown/foreign generation status, events and stop are covered by `server_owned_generations.rs:271–293`; core `config.rs` validation is covered apart from TQ-010; `native-audio.js` VAD/WAV helpers execute in `native_vad_speech_like.rs`; `CredentialCookies` helpers execute in `credential_sealed_storage.rs`; `TtsBodyInputStream` watchdog/disconnect runs in `tts_download_queue.rs`; the `tts.rs:1367` and `agent_connections.rs:375` delays sit inside fakes behind channels or timeouts and do not race; `auth_hash_offload.rs` tick counts only grow when hashing is slower. Of the pure source-pin files, `client_log_reporting.rs` and `native_audio_wav.rs` are the sole checks of their paths and `docker_build.rs` pins configuration whose text is the behavior. The long scenarios `sets.rs::set_management_flow` and `server_owned_generations.rs:238–340` stay as written: each step depends on state from the previous one, and TQ-013 adds the rejection cases separately.
 
-## Session 087 — Phase 6 completion
+## Completion
 
 TQ-001–TQ-005 were red-first regressions or characterization of defects handed over from Phase 5; three needed production fixes (SSE UTF-8 decoding, search truncation boundary, `users.json` write lock). TQ-006–TQ-024 add characterization or test-hygiene changes only. TQ-027 is closed by a guard test. TQ-015 was closed afterwards with a test-only endpoint seam.
 

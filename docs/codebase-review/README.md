@@ -11,7 +11,7 @@ A seven-pass, evidence-backed review for behavior-preserving improvements—not 
 | 3. Abstractions/reuse — bounded sharing and duplication | [abstractions.md](abstractions.md) | Complete for agreed moderate scope | Full suite `20260928T225818-53da7826b56a` (completion review reaffirmed at `be18093`) | Cross-pass items remain with their owners. |
 | 4. Security/privacy — security and privacy boundaries | [security.md](security.md) | Complete for reviewed scope | Full suite `20260929T043340-482ba1a11f9d` | Accepted device/topology and other boundaries; see [security](security.md#open-items) and [findings](findings.md). |
 | 5. Performance/resources — measured costs and resource bounds | [performance.md](performance.md) | Complete | Full suite `20261001T052944-8b04233f9f0f` (commit `5f64c9e`) | Host proxy, device/GPU measurements and retained/deferred items; see [performance](performance.md#open-items). |
-| 6. Test quality — behavior coverage, regressions and harnesses | [test-quality.md](test-quality.md) | Complete with bounded remediation | Full suite `20261002T045842-d3567b3fe1b5` (commit `d074d9f`; 1,169 tests) | TQ-026 recorded only; see [test-quality](test-quality.md#session-087--phase-6-completion). |
+| 6. Test quality — behavior coverage, regressions and harnesses | [test-quality.md](test-quality.md) | Complete with bounded remediation | Full suite `20261002T045842-d3567b3fe1b5` (commit `d074d9f`; 1,169 tests) | TEST-001 (test-binary isolation) open; TQ-026 recorded only; see [test-quality](test-quality.md#findings). |
 | 7. Documentation — prose and behavior-comment accuracy | [documentation.md](documentation.md) | In progress | Not yet gated | DOC findings remain recorded, not edited; see [documentation](documentation.md#findings). |
 
 ## Standing rules
@@ -25,4 +25,4 @@ A seven-pass, evidence-backed review for behavior-preserving improvements—not 
 
 ## Applying the changes
 
-Host rebuild/restart is needed for server/static changes, the GPU voice service, and the Android app/APK where applicable. Phase-specific notes are in [performance.md](performance.md#completion) and [test-quality.md](test-quality.md#session-087--phase-6-completion); host rollout is not performed by this review.
+Host rebuild/restart is needed for server/static changes, the GPU voice service, and the Android app/APK where applicable. Phase-specific notes are in [performance.md](performance.md#completion) and [test-quality.md](test-quality.md#completion); host rollout is not performed by this review.

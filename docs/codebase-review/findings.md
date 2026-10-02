@@ -13,11 +13,11 @@
 | COR-001 | Correctness follow-up — owner not specified in this ledger | User-store read/modify/write paths may lose concurrent updates. | Confirmed by source; separate correctness follow-up. |
 | COR-002 | Correctness follow-up — owner not specified in this ledger | Native TTS resource exhaustion needs a settled pipeline contract. | Separate correctness follow-up; pipeline contract remains prerequisite. |
 | COR-003 | Correctness follow-up — [findings.md](findings.md) | History reads may combine independently acquired database snapshots. | Confirmed by source; deterministic reproduction and implementation scope decision pending. |
-| TEST-001 | Phase 6 — [test-quality.md](test-quality.md) | Fixture reset may not isolate process-global services across repeated workspaces. | Phase 6 follow-up; see [test-quality.md](test-quality.md). |
-| TEST-002 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Phase 6 follow-up; see [test-quality.md](test-quality.md). |
-| TEST-003 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Phase 6 follow-up; see [test-quality.md](test-quality.md). |
-| TEST-004 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Resolved: template tests deleted. |
-| TEST-005 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Phase 6 follow-up; see [test-quality.md](test-quality.md). |
+| TEST-001 | Phase 6 — [test-quality.md](test-quality.md) | Fixture reset may not isolate process-global services across repeated workspaces. | Open (isolation hazard, no failing test); see [test-quality.md](test-quality.md#findings). |
+| TEST-002 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Fixed in the Phase 6 follow-up; see [test-quality.md](test-quality.md#findings). |
+| TEST-003 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Fixed in the Phase 6 follow-up; see [test-quality.md](test-quality.md#findings). |
+| TEST-004 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Fixed: template tests deleted. |
+| TEST-005 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Fixed in the Phase 6 follow-up; see [test-quality.md](test-quality.md#findings). |
 | SEC-001 | Phase 4 — [security.md](security.md) | Cookie transport classification depends on proxy-header trust and supported ingress behavior. | Open pending ingress/proxy-trust contract and dynamic validation. |
 | DOC-001 | Phase 7 — [documentation.md](documentation.md) | Privacy terminology may overstate the implemented trust boundary. | Re-checked in Phase 7; see [documentation.md](documentation.md). |
 | DOC-002 | Phase 7 — [documentation.md](documentation.md) | Documentation wording may diverge from history-cache key/TTL behavior. | Re-checked in Phase 7; see [documentation.md](documentation.md). |
