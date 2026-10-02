@@ -181,7 +181,12 @@ async fn header_free_chat_and_regenerate_keep_legacy_disconnect_stop() {
         let mut stream = response.into_body().into_data_stream();
         assert_eq!(stream.next().await.unwrap().unwrap(), "first");
         drop(stream);
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while f.chat.session_history(&f.session).last().map(|pair| pair.1.as_str()) != Some("first")
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert_eq!(f.chat.session_history(&f.session).last().unwrap().1, "first");
     }
 }

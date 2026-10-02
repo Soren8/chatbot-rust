@@ -371,8 +371,24 @@ async fn stop_mid_generation_then_edit_last_message_succeeds() {
         drop(data_stream);
     }
 
-    // Allow Drop of the generator (finalize-on-cancel) to run.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait for finalize-on-cancel to persist the partial assistant turn before regenerating.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let key_bytes = UserStore::new().unwrap().derive_encryption_key(USERNAME, PASSWORD).unwrap();
+    let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap()).unwrap();
+    let history = HistoryService::global().unwrap();
+    let mut partial_saved = false;
+    loop {
+        let loaded = history
+            .find_by_display_name(USERNAME, "default", &key)
+            .unwrap()
+            .expect("default set");
+        partial_saved = loaded.history.last().is_some_and(|pair| pair.1.contains("partial"));
+        if partial_saved || tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(partial_saved, "finalize-on-cancel did not persist the partial assistant turn");
 
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNK_DELAY_MS");
     env::set_var(

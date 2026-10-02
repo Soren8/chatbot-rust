@@ -42,6 +42,14 @@ public final class OggOpusStagingTest {
             if (!expectedFailure.getMessage().contains("not an Ogg stream")) throw expectedFailure;
         }
 
+        assertIOException("serial mismatch", "Ogg serial changed mid-stream", serialMismatchStream());
+        assertIOException("bad OpusHead magic", "first Ogg packet is not OpusHead", streamWithHead(new byte[19]));
+        byte[] stereoHead = validHead(24000);
+        stereoHead[9] = 2;
+        assertIOException("stereo OpusHead", "only mono Opus TTS is supported, got 2", streamWithHead(stereoHead));
+        assertIOException("empty audio packet", "opus decode failed: bad stub decode call", streamWithEmptyAudioPacket());
+        assertIOException("continued packet", "continued Ogg packet unsupported", continuedPacketStream());
+
         byte[] large = stream(packets(16000), 24000);
         OggOpusStreamDecoder decoder = new OggOpusStreamDecoder();
         long pcmTotal = 0;
@@ -60,6 +68,78 @@ public final class OggOpusStagingTest {
                     + large.length + "-byte stream; parsed pages must be consumed");
         }
         System.out.println("ogg staging bounded: stream=" + large.length + " maxRetained=" + maxRetained);
+    }
+
+    private static void assertIOException(String label, String message, byte[] input) throws Exception {
+        OggOpusStreamDecoder decoder = new OggOpusStreamDecoder();
+        try {
+            decoder.feed(input, input.length);
+            throw new AssertionError(label + " must be rejected");
+        } catch (IOException expectedFailure) {
+            if (!message.equals(expectedFailure.getMessage())) {
+                throw new AssertionError(label + ": expected IOException message '" + message
+                        + "', got '" + expectedFailure.getMessage() + "'");
+            }
+        }
+    }
+
+    private static byte[] validHead(int rate) {
+        byte[] head = new byte[19];
+        System.arraycopy("OpusHead".getBytes(), 0, head, 0, 8);
+        head[8] = 1;
+        head[9] = 1;
+        head[10] = (byte) (PRESKIP & 0xFF);
+        head[11] = (byte) (PRESKIP >> 8);
+        head[12] = (byte) rate;
+        head[13] = (byte) (rate >> 8);
+        head[14] = (byte) (rate >> 16);
+        head[15] = (byte) (rate >> 24);
+        return head;
+    }
+
+    private static byte[] streamWithHead(byte[] head) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        page(out, 0x02, 0, List.of(head));
+        return out.toByteArray();
+    }
+
+    private static byte[] streamWithEmptyAudioPacket() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        page(out, 0x02, 0, List.of(validHead(24000)));
+        page(out, 0x00, 1, List.of("OpusTags".getBytes()));
+        page(out, 0x04, 2, List.of(new byte[0]));
+        return out.toByteArray();
+    }
+
+    private static byte[] serialMismatchStream() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        page(out, 0x02, 0, List.of(validHead(24000)));
+        byte[] second = pageBytes(0x00, 1, List.of("OpusTags".getBytes()));
+        second[14] = 0x2B;
+        out.write(second, 0, second.length);
+        return out.toByteArray();
+    }
+
+    private static byte[] continuedPacketStream() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        page(out, 0x02, 0, List.of(validHead(24000)));
+        page(out, 0x00, 1, List.of("OpusTags".getBytes()));
+        byte[] header = new byte[28];
+        System.arraycopy("OggS".getBytes(), 0, header, 0, 4);
+        header[14] = 0x2A;
+        header[15] = 0x13;
+        header[18] = 2;
+        header[26] = 1;
+        header[27] = (byte) 255;
+        out.write(header, 0, header.length);
+        out.write(new byte[255], 0, 255);
+        return out.toByteArray();
+    }
+
+    private static byte[] pageBytes(int headerType, int seq, List<byte[]> packets) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        page(out, headerType, seq, packets);
+        return out.toByteArray();
     }
 
     private static void check(String label, byte[] expected, byte[] actual) {

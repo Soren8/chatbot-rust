@@ -36,6 +36,14 @@ fn restore_disabled_limits() {
     rate_limit::reset();
 }
 
+struct DisabledLimitsOnDrop;
+
+impl Drop for DisabledLimitsOnDrop {
+    fn drop(&mut self) {
+        restore_disabled_limits();
+    }
+}
+
 async fn bootstrap_cookie(app: &axum::Router) -> String {
     // `/` is not rate-limited; establish a sticky session cookie first.
     let response = app
@@ -63,6 +71,7 @@ async fn per_user_rate_limit_returns_429_with_retry_after() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     enable_tight_per_user_limit();
+    let _restore = DisabledLimitsOnDrop;
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     let app = build_router(resolve_static_root());
@@ -125,8 +134,6 @@ async fn per_user_rate_limit_returns_429_with_retry_after() {
         "unexpected error payload: {payload}"
     );
     assert!(payload["retry_after"].as_u64().unwrap_or(0) >= 1);
-
-    restore_disabled_limits();
 }
 
 #[tokio::test]
@@ -135,6 +142,7 @@ async fn health_is_not_rate_limited() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     enable_tight_per_user_limit();
+    let _restore = DisabledLimitsOnDrop;
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     let app = build_router(resolve_static_root());
@@ -153,6 +161,4 @@ async fn health_is_not_rate_limited() {
             .expect("GET /health");
         assert_eq!(response.status(), StatusCode::OK);
     }
-
-    restore_disabled_limits();
 }
