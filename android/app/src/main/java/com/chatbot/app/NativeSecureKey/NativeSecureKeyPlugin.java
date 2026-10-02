@@ -274,12 +274,12 @@ public class NativeSecureKeyPlugin extends Plugin {
         }
         final String pendingIv = ivB64;
         final String pendingData = dataB64;
-        call.setKeepAlive(true);
         FragmentActivity activity = getActivity();
         if (activity == null) {
             call.reject("activity unavailable");
             return;
         }
+        call.setKeepAlive(true);
         activity.runOnUiThread(() -> {
             Runnable decryptAndInject = () -> {
                 try {

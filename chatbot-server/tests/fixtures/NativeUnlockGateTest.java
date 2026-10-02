@@ -39,11 +39,42 @@ public final class NativeUnlockGateTest {
         Security.addProvider(new FakeAndroidKeyStore());
         TestContext context=new TestContext();
         NativeSecureKeyPlugin plugin=new NativeSecureKeyPlugin();plugin.context=context;plugin.activity=new FragmentActivity();
+
+        PluginCall missingPassword=new PluginCall();missingPassword.args.put("salt","c2FsdA==");plugin.deriveKeyFromPassword(missingPassword);
+        rejected(missingPassword,"password is required");check("password is required".equals(missingPassword.error),"missing password message");
+        PluginCall emptyPassword=new PluginCall();emptyPassword.args.put("password","");emptyPassword.args.put("salt","c2FsdA==");plugin.deriveKeyFromPassword(emptyPassword);
+        rejected(emptyPassword,"password is required");check("password is required".equals(emptyPassword.error),"empty password message");
+        PluginCall missingSalt=new PluginCall();missingSalt.args.put("password","password");plugin.deriveKeyFromPassword(missingSalt);
+        rejected(missingSalt,"salt is required");check("salt is required".equals(missingSalt.error),"missing salt message");
+        PluginCall emptySalt=new PluginCall();emptySalt.args.put("password","password");emptySalt.args.put("salt","");plugin.deriveKeyFromPassword(emptySalt);
+        rejected(emptySalt,"salt is required");check("salt is required".equals(emptySalt.error),"empty salt message");
+        PluginCall derived=new PluginCall();derived.args.put("password","password");derived.args.put("salt","c2FsdA==");plugin.deriveKeyFromPassword(derived);
+        check(derived.resolutions==1&&derived.rejections==0&&derived.result.get("key") instanceof String&&!((String)derived.result.get("key")).isEmpty(),"password derivation did not resolve key");
+        PluginCall missingStoreKey=call();plugin.storeKey(missingStoreKey);
+        rejected(missingStoreKey,"key is required");check("key is required".equals(missingStoreKey.error),"missing store key message");
+        PluginCall emptyStoreKey=call();emptyStoreKey.args.put("key","");plugin.storeKey(emptyStoreKey);
+        rejected(emptyStoreKey,"key is required");check("key is required".equals(emptyStoreKey.error),"empty store key message");
+        PluginCall missingSealAccount=new PluginCall();plugin.sealCachedCredentials(missingSealAccount);
+        rejected(missingSealAccount,"account is required");check("account is required".equals(missingSealAccount.error),"missing seal account message");
+        PluginCall missingUnlockAccount=new PluginCall();plugin.unlockCachedLogin(missingUnlockAccount);
+        rejected(missingUnlockAccount,"account is required");check("account is required".equals(missingUnlockAccount.error),"missing unlock account message");
+
         jar.jar.put("remember-"+ACCOUNT,REMEMBER);jar.jar.put("enc_key-"+ACCOUNT,KEY);
         PluginCall seal=call();plugin.sealCachedCredentials(seal);
         check(seal.rejections==0&&Boolean.TRUE.equals(seal.result.get("sealed")),"real seal failed: "+seal.error);
+        plugin.activity=null;
+        PluginCall unavailableActivity=call();plugin.unlockCachedLogin(unavailableActivity);
+        check(unavailableActivity.rejections==1&&unavailableActivity.resolutions==0&&"activity unavailable".equals(unavailableActivity.error),"activity unavailable result: "+unavailableActivity.error);
+        check(!unavailableActivity.keepAlive,"activity unavailable must not keep the rejected call alive");
+        plugin.activity=new FragmentActivity();
+        PluginCall absentSeal=call();absentSeal.args.put("account","bob");plugin.sealCachedCredentials(absentSeal);
+        check(absentSeal.resolutions==1&&absentSeal.rejections==0&&Boolean.FALSE.equals(absentSeal.result.get("sealed")),"missing cached cookies should resolve sealed:false");
+        PluginCall noSlot=call();noSlot.args.put("account","bob");plugin.unlockCachedLogin(noSlot);
+        check(noSlot.resolutions==1&&noSlot.rejections==0&&Boolean.FALSE.equals(noSlot.result.get("unlocked"))&&"no_credentials".equals(noSlot.result.get("reason")),"missing sealed slot result: "+noSlot.result);
+        PluginCall emptySlot=call();emptySlot.args.put("account","");plugin.unlockCachedLogin(emptySlot);
+        rejected(emptySlot,"account is required");check("account is required".equals(emptySlot.error),"empty unlock account message");
         Memory prefs=context.stores.get("chatbot_secure_key");
-        String dataSlot=prefs.values.keySet().stream().filter(s->s.startsWith("wrapped_creds_data")).findFirst().orElseThrow();
+        String dataSlot=prefs.values.keySet().stream().filter(s->s.startsWith("wrapped_creds_data")&&s.endsWith(":"+ACCOUNT)).findFirst().orElseThrow();
         String original=prefs.values.get(dataSlot);
         resetJar();
         // A decrypt before authorization would now fail with the decrypt error.
@@ -71,12 +102,20 @@ public final class NativeUnlockGateTest {
             check(jar.jar.get(name).equals(name.startsWith("remember")?REMEMBER:KEY),"missing jar cookie: "+name);
             check(jar.injected.stream().anyMatch(s->s.contains(" "+expected+"; Path=/; SameSite=Strict; HttpOnly")),"missing HttpOnly injection: "+name);
         }
+        jar.jar.put("remember-bob","bob-remember");jar.jar.put("enc_key-bob","bob-key");
+        PluginCall bobSeal=call();bobSeal.args.put("account","bob");plugin.sealCachedCredentials(bobSeal);
+        check(bobSeal.resolutions==1&&Boolean.TRUE.equals(bobSeal.result.get("sealed")),"second account seal failed");
         resetJar();
-        byte[] corrupt=java.util.Base64.getDecoder().decode(original);corrupt[corrupt.length-1]^=1;
-        prefs.values.put(dataSlot,java.util.Base64.getEncoder().encodeToString(corrupt));
+        byte[] tamperedBytes=java.util.Base64.getDecoder().decode(original);tamperedBytes[tamperedBytes.length-1]^=1;
+        prefs.values.put(dataSlot,java.util.Base64.getEncoder().encodeToString(tamperedBytes));
         PluginCall tampered=call();plugin.unlockCachedLogin(tampered);
         noInjection(tampered,"tampered");check(tampered.error.equals("failed to decrypt cached credentials"),"tamper error: "+tampered.error);
+        PluginCall clearAlice=call();plugin.clearKey(clearAlice);
+        check(clearAlice.resolutions==1&&clearAlice.rejections==0,"account clear failed: "+clearAlice.error);
+        PluginCall clearedUnlock=call();plugin.unlockCachedLogin(clearedUnlock);
+        check(clearedUnlock.resolutions==1&&Boolean.FALSE.equals(clearedUnlock.result.get("unlocked"))&&"no_credentials".equals(clearedUnlock.result.get("reason")),"cleared account still unlockable: "+clearedUnlock.result);
+        check(prefs.values.keySet().stream().anyMatch(k->k.startsWith("wrapped_creds_data")&&k.endsWith(":bob")),"clearKey removed other account slot");
         check(BiometricManager.checks==5&&BiometricPrompt.prompts==4,"prompt path counts");
-        System.out.println("5 unlock cases passed (unavailable, cancelled, failed, success, tampered); real seal + AES/GCM");
+        System.out.println("validation, no-credentials, clear, and 5 unlock cases passed; real seal + AES/GCM");
     }
 }
