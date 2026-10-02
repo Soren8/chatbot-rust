@@ -1,6 +1,6 @@
 # Performance and resource-use review (Phase 5)
 
-Scope: measured repository-wide performance review, prioritizing chat latency, client/mobile work, voice pipeline and unbounded RAM. Static observations remain leads unless measured; GPU/device/host-only costs are evidence limits. Phase 5 final gate is not recorded in the source ledger.
+Scope: measured repository-wide performance review, prioritizing chat latency, client/mobile work, voice pipeline and unbounded RAM. Static observations remain leads unless measured; GPU/device/host-only costs are evidence limits.
 
 ## Findings
 
@@ -70,7 +70,6 @@ SSE parsing moves buffer remainders; cost is quadratic only within one bounded r
 - PERF-011 inline Opus encoding and PERF-012 prefetch gaps wait on host release-build/GPU measurements.
 - N-PERF-1 main-looper delivery waits on device timing and a barge-in-safe delivery contract; B-PERF-8 waits on host GPU timing.
 - PERF-008 and S-PERF-10 remain rejected/retained as above; car protocol work remains user-deferred.
-- No Phase 5 final completion commit, full-suite job/counts or date is recorded in this ledger yet.
 
 ## Completion
 
