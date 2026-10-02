@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 import forwarder
-from forwarder import SharedState, forward_tcp, forward_udp, make_servers
+from forwarder import SharedState, _recvn, forward_tcp, forward_udp, make_servers
 
 CANNED_SUFFIX = b"\x81\x80\x00\x01canned"
 
@@ -297,6 +297,38 @@ class ForwarderServerTests(unittest.TestCase):
             sock.sendto(query, ("127.0.0.1", udp.server_address[1]))
             with self.assertRaises(socket.timeout):
                 sock.recvfrom(65535)
+
+
+class RecvnTests(unittest.TestCase):
+    class FakeConnection:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+            self.requests = []
+
+        def recv(self, count):
+            self.requests.append(count)
+            chunk = self.chunks.pop(0)
+            if isinstance(chunk, Exception):
+                raise chunk
+            return chunk
+
+    def test_reads_multiple_chunks_using_remaining_count(self):
+        conn = self.FakeConnection([b"ab", b"cd", b"e"])
+
+        self.assertEqual(_recvn(conn, 5), b"abcde")
+        self.assertEqual(conn.requests, [5, 3, 1])
+
+    def test_eof_mid_read_returns_empty_bytes(self):
+        conn = self.FakeConnection([b"ab", b""])
+
+        self.assertEqual(_recvn(conn, 5), b"")
+        self.assertEqual(conn.requests, [5, 3])
+
+    def test_recv_oserror_returns_empty_bytes(self):
+        conn = self.FakeConnection([OSError("connection reset")])
+
+        self.assertEqual(_recvn(conn, 5), b"")
+        self.assertEqual(conn.requests, [5])
 
 
 class MainSmokeTests(unittest.TestCase):
