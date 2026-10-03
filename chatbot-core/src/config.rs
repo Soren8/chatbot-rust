@@ -133,12 +133,12 @@ pub struct ProviderConfig {
     pub allowed_providers: Vec<String>,
     #[serde(default)]
     pub request_timeout: Option<f64>,
-    /// Extra attempts after an upstream `429 Too Many Requests`. Defaults to 1;
+    /// Extra attempts after an upstream `429 Too Many Requests`. Defaults to 5;
     /// 0 disables retrying.
     #[serde(default)]
     pub rate_limit_retries: Option<u32>,
     /// Upper bound (seconds) a single rate-limit retry may wait, capping any
-    /// upstream `Retry-After` hint. Defaults to 5.
+    /// upstream `Retry-After` hint. Defaults to 30.
     #[serde(default)]
     pub rate_limit_max_wait_secs: Option<f64>,
     #[serde(default)]
@@ -445,7 +445,7 @@ where
     deserializer.deserialize_any(BoolVisitor)
 }
 
-/// Insecure placeholder previously used when `SECRET_KEY` was unset.
+/// Reserved placeholder secret key; never accepted as the configured `SECRET_KEY`.
 const FORBIDDEN_SECRET_KEYS: &[&str] = &["default_secret_key"];
 
 /// Require a non-default `SECRET_KEY` from the environment. Fail closed at boot.

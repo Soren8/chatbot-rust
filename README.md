@@ -1,6 +1,6 @@
 # Chatbot Rust
 
-This repository hosts a containerized Rust-based chatbot web application with a clean, responsive Bootstrap frontend. It runs a high-performance Axum-based HTTP server, supports pluggable local or remote LLM and TTS APIs, and manages chat history and sessions encrypted securely on disk. See design-privacy.md for details on storage privacy.
+This repository hosts a containerized Rust-based chatbot web application with a clean, responsive Bootstrap frontend. It runs a high-performance Axum-based HTTP server, supports pluggable local or remote LLM and TTS APIs, stores encrypted chat history on disk, and keeps sessions in memory. Remember tokens are stored as hashes. See design-privacy.md for details on storage privacy.
 
 It started off as a simple single-threaded Flask app to test out vibe coding, but has been refactored into concurrent Rust with test coverage and security hardening as tools have improved.
 
@@ -12,7 +12,7 @@ Not a single line of code in this repository was written manually. Human work in
 - `chatbot-core` crate encapsulating chat logic, config, history (redb), persistence helpers, and session management.
 - Static assets rendered with Minijinja and served from `static/`.
 - Async provider implementations (OpenAI-compatible, XAI) in `chatbot-server` with streaming support and configurable defaults.
-- Comprehensive integration tests (`cargo test`) covering routes, session flows, and external service stubs.
+- Comprehensive integration tests run in the Docker test image (`docker compose run --rm tests`; agents use `testctl` per [AGENTS.md](AGENTS.md)) covering routes, session flows, and external service stubs.
 
 ## Repository Layout
 - `chatbot-core/` – core business logic, configuration, history store (redb), permanent `legacy_sets_json` migration, Fernet helpers, and session manager.

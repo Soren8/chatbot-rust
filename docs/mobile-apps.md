@@ -14,7 +14,7 @@ The web frontend is the only interface. This creates three issues:
 - Android Auto requires a native `CarAppService` — no framework bypasses this.
 - iOS support is low priority but desired as a side effect.
 - Existing web UI (`static/chat.js`, Bootstrap/jQuery) must be reused with minimal changes.
-- **Server-pull model**: The app loads web content from the running `chatbot-server` instead of bundling static assets. Web UI updates do not require rebuilding the APK, but they **do** require rebuilding the `webserver` Docker image (`docker compose up --build -d webserver`) because `static/` is baked into the image.
+- **Server-pull model**: The app loads web content from the running `chatbot-server` instead of bundling static assets. Web UI updates do not require rebuilding the APK, but they **do** require the operator to rebuild the `webserver` Docker image on the host (`docker compose up --build -d webserver`) because `static/` is baked into the image.
 
 ## Recommendation: Capacitor Android + Native Android Auto Module
 
@@ -152,7 +152,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
      - The same session holds `FLAG_KEEP_SCREEN_ON` (`VoiceSessionKeepAwake` via `enterVoiceRoute` / `exitVoiceRoute`) so auto screen sleep cannot pause the WebView VAD/STT/TTS loop. `chat.js` also requests a Screen Wake Lock (HTTPS / browser).
      - Power-button / pocket lock starts `VoiceModeForegroundService` (microphone FGS + `PARTIAL_WAKE_LOCK` + `ConnectivityManager.requestNetwork` with `CHANGE_NETWORK_STATE` permission; `START_NOT_STICKY` with null-intent safety for killed processes) from the same `enterVoiceRoute` / `exitVoiceRoute` pair. `enterVoiceRoute` requests `POST_NOTIFICATIONS` on API 33+ so the notice can post (Android 13+ hides FGS chips without it). It also prompts `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (GrapheneOS/AOSP **Unrestricted**): Doze Light still cuts network after a couple of minutes for **Optimized** apps even with an FGS. Set Tailscale to Unrestricted too if the server is reached over the VPN. MainActivity keeps the WebView resumed (`resumeTimers`, `RENDERER_PRIORITY_IMPORTANT`) and reasserts `View.VISIBLE` while that session is active so Chromium does not apply hidden-WebView throttling. Capacitor is forced to use `useLegacyBridge` because Chromium/Vanadium throttles the newer WebMessage bridge in the background even with an FGS. The FGS re-resumes the WebView every 15s and pokes JS; a one-shot `onPause` resume is not enough. The lock-screen control is `Notification.CallStyle.forOngoingCall` (`VISIBILITY_PUBLIC` / `IMPORTANCE_HIGH`) so it stays a hangup bar instead of a collapsed FGS row. Do not attach a `MediaSession`: SystemUI moves that into the media player and GrapheneOS/AOSP hide it unless real `USAGE_MEDIA` audio is playing, so the shade row vanishes too. Hangup/Stop is a broadcast. Do not use an Activity pending intent for Stop.
 
-2. `NativeMicUtteranceVAD` in `chat.js` (shipped path — not Silero):
+2. `NativeMicUtteranceVAD` in `static/voice-capture.js` (constructed by `static/chat.js`; shipped path — not Silero):
    - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
    - 300 ms PCM pre-roll. Record from speech-like start (~120 ms, Silero `onSpeechStart`). Barge-in only after **real speech** (`REAL_SPEECH_MS` 600 + voiced windows; desktop Silero `minSpeechMs` stays 400). A cough or short "hey" does not stop TTS; confirmed speech stops it immediately, not at end-of-speech.
    - **1500 ms** end-of-speech silence (short mid-sentence pauses do not split); **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
@@ -212,7 +212,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 
 The app does NOT bundle `static/` files. Instead, the WebView loads directly from the running `chatbot-server`. This means:
 
-- Web UI updates (chat.js, CSS, templates) do not require rebuilding the APK; rebuild `webserver` to pick up static changes in the running server.
+- Web UI updates (chat.js, CSS, templates) do not require rebuilding the APK; the operator must rebuild `webserver` on the host to pick up static changes in the running server.
 - The device must have network access to the server (same WiFi or port-forwarded)
 - For car use, the server URL should point to the machine running `chatbot-server`
 - Default URL is `http://10.0.2.2:80` (Android emulator's host loopback) for emulator flavor, `https://desktop-1.tailfc0df0.ts.net` (Tailscale Serve) for physical flavor. The physical URL must stay https: the WebView origin needs a secure context or WebCodecs STT compression never engages (every utterance falls back to WAV). These URLs are for the native app (password login derives the key via the OS plugin; the data key then lives in HttpOnly cookies). For any browser-based testing, use http://localhost or a https URL. Under RFC 6265bis §5.4, Chromium / Android WebView drops cookies with the `Secure` flag over non-localhost plain HTTP; the server cookie sanitization middleware automatically strips `Secure` from `Set-Cookie` on plain HTTP requests so the WebView stores session, remember, and enc-key cookies without requiring `csrf: false`.
@@ -236,7 +236,7 @@ The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies. Pag
 
 2. **`static/native-audio.js`** — Audio encoding and buffering helpers for STT upload. To maximize efficiency over spotty/mobile links and eliminate uncompressed PCM overhead, `encodeAudioForStt` uses hardware-accelerated `AudioEncoder` (WebCodecs) when available to compress captured PCM into AAC-LC with 7-byte ADTS framing (`audio/aac`), falling back to PCM16 WAV. Every encode decision is logged with a machine-readable reason (`STT codec: aac ...` on success; `STT codec fallback: reason=no-webcodecs|insecure-context|unsupported-config|empty-output|encoder-error` on fallback) to the browser console and adb logcat via `nativeLog` — `reason=insecure-context` on every utterance means the origin is plain HTTP and WebCodecs can never engage. The server overrides Axum's default 2MB body limit on `/stt` up to 50MB (`MAX_AUDIO_BYTES`), permitting arbitrary utterance lengths without 400 Bad Request errors, and logs every received upload at info level (`STT audio received`, with a `compressed=true/false` flag) so a silent client-side WAV fallback is visible in host logs.
 
-3. **`NativeMicUtteranceVAD`** (chat.js) — energy + speech-like + voiced-pitch on native PCM (handheld). Android Auto `VoiceScreen` stays RMS-only:
+3. **`NativeMicUtteranceVAD`** (`static/voice-capture.js`, constructed by `static/chat.js`) — energy + speech-like + voiced-pitch on native PCM (handheld). Android Auto `VoiceScreen` stays RMS-only:
    - No Silero / WebView `AudioContext` on the native path
    - 300 ms PCM pre-roll; during TTS keep start-gate frames (not empty); record at speech-like start; barge-in only on real speech (~600 ms speech-like + voicing). Cough/"hey" do not barge in. **1500 ms** end silence; **400 ms** post-TTS cooldown (not after barge-in). STT in flight does not drop the next utterance.
    - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
@@ -277,7 +277,7 @@ The lock is one test that covers **both** sides: `cough_and_hey_do_not_barge_in_
 ### VAD Evaluation
 
 Car environments are noisy. If RMS misses too often:
-- Tune RMS thresholds / hangover in `NativeMicUtteranceVAD` / `VoiceScreen`
+- Tune RMS thresholds / hangover in `NativeMicUtteranceVAD` (`static/voice-capture.js`) / `VoiceScreen`
 - Or implement a native Kotlin VAD (ONNX Runtime Mobile) — still optional, not baseline
 
 ---
@@ -452,7 +452,7 @@ Product flavors configure `server_url` string resource:
 | `android/.../util/ClientLogReporter.java` | Modify — per-call origin resolution for report uploads |
 | `android/.../car/VoiceScreen.java` | Modify — per-turn (capture at turn start) origin for /stt /chat /tts |
 | `chatbot-server/tests/fixtures/ServerSettingBehaviorTest.java` | Create — javac behavior fixture for the selection policy (run by `distribution.rs`) |
-| `static/chat.js` | Modify — `NativeMicUtteranceVAD` (RMS), voice-mode TTS, native bridge |
+| `static/voice-capture.js` | Modify — `NativeMicUtteranceVAD` (RMS); constructed by `static/chat.js` for voice-mode TTS and native bridge |
 | `static/deps/vad/` | Create — Silero VAD WASM assets |
 | `.gitignore` | Modify — exclude Capacitor build artifacts |
 

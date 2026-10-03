@@ -72,9 +72,9 @@ pub fn has_image(text: &str) -> bool {
 
 /// Approximate tokens for mixed text + image messages.
 ///
-/// Text uses ~4 chars/token. Images use fixed vision estimates so multi‑MB
-/// base64 blobs do not look like hundreds of thousands of tokens (which was
-/// causing history truncation to strip the latest image).
+/// Text uses ~4 chars/token. Images use fixed vision estimates: counting a
+/// multi‑MB base64 data URL as text would exceed the history budget and make
+/// truncation drop the newest image.
 pub fn approximate_content_tokens(text: &str) -> f64 {
     let mut tokens = 0.0;
     let mut rest = text;

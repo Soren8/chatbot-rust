@@ -284,8 +284,7 @@ pub async fn handle_delete_message(
             json!({"status": "error", "error": "user_message is required"}),
         );
     }
-    // AI text is no longer required for the check (allows deleting mid-generation or failed responses).
-    // Only user text + pair_index is used for verification.
+    // Verify deletion using the user text and pair index; assistant output may be absent during generation or after a failed response.
     let pair_index = match payload.pair_index {
         Some(index) if index >= 0 => index as usize,
         _ => {

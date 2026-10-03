@@ -18,8 +18,6 @@ pub fn api_error(status: StatusCode, message: impl Into<String>) -> HttpError {
     if status == StatusCode::BAD_REQUEST {
         warn!(status = 400, error = %message, "http 400");
     } else if status.is_server_error() {
-        // 5xx api_error callers previously logged nothing (or debug-only),
-        // leaving deterministic server failures invisible in production logs.
         error!(status = status.as_u16(), error = %message, "http 5xx");
     }
     (status, Json(json!({ "error": message })))

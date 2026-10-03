@@ -10,7 +10,7 @@ Commits return their normalized snapshot from the existing image-normalization p
 | :--- | :--- |
 | **Author** | TBD |
 | **Date** | 2026-07-09 |
-| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` sync-and-retry (no page reload). Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). **Chunked storage layout:** see [Chunked storage layout](#chunked-storage-layout). |
+| **Status** | **Implemented (cutover complete).** redb + `HistoryService`, AEAD+AAD, multi-set `history::cache::SetCache`, permanent `legacy_sets_json` module for pre-redb `sets.json` migration, `PrepareCapture` + CAS, client `set_id`/`expected_version` + 409 JSON/`version_conflict` sync-and-retry (no page reload). Live authed history RMW no longer uses `DataPersistence` (type alias to legacy seed/migration helpers only). New sets use whole-set format 1 on create and migrate to chunked format 2 on the first authenticated payload operation. See [Chunked storage layout](#chunked-storage-layout). |
 | **Related** | [design.md](design.md), [design-privacy.md](design-privacy.md) |
 | **Primary crates** | `chatbot-core`, `chatbot-server` |
 
@@ -22,7 +22,7 @@ Production-like long sessions can lose a large fraction of chat history (~80% af
 
 This design replaces the file-backed `DataPersistence` history path with an embedded **redb** store of opaque AEAD ciphertext blobs plus non-sensitive structural metadata (`set_id`, version, timestamps, ownership). All durable history access goes through a narrow, invariant-enforcing API in `chatbot-core` (`history` module). Mutations are prepare/commit with CAS on version; conflicts return HTTP 409 and force client reload.
 
-Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message rows). Set display names are sealed separately (`sets_name`) so listing does not open history. Legacy `data/user_sets/{user}/sets.json` is migrated once into redb.
+New sets are created in whole-set format 1 and migrate lazily to chunked format 2 on the first authenticated payload operation. Set display names are sealed separately (`sets_name`) so listing does not open history. Legacy `data/user_sets/{user}/sets.json` is migrated once into redb.
 
 ---
 
@@ -33,7 +33,7 @@ Phase 1 stores one whole-set encrypted payload per `set_id` (not per-message row
 | Layer | Location | Behavior |
 | :--- | :--- | :--- |
 | Durable store | `chatbot-core/src/history/` (`HistoryService` + sealed redb) | `{HOST_DATA_DIR}/history/redb`: per-`set_id` AEAD ciphertext + meta (version, ownership, `is_default`); CAS on version |
-| Multi-set cache | `history/cache.rs` (`SetCache`) | Process-local decrypted snapshots + list summaries keyed `(user_id, set_id)`, version-checked against redb meta; optional; never SoT. Avoids re-AEAD/JSON of multi-MB histories on warm `list_sets` / load / delete. |
+| Multi-set cache | `history/cache.rs` (`SetCache`) | `SetCache` stores plaintext `Arc<LogicalSnapshot>` values in process memory with TTL, capacity and byte-budget eviction. It is optional and non-authoritative. |
 | Migration format | `chatbot-core/src/legacy_sets_json/` (**permanent**) | Read/seed pre-redb `sets.json` (+ split-file legacy); orchestrated by `history/migration.rs` into redb; bak = `sets.json.migrated.bak` |
 | Session | `session.rs` | Guest RAM history; authed session cipher stores `set_id` + memory/prompt only (not full history — redb is SoT). |
 | Chat / regenerate | prepare/finalize + capture | Immutable `PrepareCapture`; CAS commit |
@@ -106,7 +106,7 @@ flowchart TD
 | **Sled** (mentioned in design.md roadmap) | Unmaintained / not the chosen path |
 | **redb** | Pure Rust, embedded, MVCC, ACID transactions, typed tables, active maintenance — fits opaque blob + metadata KV on single-node Docker deploy |
 
-**Documented decision:** future concurrent storage work targets **redb**, not Sled. Implementation of this design should update `docs/design.md` (replace the Sled bullet) when code lands; this design is the source of truth until then.
+**Documented decision:** redb is the durable history store; see the implemented layout below.
 
 ### Privacy constraints (non-negotiable)
 
@@ -114,7 +114,7 @@ From [`docs/design-privacy.md`](design-privacy.md):
 
 - Strict Private Mode: client-derived key, per-request `X-Enc-Key`, server never persists data key.
 - Only HMAC key verifier on server.
-- Ciphertext at rest (redb); in-memory cache temporarily holds decrypted working snapshots during active requests to feed LLM context, evicted/wiped from RAM after an idle TTL.
+- Plaintext snapshot cache with TTL, capacity and byte-budget eviction; cache contents are process-local and non-authoritative.
 - **Set names are sensitive** — not plaintext filenames, not unencrypted index keys.
 
 ---
@@ -171,7 +171,7 @@ flowchart LR
       Crypto[AEAD / Fernet]
       Mig[migration]
     end
-    Cache["optional SetCache<br/>(user_id, set_id) → ciphertext"]
+    Cache["optional SetCache<br/>(user_id, set_id) → plaintext snapshot"]
   end
   UI -->|X-Enc-Key + set_id + expected_version| HChat
   UI --> HSets
@@ -196,10 +196,10 @@ chatbot-core/src/
     types.rs                # SetId, UserId, SetVersion, SetSnapshot, SetSummary, BlobKind
     crypto.rs               # seal/open with AAD; Fernet legacy helpers
     store/
-      mod.rs                # trait HistoryStore + RedbHistoryStore (crate-private)
+      mod.rs                # RedbHistoryStore and store internals (crate-private)
       keys.rs               # key encoding (UUID bytes, no display names)
       tables.rs             # redb table definitions
-    cache.rs                # process-local decrypted snapshot cache with TTL eviction keyed (user_id, set_id)
+    cache.rs                # process-local plaintext snapshot cache with TTL, capacity and byte-budget eviction
     migration.rs            # sets.json → redb
     ops.rs                  # pure functions: append_pair, delete_pair, regenerate apply (on snapshots)
   session.rs                # uses history::api; drops free-form history mutation helpers over time
@@ -289,96 +289,11 @@ struct SetPayloadV1 {
 
 **Key handling:** unchanged per-request model (`EncryptionKey` in `enc_key.rs`, verifier in `UserStore`). History API accepts `&EncryptionKey` for the request; never stores it.
 
-### Public API sketch (`history::api`)
+### Public API (`history::api`)
 
-```rust
-/// Sole entry point for durable history/set access.
-pub struct HistoryService { /* Arc<RedbHistoryStore>, optional cache */ }
+`HistoryService` is the public entry point; its store is the concrete crate-private `RedbHistoryStore`. Use `HistoryService::open(path, default_system_prompt)` or `open_with_data_dir(redb_path, data_dir, default_system_prompt)`; `global()` opens the process service. Public domain types are defined in `history::types`: `SetId` wraps a private UUID, `SetVersion` wraps a `u64`, and `SetSnapshot`, `SetSummary`, `PrepareCapture`, `SetPage`, and format payload types carry the history data. `HistoryError` variants are `NotFound`, `Conflict { current_version }`, `Forbidden`, `DecryptFailed`, `MissingKey`, `InvalidInput(&'static str)`, and `Internal`.
 
-pub struct SetId(pub Uuid);
-pub struct SetVersion(pub u64);
-
-/// Immutable view used by prepare/finalize.
-pub struct SetSnapshot {
-    pub set_id: SetId,
-    pub version: SetVersion,
-    pub display_name: String,
-    pub memory: String,
-    pub system_prompt: String,
-    pub history: Vec<(String, String)>,
-    pub is_default: bool,
-}
-
-pub struct SetSummary {
-    pub set_id: SetId,
-    pub version: SetVersion,
-    pub display_name: String,
-    pub updated_at: u64,
-    pub is_default: bool,
-}
-
-pub enum HistoryError {
-    NotFound,
-    Conflict { current_version: SetVersion }, // → HTTP 409
-    Forbidden,
-    DecryptFailed,   // → 401
-    MissingKey,      // → 401
-    InvalidInput,
-    Internal(anyhow::Error),
-}
-
-impl HistoryService {
-    pub fn open_default() -> Result<Self, HistoryError>;
-
-    // --- reads ---
-    pub fn list_sets(&self, user: &str, key: &EncryptionKey)
-        -> Result<Vec<SetSummary>, HistoryError>;
-    pub fn load(&self, user: &str, set_id: SetId, key: &EncryptionKey)
-        -> Result<SetSnapshot, HistoryError>;
-
-    // --- lifecycle ---
-    pub fn create_set(&self, user: &str, display_name: &str, key: &EncryptionKey)
-        -> Result<SetSummary, HistoryError>;
-    pub fn rename_set(&self, user: &str, set_id: SetId, expected: SetVersion,
-        new_name: &str, key: &EncryptionKey) -> Result<SetVersion, HistoryError>;
-    pub fn delete_set(&self, user: &str, set_id: SetId, expected: SetVersion,
-        key: &EncryptionKey) -> Result<(), HistoryError>;
-
-    // --- content mutations (all CAS) ---
-    // Generic snapshot commit is store-internal; use named service mutations.
-    pub fn append_pair(&self, user: &str, set_id: SetId, expected: SetVersion,
-        user_msg: &str, assistant_msg: &str, key: &EncryptionKey)
-        -> Result<SetVersion, HistoryError>;
-
-    pub fn delete_pair(&self, user: &str, set_id: SetId, expected: SetVersion,
-        pair_index: usize, expected_user_msg: &str, key: &EncryptionKey)
-        -> Result<SetVersion, HistoryError>;
-
-    pub fn reset_history(&self, user: &str, set_id: SetId, expected: SetVersion,
-        key: &EncryptionKey) -> Result<SetVersion, HistoryError>;
-
-    pub fn update_memory(&self, user: &str, set_id: SetId, expected: SetVersion,
-        memory: &str, key: &EncryptionKey) -> Result<SetVersion, HistoryError>;
-
-    pub fn update_system_prompt(&self, user: &str, set_id: SetId, expected: SetVersion,
-        prompt: &str, key: &EncryptionKey) -> Result<SetVersion, HistoryError>;
-}
-```
-
-Internal commit path (all mutations funnel here):
-
-```text
-1. Begin redb write txn
-2. Read SETS_META[set_id]; verify user_id ownership; version == expected
-3. Else abort → Conflict
-4. Decrypt blob with key + AAD(user, set, kind, expected)
-5. Apply pure op in memory → new payload
-6. version' = expected + 1
-7. Encrypt with AAD(..., version')
-8. Write SETS_BLOB + SETS_META(version', updated_at)
-9. Commit txn
-10. Update optional cache for (user, set_id) with new ciphertext only
-```
+The service exposes named lifecycle and content operations (`create_set`, `fork_set`, `rename_set`, `delete_set`, `append_pair`, `commit_chat_append`, `commit_regenerate`, `delete_pair`, `reset_history`, `update_memory`, and `update_system_prompt`), with paged/materialized reads (`load_page`, `load_pair`, `load_image`, `load_thumb`, `load`). `open_ephemeral` is also available for explicitly isolated/test use. See `api.rs` and `types.rs` for signatures and complete DTO fields.
 
 ### Prepare / finalize protocol (chat & regenerate)
 
@@ -437,32 +352,13 @@ Rules:
 
 | Aspect | Today | Target |
 | :--- | :--- | :--- |
-| Key | `session_id` → one blob | `(user_id, set_id)` ciphertext entries; session may track `active_set_id` for UX only |
+| Key | `session_id` → one blob | `(user_id, set_id)` snapshot entries; session may track `active_set_id` for UX only |
 | Authority | Often treated as SoT | **Cache only**; every mutation commits redb first (or same txn then cache update) |
 | Miss | Init from disk once | Load from `HistoryService` |
-| Multi-set | One set overwrites another | Parallel cached sets; LRU/TTL eviction |
+| Multi-set | One set overwrites another | Parallel cached sets; TTL, capacity and byte-budget eviction |
 | Guests | RAM plaintext | Unchanged (no redb) |
 
-Suggested structure:
-
-```rust
-// inside history::cache or session
-struct SetCache {
-    // key: (username, SetId)
-    entries: DashMap<(String, SetId), CachedCipher>,
-}
-struct CachedCipher {
-    version: SetVersion,
-    blob: Vec<u8>,
-    last_used: Instant,
-}
-```
-
-Deprecate / remove over time:
-
-- `replace_session_set` as a free-form overwrite of “the” session history
-- `session_history` / `update_session_history` without key/set_id (plaintext guest-only paths may remain under different names)
-- `set_session_history_for_request` used by delete/reset — replace with `HistoryService::delete_pair` / `reset_history`
+The implemented `SetCache` holds plaintext `Arc<LogicalSnapshot>` values, with TTL, capacity and byte-budget eviction. It is optional and non-authoritative.
 
 ### Handler-level contract changes
 
@@ -605,7 +501,7 @@ Chunked sets use redb schema 3 and `BlobFormat::AeadChunkedV2`. `SETS_META` keep
 
 The sealed header contains memory and system prompt. The sealed manifest contains ordered pair IDs, pair generations, and each pair’s image IDs. Each pair blob contains user/assistant text, with image references rather than embedded image bytes; image and thumbnail blobs hold MIME plus raw bytes. Image/thumb plaintext uses `u16` little-endian MIME length, MIME UTF-8, then bytes; all ciphertext is nonce (12 bytes) plus AES-GCM ciphertext/tag. Format-2 pair writes normalize image payloads to references; image thumbs are generated at write time (384px maximum edge, JPEG quality 70).
 
-AAD binds user, set, blob kind, and stable identity: header uses header generation; manifest uses the full little-endian `u64` set version; pairs use pair ID and generation; images and thumbnails use image ID. Names and policies have distinct AAD kinds. HKDF-SHA256 derives the AES-256-GCM key from the request key. Set mutations use CAS on `SETS_META.version`; a successful mutation advances it and re-seals the manifest, while unchanged pair/image ciphertext is retained. Header edits advance header generation. Format 0 (Fernet) and 1 (whole-set AEAD) remain readable for migration; new sets are initially format 1 and migrate lazily.
+AAD binds user, set, blob kind, and stable identity: header uses header generation; manifest uses the full little-endian `u64` set version; pairs use pair ID and generation; images and thumbnails use image ID. Names and policies have distinct AAD kinds. HKDF-SHA256 derives the AES-256-GCM key from the request key. History API operations commit changes through atomic redb transactions with ownership and expected-version checks. Payload changes reseal the manifest and advance the set version; unchanged pair/image ciphertext is retained. Header edits advance header generation. A plaintext snapshot cache with TTL, capacity and byte-budget eviction holds shared `Arc<LogicalSnapshot>` values; it is process-local and non-authoritative.
 
 The first authenticated payload operation on a format-0/1 set takes its per-set migration lock, reads and splits `SETS_BLOB`, then writes header, manifest, pair/image/thumb rows, format-2 metadata, and removes `SETS_BLOB` atomically in one redb write transaction. Listing sets does not trigger this migration. Failure leaves the old representation intact. New data is chunked by subsequent mutations.
 
@@ -613,11 +509,11 @@ Chunked `load_page` opens header, manifest, and only the requested pair range. `
 
 Pair removal and replacement delete media rows referenced by the prior manifest; set deletion attempts a set-prefix range cleanup after removing the set metadata. There is no separate background orphan collector, and the post-delete range cleanup is best-effort.
 
-### Versioning & schema evolution
+## Versioning & schema evolution
 
-- redb `META["schema"] = 1`
-- Payload `blob_format` for crypto/layout upgrades
-- **Phase 2 (started):** split `SETS_BLOB` into a sealed header + manifest, per-pair text, and extracted image/thumb blobs so load/decrypt is proportional to the page or image requested. See [Chunked storage layout](#chunked-storage-layout).
+- redb schema version is 3 (`META["schema"]`).
+- `blob_format` tracks crypto/layout upgrades: new sets start in whole-set format 1 and migrate to chunked format 2 on the first authenticated payload operation.
+- Chunked storage is implemented; see [Chunked storage layout](#chunked-storage-layout).
 
 ---
 
@@ -749,7 +645,7 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 ## References
 
 - [`docs/design.md`](design.md) — architecture & roadmap (Sled bullet → redb via this design)
-- [`docs/design-privacy.md`](design-privacy.md) — Strict Private Mode, per-request key, ciphertext cache
+- [`docs/design-privacy.md`](design-privacy.md) — Strict Private Mode, per-request key, plaintext snapshot cache
 - [`chatbot-core/src/persistence.rs`](../chatbot-core/src/persistence.rs) — current `DataPersistence` / `sets.json`
 - [`chatbot-core/src/session.rs`](../chatbot-core/src/session.rs) — `chat_*`, `regenerate_*`, seal/unseal, session cache
 - [`chatbot-server/src/chat.rs`](../chatbot-server/src/chat.rs), [`regenerate.rs`](../chatbot-server/src/regenerate.rs), [`memory.rs`](../chatbot-server/src/memory.rs), [`sets.rs`](../chatbot-server/src/sets.rs), [`reset_chat.rs`](../chatbot-server/src/reset_chat.rs)
@@ -759,96 +655,10 @@ Alerting (ops, single-node): process crash loops; disk full on `data/`; elevated
 
 ---
 
-## PR Plan
+## Not implemented
 
-Incremental, independently reviewable PRs. Each PR should add tests first where fixing bugs (per AGENTS.md bug protocol) and run `docker compose run --rm tests` after `docker compose --progress plain up --build -d` (host terminal for the live stack).
-
-### PR 1: History domain types + pure ops (no redb yet)
-
-- **Title:** `history: introduce domain types and pure snapshot ops`
-- **Files/components:** `chatbot-core/src/history/{mod,types,ops}.rs`, `lib.rs`; unit tests for append/delete/regenerate-apply on `SetSnapshot`
-- **Dependencies:** none
-- **Description:** Define `SetId`, `SetVersion`, `SetSnapshot`, pure functions that transform snapshots without I/O. No handler changes. Establishes vocabulary for later PRs.
-
-### PR 2: redb store skeleton + sealed internals
-
-- **Title:** `history: redb store with metadata tables and encrypted blob round-trip`
-- **Files/components:** `chatbot-core/src/history/store/*`, `crypto.rs`, `Cargo.toml` (`redb`, `aes-gcm`/`chacha20poly1305`, `hkdf` as needed); config path under `HOST_DATA_DIR`; unit/integration tests with tempfile
-- **Dependencies:** PR 1
-- **Description:** Open DB, put/get blob with AEAD+AAD, CAS version update, ownership checks. Not wired to HTTP. Prove conflict returns `HistoryError::Conflict`.
-
-### PR 3: `HistoryService` public API + guest isolation
-
-- **Title:** `history: HistoryService safe API surface`
-- **Files/components:** `history/api.rs`, cache stub; tests for create/list/load/append/delete_pair/reset
-- **Dependencies:** PR 2
-- **Description:** Implement narrow API. Forbid exporting store types. Document that handlers must use only this API.
-
-### PR 4: Migration from `user_sets/*/sets.json`
-
-- **Title:** `history: migrate legacy sets.json into redb`
-- **Files/components:** `history/migration.rs`; reuse decrypt helpers from `persistence`/`crypto`; tests ported from `set_privacy.rs` / `sets.rs` seeding patterns
-- **Dependencies:** PR 3
-- **Description:** Lazy per-user migration, bak file, idempotency, privacy assertions (no plaintext set names in redb keys or filenames).
-
-### PR 5: Wire sets lifecycle endpoints to HistoryService
-
-- **Title:** `sets: serve set_id-based list/create/load/delete/rename via HistoryService`
-- **Files/components:** `chatbot-server/src/sets.rs`, `static/chat.js` (selector stores `set_id`), integration tests `sets.rs`, `set_privacy.rs`, `sets_auth.rs`, `enc_key_auth.rs`
-- **Dependencies:** PR 4
-- **Description:** Switch get/create/load/delete/rename off `DataPersistence` set maps. Return `set_id` + `version`. Load updates optional cache slot only, does not clobber other sets’ cache entries.
-
-### PR 6: PrepareCapture + chat finalize CAS (fixes wrong-set write)
-
-- **Title:** `chat: immutable PrepareCapture and CAS append_pair finalize`
-- **Files/components:** `session.rs` (`chat_prepare`/`chat_finalize`), `chatbot-server/src/chat.rs`, tests `chat.rs`, new multi-set/multi-tab style unit tests
-- **Dependencies:** PR 5
-- **Description:** Capture `{set_id, version, history}` at prepare; finalize commits only from capture via `append_pair`. Session cache no longer source of truth for history content. Regression test: prepare set A, mutate cache to set B, finalize still writes A correctly.
-
-### PR 7: Non-destructive regenerate/edit + CAS commit
-
-- **Title:** `regenerate: non-destructive prepare and CAS commit`
-- **Files/components:** `session.rs` regenerate paths, `regenerate.rs`, tests `regenerate.rs`, `edit_message.rs`
-- **Dependencies:** PR 6
-- **Description:** Remove `history.remove`/`pop` from prepare; apply replacement only on successful finalize with CAS. Failed stream leaves durable+cache history unchanged.
-
-### PR 8: delete_message, reset_chat, memory/prompt via HistoryService
-
-- **Title:** `history: route delete/reset/memory/prompt through CAS API`
-- **Files/components:** `memory.rs`, `reset_chat.rs`, related session helpers deletion; tests `memory.rs`, `delete_message.rs`, `reset_chat.rs`
-- **Dependencies:** PR 6 (PR 7 optional parallel if no conflict)
-- **Description:** Eliminate direct `store_history` / free-form session history RMW from handlers. Content-match delete stays; add `expected_version`.
-
-### PR 9: Session cache keyed by (user, set_id) + remove legacy authority paths
-
-- **Title:** `session: multi-set ciphertext cache and remove authoritative session history APIs`
-- **Files/components:** `session.rs`, `history/cache.rs`; delete/stop exporting `replace_session_set` misuse, `update_session_history` for authed paths
-- **Dependencies:** PR 6–8
-- **Description:** Cache layout change; ensure authed flows always hit HistoryService for durability. Guests unchanged.
-
-### PR 10: Remove DataPersistence history paths + docs cutover
-
-- **Title:** `persistence: remove sets.json history backend; docs redb decision`
-- **Files/components:** `persistence.rs` (delete or gut history methods), `docs/design.md` (Sled → redb done), `docs/design-privacy.md` note if needed, `docs/design-history-store.md` status → Implemented; README data layout
-- **Dependencies:** PR 4–9
-- **Description:** No code path left on `user_sets/**/sets.json` except read of `.migrated.bak` if any. Update roadmap checkboxes. Cleanup instructions for bak files.
-
-### PR 11 (optional follow-up): Client 409 UX polish + version plumbing
-
-- **Title:** `ui: handle version_conflict by syncing current_version and retrying`
-- **Files/components:** `static/chat.js`, possibly templates
-- **Dependencies:** PR 5–8
-- **Description:** On 409, apply `current_version`, retry the mutation; do not require a page reload. Track `expected_version` in frontend state from list/load/mutation responses. Reindex pair indices after delete.
-
-### Suggested merge order
-
-```text
-PR1 → PR2 → PR3 → PR4 → PR5 → PR6 → PR7
-                           ↘ PR8
-                     PR6–8 → PR9 → PR10 → PR11
-```
-
-PRs 7 and 8 can proceed in parallel after PR 6 if carefully rebased.
+- Multi-instance shared database/session storage; deployment remains single-node.
+- Background collection of orphaned chunk/media rows; set-prefix cleanup after deletion is best-effort.
 
 ---
 

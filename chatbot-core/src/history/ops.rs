@@ -661,8 +661,7 @@ mod tests {
     #[test]
     fn accepts_image_sized_user_messages_under_chat_body_cap() {
         let s = sample();
-        // ~1.5 MiB JPEG-like data URL: accepted by the 5 MiB `/chat` body limit but
-        // previously rejected by a 1M-char history max at finalize.
+        // ~1.5 MiB JPEG-like data URL: accepted by the 5 MiB `/chat` body limit.
         let image_msg = format!(
             "what is this?\n[IMAGE:data:image/jpeg;base64,{}]",
             "A".repeat(1_500_000)

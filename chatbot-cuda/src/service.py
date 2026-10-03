@@ -476,7 +476,7 @@ class InferenceService:
         kwargs: dict,
         cleanup_path: Optional[str],
     ) -> None:
-        """Run, clean up, unregister, then settle; never raises."""
+        """Run, clean up, unregister and settle; catches `Exception`, not `BaseException`."""
         try:
             outcome = func(*args, **kwargs)
         except Exception as exc:

@@ -49,6 +49,9 @@ llms:
     base_url: "http://${LOCAL_HOST}:${LOCAL_PORT}/v1"
     model_name: "dolphin3.1-8b"
     context_size: 8192
+    # OpenRouter provider routing: restrict routing to the listed providers, with no fallbacks.
+    # allowed_providers: ["ProviderA", "ProviderB"]
+    # request_timeout: 300.0         # request timeout in seconds (default 300)
     tier: "free"
     # Illustrative local route: classify private only after verifying the entire endpoint/processing chain.
     privacy_level: non_private
@@ -61,6 +64,9 @@ llms:
     tier: "premium"
     privacy_level: non_private
     search: true  # Enables Brave Search (requires BRAVE_API_KEY)
+    # OpenRouter provider routing: restrict routing to the listed providers, with no fallbacks.
+    # allowed_providers: ["ProviderA", "ProviderB"]
+    # request_timeout: 300.0         # request timeout in seconds (default 300)
     # Upstream 429 "Too Many Requests" retry (defaults shown):
     # rate_limit_retries: 5          # extra attempts after a 429 (0 disables retrying)
     # rate_limit_max_wait_secs: 30.0 # cap on honoring the upstream Retry-After hint

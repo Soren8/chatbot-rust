@@ -4,9 +4,10 @@
 owned ``InferenceService``, and loads it — including factory-injected test
 services, so tests exercise the same startup path and failure. Every route
 uses ``request.app.state.inference_service``. Startup load failures propagate
-and the app never starts degraded. HTTP shapes: TTS 400/500 with
-``application/octet-stream`` + ``X-Sample-Rate``; STT 400/422/500 with WAV
-staging owned by the service worker through its actual exit; health reports
+and the app never starts degraded. HTTP shapes: non-streaming TTS returns
+400/500 with ``application/octet-stream`` + ``X-Sample-Rate``; streaming TTS
+returns 400 before streaming starts, and a mid-stream failure ends the stream
+after the status is sent. STT returns 400/422/500 with WAV staging owned by the service worker through its actual exit; health reports
 the owned service's flags. Streaming uses a service-owned daemon thread per
 request with a bounded queue (``STREAM_BUFFER_SIZE`` backpressure): consumer
 close/cancel signals the producer at the next sentence boundary, and

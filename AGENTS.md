@@ -50,9 +50,6 @@ Logs: `temp/test-logs/`. Caches: `temp/.cargo/`, `temp/.docker/tests/`.
 
 ## Scratchpad / Temp Files
 
-- Use `temp/` for ephemeral notes (e.g., TODOs) — it is gitignored
-- Never reference `temp/` items in commit messages
-- Keep `temp/todo.md` updated as you progress
 - Preserve the `temp/.cargo/` cache directory; do not delete it because it stores Rust build artifacts used by other agents. If it is missing, recreate it inside `temp/` (never at repo root).
 - Keep Docker build caches under `temp/.docker/`; create that directory inside `temp/` when needed so the repository root stays free of sandbox artefacts.
 - Store test run artifacts under `temp/test-logs/`; do not create a top-level `test-logs/` directory.

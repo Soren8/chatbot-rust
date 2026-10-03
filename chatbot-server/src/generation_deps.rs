@@ -22,10 +22,9 @@ use crate::providers::xai::XaiProvider;
 /// Generation dependency handle: global or owned.
 ///
 /// `Clone` shares one `Arc` of owned dependencies; two handles built from
-/// separate maps share nothing. The global handle preserves the original lazy
-/// boundaries: provider lookup at selection, one `app_config()` capture for
-/// thought defaults at the old site, Brave env read only in the gated search
-/// branches of dispatch.
+/// separate maps share nothing. The global handle resolves providers at selection,
+/// captures config for thought defaults once per call, and reads Brave env only in
+/// gated search branches of dispatch.
 #[derive(Clone)]
 pub struct GenerationDeps {
     owned: Option<Arc<OwnedGenerationDeps>>,
@@ -62,7 +61,7 @@ impl Clone for OwnedGenerationDeps {
 }
 
 /// Home model listing entry: sanitized provider name plus tier plus search
-/// flag. Matches the previous `home::build_available_models` filtering.
+/// flag. The home page filters these summaries by privacy, tier and access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderSummary {
     pub provider_name: String,
@@ -227,9 +226,7 @@ impl GenerationDeps {
         }
     }
 
-    /// Thought defaults as one pair. Callers capture this at the old site
-    /// even when the payload overrides, matching the original eager
-    /// `app_config()` read. The global path reads live config once here.
+    /// Thought defaults as one pair. The global path reads live config once here.
     pub fn thoughts_defaults(&self) -> (bool, bool) {
         match &self.owned {
             Some(owned) => (owned.save_thoughts, owned.send_thoughts),
