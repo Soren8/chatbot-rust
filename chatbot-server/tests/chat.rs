@@ -12,10 +12,9 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
     enc_key::EncryptionKey,
-    history::HistoryService,
     user_store::UserStore,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -85,7 +84,7 @@ async fn chat_endpoint_returns_stubbed_stream() {
     );
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, _services) = common::workspace_router(static_root);
 
     let home_response = app
         .clone()
@@ -255,7 +254,7 @@ async fn chat_stream_persists_history_for_logged_in_user() {
         .expect("write users.json");
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, services) = common::workspace_router(static_root);
 
     let mut session_cookie: Option<String> = None;
 
@@ -388,7 +387,7 @@ async fn chat_stream_persists_history_for_logged_in_user() {
     let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap())
         .expect("enc key");
 
-    let history = HistoryService::global().expect("history service");
+    let history = services.chat().history().expect("history service");
     let snap = history
         .find_by_display_name(USERNAME, "default", &key)
         .expect("find default")

@@ -8,7 +8,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
     response::Response,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -140,7 +140,7 @@ async fn chat_empty_message_returns_raw400() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -162,7 +162,7 @@ async fn regenerate_empty_message_returns_raw400() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -184,7 +184,7 @@ async fn chat_invalid_set_name_saved_as_chat_turn() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -206,7 +206,7 @@ async fn chat_invalid_set_id_saved_as_chat_turn() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -228,7 +228,7 @@ async fn regenerate_invalid_set_name_saved_as_chat_turn() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -250,7 +250,7 @@ async fn regenerate_invalid_set_id_saved_as_chat_turn() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -293,7 +293,7 @@ async fn regenerate_pair_index_out_of_range_saved_as_chat_turn() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session_with_history(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -315,7 +315,7 @@ async fn regenerate_missing_pair_index_saved_as_chat_turn() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session_with_history(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -342,7 +342,7 @@ async fn regenerate_postlock_validation_releases_lock() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session_with_history(&app).await;
 
     let (status, _, text) = read_raw(
@@ -403,7 +403,7 @@ async fn chat_lookup_unknown_set_saved_as_chat_turn() {
     )
     .expect("write users.json");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
 
     let login_page = app
         .clone()

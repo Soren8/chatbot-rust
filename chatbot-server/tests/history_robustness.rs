@@ -15,10 +15,9 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
     enc_key::EncryptionKey,
-    history::{HistoryService, PrepareCapture, SetVersion},
-    session,
+    history::{PrepareCapture, SetVersion},
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -419,7 +418,7 @@ async fn get_sets_returns_set_id_and_version_contract() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "contract_user", "C0ntract!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "contract_user", "C0ntract!").await;
 
     let sets = get_sets(&app, &auth).await;
@@ -454,7 +453,7 @@ async fn delete_set_version_conflict_returns_409() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "conflict_user", "C0nflict!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "conflict_user", "C0nflict!").await;
 
     let created = create_set(&app, &auth, "doomed").await;
@@ -530,7 +529,7 @@ async fn multi_set_chat_does_not_clobber_other_set() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "multiset_user", "Mult1set!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "multiset_user", "Mult1set!").await;
 
     create_set(&app, &auth, "alpha").await;
@@ -575,7 +574,7 @@ async fn regenerate_prepare_without_finalize_keeps_durable_history() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "regen_abort_user", "Reg3nAbort!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "regen_abort_user", "Reg3nAbort!").await;
 
     chat(&app, &auth, "default", "keep-me", None).await;
@@ -643,7 +642,7 @@ async fn regenerate_pair_index_equal_len_creates_joined_turn() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "voice_amend_user", "V0iceAmend!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "voice_amend_user", "V0iceAmend!").await;
 
     chat(&app, &auth, "default", "first fragment", None).await;
@@ -701,7 +700,7 @@ async fn regenerate_replaces_pair_keeps_later_messages() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "regen_keep_user", "Reg3nKeep!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "regen_keep_user", "Reg3nKeep!").await;
 
     chat(&app, &auth, "default", "u1", None).await;
@@ -757,7 +756,7 @@ async fn chat_advances_version_stale_followup_mutations_conflict() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "chat_ver_user", "ChatVer1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "chat_ver_user", "ChatVer1!").await;
 
     let initial = load_set_by_name(&app, &auth, "default").await;
@@ -842,7 +841,7 @@ async fn regenerate_advances_version_stale_followup_mutations_conflict() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "regen_ver_user", "Reg3nVer!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "regen_ver_user", "Reg3nVer!").await;
 
     chat(&app, &auth, "default", "hello", None).await;
@@ -943,7 +942,7 @@ async fn version_refresh_via_get_sets_allows_delete_and_reset_after_streams() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "ver_refresh_user", "VerRefr1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "ver_refresh_user", "VerRefr1!").await;
 
     let initial = load_set_by_name(&app, &auth, "default").await;
@@ -1015,7 +1014,7 @@ async fn mutations_require_encryption_key() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "encgate_user", "EncGate1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "encgate_user", "EncGate1!").await;
 
     for (uri, body) in [
@@ -1100,7 +1099,7 @@ async fn guest_chat_does_not_touch_redb_user_store() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
 
     // Guest home for csrf
     let home = app
@@ -1180,7 +1179,7 @@ async fn stale_chat_capture_conflict_surfaces_error_chunk() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "stale_cap_user", "StaleCap1!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "stale_cap_user", "StaleCap1!").await;
 
     // Seed one message
@@ -1188,7 +1187,7 @@ async fn stale_chat_capture_conflict_surfaces_error_chunk() {
 
     // Concurrently advance version via HistoryService while simulating stale capture commit
     let key = enc_key_obj(&auth);
-    let hs = HistoryService::global().unwrap();
+    let hs = services.chat().history().unwrap();
     let snap = hs
         .find_by_display_name(&auth.username, "default", &key)
         .unwrap()
@@ -1207,8 +1206,11 @@ async fn stale_chat_capture_conflict_surfaces_error_chunk() {
     .unwrap();
 
     // Stale finalize
-    let sess = session::session_context(Some(&auth.cookie)).unwrap();
-    let extras = session::chat_finalize_with_capture(
+    let sess = services
+        .identity()
+        .session_context(Some(&auth.cookie))
+        .unwrap();
+    let extras = services.chat().chat_finalize_with_capture(
         &sess,
         "default",
         "stale-msg",
@@ -1238,7 +1240,7 @@ async fn delete_message_content_mismatch_and_out_of_range() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "delmsg_user", "DelMsg1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "delmsg_user", "DelMsg1!").await;
 
     chat(&app, &auth, "default", "hello", None).await;
@@ -1328,7 +1330,7 @@ async fn sequential_deletes_from_front_use_returned_version() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "seq_del_user", "SeqDel1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "seq_del_user", "SeqDel1!").await;
 
     chat(&app, &auth, "default", "first", None).await;
@@ -1384,7 +1386,7 @@ async fn stale_pair_index_after_delete_is_content_mismatch_not_version_conflict(
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "stale_idx_user", "StaleIdx1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "stale_idx_user", "StaleIdx1!").await;
 
     chat(&app, &auth, "default", "first", None).await;
@@ -1465,7 +1467,7 @@ async fn reset_chat_clears_only_named_set() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "reset_iso_user", "ResetIso1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "reset_iso_user", "ResetIso1!").await;
 
     create_set(&app, &auth, "keep").await;
@@ -1505,7 +1507,7 @@ async fn provider_stream_error_does_not_persist_chat() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "stream_err_user", "StreamErr1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "stream_err_user", "StreamErr1!").await;
 
     env::set_var(
@@ -1554,7 +1556,7 @@ async fn provider_stream_error_chain_reaches_client() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "stream_chain_user", "StreamChain1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "stream_chain_user", "StreamChain1!").await;
 
     env::set_var(
@@ -1617,7 +1619,7 @@ async fn mutating_other_set_does_not_pollute_session_cache() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "cache_iso_user", "CacheIso1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "cache_iso_user", "CacheIso1!").await;
 
     create_set(&app, &auth, "alpha").await;
@@ -1671,7 +1673,7 @@ async fn chat_and_regenerate_prefer_set_id_over_name() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "setid_chat_user", "SetIdChat1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "setid_chat_user", "SetIdChat1!").await;
 
     let created = create_set(&app, &auth, "by-id-set").await;
@@ -1745,7 +1747,7 @@ async fn rename_set_rejects_duplicate_display_name() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "rename_dup_user", "RenameDup1!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "rename_dup_user", "RenameDup1!").await;
 
     let alpha = create_set(&app, &auth, "alpha").await;

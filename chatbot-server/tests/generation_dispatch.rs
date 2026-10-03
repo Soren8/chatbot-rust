@@ -26,7 +26,7 @@ use axum::{
     Router,
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -328,7 +328,7 @@ async fn chat_search_tool_streams_search_markers_and_final_answer() {
     env::set_var("CHATBOT_TEST_BRAVE_RESULTS", "Atlanta: 72F, sunny");
     set_chunks(&["The weather is nice today."]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -375,7 +375,7 @@ async fn regenerate_search_tool_streams_search_markers_and_final_answer() {
     clear_generation_env();
     set_chunks(&["initial chunk"]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (chat_status, _) = post_chat(
@@ -443,7 +443,7 @@ async fn chat_search_direct_streams_without_search_markers() {
     env::remove_var("CHATBOT_TEST_BRAVE_RESULTS");
     set_chunks(&["Direct answer while search is enabled."]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -486,7 +486,7 @@ async fn regenerate_search_direct_streams_without_search_markers() {
     clear_generation_env();
     set_chunks(&["initial chunk"]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (chat_status, _) = post_chat(
@@ -553,7 +553,7 @@ async fn chat_search_disabled_ignores_tool_request() {
     env::remove_var("CHATBOT_TEST_BRAVE_RESULTS");
     set_chunks(&["Direct answer."]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -596,7 +596,7 @@ async fn regenerate_search_disabled_ignores_tool_request() {
     clear_generation_env();
     set_chunks(&["initial chunk"]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (chat_status, _) = post_chat(
@@ -663,7 +663,7 @@ async fn chat_search_without_brave_key_falls_back_to_direct() {
     env::remove_var("CHATBOT_TEST_BRAVE_RESULTS");
     set_chunks(&["Regular answer without search."]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -706,7 +706,7 @@ async fn regenerate_search_without_brave_key_falls_back_to_direct() {
     clear_generation_env();
     set_chunks(&["initial chunk"]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (chat_status, _) = post_chat(
@@ -768,7 +768,7 @@ async fn chat_stream_error_renders_clean_error_and_persists_nothing() {
     clear_generation_env();
     seed_user(workspace.path(), "gen_dispatch_err", "GenDispatch1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "gen_dispatch_err", "GenDispatch1!").await;
 
     env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["partial","__STREAM_ERROR__"]"#);
@@ -829,7 +829,7 @@ async fn regenerate_stream_error_preserves_original_pair() {
     clear_generation_env();
     seed_user(workspace.path(), "gen_dispatch_regen_err", "GenRegenErr1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "gen_dispatch_regen_err", "GenRegenErr1!").await;
 
     env::set_var("CHATBOT_TEST_OPENAI_CHUNKS", r#"["initial"]"#);
@@ -921,7 +921,7 @@ async fn chat_xai_native_search_dispatches_to_responses_with_tool() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&xai_config(&base_url, true));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -975,7 +975,7 @@ async fn regenerate_xai_native_search_dispatches_to_responses_with_tool() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&xai_config(&base_url, true));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (chat_status, _) = post_chat(
@@ -1050,7 +1050,7 @@ async fn chat_xai_brave_search_uses_openai_compatible_tool_path() {
     env::set_var("CHATBOT_TEST_BRAVE_RESULTS", "Atlanta: 72F, sunny");
     set_chunks(&["Brave answer via XAI."]);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -1106,7 +1106,7 @@ async fn chat_xai_without_brave_key_falls_back_to_native() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&xai_config(&base_url, false));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -1158,7 +1158,7 @@ async fn chat_xai_multimodal_image_maps_to_input_image() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&xai_config(&base_url, true));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(

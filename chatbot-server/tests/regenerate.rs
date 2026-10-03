@@ -12,10 +12,9 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
     enc_key::EncryptionKey,
-    history::HistoryService,
     user_store::UserStore,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -50,7 +49,7 @@ async fn regenerate_endpoint_streams_response() {
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, _services) = common::workspace_router(static_root);
 
     let home_response = app
         .clone()
@@ -230,7 +229,7 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
         .expect("write users.json");
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, services) = common::workspace_router(static_root);
 
     let mut session_cookie: Option<String> = None;
 
@@ -403,7 +402,7 @@ async fn regenerate_stream_replaces_history_entry_for_logged_in_user() {
         .expect("derive encryption key");
     let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap())
         .expect("enc key");
-    let history = HistoryService::global().expect("history service");
+    let history = services.chat().history().expect("history service");
     let loaded = history
         .find_by_display_name(USERNAME, "default", &key)
         .expect("find")
@@ -449,7 +448,7 @@ async fn regenerate_updates_system_prompt_in_history() {
         .expect("write users.json");
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, services) = common::workspace_router(static_root);
 
     let mut session_cookie: Option<String> = None;
 
@@ -567,7 +566,7 @@ async fn regenerate_updates_system_prompt_in_history() {
     let store = UserStore::new().unwrap();
     let key_bytes = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
     let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap()).unwrap();
-    let history = HistoryService::global().unwrap();
+    let history = services.chat().history().expect("history service");
     let loaded = history
         .find_by_display_name(USERNAME, "default", &key)
         .unwrap()

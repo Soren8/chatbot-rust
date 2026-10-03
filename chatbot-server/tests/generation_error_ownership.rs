@@ -24,8 +24,7 @@ use axum::{
     routing::post,
     Router,
 };
-use chatbot_core::session::ChatService;
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -319,7 +318,7 @@ async fn chat_preprepare_error_skips_save_and_keeps_lock_when_busy() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_busy_chat", "LeaseBusyChat1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_busy_chat", "LeaseBusyChat1!").await;
 
     set_chunks(&["first answer"]);
@@ -339,7 +338,9 @@ async fn chat_preprepare_error_skips_save_and_keeps_lock_when_busy() {
     clear_generation_env();
 
     assert!(
-        ChatService::global().try_acquire_generation("lease_busy_chat"),
+        services
+            .chat()
+            .try_acquire_generation("lease_busy_chat"),
         "test must hold the generation lock"
     );
 
@@ -375,11 +376,13 @@ async fn chat_preprepare_error_skips_save_and_keeps_lock_when_busy() {
     );
 
     assert!(
-        !ChatService::global().try_acquire_generation("lease_busy_chat"),
+        !services
+            .chat()
+            .try_acquire_generation("lease_busy_chat"),
         "busy preprepare error must never unlock the other generation"
     );
 
-    ChatService::global().release_session_lock("lease_busy_chat");
+    services.chat().release_session_lock("lease_busy_chat");
     assert_eq!(
         chatbot_server::test_instrumentation::take_error_count(),
         0
@@ -396,7 +399,7 @@ async fn regenerate_preprepare_error_skips_save_and_keeps_lock_when_busy() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_busy_regen", "LeaseBusyRegen1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_busy_regen", "LeaseBusyRegen1!").await;
 
     set_chunks(&["v1 answer"]);
@@ -416,7 +419,9 @@ async fn regenerate_preprepare_error_skips_save_and_keeps_lock_when_busy() {
     clear_generation_env();
 
     assert!(
-        ChatService::global().try_acquire_generation("lease_busy_regen"),
+        services
+            .chat()
+            .try_acquire_generation("lease_busy_regen"),
         "test must hold the generation lock"
     );
 
@@ -453,11 +458,13 @@ async fn regenerate_preprepare_error_skips_save_and_keeps_lock_when_busy() {
     );
 
     assert!(
-        !ChatService::global().try_acquire_generation("lease_busy_regen"),
+        !services
+            .chat()
+            .try_acquire_generation("lease_busy_regen"),
         "busy regenerate preprepare error must never unlock the other generation"
     );
 
-    ChatService::global().release_session_lock("lease_busy_regen");
+    services.chat().release_session_lock("lease_busy_regen");
     assert_eq!(
         chatbot_server::test_instrumentation::take_error_count(),
         0
@@ -488,7 +495,7 @@ async fn chat_upstream_500_renders_error_without_persisting_and_releases_lease()
     let workspace = common::TestWorkspace::with_config(&openai_config(&base_url));
     seed_user(workspace.path(), "lease_setup_chat", "LeaseSetupChat1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_setup_chat", "LeaseSetupChat1!").await;
 
     let (status, body) = read_body(
@@ -573,7 +580,7 @@ async fn regenerate_upstream_500_preserves_pair_and_releases_lease() {
     let workspace = common::TestWorkspace::with_config(&openai_config(&base_url));
     seed_user(workspace.path(), "lease_setup_regen", "LeaseSetupRegen1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_setup_regen", "LeaseSetupRegen1!").await;
 
     let (chat_status, _) = read_body(

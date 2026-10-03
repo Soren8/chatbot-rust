@@ -59,7 +59,7 @@ Coverage: every non-test comment block was extracted with its following code (co
 
 ## Resolution
 
-All findings are fixed. The user decided that the docs follow the code, except for DOC-002, where the code was brought up to the documented guarantee.
+All DOC-001–016 and DOC-C01–C10 findings are fixed. Documentation and comments follow the implemented behavior; DOC-002 required changing cache code to provide the documented sweep and zeroization behavior.
 
 - **DOC-001 and DOC-002 (privacy wording and TTL wipe):** `design-privacy.md`, `design.md` and `design-history-store.md` now say plainly that this is not end-to-end encryption, because the LLM works on plaintext, but it is as close to it as this stack allows. Data is encrypted at rest, and the server holds the key only during active requests (`9dedc1b`). For DOC-002 the code changed: the background purge (every `SESSION_PURGE_INTERVAL_SECS`, default 300 s) now sweeps expired `SetCache` entries and summaries, and `LogicalSnapshot` zeroizes its strings on drop (`a3fac32`). Red-first regressions:
   - `purge_expired_removes_only_expired_entries_and_summaries`;
@@ -81,4 +81,4 @@ All findings are fixed. The user decided that the docs follow the code, except f
 
 ## Completion
 
-Phase 7 covered the 26 tracked prose files, every non-test code comment (about 1,600 blocks across Rust, JS, Java and Python), and configuration and deployment comments. Three completed plans were folded into living docs and deleted: `privacy-and-agent-connections-plan.md`, `tts-streaming.txt` and `design-history-chunks.md`. The review ledger was condensed from 2,289 to about 560 lines. All relative links and anchors resolve. This was a documentation-only pass; the suite gate is `20261002T061504-afeafe0db3d6` at `2412b78` (1,167 tests, 0 failed).
+Phase 7 covered the 26 tracked prose files, every non-test code comment (about 1,600 blocks across Rust, JS, Java and Python), and configuration and deployment comments. Three completed plans were folded into living docs and deleted: `privacy-and-agent-connections-plan.md`, `tts-streaming.txt` and `design-history-chunks.md`. The review ledger was condensed from 2,289 to about 560 lines. All relative links and anchors resolve. Phase 7 is complete, with all findings fixed. DOC-002 also changed the history-cache background sweep and zeroization code. The suite gate is `20261003T210405-6ec64fba7bc9` (151 nonzero Rust test-result blocks; 1,171 passed, 0 failed; nested DNS 34 and voice 70 Python tests reported separately).

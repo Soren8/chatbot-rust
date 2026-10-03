@@ -9,7 +9,7 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::user_store::{CreateOutcome, UserStore};
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -145,7 +145,7 @@ async fn authenticated_load_set_without_enc_key_returns_unauthorized() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     let response = app
@@ -183,7 +183,7 @@ async fn authenticated_load_set_with_wrong_enc_key_returns_unauthorized() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     let response = app
@@ -222,7 +222,7 @@ async fn missing_verifier_does_not_enroll_from_data_request() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
     let enc_key = common::derive_encryption_key_header(username, password);
 
@@ -273,7 +273,7 @@ async fn legacy_binary_verifier_still_validates_and_migrates() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
     let enc_key = common::derive_encryption_key_header(username, password);
 
@@ -336,7 +336,7 @@ async fn expired_verifier_json_still_validates() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
     let enc_key = common::derive_encryption_key_header(username, password);
 
@@ -406,7 +406,7 @@ async fn login_sets_httponly_enc_key_cookie() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let login_page = app
         .clone()
         .oneshot(
@@ -474,7 +474,7 @@ async fn load_set_accepts_enc_key_cookie_without_header() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let login_page = app
         .clone()
         .oneshot(
@@ -591,7 +591,7 @@ async fn load_set_accepts_account_enc_key_cookie_without_last_used() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let login_page = app
         .clone()
         .oneshot(

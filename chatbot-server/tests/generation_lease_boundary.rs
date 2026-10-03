@@ -24,7 +24,7 @@ use axum::{
     Router,
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use futures_util::StreamExt;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -262,7 +262,7 @@ async fn chat_success_persists_pair_and_releases_lock() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_success", "LeaseSuccess1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_success", "LeaseSuccess1!").await;
 
     set_chunks(&["hello there"]);
@@ -306,7 +306,7 @@ async fn chat_provider_error_persists_nothing_and_releases_lock() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_provider_error", "LeaseProvider1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_provider_error", "LeaseProvider1!").await;
 
     env::set_var(
@@ -355,7 +355,7 @@ async fn chat_cancel_before_first_poll_releases_without_persisting() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_cancel_early", "LeaseCancel1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_cancel_early", "LeaseCancel1!").await;
 
     set_chunks(&["never read"]);
@@ -400,7 +400,7 @@ async fn chat_cancel_midstream_persists_partial_and_releases_lock() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_cancel_mid", "LeaseCancelMid1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_cancel_mid", "LeaseCancelMid1!").await;
 
     set_chunks(&["part-one ", "part-two"]);
@@ -449,7 +449,7 @@ async fn chat_cancel_after_poll_before_first_chunk_persists_empty_partial() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_cancel_empty", "LeaseCancelEmpty1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_cancel_empty", "LeaseCancelEmpty1!").await;
 
     // A large per-chunk delay keeps the first chunk pending so one manual poll
@@ -515,7 +515,7 @@ async fn chat_unknown_model_saves_error_turn_without_holding_lock() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_unknown_model", "LeaseUnknown1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_unknown_model", "LeaseUnknown1!").await;
 
     // A prior success creates the session entry so the saved error turn has a
@@ -590,7 +590,7 @@ async fn regenerate_success_persists_replacement_and_releases_lock() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_regen_success", "LeaseRegen1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_regen_success", "LeaseRegen1!").await;
 
     set_chunks(&["v1 answer"]);
@@ -649,7 +649,7 @@ async fn regenerate_cancel_midstream_persists_partial_replacement() {
     clear_generation_env();
     seed_user(workspace.path(), "lease_regen_cancel", "LeaseRegenCancel1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "lease_regen_cancel", "LeaseRegenCancel1!").await;
 
     set_chunks(&["v1 answer"]);

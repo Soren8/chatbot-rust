@@ -8,7 +8,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -64,7 +64,7 @@ async fn memory_and_prompt_endpoints_round_trip() {
     .expect("write users.json");
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, _services) = common::workspace_router(static_root);
 
     let login_page = app
         .clone()
@@ -362,7 +362,7 @@ async fn memory_can_be_cleared_with_empty_string() {
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, _services) = common::workspace_router(static_root);
 
     let home_response = app
         .clone()
@@ -393,7 +393,7 @@ async fn memory_can_be_cleared_with_empty_string() {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_owned()))
         .expect("csrf token meta");
 
-    // Seed memory with content (guest path; bypasses HistoryService::global()).
+    // Seed memory with content (guest path; bypasses the history service).
     let seed_response = app
         .clone()
         .oneshot(

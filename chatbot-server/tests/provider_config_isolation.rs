@@ -19,7 +19,7 @@
 //!
 //! Fixture pattern: `TestWorkspace` serialized config plus env
 //! (`CHATBOT_TEST_*`, `BRAVE_API_KEY`), actual HTTP assertions via
-//! `build_router`. No real secrets, live config, or `data/` reads.
+//! `common::workspace_router`. No real secrets, live config, or `data/` reads.
 //!
 //! Already pinned elsewhere and not duplicated here:
 //! - `generation_dispatch.rs` (15 tests): OpenAI search tool/direct/disabled/
@@ -59,7 +59,7 @@ use axum::{
     Router,
 };
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -485,7 +485,7 @@ async fn chat_omitted_model_uses_first_provider_by_default() {
     let _workspace = common::TestWorkspace::with_config(TWO_PROVIDER_CONFIG);
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, body) = post_chat(
@@ -524,7 +524,7 @@ async fn chat_empty_model_uses_first_provider_by_default() {
     let _workspace = common::TestWorkspace::with_config(TWO_PROVIDER_CONFIG);
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, _, body) = post_chat(
@@ -559,7 +559,7 @@ async fn chat_explicit_second_model_uses_second_provider() {
     let _workspace = common::TestWorkspace::with_config(TWO_PROVIDER_CONFIG);
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, _, body) = post_chat(
@@ -594,7 +594,7 @@ async fn chat_omitted_model_uses_default_llm_when_configured() {
     let _workspace = common::TestWorkspace::with_config(TWO_PROVIDER_WITH_DEFAULT_LLM_CONFIG);
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, _, body) = post_chat(
@@ -629,7 +629,7 @@ async fn regenerate_omitted_model_uses_first_provider_by_default() {
     let _workspace = common::TestWorkspace::with_config(TWO_PROVIDER_CONFIG);
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (chat_status, _, _) = post_chat(
@@ -674,7 +674,7 @@ async fn chat_unknown_model_empty_message_returns_direct400() {
     let _workspace = common::TestWorkspace::with_openai_provider();
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, body) = post_chat(
@@ -707,7 +707,7 @@ async fn regenerate_unknown_model_whitespace_returns_direct400() {
     let _workspace = common::TestWorkspace::with_openai_provider();
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, body) = post_regenerate(
@@ -741,7 +741,7 @@ async fn regenerate_unknown_model_nonempty_saves_error_turn() {
     clear_generation_env();
     seed_user(workspace.path(), "prov_cfg_regen_unknown", "ProvCfgRegen1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "prov_cfg_regen_unknown", "ProvCfgRegen1!").await;
 
     set_chunks(&["seed answer"]);
@@ -801,7 +801,7 @@ async fn chat_unsupported_provider_nonempty_saves_error_turn() {
     clear_generation_env();
     seed_user(workspace.path(), "prov_cfg_stub_chat", "ProvCfgStub1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "prov_cfg_stub_chat", "ProvCfgStub1!").await;
 
     set_chunks(&["seed answer"]);
@@ -860,7 +860,7 @@ async fn chat_unsupported_provider_empty_returns_direct400() {
     let _workspace = common::TestWorkspace::with_config(STUB_MIXED_CONFIG);
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, body) = post_chat(
@@ -894,7 +894,7 @@ async fn regenerate_unsupported_provider_nonempty_saves_error_turn() {
     clear_generation_env();
     seed_user(workspace.path(), "prov_cfg_stub_regen", "ProvCfgStub2!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "prov_cfg_stub_regen", "ProvCfgStub2!").await;
 
     set_chunks(&["seed answer"]);
@@ -952,7 +952,7 @@ async fn regenerate_unsupported_provider_whitespace_returns_direct400() {
     let _workspace = common::TestWorkspace::with_config(STUB_MIXED_CONFIG);
     clear_generation_env();
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, body) = post_regenerate(
@@ -986,7 +986,7 @@ async fn chat_save_thoughts_default_preserves_think_in_history() {
     clear_generation_env();
     seed_user(workspace.path(), "prov_cfg_save_default", "ProvCfgSave1!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "prov_cfg_save_default", "ProvCfgSave1!").await;
 
     set_chunks(&["answer-start ", "<think>secret-plan</think>", " answer-end"]);
@@ -1027,7 +1027,7 @@ async fn chat_save_thoughts_false_strips_think_on_persist_but_streams_raw() {
     clear_generation_env();
     seed_user(workspace.path(), "prov_cfg_save_false", "ProvCfgSave2!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "prov_cfg_save_false", "ProvCfgSave2!").await;
 
     set_chunks(&["answer-start ", "<think>secret-plan</think>", " answer-end"]);
@@ -1072,7 +1072,7 @@ async fn chat_save_thoughts_config_false_strips_by_default() {
     clear_generation_env();
     seed_user(workspace.path(), "prov_cfg_save_cfg", "ProvCfgSave3!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "prov_cfg_save_cfg", "ProvCfgSave3!").await;
 
     set_chunks(&["answer-start ", "<think>secret-plan</think>", " answer-end"]);
@@ -1108,7 +1108,7 @@ async fn chat_save_thoughts_true_overrides_config_false() {
     clear_generation_env();
     seed_user(workspace.path(), "prov_cfg_save_override", "ProvCfgSave4!");
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "prov_cfg_save_override", "ProvCfgSave4!").await;
 
     set_chunks(&["answer-start ", "<think>secret-plan</think>", " answer-end"]);
@@ -1149,7 +1149,7 @@ async fn chat_send_thoughts_default_strips_think_upstream() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&openai_mock_config(&base_url));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (first_status, _, _) = post_chat(
@@ -1212,7 +1212,7 @@ async fn chat_send_thoughts_true_preserves_think_upstream() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&openai_mock_config(&base_url));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (first_status, _, _) = post_chat(
@@ -1272,7 +1272,7 @@ async fn chat_send_thoughts_config_true_preserves_by_default() {
     let _workspace =
         common::TestWorkspace::with_config(&openai_mock_config_with_send_true(&base_url));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (first_status, _, _) = post_chat(

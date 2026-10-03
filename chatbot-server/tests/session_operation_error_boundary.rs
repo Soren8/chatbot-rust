@@ -24,7 +24,7 @@ use chatbot_core::{
     user_store::UserStore,
 };
 use chatbot_server::{
-    build_router, build_router_with_services, identity::RequestIdentity, resolve_static_root,
+    build_router_with_services, identity::RequestIdentity, resolve_static_root,
     services::AppServices,
 };
 use chatbot_server::{
@@ -351,7 +351,7 @@ async fn guest_custom_set_returns_raw401_not_saved_turn() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let response = app
@@ -395,7 +395,7 @@ async fn guest_custom_set_regenerate_returns_raw401() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let response = app

@@ -15,7 +15,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
     response::Response,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -201,9 +201,11 @@ fn assert_exact_json(
 
 /// Hold the per-session generation lock via the core adapter so the next
 /// route prepare sees a busy session. Returns the session id for release.
-fn hold_generation_lock(cookie: &str) -> String {
-    let ctx =
-        chatbot_core::session::session_context(Some(cookie)).expect("session context for lock");
+fn hold_generation_lock(services: &chatbot_server::services::AppServices, cookie: &str) -> String {
+    let ctx = services
+        .identity()
+        .session_context(Some(cookie))
+        .expect("session context for lock");
     let provider = chatbot_core::config::get_provider_config(Some("default"))
         .expect("default provider for lock");
     let request = chatbot_core::session::ChatRequestData {
@@ -215,7 +217,7 @@ fn hold_generation_lock(cookie: &str) -> String {
         encrypted: false,
         send_thoughts: false,
     };
-    let result = chatbot_core::session::chat_prepare(&ctx, &request, &provider, None);
+    let result = services.chat().chat_prepare(&ctx, &request, &provider, None);
     assert!(
         result.error.is_none(),
         "lock-holder prepare must succeed, got {:?}",
@@ -349,10 +351,10 @@ async fn chat_busy_returns_exact429() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let _workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
-    let session_id = hold_generation_lock(&cookie);
+    let session_id = hold_generation_lock(&services, &cookie);
 
     let (status, content_type, text) = read_raw(
         post_chat(&app, &cookie, &csrf, &json!({"message": "hello", "model_name": "default"}))
@@ -361,7 +363,7 @@ async fn chat_busy_returns_exact429() {
     .await;
     assert_exact_json(status, &content_type, &text, StatusCode::TOO_MANY_REQUESTS, BUSY_BODY);
 
-    chatbot_core::session::release_session_lock(&session_id);
+    services.chat().release_session_lock(&session_id);
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
         serde_json::to_string(&vec!["recovered".to_string()]).expect("chunk json"),
@@ -383,10 +385,10 @@ async fn regenerate_busy_returns_exact429() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let _workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
-    let session_id = hold_generation_lock(&cookie);
+    let session_id = hold_generation_lock(&services, &cookie);
 
     let (status, content_type, text) = read_raw(
         post_regenerate(
@@ -400,7 +402,7 @@ async fn regenerate_busy_returns_exact429() {
     .await;
     assert_exact_json(status, &content_type, &text, StatusCode::TOO_MANY_REQUESTS, BUSY_BODY);
 
-    chatbot_core::session::release_session_lock(&session_id);
+    services.chat().release_session_lock(&session_id);
     env::set_var(
         "CHATBOT_TEST_OPENAI_CHUNKS",
         serde_json::to_string(&vec!["recovered".to_string()]).expect("chunk json"),
@@ -422,7 +424,7 @@ async fn chat_guest_premium_returns_exact403() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let _workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -445,7 +447,7 @@ async fn regenerate_guest_premium_returns_exact403() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let _workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, content_type, text) = read_raw(
@@ -469,7 +471,7 @@ async fn chat_free_user_premium_returns_exact403() {
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
     write_user(&workspace, "free-user", "Fr33P4ssw0rd!", "free");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf, enc_key) = login_user(&app, "free-user", "Fr33P4ssw0rd!").await;
 
     let (status, content_type, text) = read_raw(
@@ -493,7 +495,7 @@ async fn chat_premium_user_allowed() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
     write_user(&workspace, "premium-user", "Pr3m1umP4ss!", "premium");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf, enc_key) = login_user(&app, "premium-user", "Pr3m1umP4ss!").await;
 
     env::set_var(
@@ -530,7 +532,7 @@ async fn regenerate_premium_user_allowed() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
     write_user(&workspace, "premium-regen", "Pr3m1umR3g3n!", "premium");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf, enc_key) = login_user(&app, "premium-regen", "Pr3m1umR3g3n!").await;
 
     env::set_var(
@@ -582,7 +584,7 @@ async fn chat_failed_policy_releases_lock() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let _workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, _, text) = read_raw(
@@ -619,7 +621,7 @@ async fn regenerate_failed_policy_releases_lock() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     let _workspace = common::TestWorkspace::with_config(POLICY_CONFIG);
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, _, text) = read_raw(

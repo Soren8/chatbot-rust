@@ -16,7 +16,7 @@ use chatbot_core::{
     enc_key::EncryptionKey,
     history::HistoryService,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -172,6 +172,7 @@ async fn post_json(
 
 async fn ensure_default_and_seed_pairs(
     app: &axum::Router,
+    history: &HistoryService,
     auth: &AuthCtx,
     pairs: &[(String, String)],
 ) -> (String, u64) {
@@ -188,10 +189,9 @@ async fn ensure_default_and_seed_pairs(
     let mut version = loaded["version"].as_u64().expect("version");
 
     let key = EncryptionKey::from_header_value(&auth.enc_key).unwrap();
-    let hs = HistoryService::global().unwrap();
     let id = chatbot_core::history::SetId::parse(&set_id).unwrap();
     for (user, assistant) in pairs {
-        version = hs
+        version = history
             .append_pair(
                 &auth.username,
                 id,
@@ -213,13 +213,14 @@ async fn load_set_without_limit_still_returns_full_history() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "page_full_user", "PageFull1!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
+    let history = services.chat().history().expect("history service");
     let auth = login_user(&app, "page_full_user", "PageFull1!").await;
 
     let pairs: Vec<(String, String)> = (0..5)
         .map(|i| (format!("u{i}"), format!("a{i}")))
         .collect();
-    let (set_id, _) = ensure_default_and_seed_pairs(&app, &auth, &pairs).await;
+    let (set_id, _) = ensure_default_and_seed_pairs(&app, &history, &auth, &pairs).await;
 
     let (status, loaded) = post_json(
         &app,
@@ -246,13 +247,14 @@ async fn load_set_limit_returns_most_recent_page_then_older() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "page_tail_user", "PageTail1!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
+    let history = services.chat().history().expect("history service");
     let auth = login_user(&app, "page_tail_user", "PageTail1!").await;
 
     let pairs: Vec<(String, String)> = (0..50)
         .map(|i| (format!("u{i}"), format!("a{i}")))
         .collect();
-    let (set_id, _) = ensure_default_and_seed_pairs(&app, &auth, &pairs).await;
+    let (set_id, _) = ensure_default_and_seed_pairs(&app, &history, &auth, &pairs).await;
 
     let (status, tail) = post_json(
         &app,
@@ -295,13 +297,19 @@ async fn load_set_thumbnails_then_history_pair_returns_full_image() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "page_thumb_user", "PageThumb1!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
+    let history = services.chat().history().expect("history service");
     let auth = login_user(&app, "page_thumb_user", "PageThumb1!").await;
 
     let full = chat_images::fixture_jpeg_data_url(800, 800);
     let user_msg = format!("what is this?\n[IMAGE:{full}]");
-    let (set_id, version) =
-        ensure_default_and_seed_pairs(&app, &auth, &[(user_msg.clone(), "a photo".into())]).await;
+    let (set_id, version) = ensure_default_and_seed_pairs(
+        &app,
+        &history,
+        &auth,
+        &[(user_msg.clone(), "a photo".into())],
+    )
+    .await;
 
     let (status, loaded) = post_json(
         &app,
@@ -453,13 +461,14 @@ async fn delete_message_accepts_thumbnail_user_message() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(workspace.path(), "page_del_user", "PageDel1!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
+    let history = services.chat().history().expect("history service");
     let auth = login_user(&app, "page_del_user", "PageDel1!").await;
 
     let full = chat_images::fixture_jpeg_data_url(640, 480);
     let user_msg = format!("keep text\n[IMAGE:{full}]");
     let (set_id, version) =
-        ensure_default_and_seed_pairs(&app, &auth, &[(user_msg, "reply".into())]).await;
+        ensure_default_and_seed_pairs(&app, &history, &auth, &[(user_msg, "reply".into())]).await;
 
     let (status, loaded) = post_json(
         &app,

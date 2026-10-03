@@ -16,7 +16,7 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::user_store::{CreateOutcome, UserStore};
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -187,7 +187,7 @@ async fn direct_endpoints_missing_key_return_unlock_401() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     // sets family: GET /get_sets needs no CSRF token.
@@ -307,7 +307,7 @@ async fn direct_endpoints_wrong_key_return_invalid_401() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     // sets family.
@@ -431,7 +431,7 @@ async fn chat_missing_and_wrong_key_return_raw_401_not_saved_turn() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     // Missing key: raw 401 JSON, not a saved 200 text/plain assistant turn.
@@ -500,7 +500,7 @@ async fn regenerate_missing_and_wrong_key_return_raw_401_not_saved_turn() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     // Missing key: raw 401 JSON, not a saved 200 text/plain assistant turn.
@@ -577,7 +577,7 @@ async fn missing_verifier_stays_missing_with_correct_key() {
     let password = "Sup3rS3cret!";
     seed_user(username, password);
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
     let enc_key = common::derive_encryption_key_header(username, password);
 

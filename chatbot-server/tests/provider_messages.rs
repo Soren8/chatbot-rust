@@ -27,7 +27,7 @@ use axum::{
     routing::post,
     Router,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -178,7 +178,7 @@ async fn user_text_request_uses_multimodal_text_part_and_envelope() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&openai_config(&base_url));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -248,7 +248,7 @@ async fn image_marker_request_uses_text_plus_image_url_parts() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&openai_config(&base_url));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -307,7 +307,7 @@ async fn system_prompt_request_uses_plain_string_system_message() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&openai_config(&base_url));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (status, body) = post_chat(
@@ -362,7 +362,7 @@ async fn second_turn_assistant_history_uses_plain_string() {
     let base_url = format!("http://{mock_addr}/v1");
     let _workspace = common::TestWorkspace::with_config(&openai_config(&base_url));
 
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
     let (first_status, first_body) = post_chat(

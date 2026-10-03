@@ -30,7 +30,7 @@ use chatbot_core::{
     user_store::UserStore,
 };
 use chatbot_server::{
-    build_router, build_router_with_services,
+    build_router_with_services,
     identity::RequestIdentity,
     request_context::{DataRequestContext, VerifiedDataContext},
     resolve_static_root,
@@ -541,7 +541,7 @@ async fn required_auth_rejects_guest_with_not_authenticated() {
     let _guard = lock_tests();
     let _workspace = setup();
     disable_rate_limits();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
 
     // Guest bootstrap via the production home page.
     let home = app
@@ -581,7 +581,7 @@ async fn missing_and_wrong_keys_rejected_after_adapter() {
     let username = "data_ctx_missing_user";
     let password = "Sup3rS3cret!";
     seed_global_user(username, password);
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     // Missing key stays a 401 unlock prompt, never a saved turn.
@@ -661,7 +661,7 @@ async fn csrf_still_precedes_key_errors() {
     let username = "data_ctx_csrf_user";
     let password = "Sup3rS3cret!";
     seed_global_user(username, password);
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, _) = login_session(&app, username, password).await;
 
     // Bogus CSRF plus a missing key must still report the CSRF failure, not
@@ -699,7 +699,7 @@ async fn model_error_still_saved_as_200_before_invalid_key() {
     let username = "data_ctx_model_user";
     let password = "Sup3rS3cret!";
     seed_global_user(username, password);
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
 
     // Unknown model plus an invalid key must still return the model error as
@@ -743,7 +743,7 @@ async fn guest_optional_routes_keep_session_behavior_and_preferences_noop() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
     disable_rate_limits();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
 
     let home = app
         .clone()
@@ -916,7 +916,7 @@ async fn logged_in_flag_still_expires_guest() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
     disable_rate_limits();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
 
     let home = app
         .clone()
@@ -964,7 +964,7 @@ async fn preferences_keeps_explicit_session_first_policy() {
 
     // preferences stays explicit: session first, key only inside the
     // authenticated branch. Guests ignore even a wrong key header.
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let home = app
         .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -999,7 +999,7 @@ async fn preferences_keeps_explicit_session_first_policy() {
     let username = "data_ctx_prefs_user";
     let password = "Sup3rS3cret!";
     seed_global_user(username, password);
-    let app = build_router(resolve_static_root());
+    let app = build_router_with_services(resolve_static_root(), services.clone());
     let (session_cookie, csrf_token) = login_session(&app, username, password).await;
     let (status, payload) = read_json(
         app.clone()

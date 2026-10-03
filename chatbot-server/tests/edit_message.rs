@@ -12,10 +12,9 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::{
     enc_key::EncryptionKey,
-    history::HistoryService,
     user_store::UserStore,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -66,7 +65,7 @@ async fn edit_message_via_regenerate_endpoint() {
         .expect("write users.json");
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, services) = common::workspace_router(static_root);
 
     let mut session_cookie: Option<String> = None;
 
@@ -203,7 +202,7 @@ async fn edit_message_via_regenerate_endpoint() {
     let store = UserStore::new().unwrap();
     let key_bytes = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
     let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap()).unwrap();
-    let history = HistoryService::global().unwrap();
+    let history = services.chat().history().expect("history service");
     let loaded = history
         .find_by_display_name(USERNAME, "default", &key)
         .unwrap()
@@ -246,7 +245,7 @@ async fn stop_mid_generation_then_edit_last_message_succeeds() {
         .expect("write users.json");
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, services) = common::workspace_router(static_root);
 
     let mut session_cookie: Option<String> = None;
 
@@ -375,7 +374,7 @@ async fn stop_mid_generation_then_edit_last_message_succeeds() {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let key_bytes = UserStore::new().unwrap().derive_encryption_key(USERNAME, PASSWORD).unwrap();
     let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap()).unwrap();
-    let history = HistoryService::global().unwrap();
+    let history = services.chat().history().expect("history service");
     let mut partial_saved = false;
     loop {
         let loaded = history
@@ -438,7 +437,7 @@ async fn stop_mid_generation_then_edit_last_message_succeeds() {
     let store = UserStore::new().unwrap();
     let key_bytes = store.derive_encryption_key(USERNAME, PASSWORD).unwrap();
     let key = EncryptionKey::from_header_value(std::str::from_utf8(&key_bytes).unwrap()).unwrap();
-    let history = HistoryService::global().unwrap();
+    let history = services.chat().history().expect("history service");
     let loaded = history
         .find_by_display_name(USERNAME, "default", &key)
         .unwrap()

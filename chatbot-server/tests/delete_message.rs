@@ -1,11 +1,13 @@
-use std::env;
+use std::{
+    env,
+    sync::{Mutex, OnceLock},
+};
 
 use axum::{
     body::{to_bytes, Body},
     http::{header, Method, Request, StatusCode},
 };
-use chatbot_core::session;
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -16,6 +18,11 @@ mod common;
 static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
 });
+
+fn test_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 async fn guest_session(app: &axum::Router) -> (String, String) {
     let home_response = app
@@ -53,23 +60,28 @@ async fn guest_session(app: &axum::Router) -> (String, String) {
 #[tokio::test]
 async fn delete_message_requires_index_and_matching_content() {
     common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, services) = common::workspace_router(static_root);
 
     let (session_cookie, csrf_token) = guest_session(&app).await;
 
-    let session_context =
-        session::session_context(Some(&session_cookie)).expect("session context for seeding");
+    let session_context = services
+        .identity()
+        .session_context(Some(&session_cookie))
+        .expect("session context for seeding");
 
     let seeded_history = vec![
         ("repeat".to_string(), "first answer".to_string()),
         ("repeat".to_string(), "second answer".to_string()),
     ];
-    session::update_session_history(&session_context.session_id, &seeded_history);
+    services
+        .chat()
+        .update_session_history(&session_context.session_id, &seeded_history);
 
     let delete_index_one = app
         .clone()
@@ -96,7 +108,7 @@ async fn delete_message_requires_index_and_matching_content() {
 
     assert_eq!(delete_index_one.status(), StatusCode::OK);
 
-    let remaining = session::session_history(&session_context.session_id);
+    let remaining = services.chat().session_history(&session_context.session_id);
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].0, "repeat");
     assert_eq!(remaining[0].1, "first answer");
@@ -125,7 +137,10 @@ async fn delete_message_requires_index_and_matching_content() {
         .expect("POST /delete_message mismatch");
 
     assert_eq!(mismatch.status(), StatusCode::CONFLICT);
-    assert_eq!(session::session_history(&session_context.session_id).len(), 1);
+    assert_eq!(
+        services.chat().session_history(&session_context.session_id).len(),
+        1
+    );
 
     let out_of_range = app
         .clone()
@@ -211,17 +226,20 @@ async fn delete_message_requires_index_and_matching_content() {
 #[tokio::test]
 async fn delete_message_accepts_image_sized_user_message_body() {
     common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
 
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
 
     let static_root = resolve_static_root();
-    let app = build_router(static_root);
+    let (app, services) = common::workspace_router(static_root);
 
     let (session_cookie, csrf_token) = guest_session(&app).await;
 
-    let session_context =
-        session::session_context(Some(&session_cookie)).expect("session context for seeding");
+    let session_context = services
+        .identity()
+        .session_context(Some(&session_cookie))
+        .expect("session context for seeding");
 
     // ~1.5 MiB payload — above the old 1 MiB memory body cap, under the chat/delete cap.
     let image_user = format!(
@@ -234,7 +252,9 @@ async fn delete_message_accepts_image_sized_user_message_body() {
         (image_user.clone(), "a photo".to_string()),
         ("plain".to_string(), "ok".to_string()),
     ];
-    session::update_session_history(&session_context.session_id, &seeded_history);
+    services
+        .chat()
+        .update_session_history(&session_context.session_id, &seeded_history);
 
     let delete_resp = app
         .clone()
@@ -264,7 +284,7 @@ async fn delete_message_accepts_image_sized_user_message_body() {
         "delete with image-sized user_message must not hit body LengthLimitError"
     );
 
-    let remaining = session::session_history(&session_context.session_id);
+    let remaining = services.chat().session_history(&session_context.session_id);
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].0, "plain");
 }

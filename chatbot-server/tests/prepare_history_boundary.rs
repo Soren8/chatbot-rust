@@ -20,7 +20,7 @@ use chatbot_core::{history::SetVersion, session::PrepareHistoryError};
 use chatbot_server::{
     http_error::map_prepare_history_err, test_instrumentation::take_error_count,
 };
-use chatbot_server::{build_router, resolve_static_root};
+use chatbot_server::resolve_static_root;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -224,7 +224,7 @@ async fn chat_missing_set_saved_as_chat_turn_and_releases_lock() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     write_user(&workspace, "hist_missing_chat", "HistM1ssing!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf, enc_key) = login_user(&app, "hist_missing_chat", "HistM1ssing!").await;
 
     let (status, content_type, text) = read_raw(
@@ -271,7 +271,7 @@ async fn regenerate_missing_set_saved_as_chat_turn() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     write_user(&workspace, "hist_missing_regen", "HistM1ssing!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf, enc_key) = login_user(&app, "hist_missing_regen", "HistM1ssing!").await;
 
     let (status, content_type, text) = read_raw(
@@ -295,7 +295,7 @@ async fn chat_wrong_key_returns_raw401() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     write_user(&workspace, "hist_wrong_key", "HistM1ssing!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf, _) = login_user(&app, "hist_wrong_key", "HistM1ssing!").await;
 
     let (status, content_type, text) = read_raw(
@@ -325,7 +325,7 @@ async fn chat_oversized_system_prompt_saved_as_chat_turn() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     write_user(&workspace, "hist_big_prompt", "HistM1ssing!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf, enc_key) = login_user(&app, "hist_big_prompt", "HistM1ssing!").await;
 
     let big_prompt = "x".repeat(900_001);

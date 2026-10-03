@@ -19,7 +19,7 @@ use axum::{
 };
 use bcrypt::{hash, DEFAULT_COST};
 use chatbot_core::enc_key::EncryptionKey;
-use chatbot_server::{build_router, resolve_static_root, test_instrumentation::take_error_count};
+use chatbot_server::{resolve_static_root, test_instrumentation::take_error_count};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -210,7 +210,7 @@ async fn memory_update_commits_durable_and_reports_version() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(&workspace, "mod006_mut_mem", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "mod006_mut_mem", "Sup3rS3cret!").await;
 
     let (status, body) = post_json(
@@ -248,7 +248,7 @@ async fn system_prompt_update_commits_durable() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(&workspace, "mod006_mut_prompt", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "mod006_mut_prompt", "Sup3rS3cret!").await;
 
     let (status, body) = post_json(
@@ -284,12 +284,11 @@ async fn delete_pair_commits_durable() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(&workspace, "mod006_mut_del", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "mod006_mut_del", "Sup3rS3cret!").await;
 
     let key = EncryptionKey::from_header_value(&auth.enc_key).expect("valid key");
-    let history = chatbot_core::history::HistoryService::global()
-        .expect("global history");
+    let history = services.chat().history().expect("history service");
     let default = history
         .ensure_default_set(&auth.username, &key)
         .expect("ensure default");
@@ -342,12 +341,11 @@ async fn reset_history_clears_durable() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(&workspace, "mod006_mut_reset", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "mod006_mut_reset", "Sup3rS3cret!").await;
 
     let key = EncryptionKey::from_header_value(&auth.enc_key).expect("valid key");
-    let history = chatbot_core::history::HistoryService::global()
-        .expect("global history");
+    let history = services.chat().history().expect("history service");
     let default = history
         .ensure_default_set(&auth.username, &key)
         .expect("ensure default");
@@ -393,7 +391,7 @@ async fn guest_memory_update_uses_session_storage() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
 
     let home = app
         .clone()
@@ -437,7 +435,7 @@ async fn guest_load_set_rejects_with_not_authenticated() {
     let _guard = test_mutex().lock().unwrap();
     env::set_var("SECRET_KEY", "integration_test_secret");
     let _workspace = common::TestWorkspace::with_openai_provider();
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
 
     let home = app
         .clone()
@@ -479,7 +477,7 @@ async fn stale_expected_version_conflicts_with_current_version() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(&workspace, "mod006_mut_cas", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "mod006_mut_cas", "Sup3rS3cret!").await;
 
     let (status, first) = post_json(
@@ -538,7 +536,7 @@ async fn invalid_set_name_returns_400_before_key_check() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(&workspace, "mod006_mut_nameprec", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "mod006_mut_nameprec", "Sup3rS3cret!").await;
 
     let (status, body) = post_json(
@@ -561,7 +559,7 @@ async fn invalid_key_precedes_invalid_set_id() {
     env::set_var("SECRET_KEY", "integration_test_secret");
     let workspace = common::TestWorkspace::with_openai_provider();
     seed_user(&workspace, "mod006_mut_keyprec", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, _services) = common::workspace_router(resolve_static_root());
     let auth = login_user(&app, "mod006_mut_keyprec", "Sup3rS3cret!").await;
 
     let (status, body) = post_json(
@@ -588,7 +586,7 @@ async fn mirror_failure_after_durable_success_persists_and_counts_once() {
     // (`storage_key`); re-enrolling the password-bootstrap account would hit
     // the verifier-mismatch guard instead.
     seed_user(&workspace, "mod006_mut_mirror_short", "Sup3rS3cret!");
-    let app = build_router(resolve_static_root());
+    let (app, services) = common::workspace_router(resolve_static_root());
     let auth =
         login_user_with_storage_key(&app, "mod006_mut_mirror_short", "Sup3rS3cret!", Some("short"))
             .await;
@@ -651,8 +649,7 @@ async fn mirror_failure_after_durable_success_persists_and_counts_once() {
     );
 
     let short_key = EncryptionKey::from_header_value(&auth.enc_key).expect("short key");
-    let history = chatbot_core::history::HistoryService::global()
-        .expect("global history");
+    let history = services.chat().history().expect("history service");
     let snap = history
         .find_by_display_name(&auth.username, "default", &short_key)
         .expect("find default")
