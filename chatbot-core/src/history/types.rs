@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
+use zeroize::Zeroize;
 use crate::config::PrivacyLevel;
 
 /// Opaque set identity. Safe to log and store unencrypted.
@@ -229,13 +230,32 @@ impl SetSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LogicalSnapshot(SetSnapshot);
 
+/// Wipe the decrypted text so evicted cache entries do not leave plaintext in
+/// freed memory.
+fn zeroize_snapshot(snapshot: &mut SetSnapshot) {
+    snapshot.display_name.zeroize();
+    snapshot.memory.zeroize();
+    snapshot.system_prompt.zeroize();
+    for (user, assistant) in &mut snapshot.history {
+        user.zeroize();
+        assistant.zeroize();
+    }
+}
+
+impl Drop for LogicalSnapshot {
+    fn drop(&mut self) {
+        zeroize_snapshot(&mut self.0);
+    }
+}
+
 impl LogicalSnapshot {
     pub(super) fn as_snapshot(&self) -> &SetSnapshot {
         &self.0
     }
 
-    pub(super) fn into_snapshot(self) -> SetSnapshot {
-        self.0
+    pub(super) fn into_snapshot(mut self) -> SetSnapshot {
+        let placeholder = SetSnapshot::empty(self.0.set_id, "", "", false);
+        std::mem::replace(&mut self.0, placeholder)
     }
 
     /// Wrap a snapshot already in durable normalized form: store
@@ -438,5 +458,25 @@ impl BlobFormat {
 
     pub fn is_chunked(self) -> bool {
         matches!(self, Self::AeadChunkedV2)
+    }
+}
+
+#[cfg(test)]
+mod zeroize_tests {
+    use super::*;
+
+    #[test]
+    fn zeroize_snapshot_clears_plaintext_fields() {
+        let mut snapshot = SetSnapshot::empty(SetId::new(), "name", "prompt", false);
+        snapshot.memory = "memory".into();
+        snapshot.history = vec![("user".into(), "assistant".into())];
+        zeroize_snapshot(&mut snapshot);
+        assert!(snapshot.display_name.is_empty());
+        assert!(snapshot.memory.is_empty());
+        assert!(snapshot.system_prompt.is_empty());
+        assert!(snapshot
+            .history
+            .iter()
+            .all(|(user, assistant)| user.is_empty() && assistant.is_empty()));
     }
 }

@@ -385,6 +385,11 @@ impl AppServices {
         (http_removed, chat_removed)
     }
 
+    /// History-cache purge step for the background task; never opens history.
+    pub fn purge_history_cache_for_background(&self) -> usize {
+        self.chat.purge_expired_history_cache()
+    }
+
     /// Remember purge step for the background task. Opens this router's
     /// remember store per call, so a fully owned router never initializes the
     /// unrelated global remember store.

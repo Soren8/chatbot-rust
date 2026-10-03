@@ -15,13 +15,19 @@ pub fn spawn_session_purge_task_with_identity(
         loop {
             ticker.tick().await;
             let (http_sessions_removed, chat_sessions_removed) = identity.purge_for_background();
+            let history_cache_removed = chatbot_core::session::ChatService::global()
+                .purge_expired_history_cache();
             let remember_removed = chatbot_core::remember_store::RememberStore::new()
                 .map(|store| store.purge_expired())
                 .unwrap_or(0);
-            if http_sessions_removed + chat_sessions_removed > 0 || remember_removed > 0 {
+            if http_sessions_removed + chat_sessions_removed > 0
+                || remember_removed > 0
+                || history_cache_removed > 0
+            {
                 info!(
                     http_sessions_removed,
                     chat_sessions_removed,
+                    history_cache_records_removed = history_cache_removed,
                     remember_tokens_removed = remember_removed,
                     "background session purge completed"
                 );
@@ -47,11 +53,16 @@ pub fn spawn_session_purge_task_with_services(services: crate::services::AppServ
             ticker.tick().await;
             let (http_sessions_removed, chat_sessions_removed) =
                 services.purge_for_background();
+            let history_cache_removed = services.purge_history_cache_for_background();
             let remember_removed = services.purge_remember_for_background();
-            if http_sessions_removed + chat_sessions_removed > 0 || remember_removed > 0 {
+            if http_sessions_removed + chat_sessions_removed > 0
+                || remember_removed > 0
+                || history_cache_removed > 0
+            {
                 info!(
                     http_sessions_removed,
                     chat_sessions_removed,
+                    history_cache_records_removed = history_cache_removed,
                     remember_tokens_removed = remember_removed,
                     "background session purge completed"
                 );

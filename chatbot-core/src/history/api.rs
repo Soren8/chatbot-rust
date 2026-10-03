@@ -115,6 +115,11 @@ pub struct HistoryService {
 }
 
 impl HistoryService {
+    /// The process-global service if already opened; never initializes it.
+    pub fn get() -> Option<&'static HistoryService> {
+        GLOBAL.get()
+    }
+
     /// Open (or reuse) the process-global service at `{HOST_DATA_DIR}/history/redb`.
     pub fn global() -> Result<&'static HistoryService, HistoryError> {
         GLOBAL.get_or_try_init(|| {
@@ -149,6 +154,11 @@ impl HistoryService {
             data_dir: data_dir.into(),
             receipt_clock: Arc::new(SystemReceiptClock),
         })
+    }
+
+    /// Drop expired cached plaintext; returns the number of records removed.
+    pub fn purge_expired_cache(&self) -> usize {
+        self.cache.purge_expired()
     }
 
     /// Cache a durable-normalized logical snapshot (no re-load/decrypt).

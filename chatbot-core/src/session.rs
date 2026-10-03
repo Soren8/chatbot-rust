@@ -694,6 +694,22 @@ impl ChatService {
         }
     }
 
+    /// Purge expired cached history plaintext without opening history: the
+    /// owned service only once opened, otherwise the global service only once
+    /// initialized.
+    pub fn purge_expired_history_cache(&self) -> usize {
+        match &self.owned {
+            Some(deps) => match &deps.history {
+                OwnedHistory::Ready(history) => history.purge_expired_cache(),
+                OwnedHistory::Lazy(lazy) => lazy
+                    .cell
+                    .get()
+                    .map_or(0, HistoryService::purge_expired_cache),
+            },
+            None => HistoryService::get().map_or(0, HistoryService::purge_expired_cache),
+        }
+    }
+
     /// Account service backing key/tier gates: the owned service or the
     /// process-global accounts, resolved lazily per operation.
     fn accounts(&self) -> AccountService {

@@ -10,7 +10,8 @@
 //!
 //! Snapshots are shared as `Arc`s, so a hit costs a refcount bump, not a copy of
 //! the history. Retained plaintext is bounded by an approximate byte budget as
-//! well as an entry count, and expired entries are pruned on every insert.
+//! well as an entry count. Expired entries are pruned on every insert and by
+//! the server's background purge; dropping a snapshot zeroizes its plaintext.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -86,7 +87,7 @@ impl SetCache {
         Self::with_limits(DEFAULT_BYTE_BUDGET, DEFAULT_TTL)
     }
 
-    fn with_limits(byte_budget: usize, ttl: Duration) -> Self {
+    pub(super) fn with_limits(byte_budget: usize, ttl: Duration) -> Self {
         Self {
             entries: Arc::new(DashMap::new()),
             summaries: Arc::new(DashMap::new()),
@@ -192,7 +193,7 @@ impl SetCache {
         let snapshot = snapshot.into();
         let inner = snapshot.as_snapshot();
         let map_key = Self::key(user, inner.set_id);
-        self.prune_expired();
+        self.purge_expired();
         self.summaries.insert(
             map_key.clone(),
             CachedSummary {
@@ -228,7 +229,7 @@ impl SetCache {
 
     /// Insert only list metadata (e.g. after list decrypt when full snap is not retained).
     pub fn put_summary(&self, user: &str, summary: &SetSummary) {
-        self.prune_expired();
+        self.purge_expired();
         self.summaries.insert(
             Self::key(user, summary.set_id),
             CachedSummary {
@@ -249,7 +250,8 @@ impl SetCache {
     }
 
     /// Drop entries past their TTL so expired plaintext does not linger until read.
-    fn prune_expired(&self) {
+    /// Returns the number of snapshots and summaries removed.
+    pub fn purge_expired(&self) -> usize {
         let expired: Vec<Key> = self
             .entries
             .iter()
@@ -259,8 +261,10 @@ impl SetCache {
         for k in &expired {
             self.remove_entry(k);
         }
+        let summaries_before = self.summaries.len();
         self.summaries
             .retain(|_, s| s.last_used.elapsed() <= self.ttl);
+        expired.len() + summaries_before.saturating_sub(self.summaries.len())
     }
 
     /// Evict least-recently-used snapshots while over the entry cap or byte
@@ -420,6 +424,30 @@ mod tests {
         assert_eq!(
             cache.bytes.load(Ordering::Relaxed),
             approx_bytes(&cache.entries.iter().next().unwrap().snapshot)
+        );
+    }
+
+    #[test]
+    fn purge_expired_removes_only_expired_entries_and_summaries() {
+        let cache = SetCache::with_limits(DEFAULT_BYTE_BUDGET, Duration::from_millis(5));
+        let stale = sized_snapshot(64);
+        let stale_key = SetCache::key("alice", stale.as_snapshot().set_id);
+        cache.put_snapshot("alice", stale);
+        let fresh = sized_snapshot(64);
+        let fresh_key = SetCache::key("alice", fresh.as_snapshot().set_id);
+        cache.put_snapshot("alice", fresh);
+        std::thread::sleep(Duration::from_millis(20));
+        cache.entries.get_mut(&fresh_key).unwrap().last_used = Instant::now();
+        cache.summaries.get_mut(&fresh_key).unwrap().last_used = Instant::now();
+
+        assert_eq!(cache.purge_expired(), 2);
+        assert!(!cache.entries.contains_key(&stale_key));
+        assert!(!cache.summaries.contains_key(&stale_key));
+        assert!(cache.entries.contains_key(&fresh_key));
+        assert!(cache.summaries.contains_key(&fresh_key));
+        assert_eq!(
+            cache.bytes.load(Ordering::Relaxed),
+            approx_bytes(&cache.entries.get(&fresh_key).unwrap().snapshot)
         );
     }
 }

@@ -96,3 +96,15 @@ fn blocked_root_errors_then_same_service_retries_successfully_after_repair() {
     let via_clone = clone.history().expect("clone reuses repaired open");
     assert!(std::ptr::eq(history, via_clone));
 }
+
+#[test]
+fn history_cache_purge_does_not_open_unopened_history() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_root = temp.path().join("data");
+    let service = make_lazy(&data_root);
+    assert_eq!(service.purge_expired_history_cache(), 0);
+    assert!(
+        !data_root.join("history").exists(),
+        "background cache purge must not open the database"
+    );
+}
