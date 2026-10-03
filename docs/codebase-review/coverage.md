@@ -69,3 +69,7 @@ Protected `.config.yml`, `.env` and runtime `data/` contents are not read withou
 - **Phase 5 — [performance](performance.md):** complete; final suite `20261001T052944-8b04233f9f0f` (146 test binaries) and physical-debug APK built. Device/GPU/host-proxy cost limits remain.
 - **Phase 6 — [test quality](test-quality.md):** complete with bounded remediation; TEST-001 is fixed and TQ-026 remains recorded only. Final suite `20261003T210405-6ec64fba7bc9` (151 Rust test-result blocks; 1,171 passed, 0 failed; nested DNS 34 and voice 70 Python tests). See phase record for scope limits.
 - **Phase 7 — [documentation](documentation.md):** complete; all prose and comment findings are fixed, including DOC-002's cache sweep/zeroization code change. Three completed plans were retired and the ledger condensed. Final suite `20261003T210405-6ec64fba7bc9` (151 Rust test-result blocks; 1,171 passed, 0 failed; nested DNS 34 and voice 70 Python tests).
+
+## Post-refactor review
+
+The [post-refactor report](post-refactor.md#coverage-and-method) records the repository-wide production/integration review at `6c86a98`, including the inspected component boundaries, candidate-focused test review, runtime evidence and remaining exclusions. Its PR-001–021 findings supplement the completed passes; this does not retroactively fill the historical matrix's empty T/D cells or claim assertion-by-assertion/line coverage.

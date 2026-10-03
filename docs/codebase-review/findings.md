@@ -26,3 +26,7 @@
 ## Ownership notes
 
 COR-001 and COR-002 are listed as separate correctness follow-ups in [security.md](security.md); their dedicated owner file is not named in the source ledger. DOC-001–003 and TEST-001–005 are owned by the linked pass files. Other phase findings remain in their respective review ledgers.
+
+## Post-refactor findings
+
+[post-refactor.md](post-refactor.md) owns PR-001–021, the new/missed findings from the whole-codebase review at `6c86a98`. It distinguishes reproduced behavior, the actual CI scanner failure, source-confirmed paths and outstanding device/concurrency verification. It also identifies earlier ledger dispositions that require reconciliation, including COR-001 and the leased expiry portion of MOD-006; their historical rows above have not been silently reclassified.

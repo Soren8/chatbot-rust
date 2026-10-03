@@ -14,6 +14,10 @@ A seven-pass, evidence-backed review for behavior-preserving improvements—not 
 | 6. Test quality — behavior coverage, regressions and harnesses | [test-quality.md](test-quality.md) | Complete with bounded remediation | Full suite `20261003T210405-6ec64fba7bc9` (151 nonzero Rust test-result blocks; 1,171 passed, 0 failed; nested DNS 34 and voice 70 Python tests) | TEST-001 fixed; TQ-026 recorded only; see [test-quality](test-quality.md#findings). |
 | 7. Documentation — prose and behavior-comment accuracy | [documentation.md](documentation.md) | Complete; all findings fixed | Full suite `20261003T210405-6ec64fba7bc9` (151 nonzero Rust test-result blocks; 1,171 passed, 0 failed; nested DNS 34 and voice 70 Python tests) | None; see [documentation](documentation.md#resolution). |
 
+## Post-refactor review
+
+The [whole-codebase post-refactor review](post-refactor.md) at `6c86a98` records new or missed follow-ups after the seven authorized phases, with source/test tracing and disposable-app reproductions. It also records the separate CI secret-scan failure; the full Cargo gate alone does not cover that check. New findings and retained decisions are distinguished in that report.
+
 ## Standing rules
 
 - Require evidence for findings; static performance observations are leads until cost is measured where possible.
