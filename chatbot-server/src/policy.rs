@@ -8,9 +8,8 @@
 //! [`crate::services::AppServices::with_tts_policy`].
 //!
 //! The global handles touch neither config nor env on construction; each
-//! operation delegates to the existing live globals at the original call
-//! site. Owned handles carry explicit values and never read ambient config
-//! or env. Production stays on the global (live) path.
+//! operation reads live globals as needed. Owned handles carry explicit values
+//! and never read ambient config or env. Production stays on the global (live) path.
 
 use std::sync::Arc;
 
@@ -40,7 +39,7 @@ impl RatePolicy {
     }
 
     /// Compatibility handle. Constructing it touches neither config nor env;
-    /// each operation delegates to the live global at the original site.
+    /// each operation reads the live global as needed.
     pub fn global() -> Self {
         Self { owned: None }
     }
@@ -115,7 +114,7 @@ impl TtsPolicy {
     }
 
     /// Compatibility handle. Constructing it touches neither config nor env;
-    /// each operation delegates to the live global at the original site.
+    /// each operation reads the live global as needed.
     pub fn global() -> Self {
         Self { owned: None }
     }

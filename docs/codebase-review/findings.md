@@ -19,9 +19,9 @@
 | TEST-004 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Fixed: template tests deleted. |
 | TEST-005 | Phase 6 — [test-quality.md](test-quality.md) | Test-quality cross-pass item. | Fixed in the Phase 6 follow-up; see [test-quality.md](test-quality.md#findings). |
 | SEC-001 | Phase 4 — [security.md](security.md) | Cookie transport classification depends on proxy-header trust and supported ingress behavior. | Open pending ingress/proxy-trust contract and dynamic validation. |
-| DOC-001 | Phase 7 — [documentation.md](documentation.md) | Privacy terminology may overstate the implemented trust boundary. | Re-checked in Phase 7; see [documentation.md](documentation.md). |
-| DOC-002 | Phase 7 — [documentation.md](documentation.md) | Documentation wording may diverge from history-cache key/TTL behavior. | Re-checked in Phase 7; see [documentation.md](documentation.md). |
-| DOC-003 | Phase 7 — [documentation.md](documentation.md) | Documentation wording requires implementation-alignment review. | Re-checked in Phase 7; see [documentation.md](documentation.md). |
+| DOC-001 | Phase 7 — [documentation.md](documentation.md) | Privacy terminology may overstate the implemented trust boundary. | Fixed: docs state "not end-to-end, as close as the stack allows"; see [documentation.md](documentation.md#resolution). |
+| DOC-002 | Phase 7 — [documentation.md](documentation.md) | Documentation wording may diverge from history-cache key/TTL behavior. | Fixed in code: background sweep of expired cache entries plus zeroize on drop; see [documentation.md](documentation.md#resolution). |
+| DOC-003 | Phase 7 — [documentation.md](documentation.md) | Documentation wording requires implementation-alignment review. | Fixed: history-store doc rewritten to match the code; see [documentation.md](documentation.md#resolution). |
 
 ## Ownership notes
 

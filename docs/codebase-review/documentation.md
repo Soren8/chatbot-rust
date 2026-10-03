@@ -3,7 +3,7 @@
 ## Scope and rules
 
 - Covers every tracked prose doc (README files, `AGENTS.md`, `docs/`, deployment READMEs and this review ledger) and the code comments that describe behavior.
-- Per the user's decision, a doc or comment that contradicts the code is **recorded here and left unchanged**. Neither side is edited; the user decides which is right.
+- A doc or comment that lags the code is fixed directly. The user is asked only when the code itself may be wrong.
 - Completed plans are folded into their living doc and then deleted. The review ledger is condensed to its current state; git keeps the history.
 - Evidence is a read of the doc claim against the cited code. Executor-side files (`test-executor/projects/*.json`) are outside this repository and are not verified.
 
@@ -15,7 +15,7 @@
 
 ## Findings
 
-| ID | Doc / comment | Claim | Code | Severity |
+| ID | Doc / comment | Claim (as found) | Code | Severity |
 | --- | --- | --- | --- | --- |
 | DOC-001 | `docs/design-privacy.md:82, 86`; `docs/design.md:165` (Phase 1 lead) | "Data persisted to disk is guaranteed end-to-end encrypted"; "End-to-end encryption is guaranteed for all data persisted to disk" | The data is AEAD-encrypted at rest, but the server receives the key on every request (`chatbot-server/src/enc_key_cookies.rs:22–42`) and decrypts server-side (`chatbot-core/src/history/api.rs:215–240, 432–442`); `login.rs:128–135` can also derive the key server-side. "End-to-end" overstates this: it is encryption at rest without a standing server key. Neighbouring statements (`design-privacy.md:72, 78, 88`) describe that accurately. | Medium |
 | DOC-002 | `docs/design-privacy.md:82, 92`; `docs/design-history-store.md:117`; `docs/design.md:165` (Phase 1 lead) | Plaintext snapshots are "wiped from RAM after a period of time" / "evicted and wiped after the idle TTL" | `SetCache` expiry is lazy: entries are removed on a later lookup or insert (`chatbot-core/src/history/cache.rs:112–123, 251–264`), and no timer or background task sweeps it (`chatbot-server/src/background.rs` touches only sessions and remember tokens). Removal drops an `Arc` without zeroizing (`cache.rs:104–107`), and other references can keep the plaintext alive. A byte budget (64 MiB) also bounds the cache but isn't documented. | Medium |
@@ -40,7 +40,7 @@ Not findings: `docs/mobile-apps.md:394–406` and `docs/audio-decoder-check.md:9
 
 ## Comment findings
 
-`HISTORY` marks a comment that narrates past behavior instead of describing current code; the project rule is that such comments go. Per the user's decision they are recorded here, not edited.
+`HISTORY` marks a comment that narrates past behavior instead of describing current code; the project rule is that such comments go unless they guard against a real regression.
 
 | ID | Comment | Problem | Code | Severity |
 | --- | --- | --- | --- | --- |
@@ -57,15 +57,27 @@ Not findings: `docs/mobile-apps.md:394–406` and `docs/audio-decoder-check.md:9
 
 Coverage: every non-test comment block was extracted with its following code (core 516, server 352, browser JS 425, Android 256, Python 83). All were read by a reviewer, and the claims were spot-checked against the source. A deterministic pass also checked every backtick-quoted identifier in a comment against the code (one miss, DOC-C06) and swept for history wording. An itemized rerun listed about 300 server claims checked, prioritizing auth, cookies, CSRF, privacy and providers, and found nothing new. The Android and Python reviewer listed 112 Android and 47 Python claims it checked. The JS reviewer reported no problems, but its line citations were unreliable, so that clean result rests on the deterministic checks.
 
-## Decisions for the user
+## Resolution
 
-Each finding above leaves both the doc and the code unchanged. For each one, decide which side is right:
+All findings are fixed. The user decided that the docs follow the code, except for DOC-002, where the code was brought up to the documented guarantee.
 
-- **Privacy wording (DOC-001, DOC-002), Medium:** "end-to-end encrypted" and "wiped after the idle TTL" overstate what the code does. Either reword the docs, or change the code: add a timed sweep and zeroization to `SetCache`.
-- **Stale status and wrong statements in living docs:** DOC-004 and DOC-005 (`design.md` still describes two privacy modes), DOC-006 (README says sessions are encrypted on disk), DOC-007 (provider-docs checkbox unchecked), DOC-010 (VAD location in `mobile-apps.md`), DOC-003 (history-store API sketches beside an "Implemented" status), DOC-012 to DOC-015 (history-store schema version, "Phase 2 started", Phase 1 overview, "source of truth until code lands"). All are likely doc-side fixes.
-- **Operator and agent instructions:** DOC-008 (README points at `cargo test`), DOC-009 (`AGENTS.md` `temp/todo.md` instruction), DOC-011 (compose rebuild step not marked host-only), DOC-016 (config example omits `allowed_providers` and `request_timeout`).
-- **Wrong comments:** DOC-C08 (voice-service stream error shape) and DOC-C10 (rate-limit defaults 1/5 vs actual 5/30). DOC-C09 is accurate for ordinary exceptions; decide whether the `BaseException` case matters.
-- **History-narration comments:** DOC-C01 to DOC-C07 break the project's no-history-comments rule. Deleting or rewording them is mechanical once approved.
+- **DOC-001 and DOC-002 (privacy wording and TTL wipe):** `design-privacy.md`, `design.md` and `design-history-store.md` now say plainly that this is not end-to-end encryption, because the LLM works on plaintext, but it is as close to it as this stack allows. Data is encrypted at rest, and the server holds the key only during active requests (`9dedc1b`). For DOC-002 the code changed: the background purge (every `SESSION_PURGE_INTERVAL_SECS`, default 300 s) now sweeps expired `SetCache` entries and summaries, and `LogicalSnapshot` zeroizes its strings on drop (`a3fac32`). Red-first regressions:
+  - `purge_expired_removes_only_expired_entries_and_summaries`;
+  - `zeroize_tests`;
+  - `history_cache_purge_does_not_open_unopened_history` (the purge never opens an unopened database).
+
+  Red job `20261003T193304-4aeac47c9ad9`; green jobs `20261003T195840-c82b77d2eef4`, `20261003T200032-dbfdb643edf9` and `20261003T200040-8830505ab71b`. The docs state the remaining limits: a sweep deadline of TTL plus up to one purge interval, and zeroization only of memory the cache owned.
+- **DOC-003 to DOC-016 (living docs and instructions):** fixed in `1f52d28`.
+  - `design.md` describes the three privacy modes as current, and the provider-docs item is ticked.
+  - The README describes encrypted history with in-memory sessions and the `testctl` entry point.
+  - `AGENTS.md` dropped the `temp/todo.md` instruction.
+  - `mobile-apps.md` places the VAD in `voice-capture.js` and marks rebuilds as host-only operator steps.
+  - `.config.yml.example` documents `allowed_providers` and `request_timeout`.
+  - `design-history-store.md` was rewritten to match the code: schema 3, chunked storage, the plaintext snapshot cache and the real API names. The unimplemented sketches and the PR plan were replaced by a short "Not implemented" section.
+- **DOC-C01 to DOC-C10 (comments):** history narration was removed or restated as current behavior.
+  - The `chat_images.rs` comment stays as a present-tense gotcha because it guards a real regression (image data URLs counted as text drop the newest image).
+  - DOC-C08 and DOC-C10 now state the actual stream-error and rate-limit behavior.
+  - DOC-C09 now says the job runner catches `Exception`, not `BaseException`. The runner is unchanged.
 
 ## Completion
 

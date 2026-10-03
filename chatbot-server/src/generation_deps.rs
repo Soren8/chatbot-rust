@@ -4,10 +4,9 @@
 //! and `/regenerate`: provider lookup, thought defaults, the Brave client,
 //! home model listing and the fake stream/search inputs used by tests. The
 //! global handle touches neither config nor env on construction; each
-//! operation delegates to the existing live globals at the original call
-//! site. Owned handles carry an explicit provider map plus default plus
-//! thought defaults plus Brave key plus optional fake inputs and never read
-//! ambient config or env.
+//! operation reads live globals when needed. Owned handles carry an explicit
+//! provider map plus default plus thought defaults plus Brave key plus
+//! optional fake inputs and never read ambient config or env.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -169,7 +168,7 @@ impl GenerationDeps {
     }
 
     /// Compatibility handle. Constructing it touches neither config nor env;
-    /// each operation delegates to the live globals at the original site.
+    /// each operation reads live globals as needed.
     pub fn global() -> Self {
         Self { owned: None }
     }
@@ -215,7 +214,7 @@ impl GenerationDeps {
 
     /// Provider lookup with the established backfill: an empty model selects
     /// the configured default, otherwise the named provider. The global path
-    /// delegates to the original lookup at this call.
+    /// reads live config at this call.
     pub fn get_provider_config(&self, model_name: Option<&str>) -> Option<ProviderConfig> {
         match &self.owned {
             Some(owned) => match model_name {
@@ -237,9 +236,9 @@ impl GenerationDeps {
         }
     }
 
-    /// Brave client for the gated search branches. The global path delegates
-    /// to the original env lookup at this call; the owned path uses only its
-    /// explicit key plus optional fake results with no env read or HTTP.
+    /// Brave client for the gated search branches. The global path reads
+    /// `BRAVE_API_KEY` at this call; the owned path uses only its explicit key
+    /// plus optional fake results with no env read or HTTP.
     /// Dispatch calls this only when search is gated on.
     pub fn brave_client(&self) -> Option<BraveClient> {
         match &self.owned {
@@ -265,8 +264,8 @@ impl GenerationDeps {
     }
 
     /// Concrete OpenAI provider for `config`. The global path delegates to
-    /// [`OpenAiProvider::new`] at this call (original env-chunk timing); the
-    /// owned path uses only explicit fake inputs with no env reads.
+    /// [`OpenAiProvider::new`] at this call; the owned path uses only explicit
+    /// fake inputs with no env reads.
     pub fn openai_provider(&self, config: &ProviderConfig) -> Result<OpenAiProvider> {
         match &self.owned {
             Some(owned) => OpenAiProvider::new_owned(
@@ -290,8 +289,8 @@ impl GenerationDeps {
     }
 }
 
-/// Pure home-listing projection over one captured config: same premium
-/// filtering and config-order iteration as the original home site, with no
+/// Pure home-listing projection over one captured config: premium
+/// filtering and config-order iteration for the home model listing, with no
 /// config read of its own. Both [`GenerationDeps::provider_summaries`] (live)
 /// and [`crate::services::AppServices::home_settings`] (blended) use it.
 pub(crate) fn summaries_from_live(

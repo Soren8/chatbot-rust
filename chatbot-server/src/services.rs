@@ -277,8 +277,8 @@ impl AppServices {
     }
 
     /// The generation dependencies for this router. Compatibility contexts
-    /// return the global handle, which delegates at the original call sites;
-    /// owned routers return their explicit handle.
+    /// return the global handle, which reads live globals as needed; owned
+    /// routers return their explicit handle.
     pub fn generation_deps(&self) -> GenerationDeps {
         self.generation.clone()
     }

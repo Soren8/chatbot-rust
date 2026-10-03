@@ -40,8 +40,8 @@ pub fn spawn_session_purge_task_with_identity(
 /// from that same [`crate::services::AppServices`] identity plus that same
 /// chat service plus that same account remember store, so an owned production
 /// router never initializes or purges the unrelated global HTTP/chat/remember
-/// stores. Compatibility routers carry the global account service, preserving
-/// the previous global remember behavior.
+/// stores. Compatibility routers carry the global account service and use its
+/// live remember-store behavior.
 pub fn spawn_session_purge_task_with_services(services: crate::services::AppServices) {
     let interval_secs = purge_interval_secs();
 

@@ -21,7 +21,7 @@ A seven-pass, evidence-backed review for behavior-preserving improvements—not 
 - Run tests through the executor (`testctl`); do not run application suites on the host. Confirm intended tests ran.
 - Host rebuilds/restarts and live rollout remain human-controlled; no live deployment is implied by review gates.
 - Preserve intended behavior and compatibility; keep explicit exclusions and evidence limits. A completed pass does not claim unmeasured device, GPU, topology or live behavior.
-- Phase 7 records doc/code contradictions without editing either side; the user decides which is right. Completed plans are folded into living docs and deleted.
+- Docs and comments that lag the code are fixed directly; ask only when the code itself may be wrong. Completed plans are folded into living docs and deleted.
 
 ## Applying the changes
 

@@ -4,8 +4,8 @@
 //! independently configured routers: CSRF policy, session-timeout seconds,
 //! the default system prompt and the voice-service endpoint. The global
 //! handle touches neither config nor env on construction; each operation
-//! delegates to the existing live globals at the original call site. Owned
-//! handles carry explicit values and never read ambient config or env.
+//! reads live globals when needed. Owned handles carry explicit values and
+//! never read ambient config or env.
 //! Production stays on the global (live) path with no startup snapshot.
 
 use std::sync::Arc;
@@ -116,7 +116,7 @@ impl ConfigSource {
     }
 
     /// Compatibility handle. Constructing it touches neither config nor env;
-    /// each operation delegates to the live global at the original site.
+    /// each operation reads the live global as needed.
     pub fn global() -> Self {
         Self { owned: None }
     }
