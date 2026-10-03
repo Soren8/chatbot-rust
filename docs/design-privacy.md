@@ -79,19 +79,20 @@ The server validates the presented key against a per-user **key verifier** (HMAC
 | XSS reading the Fernet key from JS | Enc-key cookies are HttpOnly. Page JS does not unwrap or send the key. XSS can still scrape already-decrypted chat in the DOM. |
 | XSS exporting login to another machine | Remember and enc-key cookies are HttpOnly (XSS cannot copy those). There is no `/login/keyauth`; the Fernet key is not a login credential. |
 | Full browser profile theft | Cookie jar + profile copy still wins. |
-| Server compromise while user idle | Data persisted to disk is guaranteed end-to-end encrypted (AEAD ciphertext). In RAM, plaintext working snapshots are evicted and wiped after the idle TTL expires. Server stores no standing master key. |
+| Server compromise while user idle | Disk holds only AEAD ciphertext and the server holds no standing data key, so idle users' history cannot be decrypted. Cached plaintext is purged within one purge interval after the 1-hour idle TTL. A compromise during active use exposes what the server is processing. |
 
 ### In-Memory Plaintext Handling & RAM Lifecycle
 
-End-to-end encryption is guaranteed for all data **persisted to disk** (stored in `redb` as AEAD ciphertext via `HistoryService`).
+This is not end-to-end encryption: an LLM must read plaintext, so the server handles plaintext while serving a request. Within that constraint, this design is as close to E2E encryption as this stack allows. Durable history is stored in `redb` as AES-256-GCM ciphertext, with keys derived from the user's key via HKDF and AAD binding user, set, kind and identity; set names are sealed too.
 
-In contrast, **plaintext in memory is required during requests**, because LLM backends (both local inference engines and upstream APIs) cannot interact with or process ciphertext. When generating completions or assembling prompt context, chat history, memories, and system instructions must exist unencrypted in RAM.
+The server stores no standing data key. The data key is client-side (HttpOnly `enc_key` / `enc_key-{username}` cookies; native app via the OS secure-key plugin), arriving only with requests from an active session. At password login the client derives it from the password and sends it once; only when Web Crypto is unavailable (a non-native, insecure origin) does the server derive it. The server then sets the HttpOnly cookie. The server validates it per request against the HMAC-SHA256 verifier and zeroizes it after the request. Plaintext necessarily exists in server RAM during request processing, including prompt assembly and LLM calls.
 
 To balance performance with security:
-- The server maintains a process-local working snapshot cache (`SetCache` in `chatbot-core/src/history/cache.rs`) that temporarily holds decrypted snapshots (`SetSnapshot`) for active sets, avoiding repeated AEAD decrypt operations on hot paths.
-- Plaintext data is **wiped from RAM after a period of time**: entries in `SetCache` expire and are evicted after an idle time-to-live (TTL, default 1 hour) or when cache capacity (default 256 sets) is reached.
+- The process-local `SetCache` (`chatbot-core/src/history/cache.rs`) holds decrypted `Arc<LogicalSnapshot>` snapshots and set summaries.
+- Cache limits are a 1-hour idle TTL (`DEFAULT_TTL`), 256 entries and a 64 MiB byte budget. Expired entries are removed on every insert and by the server's background purge task every `SESSION_PURGE_INTERVAL_SECS` (default 300 seconds), so cached plaintext is removed no later than one purge interval after its idle TTL. Evicted snapshots zeroize their decrypted strings on drop (display name, memory, system prompt and every message).
+- This zeroization covers cached snapshot buffers; transient per-request copies are freed normally, and plaintext sent to an upstream LLM/search/STT/TTS destination is governed by that destination's retention. Privacy modes Private/Standard/Non-private govern which destinations are allowed.
 - The single durable source of truth is always the encrypted ciphertext in `redb`.
-- The session state (`SessionStore`) holds session metadata and a sealed working mirror; it does not retain standing encryption keys or permanent plaintext history. The user's derived encryption key is zeroized after request execution and validated per-request against an HMAC-SHA256 key verifier.
+- Guest chats are RAM-only and are never written to disk. Session state holds session metadata and a sealed working mirror, not standing encryption keys or permanent plaintext history.
 
 ### Client-side key storage tiers
 
@@ -151,7 +152,7 @@ Saved chats currently have selectable **Private / Standard / Non-private** modes
 
 1.  **Authenticated Users:**
     *   Durable chat sets live in **redb** as AEAD (AES-256-GCM + HKDF) ciphertext via `HistoryService` (see [design-history-store.md](design-history-store.md)). Display names and the authoritative versioned `SETS_POLICY` mode are encrypted; legacy sets without a policy row read as Private, and newly created sets write Private. Forks inherit source mode. Listing projects mode without decrypting history; regular history edits cannot change it.
-    *   Optional multi-set ciphertext cache keyed `(user, set_id)`; session may still hold a Fernet-sealed **working mirror** of the active set for the request path (not durable SoT).
+    *   Optional multi-set plaintext snapshot cache keyed `(user, set_id)`; session may still hold a Fernet-sealed **working mirror** of the active set for the request path (not durable SoT).
     *   Keys are derived from the login password on the client.
     *   The server stores only an HMAC key verifier, not the data key.
     *   Browsers send the key in HttpOnly cookies; page JS never holds it. WebAuthn PRF is not on the request path.

@@ -114,7 +114,7 @@ From [`docs/design-privacy.md`](design-privacy.md):
 
 - Strict Private Mode: client-derived key, per-request `X-Enc-Key`, server never persists data key.
 - Only HMAC key verifier on server.
-- Plaintext snapshot cache with TTL, capacity and byte-budget eviction; cache contents are process-local and non-authoritative.
+- Plaintext snapshot cache with TTL, capacity and byte-budget eviction; cache contents are process-local and non-authoritative, pruned on inserts and by the background sweep within one purge interval after the idle TTL, and zeroized on eviction.
 - **Set names are sensitive** — not plaintext filenames, not unencrypted index keys.
 
 ---

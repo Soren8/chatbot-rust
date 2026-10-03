@@ -106,7 +106,7 @@ static GLOBAL: OnceCell<HistoryService> = OnceCell::new();
 #[derive(Clone)]
 pub struct HistoryService {
     store: Arc<RedbHistoryStore>,
-    /// Optional multi-set ciphertext cache; never authoritative.
+    /// Optional multi-set cache of decrypted plaintext snapshots; never authoritative.
     cache: SetCache,
     default_system_prompt: String,
     /// Host data dir containing `user_sets/` for legacy migration.
