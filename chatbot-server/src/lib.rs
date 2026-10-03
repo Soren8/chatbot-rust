@@ -57,22 +57,33 @@ pub async fn run() -> anyhow::Result<()> {
     let static_root = resolve_static_root();
     info!("serving static assets from {}", static_root.display());
 
-    // One owned application services context for the process: identity plus
-    // TTS pending tokens plus rate-limit counters plus chat (session mirror,
-    // durable history, account-key/tier gates) plus accounts (user/remember
-    // stores). The router and the background purge share this instance. Chat
-    // history opens lazily on first use via `ChatService::with_storage` with
-    // `get_or_try_init` retry, so a database failure is fallible per request
-    // and never fatal at startup, and the same database file is never opened
-    // twice (no global chat/history init). User/remember stores open per call
-    // through the shared account service. Deliberate root capture:
-    // timeout/prompt/history roots/account root/verifier secret are resolved
-    // once from `app_config()` here, with the same `HOST_DATA_DIR` /
-    // `host_data_dir` semantics as `UserStore::new` and
-    // `HistoryService::global`. Live global config remains for providers,
-    // CSRF, TTS, rate limits, cookie secure/max-age, and
-    // login/signup/home/preferences/voice-service routes.
-    let app_config = chatbot_core::config::app_config();
+    // One owned application services context for the process. The router and
+    // the background purge share this instance; tests use the same composition
+    // with their own captured workspace config.
+    let services = compose_services(&chatbot_core::config::app_config())?;
+    background::spawn_session_purge_task_with_services(services.clone());
+
+    let app = build_router_with_services(static_root, services);
+
+    let bind_addr = env::var("CHATBOT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:80".into());
+    let listener = TcpListener::bind(&bind_addr).await?;
+    let addr = listener.local_addr()?;
+    info!("listening on http://{addr}");
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Compose the production-owned services from one captured configuration.
+/// Root-, timeout-, prompt-, and secret-dependent services retain these values
+/// even if process-global configuration changes later.
+pub fn compose_services(
+    app_config: &chatbot_core::config::AppConfig,
+) -> anyhow::Result<services::AppServices> {
     let identity = identity::RequestIdentity::with_store(Arc::new(HttpSessionStore::new(
         app_config.session_timeout,
     )));
@@ -89,27 +100,13 @@ pub async fn run() -> anyhow::Result<()> {
         app_config.host_data_dir.clone(),
         accounts.clone(),
     );
-    let services = services::AppServices::with_owned_stores(identity)
+    Ok(services::AppServices::with_owned_stores(identity)
         .with_chat_service(chat)
         .with_account_service(accounts.clone())
         .with_connection_service(chatbot_core::agent_connections::ConnectionService::open(
-            &app_config.host_data_dir, accounts,
-        ).map_err(|err| anyhow::anyhow!("Unable to open connection storage: {err}"))?);
-    background::spawn_session_purge_task_with_services(services.clone());
-
-    let app = build_router_with_services(static_root, services);
-
-    let bind_addr = env::var("CHATBOT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:80".into());
-    let listener = TcpListener::bind(&bind_addr).await?;
-    let addr = listener.local_addr()?;
-    info!("listening on http://{addr}");
-
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
-    Ok(())
+            &app_config.host_data_dir,
+            accounts,
+        ).map_err(|err| anyhow::anyhow!("Unable to open connection storage: {err}"))?))
 }
 
 async fn set_cross_origin_isolation_headers(
