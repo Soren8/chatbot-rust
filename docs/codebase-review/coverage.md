@@ -72,4 +72,4 @@ Protected `.config.yml`, `.env` and runtime `data/` contents are not read withou
 
 ## Post-refactor review
 
-The [post-refactor report](post-refactor.md#coverage-and-method) records the repository-wide production/integration review at `6c86a98`, including the inspected component boundaries, candidate-focused test review, runtime evidence and remaining exclusions. Its PR-001–021 findings supplement the completed passes; this does not retroactively fill the historical matrix's empty T/D cells or claim assertion-by-assertion/line coverage.
+The [post-refactor report](post-refactor.md#coverage-and-method) records the repository-wide production/integration review at `6c86a98`, including the inspected component boundaries, candidate-focused test review, runtime evidence and remaining exclusions. Its PR-001–022 findings supplement the completed passes, with PR-022 adding the subsequent user-reported oversized-image inference failure and source-traced forwarding gap; this does not retroactively fill the historical matrix's empty T/D cells or claim assertion-by-assertion/line coverage.

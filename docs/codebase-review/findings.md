@@ -29,4 +29,4 @@ COR-001 and COR-002 are listed as separate correctness follow-ups in [security.m
 
 ## Post-refactor findings
 
-[post-refactor.md](post-refactor.md) owns PR-001–021, the new/missed findings from the whole-codebase review at `6c86a98`. It distinguishes reproduced behavior, the actual CI scanner failure, source-confirmed paths and outstanding device/concurrency verification. It also identifies earlier ledger dispositions that require reconciliation, including COR-001 and the leased expiry portion of MOD-006; their historical rows above have not been silently reclassified.
+[post-refactor.md](post-refactor.md) owns PR-001–022, the new/missed findings from the whole-codebase review at `6c86a98` and the subsequent user-reported oversized-image inference failure. It distinguishes reproduced behavior, the actual CI scanner failure, user reports, source-confirmed paths and outstanding device/concurrency verification. It also identifies earlier ledger dispositions that require reconciliation, including COR-001 and the leased expiry portion of MOD-006; their historical rows above have not been silently reclassified.

@@ -4,9 +4,15 @@ Reviewed 2026-10-03 on `refactor@6c86a98`, after the seven authorized phases. On
 
 ## Verdict
 
-The ownership refactor has established useful boundaries, but completion of the seven passes is not an issue-free release gate. This review found **21 follow-ups: six P1, fourteen P2 and one P3**. Nine behavior findings were reproduced against the freshly built disposable app or its shipped browser module; the actual CI secret scanner also failed. The remaining findings distinguish source evidence from outstanding concurrency, provider or device reproduction.
+The ownership refactor has established useful boundaries, but completion of the seven passes is not an issue-free release gate. The review and subsequent user report track **22 follow-ups: seven P1, fourteen P2 and one P3**. Nine behavior findings were reproduced against the freshly built disposable app or its shipped browser module; the actual CI secret scanner also failed. PR-022 adds the user's inference crash/unload report with source confirmation of the missing outbound bounds. The remaining findings distinguish source evidence from outstanding concurrency, provider or device reproduction.
 
 P1 means a security boundary, primary workflow or CI gate needs prompt attention. P2 means a concrete correctness/robustness follow-up. P3 means the review/architecture records need reconciliation. All findings below are open; recommendations are proposed remediation, not implemented changes. Existing accepted/deferred issues are listed separately.
+
+## Confirmed remediation contracts
+
+The user confirmed biometric/PIN unlock on Android cold entry with cached credentials, preserving the existing one-minute resume grace and confirmed continuing-background-voice exemption. The user also confirmed inline system-prompt saving when Send is accepted; stale/rejected admissions must make no prompt changes.
+
+For image formats, the user's preference is the widest safe support; SVG support is low priority. Safe support requires passive output, restricted decoding/conversion and a safe original-serving policy (PR-001); outbound size bounds and automatic resizing belong to PR-022. Exact image limits remain to be selected against the affected model/backend's supported budget.
 
 ## Coverage and method
 
@@ -50,6 +56,7 @@ Tests were traced for the identified behavior gaps; this is not a claim that eve
 | PR-019 | P1 | The CI secret-scan command fails on legitimate Connections DTO fields. | Actual command failed; 13 fixture checks passed |
 | PR-020 | P2 | Configuration validates trimmed tiers/types but retains untrimmed runtime values. | Source; premium gate and dispatch consequences traced |
 | PR-021 | P2 | Native API-26 calls are unguarded despite the declared API-24 minimum. | Source; API-24/25 device/emulator verification pending |
+| PR-022 | P1 | Oversized model-bound images are forwarded without size bounds/resizing and can crash/unload inference. | User-reported backend failure; missing outbound bounds confirmed by source |
 
 ## Detailed findings
 
@@ -212,6 +219,20 @@ This is source-confirmed for whitespace-bearing configuration, not observed on t
 
 The focus calls alone leave advertised API-24/25 voice/playback paths exposed to unavailable platform classes; origin slot handling adds another compatibility boundary. This review did not run those Android versions. Honor the declared minimum with version-gated native APIs and verify API-24/25 app entry, password/cached login, voice mode and standalone playback. Current JVM stubs and a modern-SDK APK compile cannot establish old-OS compatibility.
 
+### PR-022 — Bound and resize every model-bound image
+
+User report (verbatim):
+
+> currently we naively forward uploaded images to the language model, if they're too large, it can crash the inference and cause the model to become unloaded. so we need to set an image size bounds and auto-resize if necessary before passing to the LLM.
+
+`chatbot-core/src/chat.rs:206–223, 258–259` reserves image slots and thumbnails older history, but appends the newest user turn unchanged at full fidelity. `chat_images.rs:219–238` also passes a chosen full-resolution history image through unchanged or resolves the original. `history/api.rs:837–854` returns stored original bytes for full fidelity and the thumbnail fallback. Regenerate prepares its coalesced full-image user message through the same path (`chatbot-server/src/regenerate.rs:275–305`). Provider mapping (`providers/message_utils.rs:25–35`) wraps those data URLs without validating dimensions, pixel count or encoded size. The HTTP request-byte cap and fixed vision-token estimates do not bound decoded image dimensions or inference memory.
+
+Required remediation is a shared server-side outbound image policy before LLM dispatch: enforce explicit width/height, total-pixel and encoded-payload limits, preserve aspect ratio, and automatically downsize/re-encode oversized valid images. Apply it to every new-turn attachment, selected historical image, thumbnail-to-original fallback and regenerated/edit image across both provider paths; the existing full-resolution-slot count is not a per-image size bound. Undersized images should not be upscaled. Unreadable/unsupported payloads must produce a controlled outcome rather than bypassing the bounds as raw data URLs, and image decoding itself needs resource limits.
+
+Keep outbound renditions distinct from durable originals so model resizing does not silently reduce stored-photo quality, subject to PR-001's safe-format/original-serving contract. Characterize large landscape/portrait and highly compressed high-pixel-count fixtures, already-small images, malformed inputs and multiple attachments. Capture actual outgoing provider payloads for chat, regenerate and retained history; verify dimensions/pixels/bytes and stored-original fidelity. Backend-specific defaults or overrides need agreed limits and provider-configuration validation if configuration is added.
+
+The inference crash/model unload is user-reported, not reproduced in this review. The forwarding gap is source-confirmed; no GPU model was loaded and no deliberate OOM was attempted. The affected backend/model and safe image budget remain inputs for choosing concrete limits. This is an availability/resource-bound finding independent of SVG script execution.
+
 ## Existing work still requiring a disposition
 
 These are not counted as new discoveries:
@@ -226,7 +247,7 @@ The current production lease, owned-service composition, manifest-authenticated 
 
 ## Additional focused characterization leads
 
-These source observations need narrowly scoped reproductions before assigning a separate finding/disposition; they are not included in the twenty-one prioritized findings:
+These source observations need narrowly scoped reproductions before assigning a separate finding/disposition; they are not included in the twenty-two prioritized findings:
 
 - **Guest settings before the first turn:** `session.rs:444–469` makes memory/prompt updates no-ops when no chat entry exists, while guest HTTP handlers return success. Guest prepare then initializes/clears those fields (`:877–904`). Cover save-before-first-chat independently of the PR-002 browser crash.
 - **Wire/projection parity (MOD-010):** durable `EventText` (`generations.rs:407–445`) recognizes `<think>`/`<thinking>` closes, while the browser decoder and core thought stripping additionally support `[BEGIN FINAL RESPONSE]`. Cover that marker and split-marker/live/recovered/native projections; a successful `<think>…</think>` test does not establish parity.
@@ -255,4 +276,4 @@ The exploratory probes assert the observed defects so the evidence scripts can f
 
 ## Recommended ordering
 
-Address the attachment execution boundary, native credential entry paths, guest/account namespace failures, indirect query logging and failing CI contract first. Then repair create/admission/CAS/Stop and mutation fencing with end-to-end recovery tests. Follow with provider terminal outcomes, voice staging/native renewal, numeric bounds and initialization races. Reconcile the architecture/coverage records with those dispositions so the next completion gate states both what passed and what remains open.
+Address the attachment execution boundary and model-bound image resizing, native credential entry paths, guest/account namespace failures, indirect query logging and failing CI contract first. Then repair create/admission/CAS/Stop and mutation fencing with end-to-end recovery tests. Follow with provider terminal outcomes, voice staging/native renewal, numeric bounds and initialization races. Reconcile the architecture/coverage records with those dispositions so the next completion gate states both what passed and what remains open.
