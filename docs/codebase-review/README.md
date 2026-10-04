@@ -18,7 +18,7 @@ A seven-pass, evidence-backed review for behavior-preserving improvements—not 
 
 The [whole-codebase post-refactor review](post-refactor.md) at `6c86a98` records new or missed follow-ups after the seven authorized phases, with source/test tracing and disposable-app reproductions. It also records the separate CI secret-scan failure; the full Cargo gate alone does not cover that check. New findings and retained decisions are distinguished in that report.
 
-Final integrated PR gate passed: job `20261004T061453-813f3ffc3d50`, 153 nonzero Rust result blocks, 1,199 passed and 0 failed; nested DNS (34) and voice-service (72) Python tests are separate counts. See [post-refactor.md](post-refactor.md) for logs and verification limits, [findings.md](findings.md) for current cross-pass dispositions, and [coverage.md](coverage.md) for historical Phase 6/7 T/D scope. The gate does not close PR-006's remaining legacy fallback boundary or imply device/GPU/heap verification or all-findings closure.
+Final integrated PR gate passed: job `20261004T061453-813f3ffc3d50`, 153 nonzero Rust result blocks, 1,199 passed and 0 failed; nested DNS (34) and voice-service (72) Python tests are separate counts. PR-006 subsequently closed within its admission contract through a separate 49-test focused verification set; this was not a full-workspace rerun. See [post-refactor.md](post-refactor.md) for logs and verification limits, [findings.md](findings.md) for current cross-pass dispositions, and [coverage.md](coverage.md) for historical Phase 6/7 T/D scope. Physical-device/GPU/heap limits and all-findings status remain distinct.
 
 ## Standing rules
 

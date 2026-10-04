@@ -983,6 +983,9 @@ impl ChatService {
         if session.username.is_some() {
             let key = self.require_encryption_key(session.username.as_deref(), encryption_key)?;
             let key = key.expect("validated encryption key");
+            if expected_version.is_none() {
+                self.ensure_model_allowed(provider, session.username.as_deref())?;
+            }
             data.requires_cipher = true;
             let username = session.username.as_deref().expect("cipher requires user");
 
@@ -1010,18 +1013,19 @@ impl ChatService {
             set_version = Some(snapshot.version);
             image_resolver = Some(self.image_resolver(username, snapshot.set_id, key));
             prepare_capture = Some(PrepareCapture::from_snapshot(&snapshot));
-        } else if !data.initialised {
-            data.requires_cipher = false;
-            self.initialise_session_data(&mut data, session, set_name, None)?;
-            if let Some(prompt) = request.system_prompt {
+        } else {
+            if expected_version.is_none() {
+                self.ensure_model_allowed(provider, session.username.as_deref())?;
+            }
+            if !data.initialised {
+                data.requires_cipher = false;
+                self.initialise_session_data(&mut data, session, set_name, None)?;
+                if let Some(prompt) = request.system_prompt {
+                    data.system_prompt = prompt.to_owned();
+                }
+            } else if let Some(prompt) = request.system_prompt {
                 data.system_prompt = prompt.to_owned();
             }
-        } else if let Some(prompt) = request.system_prompt {
-            data.system_prompt = prompt.to_owned();
-        }
-
-        if expected_version.is_none() {
-            self.ensure_model_allowed(provider, session.username.as_deref())?;
         }
         data.encrypted = request.encrypted;
 
@@ -1399,6 +1403,9 @@ impl ChatService {
         if session.username.is_some() {
             let key = self.require_encryption_key(session.username.as_deref(), encryption_key)?;
             let key = key.expect("validated encryption key");
+            if expected_version.is_none() {
+                self.ensure_model_allowed(provider, session.username.as_deref())?;
+            }
             data.requires_cipher = true;
             let username = session.username.as_deref().expect("cipher requires user");
             let snapshot = self.load_prepare_snapshot_with_prompt(
@@ -1431,6 +1438,9 @@ impl ChatService {
             full_history = snapshot.history;
             prepare_capture = Some(capture);
         } else {
+            if expected_version.is_none() {
+                self.ensure_model_allowed(provider, session.username.as_deref())?;
+            }
             data.requires_cipher = false;
             if !data.initialised {
                 self.initialise_session_data(&mut data, session, set_name, None)?;
@@ -1536,9 +1546,6 @@ impl ChatService {
         // Guest and authed: prepare is non-destructive. Model context is a prefix only;
         // shared history is replaced at finalize.
 
-        if expected_version.is_none() {
-            self.ensure_model_allowed(provider, session.username.as_deref())?;
-        }
         data.encrypted = request.encrypted;
 
         let model_name = request
