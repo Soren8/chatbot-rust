@@ -8,6 +8,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use super::types::{
     BlobFormat, HeaderV1, ImageId, ImagePayloadV1, ManifestV1, PairId, PairPayloadV1, SetId,
@@ -192,7 +193,7 @@ fn aead_seal(
     enc_key: &EncryptionKey,
 ) -> Result<Vec<u8>, CryptoError> {
     let aes_key = derive_aes_key(enc_key);
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Encrypt)?;
+    let cipher = Aes256Gcm::new_from_slice(&aes_key[..]).map_err(|_| CryptoError::Encrypt)?;
     // Generate a fresh random 96-bit nonce per message from the OS CSPRNG.
     let nonce: Nonce<<Aes256Gcm as AeadCore>::NonceSize> = Nonce::generate();
     let ct = cipher
@@ -217,18 +218,18 @@ fn aead_open(aad: &[u8], blob: &[u8], enc_key: &EncryptionKey) -> Result<Vec<u8>
     let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
     let nonce_fixed: [u8; NONCE_LEN] = nonce_bytes.try_into().map_err(|_| CryptoError::Framing)?;
     let aes_key = derive_aes_key(enc_key);
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CryptoError::Decrypt)?;
+    let cipher = Aes256Gcm::new_from_slice(&aes_key[..]).map_err(|_| CryptoError::Decrypt)?;
     let nonce = nonce_array(nonce_fixed);
     cipher
         .decrypt(&nonce, Payload { msg: ct, aad })
         .map_err(|_| CryptoError::Decrypt)
 }
 
-fn derive_aes_key(enc_key: &EncryptionKey) -> [u8; 32] {
+fn derive_aes_key(enc_key: &EncryptionKey) -> Zeroizing<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(None, enc_key.as_bytes());
-    let mut out: [u8; 32] = Default::default();
+    let mut out = Zeroizing::new([0u8; 32]);
     // HKDF expand only fails if length is invalid; 32 is fine.
-    hk.expand(HKDF_INFO, &mut out)
+    hk.expand(HKDF_INFO, &mut out[..])
         .expect("HKDF expand length valid");
     out
 }

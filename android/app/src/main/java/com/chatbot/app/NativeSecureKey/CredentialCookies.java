@@ -34,6 +34,19 @@ public final class CredentialCookies {
         return name.startsWith("remember") || name.startsWith("enc_key");
     }
 
+    /** True when a cookie jar carries any remembered-account or data-key bearer. */
+    public static boolean hasCredentialCookie(String cookieHeader) {
+        if (cookieHeader == null || cookieHeader.isEmpty()) return false;
+        for (String part : cookieHeader.split(";")) {
+            String[] pair = part.trim().split("=", 2);
+            if (pair.length == 2 && !pair[1].trim().isEmpty()
+                    && isCredentialCookie(pair[0].trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Parsed per-account values from a cookie header; nulls when absent. */
     public static final class ParsedCredentials {
         public final String remember;

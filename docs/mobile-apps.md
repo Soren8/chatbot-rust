@@ -42,6 +42,15 @@ sentence's download. `beginSession` advertises `maxQueuedClips`; each
 generation-tagged `clipConsumed` event releases one slot. Older APKs without
 that capability continue using enqueue acknowledgements.
 
+Every native clip completion carries an explicit `played`, `expired`, or
+`failed` outcome. `played` releases the lookahead slot and advances in order;
+an expired token causes one fresh admission for the same sentence operation,
+then the native queue is restarted and pending lookahead clips are replayed in
+sentence order. The admission keeps the original idempotency key. A failed clip
+or a second expiry stops the queue and surfaces a voice-output failure rather
+than consuming the sentence as successful or advancing later audio. Desktop
+expired-token recovery also re-admits under the original sentence operation.
+
 Each native clip allows four GET attempts with backoff. The server caches the
 audio for the initial transfer plus three replays, avoiding resynthesis after
 an interrupted body. Synthesis/header reads retain a 120-second timeout;
@@ -224,7 +233,7 @@ The app does NOT bundle `static/` files. Instead, the WebView loads directly fro
 
 ### Key cache & biometrics
 
-The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies. Page JS does not call `NativeSecureKey.getKey` on the request path, and never handles the raw Fernet key. `deriveKeyFromPassword` is used at password login only. On mobile, cached credentials (`remember-{username}` and `enc_key-{username}`) are sealed in hardware-backed Android Keystore at rest. When logging in with cached credentials, `NativeSecureKey.unlockCachedLogin` prompts biometric authentication (`BiometricPrompt` with device PIN fallback) before native injects the cookies into `CookieManager`. Active logged-in sessions enforce a 1-minute resume lock with `FLAG_SECURE` (bypassed when `VoiceModeForegroundSession` is active). Overview leaks in the app switcher are prevented via `setRecentsScreenshotEnabled(false)` and focus-toggled `FLAG_SECURE`, allowing in-app screenshots when the app is focused and unlocked. Clearing app storage or forgetting an account removes the Keystore entries and cookies. Plugin changes always require an APK rebuild; JS/template changes come from the server.
+The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies. Page JS does not call a key-export API on the request path and never handles the raw Fernet key. `deriveKeyFromPassword` is used at password login only. On mobile, cached credentials are sealed in hardware-backed Android Keystore. At cold-process entry, credential cookies in the WebView jar or sealed credential slots trigger a native unlock gate before authenticated page content is shown, even if a live cookie jar survived process death. Biometric/device-credential authentication is required before the protected WebView is revealed. The separate 1-minute background resume lock applies after same-process backgrounding; confirmed continuing foreground voice is exempt. The login page requests `purgeCachedCookies`, and completion is acknowledged only after CookieManager reports the purge; this does not mean active-session cookies are globally removed from the jar. Overview leaks in the app switcher are prevented via `setRecentsScreenshotEnabled(false)` and focus-toggled `FLAG_SECURE`, allowing in-app screenshots when the app is focused and unlocked. Clearing app storage or forgetting an account removes the Keystore entries and cookies. Plugin changes always require an APK rebuild; JS/template changes come from the server.
 
 ---
 

@@ -105,7 +105,7 @@ function nativeSession() {
   const enqueued = [];
   const cancelled = [];
   const state = {
-    raw: '', generating: true, ended: 0, finished: 0, listener: null,
+    raw: '', generating: true, ended: 0, finished: 0, generation: 1, listener: null,
     observer: null, chatErrors: [], reports: [], consoleErrors: [],
   };
   let timer = 0;
@@ -252,6 +252,12 @@ async function checkNative(name, raws, expected, holdFirst) {
   s.posts.forEach((p, i) => p.resolve('tok' + i));
   await flush();
   assert.deepEqual(s.enqueued, s.posts.map((p, i) => 'tok' + i), name + ' native must enqueue once in order');
+  assert.equal(s.state.ended, 0, name + ' native must wait for clip playback before ending the queue');
+  s.enqueued.forEach((token) => s.state.listener({
+    type: 'clipConsumed', generation: s.state.generation,
+    url: 'https://chat/tts_stream/' + token, outcome: 'played'
+  }));
+  await flush();
   assert.equal(s.state.ended, 1, name + ' native must mark end of queue');
 }
 

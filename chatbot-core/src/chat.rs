@@ -258,6 +258,15 @@ pub fn prepare_prompt_messages_with(
     // New user turn is always appended at full fidelity (including full-res image).
     messages.push(ChatMessage::user(new_user_message.to_owned()));
 
+    // Apply a final, uniform outbound policy after history resolution and
+    // thumbnail selection. Only user messages are parsed for image parts by
+    // the provider mapper; leave quoted markers in system/assistant text alone.
+    for message in &mut messages {
+        if message.role == ChatMessageRole::User && has_image(&message.content) {
+            message.content = chat_images::normalize_model_image_text(&message.content);
+        }
+    }
+
     debug!(
         history_pairs = original_pairs,
         truncated_pairs = truncated_pairs,
@@ -356,7 +365,7 @@ mod tests {
     use crate::chat_images::{count_images, IMAGE_TAG_PREFIX};
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
-    use image::{DynamicImage, ImageBuffer, Rgb};
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
     use std::io::Cursor;
 
     fn mock_context(history: Vec<(String, String)>, memory: &str) -> ChatContext {
@@ -409,6 +418,13 @@ mod tests {
             "{IMAGE_TAG_PREFIX}data:image/jpeg;base64,{}]",
             STANDARD.encode(&jpeg)
         )
+    }
+
+    fn valid_png_data_url() -> String {
+        let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(1, 1, Rgb([20, 40, 60])));
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+        format!("data:image/png;base64,{}", STANDARD.encode(bytes.into_inner()))
     }
 
     #[test]
@@ -613,7 +629,7 @@ mod tests {
         use crate::chat_images::{ImageFidelity, ImageResolver};
         use crate::history::ImageId;
         use std::sync::{Arc, Mutex};
-        const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aenQAAAAASUVORK5CYII=";
+        let png = valid_png_data_url();
         let ids: Vec<ImageId> = (0..3).map(|_| ImageId::new()).collect();
         let tag = |id: &ImageId| format!("[IMAGE:img:{}]", id.as_hyphenated());
         let history = vec![
@@ -624,9 +640,10 @@ mod tests {
         ];
         let calls = Arc::new(Mutex::new(Vec::new()));
         let log = calls.clone();
+        let resolver_png = png.clone();
         let resolver = ImageResolver::new(move |id, fidelity| {
             log.lock().unwrap().push((id, fidelity));
-            Some(PNG.to_owned())
+            Some(resolver_png.clone())
         });
         let mut context = mock_context(history, "");
         context.image_resolver = Some(resolver);
@@ -641,8 +658,8 @@ mod tests {
         let users: Vec<&str> = prepared.messages.iter()
             .filter(|m| m.role == ChatMessageRole::User).map(|m| m.content.as_str()).collect();
         assert!(!users.iter().any(|u| u.contains("dropped")), "{users:?}");
-        assert!(users.iter().any(|u| u.contains("older") && u.contains(PNG)), "{users:?}");
-        assert!(users.iter().any(|u| u.contains("newest") && u.contains(PNG)), "{users:?}");
+        assert!(users.iter().any(|u| u.contains("older") && u.contains(&png)), "{users:?}");
+        assert!(users.iter().any(|u| u.contains("newest") && u.contains(&png)), "{users:?}");
         assert!(!users.iter().any(|u| u.contains("img:") || u.contains('\u{0}')), "{users:?}");
     }
 }

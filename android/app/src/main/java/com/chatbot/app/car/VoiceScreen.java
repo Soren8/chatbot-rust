@@ -2,7 +2,6 @@ package com.chatbot.app.car;
 
 import android.content.Context;
 import android.media.AudioAttributes;
-import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
@@ -24,6 +23,7 @@ import androidx.lifecycle.LifecycleOwner;
 
 import com.chatbot.app.R;
 import com.chatbot.app.audio.OggOpusStreamDecoder;
+import com.chatbot.app.audio.AudioFocusCompat;
 import com.chatbot.app.util.FileLogger;
 import com.chatbot.app.util.ServerUrlResolver;
 import com.chatbot.app.util.ServerUrlSettingStore;
@@ -72,7 +72,7 @@ public class VoiceScreen extends Screen {
     private volatile String generationOrigin;
     private volatile AudioTrack activeTrack;
     private volatile AudioRecord audioRecord;
-    private AudioFocusRequest audioFocusRequest;
+    private AudioFocusCompat.Focus audioFocusRequest;
     private boolean hasAudioFocus = false;
     private String statusText = "Initializing…";
     private String lastTranscription = "";
@@ -664,24 +664,20 @@ public class VoiceScreen extends Screen {
 
     private void requestAudioFocus() {
         if (audioManager == null || hasAudioFocus) return;
-        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                .setOnAudioFocusChangeListener(change -> {
+        audioFocusRequest = AudioFocusCompat.request(audioManager, change -> {
                     Log.i(TAG, "Audio focus change: " + change);
                     FileLogger.log(TAG, "AudioFocusChangeListener: " + change);
-                })
-                .build();
-        int result = audioManager.requestAudioFocus(audioFocusRequest);
-        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
-        FileLogger.log(TAG, "requestAudioFocus result=" + result + " granted=" + hasAudioFocus);
+                }, new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(), AudioManager.STREAM_MUSIC);
+        hasAudioFocus = audioFocusRequest != null && audioFocusRequest.granted;
+        FileLogger.log(TAG, "requestAudioFocus granted=" + hasAudioFocus);
     }
 
     private void abandonAudioFocus() {
         if (audioManager != null && audioFocusRequest != null && hasAudioFocus) {
-            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+            AudioFocusCompat.abandon(audioManager, audioFocusRequest);
             FileLogger.log(TAG, "abandonAudioFocus");
             hasAudioFocus = false;
         }

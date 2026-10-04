@@ -64,6 +64,22 @@ impl GenerationFeedback {
         *self.base_version.lock().unwrap_or_else(|e| e.into_inner()) = version;
         Ok(())
     }
+
+    /// Capture a prepare result whose caller version was already checked by
+    /// core before an inline prompt could mutate the durable set. The worker's
+    /// CAS baseline is the actual post-prompt capture version; guests retain
+    /// the ordinary zero-version check because they have no durable capture.
+    pub fn capture_prevalidated(
+        &self,
+        capture: Option<&chatbot_core::history::PrepareCapture>,
+    ) -> Result<(), HttpError> {
+        let Some(capture) = capture else {
+            return self.capture(None);
+        };
+        *self.base_version.lock().unwrap_or_else(|e| e.into_inner()) = capture.version.0;
+        Ok(())
+    }
+
     pub fn finalized(&self, outcome: &FinalizeOutcome) {
         *self.outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome.clone());
     }
@@ -102,7 +118,13 @@ impl State {
     /// only drops the front), so this is an index, not a scan.
     fn events_after(&self, cursor: u64) -> Vec<Event> {
         let Some(first) = self.events.front().map(|e| e.seq) else { return Vec::new() };
-        let skip = usize::try_from((cursor + 1).saturating_sub(first)).unwrap_or(usize::MAX);
+        let skip = if cursor < first {
+            0
+        } else {
+            usize::try_from(cursor - first)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1)
+        };
         self.events.range(skip.min(self.events.len())..).cloned().collect()
     }
 }
@@ -676,6 +698,14 @@ mod tests {
         assert_eq!(seqs(9), Vec::<u64>::new());
         assert_eq!(seqs(42), Vec::<u64>::new());
         assert!(state_with(1..=0).events_after(0).is_empty());
+    }
+
+    #[test]
+    fn events_after_maximum_cursor_is_empty_and_does_not_wrap() {
+        let state = state_with(5..=9);
+        assert!(state.events_after(u64::MAX).is_empty());
+        assert!(state.events_after(u64::MAX - 1).is_empty());
+        assert!(state.events_after(u64::MAX - 5).is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

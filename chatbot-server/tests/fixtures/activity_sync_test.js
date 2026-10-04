@@ -7,7 +7,7 @@ vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), context);
 const api = context.module.exports;
 const tick = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 function response(status, data, reader) {
-  return { status, ok: status >= 200 && status < 300, json: async () => data, text: async () => JSON.stringify(data), body: reader && { getReader: () => reader } };
+  return { status, ok: status >= 200 && status < 300, json: async () => data, text: async () => JSON.stringify(data), clone() { return response(status, data, reader); }, body: reader && { getReader: () => reader } };
 }
 function frames(lines, fail) {
   let i = 0;
@@ -125,8 +125,28 @@ const delta = (seq, text) => ({ seq, type: 'delta', text });
 
   let payload;
   h = harness(async (url, init) => { payload = JSON.parse(init.body); return response(200, {}); });
-  await h.sync.request('/create_set', { method: 'POST', body: '{}' }); assert.ok(payload.name);
-  console.log('PASS explicit create name');
+  await h.sync.request('/create_set', { method: 'POST', body: '{}' });
+  assert.ok(payload.set_name, 'create supplies an explicit name using the server DTO');
+  assert.equal(payload.name, undefined, 'unknown name field is never sent');
+  console.log('PASS explicit create DTO name');
+
+  let createAttempts = 0, recoveredName, replayedCreateName;
+  h = harness(async (url, init) => {
+    if (url === '/create_set') {
+      const body = JSON.parse(init.body);
+      replayedCreateName = body.set_name;
+      if (++createAttempts === 1) throw new TypeError('create admitted but response lost');
+      return response(200, { status: 'error', error: 'Set already exists or invalid name' });
+    }
+    assert.equal(url, '/get_sets', 'name collision is resolved against saved sets');
+    return response(200, [{ set_id: 'created-on-first-attempt', name: replayedCreateName, version: 0 }]);
+  });
+  const createResult = await (await h.sync.request('/create_set', { method: 'POST', body: '{}' })).json();
+  recoveredName = createResult.set_id;
+  assert.equal(recoveredName, 'created-on-first-attempt', 'response-loss retry recovers the original target');
+  assert.equal(createAttempts, 2, 'recovery replays one stable explicit-name operation');
+  assert.ok(replayedCreateName);
+  console.log('PASS create response-loss recovery resolves existing target');
 
   let aborted = false;
   h = harness((url, init) => new Promise((resolve, reject) => init.signal.addEventListener('abort', () => { aborted = true; const e = new Error(); e.name = 'AbortError'; reject(e); })));
@@ -219,6 +239,51 @@ const delta = (seq, text) => ({ seq, type: 'delta', text });
   h.sync.navigate('new'); admitted(response(202, { generation_id: 'old' })); await oldStart; await tick();
   assert.equal(h.events.length, 0, 'navigation fences late admission attachments');
   console.log('PASS late admission view fence');
+
+  let releaseAdmission, stopCalls = [], admissionSignal;
+  h = harness(async (url, init) => {
+    if (url === '/chat') {
+      admissionSignal = init.signal;
+      return new Promise(resolve => { releaseAdmission = resolve; });
+    }
+    stopCalls.push(url);
+    return response(200, {});
+  });
+  const stopController = new AbortController();
+  const pendingAdmission = h.sync.generationResponse('chat', {
+    body: JSON.stringify({ message: 'stop pending' }), signal: stopController.signal
+  });
+  await tick();
+  assert.ok(admissionSignal, 'durable admission has a transport signal');
+  const stopPending = h.sync.stop();
+  stopController.abort();
+  releaseAdmission(response(202, { generation_id: 'late-stop' }));
+  await Promise.all([pendingAdmission, stopPending]);
+  await tick();
+  assert.equal(stopCalls.filter(url => url === '/generations/late-stop/stop').length, 1,
+    'Stop intent survives a delayed accepted admission');
+  assert.equal(admissionSignal.aborted, false, 'Stop does not treat admission abort as proof the server rejected it');
+  console.log('PASS Stop intent survives pending admission acknowledgement');
+
+  let retryAdmission, admissionSends = 0, admissionKeys = [], replayStops = [];
+  h = harness(async (url, init) => {
+    if (url === '/chat') {
+      admissionKeys.push(init.headers['Idempotency-Key']);
+      if (++admissionSends === 1) throw new TypeError('accepted, response lost');
+      return response(202, { generation_id: 'replayed-stop' });
+    }
+    replayStops.push(url);
+    return response(200, {});
+  }, { sleep: () => new Promise(resolve => { retryAdmission = resolve; }) });
+  const replayedAdmission = h.sync.start({ kind: 'chat', message: 'stop after lost acknowledgement' });
+  await tick();
+  const replayStop = h.sync.stop();
+  retryAdmission();
+  await Promise.all([replayedAdmission, replayStop]);
+  assert.equal(admissionKeys.length, 2);
+  assert.equal(admissionKeys[0], admissionKeys[1], 'replayed admission preserves its idempotency key');
+  assert.deepEqual(replayStops, ['/generations/replayed-stop/stop'], 'lost acknowledgement replay is explicitly stopped');
+  console.log('PASS Stop intent survives accepted-but-lost admission acknowledgement');
 
   let initialGets = 0;
   h = harness(async (url, init) => {

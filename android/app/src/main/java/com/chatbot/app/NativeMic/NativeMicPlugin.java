@@ -10,7 +10,6 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
-import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
@@ -26,6 +25,7 @@ import android.view.WindowManager;
 import androidx.core.content.ContextCompat;
 
 import com.chatbot.app.audio.VoiceAudioRoute;
+import com.chatbot.app.audio.AudioFocusCompat;
 import com.chatbot.app.audio.VoiceModeForegroundService;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.audio.VoiceModeNativeHooks;
@@ -69,7 +69,7 @@ public class NativeMicPlugin extends Plugin {
     private Thread recordingThread = null;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private AudioManager audioManager = null;
-    private AudioFocusRequest audioFocusRequest = null;
+    private AudioFocusCompat.Focus audioFocusRequest = null;
     private boolean hasAudioFocus = false;
     /** Drops PCM callbacks queued before notification Stop or a recorder restart. */
     private final AtomicLong recordingGeneration = new AtomicLong(0);
@@ -337,12 +337,8 @@ public class NativeMicPlugin extends Plugin {
             FileLogger.log(TAG, "requestAudioFocus skipped: audioManager=" + (audioManager != null) + " hasAudioFocus=" + hasAudioFocus);
             return;
         }
-        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                .setOnAudioFocusChangeListener(change -> {
+        audioFocusRequest = AudioFocusCompat.request(audioManager,
+                change -> {
                     Log.i(TAG, "Audio focus change: " + change);
                     FileLogger.log(TAG, "AudioFocusChangeListener: " + change);
                     if (change == AudioManager.AUDIOFOCUS_LOSS
@@ -354,11 +350,12 @@ public class NativeMicPlugin extends Plugin {
                     if (!sessionCoordinator.isTtsSessionActive()) {
                         onAudioModeOrFocusChanged();
                     }
-                })
-                .build();
-        int result = audioManager.requestAudioFocus(audioFocusRequest);
-        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
-        FileLogger.log(TAG, "requestAudioFocus result=" + result + " granted=" + hasAudioFocus);
+                }, new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(), AudioManager.STREAM_MUSIC);
+        hasAudioFocus = audioFocusRequest != null && audioFocusRequest.granted;
+        FileLogger.log(TAG, "requestAudioFocus granted=" + hasAudioFocus);
     }
 
     private AudioDeviceInfo findBuiltInSpeaker() {
@@ -721,7 +718,7 @@ public class NativeMicPlugin extends Plugin {
 
     private void abandonAudioFocus() {
         if (audioManager != null && audioFocusRequest != null && hasAudioFocus) {
-            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+            AudioFocusCompat.abandon(audioManager, audioFocusRequest);
             FileLogger.log(TAG, "abandonAudioFocus");
             hasAudioFocus = false;
         }

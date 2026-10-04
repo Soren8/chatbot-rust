@@ -179,6 +179,11 @@ fn default_true() -> bool {
 
 impl ProviderConfig {
     fn finalize(mut self) -> Self {
+        self.provider_type = self.provider_type.trim().to_ascii_lowercase();
+        self.tier = self
+            .tier
+            .map(|tier| tier.trim().to_ascii_lowercase());
+
         if self.base_url.contains("openrouter.ai") {
             if let Ok(openrouter_key) = env::var("OPENROUTER_API_KEY") {
                 if !openrouter_key.trim().is_empty() {
@@ -1321,6 +1326,23 @@ mod tests {
         let config = app_config();
         assert_eq!(config.tts_provider, "kokoro");
         assert_eq!(config.default_provider().tier.as_deref(), Some("free"));
+        reset();
+    }
+
+    #[test]
+    fn validated_provider_type_and_tier_are_normalized_for_runtime_use() {
+        let _lock = test_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "llms:\n  - provider_name: 'p'\n    type: ' OpenAI '\n    model_name: 'm'\n    tier: ' Premium '\n",
+        );
+        let _cwd_guard = CwdGuard::change_to(dir.path());
+        let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
+        reset();
+        let provider = app_config().default_provider().clone();
+        assert_eq!(provider.provider_type, "openai");
+        assert_eq!(provider.tier.as_deref(), Some("premium"));
         reset();
     }
 

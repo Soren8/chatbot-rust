@@ -19,7 +19,6 @@ interrupted (cooperative boundary).
 
 import asyncio
 import logging
-import tempfile
 from contextlib import aclosing, asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, File, HTTPException, Request, Response, UploadFile
@@ -142,12 +141,6 @@ async def kokoro_tts_stream(req: KokoroTtsRequest, request: Request):
 
 # ── STT ───────────────────────────────────────────────────────────────────────
 
-def _stage_wav(wav_bytes: bytes) -> str:
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp.write(wav_bytes)
-        return tmp.name
-
-
 @router.post("/v1/stt")
 async def stt(request: Request, audio: UploadFile = File(...)):
     raw = await audio.read()
@@ -168,10 +161,8 @@ async def stt(request: Request, audio: UploadFile = File(...)):
         logger.exception("Audio conversion failed")
         raise HTTPException(status_code=422, detail=f"Audio conversion failed: {exc}")
 
-    tmp_path = await asyncio.to_thread(_stage_wav, wav_bytes)
-
     try:
-        text = await service.transcribe_async(tmp_path)
+        text = await service.transcribe_wav_async(wav_bytes)
     except Exception as exc:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=str(exc))

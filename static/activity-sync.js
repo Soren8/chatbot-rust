@@ -23,6 +23,7 @@
     var navigation = 0;
     var mutationTail = Promise.resolve();
     var retryWaiters = new Set();
+    var pendingAdmissions = new Set();
 
     function waitRetry(ms, signal) {
       return new Promise(function (resolve) {
@@ -90,14 +91,33 @@
         init.headers = Object.assign({ 'Idempotency-Key': operationId() }, init.headers || {});
         if (url === '/create_set') {
           var body = JSON.parse(init.body || '{}');
-          if (!body.name) body.name = deps.createSetName ? deps.createSetName() : 'New Chat ' + clock().toString(36) + '-' + serial;
+          if (!body.set_name) body.set_name = deps.createSetName ? deps.createSetName() : 'New Chat ' + clock().toString(36) + '-' + serial;
           init.body = JSON.stringify(body);
         }
       }
+      var createName = url === '/create_set' ? JSON.parse(init.body || '{}').set_name : null;
       var key = mutation && init.headers['Idempotency-Key'];
       var pending = { url: url, init: init, promise: null };
       function run() {
-        pending.promise = send(url, init, controller.signal);
+        pending.promise = send(url, init, controller.signal).then(async function (response) {
+          if (!createName) return response;
+          var body;
+          try { body = await (response.clone ? response.clone() : response).json(); } catch (e) { return response; }
+          if (!body || body.status !== 'error' || !/Set already exists or invalid name/.test(body.error || '')) return response;
+          // Create has no server receipt. A lost successful acknowledgement
+          // replays the explicit name, which then collides; resolve that
+          // collision to the already-created set rather than creating a
+          // second auto-named set or surfacing a misleading failure.
+          var listed = await send('/get_sets', { headers: deps.headers ? deps.headers() : {} }, controller.signal).catch(function () { return null; });
+          if (!listed || !listed.ok) return response;
+          var sets = await listed.json().catch(function () { return []; });
+          var found = Array.isArray(sets) && sets.find(function (set) { return set && set.name === createName; });
+          if (!found) return response;
+          return { ok: true, status: 200, json: async function () {
+            return { status: 'success', set_id: found.set_id, name: found.name, version: found.version,
+              privacy_level: found.privacy_level, recovered: true };
+          } };
+        });
         return pending.promise;
       }
       if (mutation) outbox.set(key, pending);
@@ -222,27 +242,68 @@
     }
     async function start(payload, onEvent) {
       var binding = navigation;
+      var admission = { stopRequested: false, resolveStop: null };
+      admission.stopPromise = new Promise(function (resolve) { admission.resolveStop = resolve; });
+      pendingAdmissions.add(admission);
       state('sending');
       var route = payload.kind === 'regenerate' ? '/regenerate' : '/chat';
-      var response = await request(route, { method: 'POST', headers: Object.assign({}, deps.headers ? deps.headers() : {}, { 'X-Generation-Mode': 'durable' }), body: JSON.stringify(payload) });
-      var id = response.headers && response.headers.get('X-Generation-Id');
-      var data = id ? { generation_id: id } : await response.json();
-      if (binding !== navigation) {
-        if (response.body && response.body.cancel) await response.body.cancel();
-        return { response: response, data: data, detached: true };
+      try {
+        var response = await request(route, { method: 'POST', headers: Object.assign({}, deps.headers ? deps.headers() : {}, { 'X-Generation-Mode': 'durable' }), body: JSON.stringify(payload) });
+        var id = response.headers && response.headers.get('X-Generation-Id');
+        var data = id ? { generation_id: id } : await response.json();
+        if (response.status === 409 && data.error === 'generation_active') {
+          if (admission.stopRequested) {
+            var activeId = data.generation && data.generation.generation_id;
+            if (activeId) await request('/generations/' + encodeURIComponent(activeId) + '/stop', {
+              method: 'POST', headers: deps.headers ? deps.headers() : {}, body: '{}'
+            });
+            admission.resolveStop();
+            return { queued: true, response: response, data: data };
+          }
+        }
+        if (binding !== navigation) {
+          if (admission.stopRequested && response.ok && data && data.generation_id) {
+            await request('/generations/' + encodeURIComponent(data.generation_id) + '/stop', {
+              method: 'POST', headers: deps.headers ? deps.headers() : {}, body: '{}'
+            });
+          }
+          if (response.body && response.body.cancel) await response.body.cancel();
+          admission.resolveStop();
+          return { response: response, data: data, detached: true };
+        }
+        if (response.status === 409 && data.error === 'generation_active') {
+          queuedIntent = payload;
+          state('needs-action');
+          attach(data.generation).catch(function () { state('needs-action'); });
+          admission.resolveStop();
+          return { queued: true, response: response, data: data };
+        }
+        if (!response.ok) {
+          admission.resolveStop();
+          return { response: response, data: data };
+        }
+        queuedIntent = null;
+        if (admission.stopRequested && data && data.generation_id) {
+          await request('/generations/' + encodeURIComponent(data.generation_id) + '/stop', {
+            method: 'POST', headers: deps.headers ? deps.headers() : {}, body: '{}'
+          });
+          admission.resolveStop();
+        } else {
+          admission.resolveStop();
+          attach(data, onEvent, id ? response : null).catch(function () { state('needs-action'); });
+        }
+        return { descriptor: data, response: response };
+      } finally {
+        pendingAdmissions.delete(admission);
+        admission.resolveStop();
       }
-      if (response.status === 409 && data.error === 'generation_active') {
-        queuedIntent = payload;
-        state('needs-action');
-        attach(data.generation).catch(function () { state('needs-action'); });
-        return { queued: true, response: response, data: data };
-      }
-      if (!response.ok) return { response: response, data: data };
-      queuedIntent = null;
-      attach(data, onEvent, id ? response : null).catch(function () { state('needs-action'); });
-      return { descriptor: data, response: response };
     }
     function stop() {
+      if (pendingAdmissions.size) {
+        var pending = Array.from(pendingAdmissions);
+        pending.forEach(function (admission) { admission.stopRequested = true; });
+        return Promise.all(pending.map(function (admission) { return admission.stopPromise; }));
+      }
       if (!view) return Promise.resolve();
       return request('/generations/' + encodeURIComponent(view.id) + '/stop', { method: 'POST', headers: deps.headers ? deps.headers() : {}, body: '{}' });
     }

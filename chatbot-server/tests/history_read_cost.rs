@@ -5,10 +5,13 @@
 
 mod common;
 
-use std::{collections::HashMap, env, net::SocketAddr, sync::{Arc, Mutex, OnceLock}};
+use std::{collections::HashMap, env, io::Cursor, net::SocketAddr, sync::{Arc, Mutex, OnceLock}};
 
 use axum::{body::{to_bytes, Body}, http::{header, Method, Request, StatusCode}, routing::post, Router};
+use base64::Engine;
 use bcrypt::{hash, DEFAULT_COST};
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
+
 use chatbot_core::{
     account_service::AccountService,
     enc_key::EncryptionKey,
@@ -26,7 +29,16 @@ use tower::ServiceExt;
 const USER: &str = "cost-owner";
 const PASSWORD: &str = "CostPassword!42";
 const IMAGES: u64 = 3;
-const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aenQAAAAASUVORK5CYII=";
+
+fn png_data_url() -> String {
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(1, 1, Rgb([20, 40, 60])));
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    )
+}
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -109,10 +121,11 @@ voice_service_port: {}
     let set_id = created["set_id"].as_str().unwrap().to_owned();
     let key = EncryptionKey::from_header_value(&session.key).unwrap();
     let history = chat.history().unwrap();
+    let png = png_data_url();
     let mut version = SetVersion(created["version"].as_u64().unwrap());
     for turn in 0..IMAGES {
         version = history.append_pair(USER, SetId::parse(&set_id).unwrap(), version,
-            &format!("picture {turn} [IMAGE:{PNG}]"), "seen", &key).unwrap();
+            &format!("picture {turn} [IMAGE:{png}]"), "seen", &key).unwrap();
     }
     let response = app.clone().oneshot(json_request(&session, "/set_privacy",
         json!({"set_id":set_id,"expected_version":version.0,"privacy_level":"non_private"}))).await.unwrap();
@@ -178,7 +191,7 @@ async fn regenerate_prompt_decrypts_only_the_edited_pair_image() {
     let last = IMAGES - 1;
     take_blob_opens();
     let response = app.clone().oneshot(json_request(&session, "/regenerate", json!({
-        "message": format!("picture {last} [IMAGE:{PNG}]"), "set_id": set_id, "pair_index": last,
+        "message": format!("picture {last} [IMAGE:{}]", png_data_url()), "set_id": set_id, "pair_index": last,
     }))).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let opens = take_blob_opens();

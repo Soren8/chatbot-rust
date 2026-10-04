@@ -3,6 +3,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import com.chatbot.app.audio.TtsClipOutcome;
 
 public class Phase4TtsLogTest {
     static final String TAG = "NativeVoiceTts";
@@ -20,7 +21,7 @@ public class Phase4TtsLogTest {
         attempts++;
         throw new IOException("download failed for " + url);
     }
-    void writePcmToTrack(int rate, byte[] pcm, long generation) {}
+    boolean writePcmToTrack(int rate, byte[] pcm, long generation) throws IOException { return true; }
     void drainPlaybackBuffer() {}
     void stopPlaybackInternal(boolean notify) { active = false; }
     void releaseAudioTrack(long generation) { active = false; }
@@ -45,7 +46,7 @@ public class Phase4TtsLogTest {
         Phase4TtsLogTest failedClip = new Phase4TtsLogTest();
         failedClip.workerLoop(1, new TtsDownloadQueue<>(new ExecutionException(new IOException(SECRET))));
         if (!failedClip.events.equals(List.of("clipConsumed"))) throw new AssertionError("failed clip was not consumed");
-        check("queue_execution_exception", "clip failed");
+        check("queue_execution_exception", "clip download failed");
 
         Phase4TtsLogTest failedLoop = new Phase4TtsLogTest();
         failedLoop.workerLoop(1, new TtsDownloadQueue<>(new IllegalStateException(SECRET)));
@@ -71,6 +72,7 @@ public class Phase4TtsLogTest {
         }
         boolean isIdle() { return true; }
         void complete(Clip<T> clip) {}
+        void close() {}
         static class Clip<T> {
             String id = SECRET;
             ExecutionException failure;

@@ -141,6 +141,15 @@ function makeRenderer(overrides) {
     assert.equal(Renderer.sanitizeDataImageSrc(null), null);
   });
 
+  check('SVG image sources are rejected by preview and lightbox rendering', () => {
+    const { renderer } = makeRenderer({});
+    const svg = 'data:image/svg+xml;base64,PHN2Zy8+';
+    assert.equal(Renderer.sanitizeDataImageSrc(svg), null);
+    assert.equal(Renderer.sanitizeDataImageSrc('data:image/SVG+XML;base64,PHN2Zy8+'), null);
+    assert.equal(renderer.sanitizeLightboxSrc(svg), null);
+    assert.deepEqual(findAll(renderer.buildUserMessageSpan('caption', svg, {}), node => node.tagName === 'img'), []);
+  });
+
   check('user text reaches the tree as text, never markup', () => {
     const { renderer } = makeRenderer({});
     const evil = 'Hello <img src=x onerror=alert(1)>';

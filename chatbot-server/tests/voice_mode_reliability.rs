@@ -1769,7 +1769,7 @@ fn native_tts_audio_focus_and_speaker_routing_during_voice_mode() {
     let stop_internal = java_method_body(tts_plugin, "private void stopPlaybackInternal(")
         .expect("stopPlaybackInternal must be declared");
     assert!(
-        stop_internal.contains("abandonAudioFocusRequest")
+        stop_internal.contains("AudioFocusCompat.abandon(am, currentFocusRequest)")
             && stop_internal.contains("reclaimAudioFocusIfPresent"),
         "stopPlaybackInternal must release focus and notify NativeMic to reclaim focus"
     );
@@ -1967,10 +1967,26 @@ fn native_tts_prefetches_remaining_tokens_when_text_is_complete() {
         native_tts.contains("inFlightSentences < lookahead") && native_tts.contains("queueSentence(text)"),
         "completed text must fill available look-ahead slots without issuing an unbounded tail of tokens"
     );
+    let token_request = native_tts
+        .find("var prepared = requestToken(text, job.operation)")
+        .expect("each queued sentence must start its token request immediately");
+    let ordered_enqueue = native_tts
+        .find("enqueueTail = enqueueTail.then")
+        .expect("native enqueues must remain serialized");
     assert!(
-        native_tts.contains("var prepared = requestToken(text)")
-            && native_tts.contains("enqueueTail = enqueueTail.then"),
+        token_request < ordered_enqueue,
         "token requests must start independently of ordered enqueueing"
+    );
+    assert!(
+        native_tts.contains("operation: sentenceOperationId()")
+            && native_tts.contains("requestToken(expiredJob.text, expiredJob.operation)")
+            && native_tts.contains("'Idempotency-Key': sentenceOperation"),
+        "expired-token renewal must reuse the sentence operation ID used for its initial admission"
+    );
+    assert!(
+        native_tts.contains("job.renewals < 1")
+            && native_tts.contains("restartExpiredNativeQueue(job)"),
+        "expired-token session restart must retain its bounded renewal"
     );
     assert!(
         native_tts.contains("in sentence order") || native_tts.contains("enqueueTail"),

@@ -3,7 +3,6 @@ package com.chatbot.app;
 import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
-import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
@@ -12,9 +11,11 @@ import android.util.Log;
 import android.webkit.CookieManager;
 
 import com.chatbot.app.audio.OggOpusStreamDecoder;
+import com.chatbot.app.audio.AudioFocusCompat;
 import com.chatbot.app.audio.TtsAudioPolicy;
 import com.chatbot.app.audio.TtsDownloadQueue;
 import com.chatbot.app.audio.TtsBodyInputStream;
+import com.chatbot.app.audio.TtsClipOutcome;
 import com.chatbot.app.audio.VoiceAudioRoute;
 import com.chatbot.app.util.ClientLogReporter;
 import com.getcapacitor.JSObject;
@@ -90,7 +91,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
     /** Usage the held focus request was built with; -1 when none is held. */
     private volatile int focusUsage = -1;
     private static volatile NativeVoiceTtsPlugin instance;
-    private AudioFocusRequest currentFocusRequest;
+    private AudioFocusCompat.Focus currentFocusRequest;
 
     @Override
     public void load() {
@@ -199,13 +200,21 @@ public class NativeVoiceTtsPlugin extends Plugin {
             try {
                 TtsDownloadQueue.Clip<AudioClip> pending = queue.poll(QUEUE_POLL_MS, TimeUnit.MILLISECONDS);
                 if (pending != null) {
+                    String outcome = TtsClipOutcome.FAILED;
                     try {
                         AudioClip clip = pending.await();
                         if (clip != null && isGenerationActive(generation)) {
-                            writePcmToTrack(clip.sampleRate, clip.pcm, generation);
+                            if (writePcmToTrack(clip.sampleRate, clip.pcm, generation)) {
+                                outcome = TtsClipOutcome.PLAYED;
+                            }
                         }
                     } catch (ExecutionException e) {
-                        Log.e(TAG, "clip failed; continuing queue");
+                        Throwable cause = e.getCause();
+                        outcome = TtsClipOutcome.forFailure(cause);
+                        Log.e(TAG, "clip download failed");
+                    } catch (IOException e) {
+                        outcome = TtsClipOutcome.FAILED;
+                        Log.e(TAG, "clip playback failed; stopping queue");
                     } finally {
                         queue.complete(pending);
                         if (isGenerationActive(generation)) {
@@ -213,8 +222,15 @@ public class NativeVoiceTtsPlugin extends Plugin {
                             event.put("type", "clipConsumed");
                             event.put("generation", generation);
                             event.put("url", pending.id);
+                            event.put("outcome", outcome);
                             notifyListeners("playbackState", event);
                         }
+                    }
+                    if (!TtsClipOutcome.PLAYED.equals(outcome)) {
+                        // Do not run later sentences ahead of an expired head
+                        // or hide a failed clip behind normal queue completion.
+                        queue.close();
+                        return;
                     }
                     continue;
                 }
@@ -256,6 +272,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
             try {
                 return playUrlToTrackOnce(urlStr, generation);
             } catch (IOException e) {
+                if (e instanceof TtsClipOutcome.ExpiredToken) throw e;
                 last = e;
                 Log.e(TAG, "playUrlToTrack attempt " + attempt + " failed");
             }
@@ -292,6 +309,9 @@ public class NativeVoiceTtsPlugin extends Plugin {
             if (code == 404 || code == 401 || code == 403) {
                 Log.e(TAG, "GET non-retryable code=" + code);
                 ClientLogReporter.report("VOICE-ERROR", "voice: tts clip non-retryable code=" + code);
+                if (TtsClipOutcome.isExpiredHttpStatus(code)) {
+                    throw new TtsClipOutcome.ExpiredToken();
+                }
                 return null;
             }
             if (code < 200 || code >= 300) {
@@ -398,15 +418,15 @@ public class NativeVoiceTtsPlugin extends Plugin {
         return new AudioClip(decoder.sampleRate(), fullPcm);
     }
 
-    private void writePcmToTrack(int sampleRate, byte[] pcm, long generation) throws IOException {
+    private boolean writePcmToTrack(int sampleRate, byte[] pcm, long generation) throws IOException {
         if (pcm == null || pcm.length < 2) {
-            return;
+            return false;
         }
         if (!isGenerationActive(generation)) {
-            return;
+            return false;
         }
         AudioTrack track = ensureTrackPlaying(sampleRate, generation);
-        writePcmBlocking(track, pcm, generation);
+        return writePcmBlocking(track, pcm, generation);
     }
 
     private static final class WavStreamDecoder {
@@ -539,12 +559,12 @@ public class NativeVoiceTtsPlugin extends Plugin {
         }
     }
 
-    private void writePcmBlocking(AudioTrack track, byte[] pcm, long generation) throws IOException {
+    private boolean writePcmBlocking(AudioTrack track, byte[] pcm, long generation) throws IOException {
         int offset = 0;
         int remaining = pcm.length & ~1;
         while (remaining > 0) {
             if (!isGenerationActive(generation) || audioTrack != track) {
-                return;
+                return false;
             }
             int written;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -559,6 +579,7 @@ public class NativeVoiceTtsPlugin extends Plugin {
             remaining -= written;
             bytesWritten.addAndGet(written);
         }
+        return offset > 0;
     }
 
     private boolean isVoiceRouteActive() {
@@ -584,22 +605,20 @@ public class NativeVoiceTtsPlugin extends Plugin {
         if (!TtsAudioPolicy.shouldRefreshFocus(currentFocusRequest != null, focusUsage, desiredUsage)) {
             return;
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && currentFocusRequest != null) {
+        if (currentFocusRequest != null) {
             try {
-                am.abandonAudioFocusRequest(currentFocusRequest);
+                AudioFocusCompat.abandon(am, currentFocusRequest);
             } catch (Exception ignored) {
             }
             currentFocusRequest = null;
         }
-        AudioFocusRequest req = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(new AudioAttributes.Builder()
+        AudioFocusCompat.Focus req = AudioFocusCompat.request(am, change -> {},
+                new AudioAttributes.Builder()
                         .setUsage(desiredUsage)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                .build();
+                        .build(), AudioManager.STREAM_MUSIC);
         currentFocusRequest = req;
         focusUsage = desiredUsage;
-        am.requestAudioFocus(req);
     }
 
     private boolean hasHeadsetOrBluetoothConnected(AudioManager am) {
@@ -801,12 +820,12 @@ public class NativeVoiceTtsPlugin extends Plugin {
         bytesWritten.set(0);
 
         if (notifyStopped) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && currentFocusRequest != null) {
+            if (currentFocusRequest != null) {
                 Context ctx = getContext();
                 if (ctx != null) {
                     AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
                     if (am != null) {
-                        am.abandonAudioFocusRequest(currentFocusRequest);
+                        AudioFocusCompat.abandon(am, currentFocusRequest);
                     }
                 }
                 currentFocusRequest = null;

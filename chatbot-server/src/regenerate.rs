@@ -89,6 +89,10 @@ pub(crate) async fn handle_regenerate_legacy(
         return Err(api_error(StatusCode::UNAUTHORIZED, "Invalid or missing CSRF token"));
     }
 
+    if chatbot_core::chat_images::contains_svg_attachment(&payload.message) {
+        return Err(api_error(StatusCode::BAD_REQUEST, "SVG images are not supported"));
+    }
+
     let data_context = crate::request_context::DataRequestContext::resolve(
         &identity,
         &headers,
@@ -186,6 +190,31 @@ pub(crate) async fn handle_regenerate_legacy(
     let save_thoughts = payload.save_thoughts.unwrap_or(default_save_thoughts);
     let send_thoughts = payload.send_thoughts.unwrap_or(default_send_thoughts);
 
+    let mut allow_native_search_fallback = true;
+    if let Some((_, _, level)) = privacy_binding.as_ref() {
+        allow_native_search_fallback = crate::set_privacy_coordinator::check_destination_eligibility(
+            *level,
+            services.config_source().destination_policy().as_deref(),
+            &selected_model,
+            provider_type.as_str(),
+            provider_config.xai_search,
+            payload.web_search.unwrap_or(false),
+        )?;
+    }
+
+    if feedback.is_none()
+        && payload.web_search.unwrap_or(false)
+        && provider_type == "xai"
+        && !provider_config.xai_search
+        && !allow_native_search_fallback
+        && generation.brave_client().is_none()
+    {
+        return Err(api_error_json(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({"error":"privacy_restricted","destination":"native_search"}),
+        ));
+    }
+
     let request_data = RegenerateRequestData {
         message: payload.message.as_str(),
         system_prompt: payload.system_prompt.as_deref(),
@@ -197,11 +226,21 @@ pub(crate) async fn handle_regenerate_legacy(
         send_thoughts,
     };
 
-    let prepare = chat.regenerate_prepare_leased(
+    if session_context.username.is_none() {
+        if let Some(feedback) = &feedback {
+            // Guest durable admissions have no history snapshot for core to
+            // compare; perform their zero-version check before session RAM
+            // can accept an inline prompt.
+            feedback.capture(None)?;
+        }
+    }
+
+    let prepare = chat.regenerate_prepare_leased_with_expected_version(
         &session_context,
         &request_data,
         &provider_config,
         encryption_key.as_ref(),
+        feedback.as_ref().map(|f| f.expected_version),
     );
 
     if let Some((_, set_id, captured_level)) = &privacy_binding {
@@ -213,7 +252,24 @@ pub(crate) async fn handle_regenerate_legacy(
     }
 
     if let Some(err) = prepare.error {
-        if feedback.is_some() { return Err(crate::chat_utils::prepare_rejection(err)); }
+        if feedback.is_some() {
+            if let (
+                Some((_, set_id, _)),
+                chatbot_core::session::PrepareError::History(
+                    chatbot_core::session::PrepareHistoryError::Conflict { current_version },
+                ),
+            ) = (privacy_binding.as_ref(), &err)
+            {
+                return Err(api_error_json(
+                    StatusCode::CONFLICT,
+                    chatbot_core::history::HistoryService::version_conflict_body(
+                        *set_id,
+                        *current_version,
+                    ),
+                ));
+            }
+            return Err(crate::chat_utils::prepare_rejection(err));
+        }
         return map_prepare_error(
             err,
             &chat,
@@ -231,18 +287,7 @@ pub(crate) async fn handle_regenerate_legacy(
         return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "missing set privacy capture"));
     }
     if let Some(feedback) = &feedback {
-        feedback.capture(context.prepare_capture.as_ref())?;
-    }
-    let mut allow_native_search_fallback = true;
-    if let Some((_, _, level)) = privacy_binding.as_ref() {
-        allow_native_search_fallback = crate::set_privacy_coordinator::check_destination_eligibility(
-            *level,
-            services.config_source().destination_policy().as_deref(),
-            &selected_model,
-            provider_type.as_str(),
-            provider_config.xai_search,
-            payload.web_search.unwrap_or(false),
-        )?;
+        feedback.capture_prevalidated(context.prepare_capture.as_ref())?;
     }
     let privacy_permit = privacy_binding.map(|(permit, _, _)| permit);
 

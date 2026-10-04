@@ -8,11 +8,11 @@ The Cargo workspace contains `chatbot-core`, `chatbot-server`, and `chatbot-test
 
 `chatbot-server/src/main.rs` invokes `run()` in `lib.rs`. Startup initializes logging, resolves static assets, starts purge, builds the router, binds and serves. The purge task calls core session and remember stores; its task handle is discarded, and these files do not show an application-owned shutdown handle.
 
-`build_router()` assembles handlers and a rate-limited subrouter. Middleware owns cross-origin headers, cookie transport classification/sanitization, static cache policy and server-error logging. `http_error.rs` maps typed core errors to Axum JSON; a compatibility path also adapts core `ServiceResponse`. See [findings.md](findings.md) (MOD-001).
+`build_router()` assembles handlers and a rate-limited subrouter. Middleware owns cross-origin headers, cookie transport classification/sanitization, static cache policy and server-error logging. `http_error.rs` maps typed core errors to Axum JSON; core `ServiceResponse` and HTTP-body construction have been removed. See [findings.md](findings.md) (MOD-001).
 
 ## Core state ownership
 
-`config::app_config()` owns resettable global configuration. `HttpSessionStore` and `SessionStore` are separate process globals: the former owns cookie-indexed identity/CSRF records; the latter owns per-identity chat state and generation locks. `HistoryService` has a separate process-global entry point. Session code also composes policy checks, chat preparation, key verification, mirror sealing and history commits. See [findings.md](findings.md) (MOD-002).
+`config::app_config()` and lazy global compatibility constructors remain available. Production instead composes owned HTTP identity, chat/history, account and policy/service dependencies through `AppServices`; the identity and chat-state types retain distinct responsibilities. Session code still composes chat preparation, key verification, mirror sealing and history commits. See [findings.md](findings.md) (MOD-002).
 
 `TestWorkspace` changes cwd/environment and resets config/rate limiting, but does not own all independently initialized globals. Test callers/process isolation remain relevant to TEST-001, owned by [test-quality.md](test-quality.md).
 
@@ -34,7 +34,7 @@ Android microphone/playback plugins call static instance helpers. A foreground s
 
 ## Authentication and credential lifecycle
 
-Password login derives a key in web crypto/native plugin or on the server, validates password and verifier, rotates HTTP session, then issues session/remember/key cookies. Cached native login unwraps credentials and injects cookies before `/login/remember`; browser JS maintains account names. Home auto-restore and explicit remember-login compose remember rotation, session creation and key-cookie promotion. Legacy key-returning interfaces remain a compatibility concern (MOD-014/SEC-003); see [modularity.md](modularity.md) and [security.md](security.md).
+Password login derives a key in web crypto/native plugin or on the server, validates password and verifier, rotates HTTP session, then issues session/remember/key cookies. Cached native login unwraps credentials and injects cookies before `/login/remember`; browser JS maintains account names. Home auto-restore and explicit remember-login compose remember rotation, session creation and key-cookie promotion. The legacy key-export surface has been removed; the remaining SEC-003 security decision is tracked in [security.md](security.md), not as an outstanding key-export API (see [modularity.md](modularity.md)).
 
 ## Packaging and test boundaries
 
@@ -55,8 +55,6 @@ Keep the acyclic Cargo dependency direction, private redb tables/crypto, typed h
 - Shared naming and Fernet helpers live in current-domain core modules; legacy storage delegates while preserving compatibility APIs.
 - TTS text preparation, backend PCM synthesis and token lifecycle have private module owners; HTTP/access/codec remain in the parent.
 - Production uses owned request/config, account, chat/history, rate and TTS service/policy dependencies where recorded in [design.md](../design.md); compatibility constructors remain lazy-global paths.
-
-## Open boundary
 
 ## Open boundary
 

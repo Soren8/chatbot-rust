@@ -370,24 +370,24 @@ async fn stop_before_worker_poll_saves_empty_turn() {
 
 #[tokio::test]
 async fn authenticated_privacy_regenerate_and_set_reservation() {
+    const FERNET_KEY: &str = "-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_s=";
+
     let _lock = lock();
     let workspace = common::TestWorkspace::with_openai_provider();
     let identity =
         RequestIdentity::with_store_and_csrf(Arc::new(HttpSessionStore::new(3600)), true);
     let home = identity.prepare_home_context(None).unwrap();
     let login = identity
-        .finalize_login(Some(&common::extract_cookie(&home.set_cookie)), "alice")
+        .finalize_login(Some(&common::extract_cookie(&home.set_cookie)), "guest_review_account")
         .unwrap();
     let cookie = common::extract_cookie(&login.set_cookie);
     let session = identity.session_context(Some(&cookie)).unwrap().session_id;
     let root = workspace.path().to_path_buf();
-    let key =
-        chatbot_core::enc_key::EncryptionKey::from_header_value("test-encryption-key-material")
-            .unwrap();
+    let key = chatbot_core::enc_key::EncryptionKey::from_header_value(FERNET_KEY).unwrap();
     let mut users = chatbot_core::user_store::UserStore::open(&root).unwrap();
-    users.create_user("alice", "unused-hash").unwrap();
+    users.create_user("guest_review_account", "unused-hash").unwrap();
     users
-        .ensure_key_verifier_with_secret("alice", key.as_bytes(), b"test-secret")
+        .ensure_key_verifier_with_secret("guest_review_account", key.as_bytes(), b"test-secret")
         .unwrap();
     let chat = ChatService::with_storage(
         Arc::new(ChatSessionStore::new(3600, "test".into())),
@@ -398,7 +398,7 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
     let snapshot = chat
         .history()
         .unwrap()
-        .ensure_default_set("alice", &key)
+        .ensure_default_set("guest_review_account", &key)
         .unwrap();
     let coordinator = chatbot_server::set_privacy_coordinator::SetPrivacyCoordinator::default();
     let provider = chatbot_core::config::get_provider_config(None).unwrap();
@@ -422,17 +422,40 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
         app: build_router_with_services(resolve_static_root(), services),
         cookie,
         csrf: login.csrf_token,
-        chat,
-        session,
+        chat: chat.clone(),
+        session: session.clone(),
     };
     let authenticated = |method: &str, uri: &str, payload: Value| {
         let mut request = request(&f, method, uri, payload, None);
         request
             .headers_mut()
-            .insert("X-Enc-Key", "test-encryption-key-material".parse().unwrap());
+            .insert("X-Enc-Key", FERNET_KEY.parse().unwrap());
         request
     };
-    let payload = json!({"kind":"chat", "set_id":snapshot.set_id.to_string(), "expected_version":snapshot.version.0, "message":"question"});
+    let response = f
+        .app
+        .clone()
+        .oneshot(authenticated(
+            "POST",
+            "/load_set",
+            json!({"set_id":snapshot.set_id.to_string()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+
+    let stale_prompt = json!({"kind":"chat", "set_id":snapshot.set_id.to_string(),
+        "expected_version":snapshot.version.0.saturating_sub(1), "message":"stale prompt",
+        "system_prompt":"must not persist"});
+    let response = f.app.clone().oneshot(authenticated("POST", "/chat", stale_prompt)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let after_stale = chat.history().unwrap().load("guest_review_account", snapshot.set_id, &key).unwrap();
+    assert_eq!(after_stale.version, snapshot.version, "stale admission must not advance the set");
+    assert_eq!(after_stale.system_prompt, snapshot.system_prompt, "stale inline prompt must not persist");
+
+    let payload = json!({"kind":"chat", "set_id":snapshot.set_id.to_string(), "expected_version":snapshot.version.0,
+        "message":"question", "system_prompt":"accepted inline prompt"});
     let response = f
         .app
         .clone()
@@ -440,18 +463,20 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(chat.history().unwrap().load("guest_review_account", snapshot.set_id, &key).unwrap().system_prompt,
+        "accepted inline prompt", "accepted durable admission must persist its inline prompt");
     let id = value(response).await["generation_id"]
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(coordinator.try_update("alice", snapshot.set_id).is_none());
+    assert!(coordinator.try_update("guest_review_account", snapshot.set_id).is_none());
     // The same account's other HTTP session attaches, but cannot send another
     // generation for the reserved set, even via a differently formatted UUID.
     let other_home = identity.prepare_home_context(None).unwrap();
     let other_login = identity
         .finalize_login(
             Some(&common::extract_cookie(&other_home.set_cookie)),
-            "alice",
+            "guest_review_account",
         )
         .unwrap();
     let mut other = authenticated(
@@ -482,16 +507,62 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
     assert_eq!(response.status(), StatusCode::OK);
     let output = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     assert!(std::str::from_utf8(&output).unwrap().contains("\"saved\""));
-    assert!(coordinator.try_update("alice", snapshot.set_id).is_some());
+    assert!(coordinator.try_update("guest_review_account", snapshot.set_id).is_some());
     let saved = f
         .chat
         .history()
         .unwrap()
-        .load("alice", snapshot.set_id, &key)
+        .load("guest_review_account", snapshot.set_id, &key)
         .unwrap();
     assert_eq!(saved.history.last().unwrap().1, "firstsecond");
-    let response = f.app.clone().oneshot(authenticated("POST", "/regenerate", json!({"kind":"regenerate", "set_id":snapshot.set_id.to_string(), "expected_version":saved.version.0, "message":"question", "pair_index":0}))).await.unwrap();
+    chat.update_session_memory_for_request(
+        &session,
+        "guest_review_account",
+        snapshot.set_id,
+        "cipher mirror probe",
+        &key,
+    )
+    .expect("prefixed account mirror must decrypt and reseal with its active set");
+    chat.update_session_memory_for_request(
+        &session,
+        "guest_review_account",
+        snapshot.set_id,
+        "cipher mirror probe",
+        &key,
+    )
+    .expect("the newly sealed prefixed account mirror must be decryptable");
+    let mirror = chat
+        .session_history_for_request(&session, Some("guest_review_account"), Some(&key))
+        .expect("prefixed authenticated session mirror must remain decryptable");
+    assert!(mirror.is_empty(), "authenticated history is intentionally kept in HistoryService");
+    let invalid_pair = authenticated(
+        "POST",
+        "/regenerate",
+        json!({"kind":"regenerate", "set_id":snapshot.set_id.to_string(),
+            "expected_version":saved.version.0, "message":"question", "pair_index":99,
+            "system_prompt":"must not persist for invalid pair"}),
+    );
+    let response = f.app.clone().oneshot(invalid_pair).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let after_invalid_pair = chat.history().unwrap().load("guest_review_account", snapshot.set_id, &key).unwrap();
+    assert_eq!(after_invalid_pair.version, saved.version, "invalid pair admission must not advance the set");
+    assert_eq!(after_invalid_pair.system_prompt, "accepted inline prompt");
+    let stale_regenerate = authenticated(
+        "POST",
+        "/regenerate",
+        json!({"kind":"regenerate", "set_id":snapshot.set_id.to_string(),
+            "expected_version":saved.version.0.saturating_sub(1), "message":"question", "pair_index":0,
+            "system_prompt":"stale regenerate prompt"}),
+    );
+    let response = f.app.clone().oneshot(stale_regenerate).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let after_stale_regenerate = chat.history().unwrap().load("guest_review_account", snapshot.set_id, &key).unwrap();
+    assert_eq!(after_stale_regenerate.version, saved.version);
+    assert_eq!(after_stale_regenerate.system_prompt, "accepted inline prompt");
+    let response = f.app.clone().oneshot(authenticated("POST", "/regenerate", json!({"kind":"regenerate", "set_id":snapshot.set_id.to_string(), "expected_version":saved.version.0, "message":"question", "pair_index":0, "system_prompt":"accepted regenerate prompt"}))).await.unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(chat.history().unwrap().load("guest_review_account", snapshot.set_id, &key).unwrap().system_prompt,
+        "accepted regenerate prompt", "accepted regenerate admission must persist its inline prompt");
     let id = value(response).await["generation_id"]
         .as_str()
         .unwrap()
@@ -511,11 +582,151 @@ async fn authenticated_privacy_regenerate_and_set_reservation() {
         .chat
         .history()
         .unwrap()
-        .load("alice", snapshot.set_id, &key)
+        .load("guest_review_account", snapshot.set_id, &key)
         .unwrap();
     assert_eq!(regenerated.history.len(), 1);
     assert_eq!(regenerated.history[0].1, "firstsecond");
     assert!(regenerated.version.0 > saved.version.0);
+}
+
+#[tokio::test]
+async fn legacy_search_fallback_rejection_does_not_persist_inline_prompt() {
+    use chatbot_core::{
+        config::{PrivacyLevel, ProviderConfig, SearchProvidersConfig},
+        config_source::{ConfigSource, DestinationPolicy},
+        enc_key::EncryptionKey,
+    };
+
+    let _lock = lock();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().to_path_buf();
+    let key = EncryptionKey::from_header_value("test-encryption-key-material").unwrap();
+    let user = "fallback_owner";
+    let secret = "legacy_fallback_test_secret";
+    let mut users = chatbot_core::user_store::UserStore::open(&root).unwrap();
+    users.create_user(user, "unused-hash").unwrap();
+    users
+        .ensure_key_verifier_with_secret(user, key.as_bytes(), secret.as_bytes())
+        .unwrap();
+
+    let provider = ProviderConfig {
+        privacy_level: PrivacyLevel::Standard,
+        provider_name: "xai".into(),
+        provider_type: "xai".into(),
+        tier: None,
+        model_name: "grok-test".into(),
+        context_size: Some(4096),
+        base_url: "http://127.0.0.1:1/v1".into(),
+        api_key: None,
+        allowed_providers: Vec::new(),
+        request_timeout: Some(1.0),
+        rate_limit_retries: Some(0),
+        rate_limit_max_wait_secs: Some(0.02),
+        test_chunks: None,
+        search: false,
+        xai_search: false,
+        xai_zdr: false,
+    };
+    let mut search = SearchProvidersConfig::default();
+    search.brave.privacy_level = PrivacyLevel::Standard;
+    search.xai_native.privacy_level = PrivacyLevel::NonPrivate;
+    let config = ConfigSource::new(
+        true,
+        3600,
+        "original system prompt".into(),
+        "http://127.0.0.1:1".into(),
+    )
+    .with_destination_policy(DestinationPolicy::from_providers(
+        std::slice::from_ref(&provider),
+        &search,
+        PrivacyLevel::NonPrivate,
+        PrivacyLevel::NonPrivate,
+    ));
+    let identity = RequestIdentity::with_store_and_config(
+        Arc::new(HttpSessionStore::new(3600)),
+        config.clone(),
+    );
+    let home = identity.prepare_home_context(None).unwrap();
+    let login = identity
+        .finalize_login(Some(&common::extract_cookie(&home.set_cookie)), user)
+        .unwrap();
+    let cookie = common::extract_cookie(&login.set_cookie);
+
+    let chat = ChatService::with_storage(
+        Arc::new(ChatSessionStore::new(3600, "original system prompt".into())),
+        root.clone(),
+        root,
+        secret.into(),
+    );
+    let snapshot = chat
+        .history()
+        .unwrap()
+        .ensure_default_set(user, &key)
+        .unwrap();
+    let _standard_version = chat
+        .history()
+        .unwrap()
+        .change_privacy_level(
+            user,
+            snapshot.set_id,
+            snapshot.version,
+            PrivacyLevel::Standard,
+            &key,
+        )
+        .unwrap();
+
+    let generation = GenerationDeps::new_with_fake(
+        HashMap::from([("xai".into(), provider)]),
+        "xai".into(),
+        false,
+        false,
+        None, // No Brave client: native fallback is policy-ineligible.
+        None,
+        None,
+        None,
+        0,
+        None,
+    );
+    let services = AppServices::with_owned_stores(identity)
+        .with_chat_service(chat.clone())
+        .with_config_source(config)
+        .with_rate_policy(chatbot_server::policy::RatePolicy::new(0, 0))
+        .with_generation_deps(generation);
+    let app = build_router_with_services(resolve_static_root(), services);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/chat")
+                .header(header::COOKIE, cookie)
+                .header("X-CSRF-Token", login.csrf_token)
+                .header("X-Enc-Key", "test-encryption-key-material")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "set_id": snapshot.set_id.to_string(),
+                        "message": "search request",
+                        "model_name": "xai",
+                        "web_search": true,
+                        "system_prompt": "must not persist after rejected setup"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["error"], "privacy_restricted");
+    assert_eq!(error["destination"], "native_search");
+    let after = chat
+        .history()
+        .unwrap()
+        .load(user, snapshot.set_id, &key)
+        .unwrap();
+    assert_eq!(after.system_prompt, "original system prompt");
 }
 
 #[tokio::test]

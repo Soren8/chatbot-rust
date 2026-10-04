@@ -100,13 +100,13 @@ function desktopQueue(source) {
 function nativeQueue(source) {
   const posts = [];
   const enqueued = [];
-  const state = { ended: 0, finished: 0, observer: null, listener: null };
+  const state = { ended: 0, finished: 0, observer: null, listener: null, generation: 0 };
   const lifecycle = makeOwner();
   let sessionPromise = null;
   let sessionListener = null;
   const bridge = {
     stop: async () => {},
-    beginSession: async () => ({ generation: 1, maxQueuedClips: 4 }),
+    beginSession: async () => ({ generation: ++state.generation, maxQueuedClips: 4 }),
     addListener: async (name, listener) => { state.listener = listener; return { remove() {} }; },
     enqueue: async (url) => { enqueued.push(url.split('/').pop()); },
     markEndOfQueue: async () => { state.ended++; },
@@ -162,6 +162,12 @@ function nativeQueue(source) {
       posts.forEach((p, i) => { if (!p.done) { p.done = true; p.resolve('tok' + i); } });
       await flush();
       for (let i = 0; i < 12; i++) await flush();
+      assert.equal(state.ended, 0, 'token admission/enqueue alone must not finish native playback');
+      enqueued.forEach((token) => state.listener({
+        type: 'clipConsumed', generation: state.generation,
+        url: 'https://chat/tts_stream/' + token, outcome: 'played'
+      }));
+      await flush();
     },
   };
 }

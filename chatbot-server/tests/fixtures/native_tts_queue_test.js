@@ -23,6 +23,14 @@ async function flush() {
   for (let i = 0; i < 40; i++) await Promise.resolve();
 }
 
+async function flushUntil(predicate, label) {
+  for (let i = 0; i < 1000; i++) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
+  assert.fail('timed out waiting for ' + label);
+}
+
 const voiceText = require(require('node:path').join(require('node:path').dirname(process.argv[2]), 'voice-text.js'));
 const activitySync = require(require('node:path').join(require('node:path').dirname(process.argv[2]), 'activity-sync.js'));
 
@@ -30,7 +38,8 @@ function session(sentences, generating = false, modern = true, realSplit = false
   const posts = [];
   const enqueued = [];
   const cancelled = [];
-  const state = { generating, sentences, ended: 0, listener: null, observer: null };
+  const state = { generating, sentences, ended: 0, listener: null, observer: null,
+    generation: 0, beginSessions: 0, sessionEnqueues: [], queueClosed: false, messages: [], stops: 0, endMarkers: 0 };
   let timer = 0;
   // Generating state comes from the real conversation request tracker, the
   // single authority the shared per-message source reads via
@@ -65,11 +74,22 @@ function session(sentences, generating = false, modern = true, realSplit = false
   let sessionPromise = null;
   let sessionListener = null;
   const bridge = {
-    stop: async () => {},
-    beginSession: async () => modern ? { generation: 1, maxQueuedClips: 4 } : { generation: 1 },
-    addListener: async (name, listener) => { state.listener = listener; return { remove() {} }; },
-    enqueue: async url => { enqueued.push(url.split('/').pop()); },
-    markEndOfQueue: async () => { state.ended++; }
+    stop: async () => { state.stops++; state.queueClosed = true; },
+    beginSession: async () => {
+      state.beginSessions++;
+      state.generation++;
+      state.queueClosed = false;
+      state.sessionEnqueues.push([]);
+      return modern ? { generation: state.generation, maxQueuedClips: 4 } : { generation: state.generation };
+    },
+    addListener: async (name, listener) => { state.listener = listener; return { remove() { if (state.listener === listener) state.listener = null; } }; },
+    enqueue: async url => {
+      if (state.queueClosed) throw new Error('native queue closed');
+      const token = url.split('/').pop();
+      enqueued.push(token);
+      state.sessionEnqueues[state.sessionEnqueues.length - 1].push(token);
+    },
+    markEndOfQueue: async () => { state.ended++; state.endMarkers++; }
   };
   const deps = {
     voiceLifecycle,
@@ -102,7 +122,7 @@ function session(sentences, generating = false, modern = true, realSplit = false
     notifyStarted() { voiceLifecycle.notePlaybackStarted(); },
     notifyEnded() { voiceLifecycle.notePlaybackEnded(); },
     reportVoice() {},
-    appendMessage() {},
+    appendMessage(text) { state.messages.push(text); },
     logError() {},
     setTimeout() { return ++timer; },
     clearTimeout() {},
@@ -110,6 +130,12 @@ function session(sentences, generating = false, modern = true, realSplit = false
     getSessionPromise: () => sessionPromise,
     setSessionPromise: (promise) => { sessionPromise = promise; },
     setSessionListener: (listener) => { sessionListener = listener; },
+    resetNativeSession: async () => {
+      sessionPromise = null;
+      if (sessionListener) await Promise.resolve(sessionListener).then(handle => handle && handle.remove());
+      sessionListener = null;
+      state.listener = null;
+    },
     nativeStop: () => bridge.stop().catch(() => {}),
     invalidateNative() {
       voiceLifecycle.invalidateNativeSession();
@@ -126,7 +152,12 @@ function session(sentences, generating = false, modern = true, realSplit = false
   ttsPlayback.playNativeVoiceModeTts(deps, {}, generating ? {} : { sentences });
   return { posts, enqueued, cancelled, state, voiceLifecycle,
     restream() { publish(); },
-    consume(token) { state.listener({ type: 'clipConsumed', generation: 1, url: 'https://chat/tts_stream/' + token }); }
+    emit(event) { state.listener(event); },
+    consume(token, outcome) {
+      const result = Object.assign({ type: 'clipConsumed', generation: state.generation, url: 'https://chat/tts_stream/' + token }, outcome || {});
+      if (result.outcome === 'expired' || result.outcome === 'failed') state.queueClosed = true;
+      state.listener(result);
+    }
   };
 }
 
@@ -267,18 +298,21 @@ async function readyHeadDoesNotWaitForSlowTailAndWindowRefills() {
   s.posts[3].resolve('four');
   await flush();
   assert.equal(s.posts.length, 4, 'token responses alone must not expand the window');
-  s.consume('one');
-  s.consume('one');
+  s.consume('one', { outcome: 'played' });
+  s.consume('one', { outcome: 'played' });
   await flush();
   assert.equal(s.posts.length, 5, 'one consumed clip releases exactly one slot');
   assert.equal(s.state.ended, 0, 'unknown tail cannot mark end of queue');
   s.posts[4].resolve('five');
-  s.consume('two');
+  s.consume('two', { outcome: 'played' });
   await flush();
   s.posts[5].resolve('six');
   await flush();
   assert.deepEqual(s.enqueued, ['one', 'two', 'three', 'four', 'five', 'six']);
-  assert.equal(s.state.ended, 1, 'end is marked after all URLs have been enqueued');
+  assert.equal(s.state.ended, 0, 'end marker waits until every bounded native slot is consumed');
+  ['three', 'four', 'five', 'six'].forEach(token => s.consume(token, { outcome: 'played' }));
+  await flush();
+  assert.equal(s.state.ended, 1, 'end is marked after all queued clips are consumed');
 }
 
 async function streamingTextFillsWindowWithoutWaitingForGenerationToEnd() {
@@ -310,6 +344,116 @@ async function failedHeadRetriesInOrderWithoutRepostingReadyTail() {
   assert.deepEqual(s.enqueued, ['one', 'two'], 'retry plays each sentence once in order');
   s.restream(); s.restream(); await flush();
   assert.equal(s.posts.length, 3, 'duplicate published text never requeues through the real sentence pipeline');
+}
+
+async function expiredNativeTokenRenewsSameSentenceInPlace() {
+  const s = session(['Keep this sentence.']);
+  await flush();
+  s.posts[0].resolve('expired-token');
+  await flush();
+  assert.deepEqual(s.enqueued, ['expired-token']);
+  // Native protocol reports a download 404 as an expired token, not as a
+  // consumed/skipped clip. JS must renew this exact sentence under its key.
+  s.consume('expired-token', { outcome: 'expired' });
+  await flush();
+  assert.equal(s.posts.length, 2, 'expired token causes one bounded same-sentence re-admission');
+  assert.equal(s.posts[1].text, 'Keep this sentence.', 'renewal retains the original sentence text');
+  assert.equal(s.posts[1].key, s.posts[0].key, 'renewal retains the original sentence operation ID');
+  s.posts[1].resolve('renewed-token');
+  await flush();
+  assert.equal(s.state.beginSessions, 2, 'expired native queue is replaced with a fresh session');
+  assert.deepEqual(s.enqueued, ['expired-token', 'renewed-token'], 'renewed clip occupies the original queue slot');
+  assert.equal(s.state.ended, 0, 'replacement session is not marked complete before playback');
+  s.consume('renewed-token', { outcome: 'played' });
+  await flush();
+  assert.equal(s.state.ended, 1, 'successful renewed clip permits queue completion');
+}
+
+async function expiredHeadRestartsFourClipWindowInOrder() {
+  const s = session(['One.', 'Two.', 'Three.', 'Four.', 'Five.']);
+  await flush();
+  assert.equal(s.posts.length, 4, 'native lookahead is bounded to four sentence admissions');
+  ['old-one', 'two', 'three', 'four'].forEach((token, i) => s.posts[i].resolve(token));
+  await flushUntil(() => s.state.sessionEnqueues[0].length === 4, 'all four admitted clips to enqueue');
+  assert.deepEqual(s.state.sessionEnqueues[0], ['old-one', 'two', 'three', 'four']);
+
+  // Native closes this queue on the expired first download and will not emit
+  // clipConsumed for the later downloads that were ready behind it.
+  s.consume('old-one', { outcome: 'expired' });
+  await flushUntil(() => s.posts.length === 5, 'same-key admission renewal');
+  assert.equal(s.posts.length, 5, 'only the expired head is renewed');
+  assert.equal(s.posts[4].text, 'One.', 'renewal keeps the failed head sentence');
+  assert.equal(s.posts[4].key, s.posts[0].key, 'renewal reuses the head operation key');
+  s.posts[4].resolve('new-one');
+  await flushUntil(() => s.state.sessionEnqueues[1] && s.state.sessionEnqueues[1].length === 4,
+    'replacement session to replay all four logical clips');
+  assert.equal(s.state.beginSessions, 2, 'the failed native queue is replaced');
+  assert.deepEqual(s.state.sessionEnqueues[1], ['new-one', 'two', 'three', 'four'],
+    'all outstanding logical jobs replay in original order without holes');
+  assert.equal(s.posts.length, 5, 'lookahead slot remains occupied until a clip is played');
+  assert.equal(s.state.ended, 0, 'no end marker is sent while replayed clips remain');
+
+  s.emit({ type: 'clipConsumed', generation: 1, url: 'https://chat/tts_stream/new-one', outcome: 'played' });
+  await flush();
+  assert.equal(s.posts.length, 5, 'late event from the closed native generation cannot release a current slot');
+
+  ['new-one', 'two', 'three', 'four'].forEach(token => s.consume(token, { outcome: 'played' }));
+  await flushUntil(() => s.posts.length === 6, 'one freed slot to admit the fifth sentence');
+  assert.equal(s.posts.length, 6, 'a played clip releases one slot for the fifth sentence');
+  assert.equal(s.posts[5].text, 'Five.');
+  s.posts[5].resolve('five');
+  await flushUntil(() => s.state.sessionEnqueues[1].length === 5, 'fifth clip to enqueue after replayed clips');
+  assert.deepEqual(s.state.sessionEnqueues[1], ['new-one', 'two', 'three', 'four', 'five']);
+  ['five'].forEach(token => s.consume(token, { outcome: 'played' }));
+  await flush();
+  assert.equal(s.state.ended, 1, 'end marker follows the final played clip');
+}
+
+async function manualStopDuringRenewalDoesNotRestartOrRequeue() {
+  const s = session(['Stop me.']);
+  await flush();
+  s.posts[0].resolve('expired-token');
+  await flush();
+  s.consume('expired-token', { outcome: 'expired' });
+  await flush();
+  assert.equal(s.posts.length, 2, 'renewal request is in flight');
+  s.voiceLifecycle.stopAllPlayback();
+  s.posts[1].resolve('late-renewal');
+  await flush();
+  assert.equal(s.state.beginSessions, 1, 'manual stop prevents creation of a replacement native session');
+  assert.deepEqual(s.enqueued, ['expired-token'], 'manual stop prevents late renewal enqueue');
+  assert(s.cancelled.includes('late-renewal'), 'late renewed token is cancelled');
+  assert.equal(s.state.ended, 0, 'manual stop never marks the queue complete');
+}
+
+async function permanentNativeClipFailureSurfacesAndStops() {
+  const s = session(['One.', 'Two.']);
+  await flush();
+  s.posts[0].resolve('one');
+  s.posts[1].resolve('two');
+  await flush();
+  s.consume('one', { outcome: 'failed' });
+  await flush();
+  assert.equal(s.state.beginSessions, 1, 'permanent failure does not silently restart or skip forward');
+  assert(s.state.messages.includes('Voice output failed. Try again.'), 'permanent failure is visible');
+  assert(s.state.stops > 0, 'native playback is stopped on a permanent failure');
+  assert.equal(s.state.endMarkers, 0, 'failed clip never advances to normal end-of-queue');
+}
+
+async function missingOrUnknownNativeOutcomeFailsClosed() {
+  for (const outcome of [undefined, 'unexpected']) {
+    const s = session(['One.', 'Two.']);
+    await flush();
+    s.posts[0].resolve('one');
+    s.posts[1].resolve('two');
+    await flush();
+    s.consume('one', outcome === undefined ? {} : { outcome });
+    await flush();
+    assert(s.state.messages.includes('Voice output failed. Try again.'),
+      'missing/unknown outcome is not treated as a successfully played clip');
+    assert(s.state.stops > 0, 'protocol mismatch stops the native queue');
+    assert.equal(s.state.endMarkers, 0, 'protocol mismatch never emits normal end-of-queue');
+  }
 }
 
 async function stopCancelsLateTokensWithoutEnqueueingThem() {
@@ -383,6 +527,11 @@ async function durableReplayFeedsRealSentenceQueueOnce() {
   await readyHeadDoesNotWaitForSlowTailAndWindowRefills();
   await streamingTextFillsWindowWithoutWaitingForGenerationToEnd();
   await failedHeadRetriesInOrderWithoutRepostingReadyTail();
+  await expiredNativeTokenRenewsSameSentenceInPlace();
+  await expiredHeadRestartsFourClipWindowInOrder();
+  await manualStopDuringRenewalDoesNotRestartOrRequeue();
+  await permanentNativeClipFailureSurfacesAndStops();
+  await missingOrUnknownNativeOutcomeFailsClosed();
   await stopCancelsLateTokensWithoutEnqueueingThem();
   await olderApkDoesNotWaitForUnsupportedConsumptionEvents();
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,9 +1,24 @@
+use std::io::Cursor;
+
+use base64::Engine;
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
+use serde_json::{json, Value};
+
 use chatbot_core::{
     enc_key::EncryptionKey,
     history::{HistoryError, HistoryService, SetId},
     operation_receipt::{OperationId, OperationRequest},
 };
-use serde_json::{json, Value};
+
+fn png_data_url() -> String {
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(1, 1, Rgb([20, 40, 60])));
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    )
+}
 
 #[test]
 fn receipt_fork_materializes_images_and_is_immediately_listed() {
@@ -13,13 +28,13 @@ fn receipt_fork_materializes_images_and_is_immediately_listed() {
             .unwrap();
     let key = EncryptionKey::from_header_value("data-key").unwrap();
     let source = history.create_set("alice", "Source", &key).unwrap();
-    let message = "picture [IMAGE:data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aenQAAAAASUVORK5CYII=]";
+    let message = format!("picture [IMAGE:{}]", png_data_url());
     let version = history
         .append_pair(
             "alice",
             source.set_id,
             source.version,
-            message,
+            &message,
             "answer",
             &key,
         )

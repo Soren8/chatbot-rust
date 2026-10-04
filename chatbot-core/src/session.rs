@@ -826,6 +826,13 @@ impl ChatService {
         Ok(())
     }
 
+    fn has_mismatched_guest_identity(session: &SessionContext) -> bool {
+        session.username.as_deref().is_some_and(|username| {
+            session.session_id.starts_with(SESSION_GUEST_PREFIX)
+                && session.session_id.as_str() != username
+        })
+    }
+
     fn load_history_snapshot(
         &self,
         username: &str,
@@ -912,9 +919,15 @@ impl ChatService {
         request_set_id: Option<SetId>,
         set_name: &str,
         prompt: Option<&str>,
+        expected_version: Option<u64>,
         key: &EncryptionKey,
     ) -> Result<SetSnapshot, PrepareError> {
         let mut snapshot = self.load_history_snapshot(username, request_set_id, set_name, key)?;
+        if expected_version.is_some_and(|expected| snapshot.version.0 != expected) {
+            return Err(PrepareError::History(map_history_to_prepare(crate::history::HistoryError::Conflict {
+                current_version: snapshot.version,
+            })));
+        }
         if let Some(prompt) = prompt {
             if prompt != snapshot.system_prompt {
                 let new_v = self
@@ -943,10 +956,23 @@ impl ChatService {
         request_set_id: Option<SetId>,
         entry: &Arc<SessionEntry>,
         encryption_key: Option<&EncryptionKey>,
+        expected_version: Option<u64>,
     ) -> Result<ChatContext, PrepareError> {
         let _default_prompt = self.default_prompt_resolved();
         let mut data = entry.data.lock().unwrap();
         data.last_used = Instant::now();
+        if expected_version.is_some() {
+            self.ensure_model_allowed(provider, session.username.as_deref())?;
+        }
+        if Self::has_mismatched_guest_identity(session) {
+            // Retain the compatibility error for impossible authenticated
+            // guest-bootstrap contexts; a real prefixed account has its
+            // username as its session ID and follows the authenticated path.
+            if expected_version.is_none() {
+                self.ensure_model_allowed(provider, session.username.as_deref())?;
+            }
+            return Err(SessionOperationError::AuthenticatedBootstrapMisuse.into());
+        }
 
         let mut prepare_capture = None;
         let mut set_id = None;
@@ -954,9 +980,10 @@ impl ChatService {
         let mut display_set_name = set_name.to_owned();
         let mut image_resolver = None;
 
-        if data.requires_cipher {
+        if session.username.is_some() {
             let key = self.require_encryption_key(session.username.as_deref(), encryption_key)?;
             let key = key.expect("validated encryption key");
+            data.requires_cipher = true;
             let username = session.username.as_deref().expect("cipher requires user");
 
             let snapshot = self.load_prepare_snapshot_with_prompt(
@@ -964,6 +991,7 @@ impl ChatService {
                 request_set_id,
                 set_name,
                 request.system_prompt,
+                expected_version,
                 key,
             )?;
             display_set_name = snapshot.display_name.clone();
@@ -983,6 +1011,7 @@ impl ChatService {
             image_resolver = Some(self.image_resolver(username, snapshot.set_id, key));
             prepare_capture = Some(PrepareCapture::from_snapshot(&snapshot));
         } else if !data.initialised {
+            data.requires_cipher = false;
             self.initialise_session_data(&mut data, session, set_name, None)?;
             if let Some(prompt) = request.system_prompt {
                 data.system_prompt = prompt.to_owned();
@@ -991,7 +1020,9 @@ impl ChatService {
             data.system_prompt = prompt.to_owned();
         }
 
-        self.ensure_model_allowed(provider, session.username.as_deref())?;
+        if expected_version.is_none() {
+            self.ensure_model_allowed(provider, session.username.as_deref())?;
+        }
         data.encrypted = request.encrypted;
 
         let model_name = request
@@ -1044,7 +1075,7 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> ChatPrepareResult {
-        self.chat_prepare_internal(session, request, provider, encryption_key)
+        self.chat_prepare_internal(session, request, provider, encryption_key, None)
             .0
     }
 
@@ -1058,6 +1089,7 @@ impl ChatService {
         request: &ChatRequestData<'_>,
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
+        expected_version: Option<u64>,
     ) -> (ChatPrepareResult, Option<Arc<SessionEntry>>) {
         let store = self.sessions();
         store.clean_expired();
@@ -1117,6 +1149,7 @@ impl ChatService {
             resolved_set_id,
             &entry,
             encryption_key,
+            expected_version,
         ) {
             Ok(ctx) => ctx,
             Err(err) => {
@@ -1340,28 +1373,44 @@ impl ChatService {
         request_set_id: Option<SetId>,
         entry: &Arc<SessionEntry>,
         encryption_key: Option<&EncryptionKey>,
+        expected_version: Option<u64>,
     ) -> Result<(ChatContext, Option<usize>), PrepareError> {
         let mut data = entry.data.lock().unwrap();
         data.last_used = Instant::now();
+        if expected_version.is_some() {
+            self.ensure_model_allowed(provider, session.username.as_deref())?;
+        }
+        if Self::has_mismatched_guest_identity(session) {
+            if expected_version.is_none() {
+                self.ensure_model_allowed(provider, session.username.as_deref())?;
+            }
+            return Err(SessionOperationError::AuthenticatedBootstrapMisuse.into());
+        }
 
         let mut prepare_capture = None;
         let mut set_id = None;
         let mut set_version = None;
         let full_history: Vec<(String, String)>;
         let memory_text: String;
-        let system_prompt: String;
+        let mut system_prompt: String;
         let mut display_set_name = set_name.to_owned();
         let mut durable_owner = None;
 
-        if data.requires_cipher {
+        if session.username.is_some() {
             let key = self.require_encryption_key(session.username.as_deref(), encryption_key)?;
             let key = key.expect("validated encryption key");
+            data.requires_cipher = true;
             let username = session.username.as_deref().expect("cipher requires user");
             let snapshot = self.load_prepare_snapshot_with_prompt(
                 username,
                 request_set_id,
                 set_name,
-                request.system_prompt,
+                if expected_version.is_some() {
+                    None
+                } else {
+                    request.system_prompt
+                },
+                expected_version,
                 key,
             )?;
             durable_owner = Some((username, snapshot.set_id, key));
@@ -1382,11 +1431,14 @@ impl ChatService {
             full_history = snapshot.history;
             prepare_capture = Some(capture);
         } else {
+            data.requires_cipher = false;
             if !data.initialised {
                 self.initialise_session_data(&mut data, session, set_name, None)?;
             }
-            if let Some(prompt) = request.system_prompt {
-                data.system_prompt = prompt.to_owned();
+            if expected_version.is_none() {
+                if let Some(prompt) = request.system_prompt {
+                    data.system_prompt = prompt.to_owned();
+                }
             }
             full_history = data.history.clone();
             memory_text = data.memory.clone();
@@ -1448,10 +1500,45 @@ impl ChatService {
             cap.replace_user_message = Some(effective_user);
         }
 
+        // Durable generation admission validates the caller's version before
+        // this point, but regenerate-specific index/coalescing validation must
+        // also finish before its inline prompt can advance the set version.
+        if expected_version.is_some() {
+            if let Some(prompt) = request.system_prompt {
+                if prompt != system_prompt {
+                    if let Some(capture) = prepare_capture.as_mut() {
+                        let (username, set_id, key) =
+                            durable_owner.as_ref().expect("durable capture owner");
+                        let new_version = self
+                            .history_for_prepare()?
+                            .update_system_prompt(
+                                username,
+                                *set_id,
+                                capture.version,
+                                prompt,
+                                key,
+                            )
+                            .map_err(map_history_to_prepare)?;
+                        capture.system_prompt = prompt.to_owned();
+                        capture.version = new_version;
+                        set_version = Some(new_version);
+                        data.memory = memory_text.clone();
+                        data.system_prompt = prompt.to_owned();
+                        let _ = seal_session_data(&mut data, key.as_bytes());
+                    } else {
+                        data.system_prompt = prompt.to_owned();
+                    }
+                    system_prompt = prompt.to_owned();
+                }
+            }
+        }
+
         // Guest and authed: prepare is non-destructive. Model context is a prefix only;
         // shared history is replaced at finalize.
 
-        self.ensure_model_allowed(provider, session.username.as_deref())?;
+        if expected_version.is_none() {
+            self.ensure_model_allowed(provider, session.username.as_deref())?;
+        }
         data.encrypted = request.encrypted;
 
         let model_name = request
@@ -1494,7 +1581,7 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> RegeneratePrepareResult {
-        self.regenerate_prepare_internal(session, request, provider, encryption_key)
+        self.regenerate_prepare_internal(session, request, provider, encryption_key, None)
             .0
     }
 
@@ -1506,6 +1593,7 @@ impl ChatService {
         request: &RegenerateRequestData<'_>,
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
+        expected_version: Option<u64>,
     ) -> (RegeneratePrepareResult, Option<Arc<SessionEntry>>) {
         let store = self.sessions();
         store.clean_expired();
@@ -1569,6 +1657,7 @@ impl ChatService {
             resolved_set_id,
             &entry,
             encryption_key,
+            expected_version,
         ) {
             Ok((context, insertion_index)) => (
                 RegeneratePrepareResult {
@@ -1803,8 +1892,22 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> LeasedChatPrepare {
-        let (result, entry) =
-            self.chat_prepare_internal(session, request, provider, encryption_key);
+        self.chat_prepare_leased_with_expected_version(session, request, provider, encryption_key, None)
+    }
+
+    /// Durable admission variant: compare the caller's captured set version
+    /// against the loaded snapshot before an inline prompt can be persisted.
+    pub fn chat_prepare_leased_with_expected_version(
+        &self,
+        session: &SessionContext,
+        request: &ChatRequestData<'_>,
+        provider: &ProviderConfig,
+        encryption_key: Option<&EncryptionKey>,
+        expected_version: Option<u64>,
+    ) -> LeasedChatPrepare {
+        let (result, entry) = self.chat_prepare_internal(
+            session, request, provider, encryption_key, expected_version,
+        );
         let ChatPrepareResult { context, error } = result;
         // The lease takes the acquired entry directly: no map relookup, so a
         // concurrent expiry recreation cannot substitute another entry between
@@ -1834,8 +1937,21 @@ impl ChatService {
         provider: &ProviderConfig,
         encryption_key: Option<&EncryptionKey>,
     ) -> LeasedRegeneratePrepare {
-        let (result, entry) =
-            self.regenerate_prepare_internal(session, request, provider, encryption_key);
+        self.regenerate_prepare_leased_with_expected_version(session, request, provider, encryption_key, None)
+    }
+
+    /// Durable admission variant with a pre-mutation caller-version check.
+    pub fn regenerate_prepare_leased_with_expected_version(
+        &self,
+        session: &SessionContext,
+        request: &RegenerateRequestData<'_>,
+        provider: &ProviderConfig,
+        encryption_key: Option<&EncryptionKey>,
+        expected_version: Option<u64>,
+    ) -> LeasedRegeneratePrepare {
+        let (result, entry) = self.regenerate_prepare_internal(
+            session, request, provider, encryption_key, expected_version,
+        );
         let RegeneratePrepareResult {
             context,
             insertion_index,
@@ -1873,6 +1989,7 @@ impl ChatService {
         let entry = store.entry(session_id);
         let mut data = entry.data.lock().unwrap();
         self.require_encryption_key(Some(username), Some(key))?;
+        data.requires_cipher = true;
         let key_bytes = key.as_bytes();
         unseal_session_data(&mut data, key_bytes, &self.default_prompt_resolved())?;
         if data.active_set_id != Some(set_id) {
@@ -1899,6 +2016,7 @@ impl ChatService {
         let entry = store.entry(session_id);
         let mut data = entry.data.lock().unwrap();
         self.require_encryption_key(Some(username), Some(key))?;
+        data.requires_cipher = true;
         let key_bytes = key.as_bytes();
         unseal_session_data(&mut data, key_bytes, &self.default_prompt_resolved())?;
         if data.active_set_id != Some(set_id) {
@@ -1926,6 +2044,10 @@ impl ChatService {
         let store = self.sessions();
         let entry = store.entry(session_id);
         let mut data = entry.data.lock().unwrap();
+        if username.is_some() {
+            self.require_encryption_key(username, key)?;
+        }
+        data.requires_cipher = username.is_some();
         data.memory = memory.to_owned();
         data.system_prompt = system_prompt.to_owned();
         data.history = history.to_vec();
@@ -1955,6 +2077,10 @@ impl ChatService {
             return Ok(Vec::new());
         };
         let mut data = entry.data.lock().unwrap();
+        if username.is_some() {
+            self.require_encryption_key(username, key)?;
+        }
+        data.requires_cipher = username.is_some();
         if data.requires_cipher {
             self.require_encryption_key(username, key)?;
             let key_bytes = key.expect("validated encryption key").as_bytes();
@@ -1977,6 +2103,10 @@ impl ChatService {
             return Ok(());
         };
         let mut data = entry.data.lock().unwrap();
+        if username.is_some() {
+            self.require_encryption_key(username, key)?;
+        }
+        data.requires_cipher = username.is_some();
         if let Some(expected) = set_id {
             if data.requires_cipher {
                 if let Some(k) = key {

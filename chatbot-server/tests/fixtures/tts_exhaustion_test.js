@@ -229,6 +229,7 @@ function nativeReplacementHarness() {
   const deferredOldRejections = [];
   const state = {
     phase: 'A', ended: 0,
+    generation: 0, listener: null,
     chatErrors: [], reports: [], consoleErrors: [],
   };
   const voiceLifecycle = makeOwner(false);
@@ -238,8 +239,8 @@ function nativeReplacementHarness() {
   let sessionListener = null;
   const mkBridge = () => ({
     stop: async () => { stops.push(enqueued.length); },
-    beginSession: async () => ({ generation: 1, maxQueuedClips: 4 }),
-    addListener: async () => ({ remove() {} }),
+    beginSession: async () => ({ generation: ++state.generation, maxQueuedClips: 4 }),
+    addListener: async (name, listener) => { state.listener = listener; return { remove() {} }; },
     enqueue: (url) => {
       const tok = url.split('/').pop();
       enqueueCalls.push(tok);
@@ -416,6 +417,12 @@ function nativeReplacementHarness() {
     assert.deepEqual(t.state.reports, [], 'stale failure stays silent');
     t.chatRequests.finish(t.chatRequests.seq());
     t.observers[1]();
+    await flush();
+    assert.equal(t.state.ended, 0, 'a successful enqueue is not evidence that the clip has played');
+    t.state.listener({
+      type: 'clipConsumed', generation: t.state.generation,
+      url: 'https://chat/tts_stream/new-0', outcome: 'played'
+    });
     await flush();
     assert.equal(t.state.ended, 1, 'new session marks end of queue');
   }

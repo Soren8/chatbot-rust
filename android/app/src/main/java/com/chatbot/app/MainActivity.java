@@ -42,14 +42,36 @@ import com.getcapacitor.CapConfig;
 public class MainActivity extends BridgeActivity {
     private static final String TAG = "MainActivity";
     public static final long RESUME_LOCK_GRACE_MS = 60_000; // 1 minute
+    private static final String PREF_NATIVE_BACKGROUND_ELAPSED = "native_backgrounded_elapsed";
+    private static final String PREF_NATIVE_UNLOCK_REQUIRED = "native_unlock_required";
+    private static boolean processHasStartedActivity = false;
     private static final int SETTINGS_REQUEST = 4071;
     private long backgroundedAt = 0;
     private boolean isLocked = false;
+    private boolean entryLocked = false;
     private FrameLayout lockOverlay = null;
     private FrameLayout offlineOverlay = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        boolean previouslyLocked = getPreferences(MODE_PRIVATE)
+                .getBoolean(PREF_NATIVE_UNLOCK_REQUIRED, false);
+        boolean hasCredentialState = hasCachedCredentialCookies();
+        boolean confirmedBackgroundVoice = VoiceModeForegroundSession.get().isConfirmed();
+        long persistedBackgroundAt = getPreferences(MODE_PRIVATE)
+                .getLong(PREF_NATIVE_BACKGROUND_ELAPSED, 0);
+        long restoredBackgroundAge = NativeUnlockGate.elapsedSinceBackground(
+                persistedBackgroundAt, SystemClock.elapsedRealtime());
+        boolean resumeMustLock = NativeUnlockGate.shouldLockResume(isUserLoggedIn(),
+                restoredBackgroundAge, RESUME_LOCK_GRACE_MS, confirmedBackgroundVoice);
+        entryLocked = NativeUnlockGate.shouldLockEntry(previouslyLocked,
+                !processHasStartedActivity, confirmedBackgroundVoice,
+                hasCredentialState) || resumeMustLock;
+        processHasStartedActivity = true;
+        // Restore independently of Bundle presence: an in-process Activity
+        // recreation without saved state must not erase the resume age.
+        backgroundedAt = getPreferences(MODE_PRIVATE)
+                .getLong(PREF_NATIVE_BACKGROUND_ELAPSED, 0);
         FileLogger.init(getApplicationContext());
         ClientLogReporter.init(getApplicationContext());
         installCrashReporter();
@@ -63,6 +85,10 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(LoggerPlugin.class);
         registerPlugin(ServerSettingsPlugin.class);
         super.onCreate(savedInstanceState);
+        if (entryLocked) {
+            hideProtectedWebView();
+            lockApp();
+        }
         installOfflineErrorHandler();
     }
 
@@ -132,6 +158,13 @@ public class MainActivity extends BridgeActivity {
         // override is persisted. capacitor.config.json carries no server.url
         // override, so the Bridge/Config URL is never consulted.
         String serverUrl = ServerUrlSettingStore.selected(this);
+        // Hide the server-pull WebView before BridgeActivity starts its first
+        // navigation. Cached bearer cookies must never render authenticated
+        // page content in a cold native process before platform confirmation.
+        if (entryLocked) {
+            WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView != null) webView.setVisibility(View.INVISIBLE);
+        }
         config = new CapConfig.Builder(this)
                 .setHTML5mode(base.isHTML5Mode())
                 .setServerUrl(serverUrl)
@@ -180,6 +213,8 @@ public class MainActivity extends BridgeActivity {
         keepVoiceWebViewRunning();
         if (!isFinishing()) {
             backgroundedAt = SystemClock.elapsedRealtime();
+            getPreferences(MODE_PRIVATE).edit()
+                    .putLong(PREF_NATIVE_BACKGROUND_ELAPSED, backgroundedAt).apply();
         }
     }
 
@@ -198,17 +233,20 @@ public class MainActivity extends BridgeActivity {
 
     private void checkResumeLock() {
         if (backgroundedAt > 0) {
-            long elapsed = SystemClock.elapsedRealtime() - backgroundedAt;
+            long elapsed = NativeUnlockGate.elapsedSinceBackground(
+                    backgroundedAt, SystemClock.elapsedRealtime());
             if (elapsed >= RESUME_LOCK_GRACE_MS) {
                 // Security gate: only a platform-confirmed foreground service
                 // bypasses the lock. A merely requested (unconfirmed) session
                 // must not skip biometric unlock.
-                if (!VoiceModeForegroundSession.get().isConfirmed() && isUserLoggedIn()) {
+                if (NativeUnlockGate.shouldLockResume(isUserLoggedIn(), elapsed,
+                        RESUME_LOCK_GRACE_MS, VoiceModeForegroundSession.get().isConfirmed())) {
                     lockApp();
                     return;
                 }
             }
             backgroundedAt = 0;
+            getPreferences(MODE_PRIVATE).edit().remove(PREF_NATIVE_BACKGROUND_ELAPSED).apply();
         }
     }
 
@@ -385,11 +423,25 @@ public class MainActivity extends BridgeActivity {
         return false;
     }
 
+    private boolean hasCachedCredentialCookies() {
+        try {
+            String cookieHeader = CookieManager.getInstance().getCookie(resolveServerUrl());
+            return CredentialCookies.hasCredentialCookie(cookieHeader)
+                    || NativeSecureKeyPlugin.hasSealedCredentials(this);
+        } catch (Exception e) {
+            // An unreadable cookie jar is not evidence that this is a guest;
+            // fail closed so an authenticated page cannot bypass the gate.
+            Log.w(TAG, "cached credential check failed; requiring native unlock", e);
+            return true;
+        }
+    }
+
     private void lockApp() {
         if (isLocked) {
             return;
         }
         isLocked = true;
+        getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_NATIVE_UNLOCK_REQUIRED, true).apply();
         runOnUiThread(() -> {
             updateWindowSecurity(hasWindowFocus());
             ensureLockOverlay();
@@ -522,8 +574,15 @@ public class MainActivity extends BridgeActivity {
     private void unlockApp() {
         isLocked = false;
         backgroundedAt = 0;
+        getPreferences(MODE_PRIVATE).edit()
+                .remove(PREF_NATIVE_BACKGROUND_ELAPSED)
+                .putBoolean(PREF_NATIVE_UNLOCK_REQUIRED, false)
+                .apply();
         if (lockOverlay != null) {
             lockOverlay.setVisibility(View.GONE);
+        }
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().setVisibility(View.VISIBLE);
         }
         updateWindowSecurity(hasWindowFocus());
     }
@@ -539,6 +598,15 @@ public class MainActivity extends BridgeActivity {
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
             }
         });
+    }
+
+    private void hideProtectedWebView() {
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().setVisibility(View.INVISIBLE);
+        }
+        getWindow().setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE);
     }
 
 

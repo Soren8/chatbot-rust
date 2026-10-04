@@ -384,6 +384,7 @@ dependencies = [
  "chatbot-core",
  "chatbot-test-support",
  "futures-util",
+ "image",
  "minijinja",
  "ogg",
  "once_cell",
@@ -409,6 +410,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "urlencoding",
+ "zeroize",
 ]
 
 [[package]]

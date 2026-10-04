@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use image::imageops::FilterType;
 use image::DynamicImage;
+use image::{ImageFormat, ImageReader, Limits};
 use std::collections::HashMap;
 use std::io::Cursor;
 use tracing::debug;
@@ -45,6 +46,14 @@ const THUMB_JPEG_QUALITY: u8 = 55;
 const UI_THUMB_MAX_EDGE: u32 = 384;
 /// JPEG quality for chat-history UI thumbnails.
 const UI_THUMB_JPEG_QUALITY: u8 = 70;
+/// Outbound vision-model image dimensions are kept within the user's confirmed
+/// safe inference boundary.
+pub const MODEL_IMAGE_MAX_EDGE: u32 = 1_024;
+/// Avoid unbounded base64 and decoder allocations for untrusted attachments.
+const MAX_IMAGE_INPUT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_IMAGE_INPUT_EDGE: u32 = 16_384;
+const MAX_IMAGE_INPUT_PIXELS: u64 = 32_000_000;
+const MAX_IMAGE_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// Placeholder when decode/resize fails for a non-priority image.
 const IMAGE_OMITTED_PLACEHOLDER: &str = "[prior image omitted to fit context]";
@@ -68,6 +77,152 @@ pub fn count_images(text: &str) -> usize {
 /// True if the message contains at least one image attachment tag.
 pub fn has_image(text: &str) -> bool {
     text.contains(IMAGE_TAG_PREFIX)
+}
+
+/// True when any image tag declares the unsupported SVG MIME type.
+pub fn contains_svg_attachment(text: &str) -> bool {
+    let mut rest = text;
+    while let Some(start) = rest.find(IMAGE_TAG_PREFIX) {
+        rest = &rest[start + IMAGE_TAG_PREFIX.len()..];
+        let Some(end) = rest.find(IMAGE_TAG_SUFFIX) else {
+            break;
+        };
+        let payload = &rest[..end];
+        if let Some((mime, _)) = split_data_url_or_raw(payload) {
+            if mime.trim().eq_ignore_ascii_case("image/svg+xml") {
+                return true;
+            }
+        }
+        rest = &rest[end + 1..];
+    }
+    false
+}
+
+/// Normalize one attachment for model dispatch. Unsupported, malformed and
+/// over-budget images are rejected instead of being forwarded as raw data.
+pub fn model_bounded_image_data_url(payload: &str) -> Option<String> {
+    let (_declared_mime, encoded) = split_data_url_or_raw(payload)?;
+    if encoded.len() > MAX_IMAGE_INPUT_BYTES.saturating_mul(4) / 3 + 8 {
+        return None;
+    }
+    let bytes = STANDARD.decode(encoded.trim()).ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_INPUT_BYTES {
+        return None;
+    }
+
+    let mime = raster_image_mime(&bytes)?;
+    // Canonicalize spoofed MIME types, including SVG MIME attached to raster
+    // bytes. The actual file format, not the client-supplied label, wins.
+    let image = decode_bounded_image(&bytes)?;
+    if image.width() <= MODEL_IMAGE_MAX_EDGE && image.height() <= MODEL_IMAGE_MAX_EDGE {
+        return Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)));
+    }
+
+    let resized = resize_within_bounds(image, MODEL_IMAGE_MAX_EDGE, MODEL_IMAGE_MAX_EDGE);
+    let mut png = Cursor::new(Vec::new());
+    resized.write_to(&mut png, ImageFormat::Png).ok()?;
+    let resized = png.into_inner();
+    Some(format!("data:image/png;base64,{}", STANDARD.encode(resized)))
+}
+
+/// Canonical passive raster content type for serving a stored original.
+/// The original bytes are returned unchanged by callers.
+pub fn raster_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_INPUT_BYTES {
+        return None;
+    }
+    let reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?;
+    raster_mime(reader.format()?)
+}
+
+/// Read dimensions from a recognized raster header without allocating decoded
+/// pixels. Used by history serving to distinguish an already-small thumb from
+/// an original that must be re-thumbnailed.
+pub fn raster_image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_INPUT_BYTES {
+        return None;
+    }
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    raster_mime(reader.format()?)?;
+    reader.into_dimensions().ok()
+}
+
+fn raster_mime(format: ImageFormat) -> Option<&'static str> {
+    match format {
+        ImageFormat::Jpeg => Some("image/jpeg"),
+        ImageFormat::Png => Some("image/png"),
+        ImageFormat::Gif => Some("image/gif"),
+        ImageFormat::WebP => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn image_decode_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_INPUT_EDGE);
+    limits.max_image_height = Some(MAX_IMAGE_INPUT_EDGE);
+    limits.max_alloc = Some(MAX_IMAGE_DECODE_ALLOC);
+    limits
+}
+
+fn decode_bounded_image(bytes: &[u8]) -> Option<DynamicImage> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_INPUT_BYTES {
+        return None;
+    }
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let format = reader.format()?;
+    raster_mime(format)?;
+    let (width, height) = reader.into_dimensions().ok()?;
+    if u64::from(width) * u64::from(height) > MAX_IMAGE_INPUT_PIXELS {
+        return None;
+    }
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(image_decode_limits());
+    reader.decode().ok()
+}
+
+fn resize_within_bounds(img: DynamicImage, max_width: u32, max_height: u32) -> DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    if w <= max_width && h <= max_height {
+        return img;
+    }
+    img.resize(max_width, max_height, FilterType::Triangle)
+}
+
+pub(crate) fn normalize_model_image_text(text: &str) -> String {
+    if !has_image(text) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len().min(64 * 1024));
+    let mut rest = text;
+    while let Some(start) = rest.find(IMAGE_TAG_PREFIX) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + IMAGE_TAG_PREFIX.len()..];
+        let Some(end) = rest.find(IMAGE_TAG_SUFFIX) else {
+            // An unterminated image marker is malformed input; discard its
+            // remainder instead of forwarding it to the provider mapper.
+            out.push_str(IMAGE_OMITTED_PLACEHOLDER);
+            return out;
+        };
+        let payload = &rest[..end];
+        rest = &rest[end + 1..];
+        match model_bounded_image_data_url(payload) {
+            Some(url) => {
+                out.push_str(IMAGE_TAG_PREFIX);
+                out.push_str(&url);
+                out.push(IMAGE_TAG_SUFFIX);
+            }
+            // Omission text is deliberately outside an [IMAGE:...] marker.
+            // Otherwise a provider mapper could reinterpret it as an image.
+            None => out.push_str(IMAGE_OMITTED_PLACEHOLDER),
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Approximate tokens for mixed text + image messages.
@@ -291,23 +446,27 @@ fn thumbnail_payload(payload: &str) -> Option<String> {
 }
 
 fn thumbnail_payload_with(payload: &str, max_edge: u32, quality: u8) -> Option<String> {
-    let (mime, b64) = split_data_url_or_raw(payload)?;
+    let (_mime, b64) = split_data_url_or_raw(payload)?;
+    if b64.len() > MAX_IMAGE_INPUT_BYTES.saturating_mul(4) / 3 + 8 {
+        return None;
+    }
     let bytes = STANDARD.decode(b64.trim()).ok()?;
     if bytes.is_empty() {
         return None;
     }
+    let img = decode_bounded_image(&bytes)?;
 
     // Already tiny — keep as-is (still counts as thumb in estimates).
     if payload.len() <= THUMB_DATA_URL_LEN_HINT && bytes.len() < 12_000 {
-        let url = if payload.starts_with("data:") {
-            payload.to_owned()
-        } else {
-            format!("data:{mime};base64,{b64}")
-        };
-        return Some(url);
+        let canonical = raster_mime(
+            ImageReader::new(Cursor::new(bytes.as_slice()))
+                .with_guessed_format()
+                .ok()?
+                .format()?,
+        )?;
+        return Some(format!("data:{canonical};base64,{}", STANDARD.encode(bytes)));
     }
 
-    let img = image::load_from_memory(&bytes).ok()?;
     let thumb = resize_to_max_edge(img, max_edge);
     let mut jpeg = Vec::new();
     {
@@ -592,12 +751,14 @@ pub(crate) fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
 }
 
 fn decode_and_thumb_image(payload: &str) -> Option<ExtractedImage> {
-    let (mime, bytes) = decode_image_data_url(payload)?;
+    let (_mime, bytes) = decode_image_data_url(payload)?;
+    let actual_mime = raster_image_mime(&bytes)?.to_owned();
+    let image = decode_bounded_image(&bytes)?;
     let image_id = ImageId::new();
-    match encode_jpeg_thumb(&bytes, UI_THUMB_MAX_EDGE, UI_THUMB_JPEG_QUALITY) {
+    match encode_jpeg_thumb_from_image(image, UI_THUMB_MAX_EDGE, UI_THUMB_JPEG_QUALITY) {
         Some(thumb) => Some(ExtractedImage {
             image_id,
-            mime,
+            mime: actual_mime,
             bytes,
             thumb_mime: "image/jpeg".into(),
             thumb_bytes: thumb,
@@ -607,9 +768,9 @@ fn decode_and_thumb_image(payload: &str) -> Option<ExtractedImage> {
             debug!(image_id = %image_id, "history_thumb_fallback");
             Some(ExtractedImage {
                 image_id,
-                mime: mime.clone(),
+                mime: actual_mime.clone(),
                 bytes: bytes.clone(),
-                thumb_mime: mime,
+                thumb_mime: actual_mime,
                 thumb_bytes: bytes,
                 thumb_fell_back: true,
             })
@@ -618,10 +779,11 @@ fn decode_and_thumb_image(payload: &str) -> Option<ExtractedImage> {
 }
 
 fn encode_jpeg_thumb(bytes: &[u8], max_edge: u32, quality: u8) -> Option<Vec<u8>> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let img = image::load_from_memory(bytes).ok()?;
+    let img = decode_bounded_image(bytes)?;
+    encode_jpeg_thumb_from_image(img, max_edge, quality)
+}
+
+fn encode_jpeg_thumb_from_image(img: DynamicImage, max_edge: u32, quality: u8) -> Option<Vec<u8>> {
     let thumb = resize_to_max_edge(img, max_edge);
     let mut jpeg = Vec::new();
     {
@@ -674,6 +836,9 @@ pub fn nth_image_data_url(text: &str, index: usize) -> Option<String> {
 /// Decode a stored `[IMAGE:...]` payload or data URL to mime + bytes.
 pub fn decode_image_data_url(payload: &str) -> Option<(String, Vec<u8>)> {
     let (mime, b64) = split_data_url_or_raw(payload)?;
+    if b64.len() > MAX_IMAGE_INPUT_BYTES.saturating_mul(4) / 3 + 8 {
+        return None;
+    }
     let bytes = STANDARD.decode(b64.trim()).ok()?;
     if bytes.is_empty() {
         return None;

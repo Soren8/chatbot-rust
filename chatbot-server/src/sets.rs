@@ -594,7 +594,13 @@ pub async fn handle_history_pair(
         };
         if let Some(idx) = payload.image_index {
             return match history.load_image(username, set_id, pair_index, idx, key) {
-                Ok((mime, bytes)) => {
+                Ok((_mime, bytes)) => {
+                    let Some(mime) = chat_images::raster_image_mime(&bytes) else {
+                        return build_json_response(
+                            StatusCode::NOT_FOUND,
+                            json!({"error": "image not found"}),
+                        );
+                    };
                     let image_src = format!(
                         "data:{mime};base64,{}",
                         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
@@ -686,7 +692,28 @@ pub async fn handle_history_image(
         history.load_image(username, id, pair_index, image_index, key)
     };
     match loaded {
-        Ok((mime, bytes)) => build_image_response(&mime, bytes),
+        Ok((_mime, mut bytes)) => {
+            let Some(mime) = chat_images::raster_image_mime(&bytes) else {
+                return build_json_response(
+                    StatusCode::NOT_FOUND,
+                    json!({"error": "image not found"}),
+                );
+            };
+            if want_thumb {
+                let dimensions = chat_images::raster_image_dimensions(&bytes);
+                if dimensions.is_none_or(|(width, height)| width > 384 || height > 384) {
+                    let Some(thumb) = chat_images::ui_thumb_jpeg(&bytes) else {
+                        return build_json_response(
+                            StatusCode::NOT_FOUND,
+                            json!({"error": "image not found"}),
+                        );
+                    };
+                    bytes = thumb;
+                    return build_image_response("image/jpeg", bytes);
+                }
+            }
+            build_image_response(mime, bytes)
+        }
         Err(_) => build_json_response(
             StatusCode::NOT_FOUND,
             json!({"error": "image not found"}),
@@ -733,7 +760,15 @@ fn history_pair_json(
     }
     let (user, assistant) = &history[pair_index];
     if let Some(idx) = image_index {
-        let image_src = chat_images::nth_image_data_url(user, idx);
+        let image_src = chat_images::nth_image_data_url(user, idx).and_then(|url| {
+            let (mime, bytes) = chat_images::decode_image_data_url(&url)?;
+            let actual_mime = chat_images::raster_image_mime(&bytes)?;
+            let _ = mime;
+            Some(format!(
+                "data:{actual_mime};base64,{}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+            ))
+        });
         if image_src.is_none() {
             return build_json_response(
                 StatusCode::NOT_FOUND,
@@ -946,6 +981,8 @@ fn build_image_response(mime: &str, bytes: Vec<u8>) -> Result<Response<Body>, Ht
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
+        .header("content-security-policy", "default-src 'none'; sandbox")
+        .header("x-content-type-options", "nosniff")
         .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable")
         .header(header::CONTENT_LENGTH, len.to_string())
         .body(Body::from(bytes))

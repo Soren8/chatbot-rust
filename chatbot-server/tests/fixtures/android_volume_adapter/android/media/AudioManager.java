@@ -16,6 +16,10 @@ public class AudioManager {
     public static final int AUDIOFOCUS_REQUEST_GRANTED = 1;
     public static final int GET_DEVICES_OUTPUTS = 0;
 
+    public interface OnAudioFocusChangeListener {
+        void onAudioFocusChange(int change);
+    }
+
     public final List<Integer> focusRequests = new ArrayList<>();
     public int focusAbandons;
     public final List<Integer> adjusts = new ArrayList<>();
@@ -25,6 +29,13 @@ public class AudioManager {
         focusRequests.add(request != null ? request.usage : -1);
         return AUDIOFOCUS_REQUEST_GRANTED;
     }
+
+    public int requestAudioFocus(OnAudioFocusChangeListener listener, int stream, int gain) {
+        focusRequests.add(-1);
+        return AUDIOFOCUS_REQUEST_GRANTED;
+    }
+
+    public void abandonAudioFocus(OnAudioFocusChangeListener listener) {}
 
     public void abandonAudioFocusRequest(AudioFocusRequest request) {
         focusAbandons++;

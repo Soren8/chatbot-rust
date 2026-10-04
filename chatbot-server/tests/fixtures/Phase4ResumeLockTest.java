@@ -2,14 +2,20 @@ import java.util.concurrent.Executor;
 import com.chatbot.app.util.NativeUnlockGate;
 
 public class Phase4ResumeLockTest {
+    static final int MODE_PRIVATE = 0;
+    static final String PREF_NATIVE_BACKGROUND_ELAPSED = "native_backgrounded_elapsed";
+    static final String PREF_NATIVE_UNLOCK_REQUIRED = "native_unlock_required";
     boolean isLocked = true;
     long backgroundedAt = 99;
+    final Preferences preferences = new Preferences();
     FrameLayout lockOverlay;
     FrameLayout root = new FrameLayout();
     Bridge bridge = new Bridge();
     static final String TAG = "resume";
 
     Phase4ResumeLockTest() {
+        preferences.values.put(PREF_NATIVE_BACKGROUND_ELAPSED, backgroundedAt);
+        preferences.values.put(PREF_NATIVE_UNLOCK_REQUIRED, true);
         ensureLockOverlay();
     }
 
@@ -25,6 +31,7 @@ public class Phase4ResumeLockTest {
     }
     FrameLayout findViewById(int id) { return root; }
     Bridge getBridge() { return bridge; }
+    Preferences getPreferences(int mode) { return preferences; }
     String resolveServerUrl() { return "https://server.example"; }
     boolean hasWindowFocus() { return true; }
     void updateWindowSecurity(boolean focused) {}
@@ -32,7 +39,8 @@ public class Phase4ResumeLockTest {
     /* SHIPPED_METHODS */
 
     static void expectLocked(Phase4ResumeLockTest app, String scenario) {
-        if (!app.isLocked || app.backgroundedAt != 99 || !app.lockOverlay.visible || !app.bridge.webView.urls.isEmpty())
+        if (!app.isLocked || app.backgroundedAt != 99 || !app.lockOverlay.visible || !app.bridge.webView.urls.isEmpty()
+                || !app.preferences.getBoolean(PREF_NATIVE_UNLOCK_REQUIRED, false))
             throw new AssertionError(scenario + " unlocked or navigated without authentication");
     }
     static void scenario(String name, int status, int result, boolean switchAccount, boolean authenticated) {
@@ -49,6 +57,9 @@ public class Phase4ResumeLockTest {
         if (authenticated) {
             if (app.isLocked || app.lockOverlay.visible || app.backgroundedAt != 0)
                 throw new AssertionError(name + " did not unlock on success");
+            if (app.preferences.getBoolean(PREF_NATIVE_UNLOCK_REQUIRED, true)
+                    || app.preferences.values.containsKey(PREF_NATIVE_BACKGROUND_ELAPSED))
+                throw new AssertionError(name + " did not persist successful unlock state");
             java.util.List<String> expected = switchAccount ? java.util.List.of("https://server.example/login") : java.util.List.of();
             if (!expected.equals(app.bridge.webView.urls)) throw new AssertionError(name + " navigation: " + app.bridge.webView.urls);
         } else expectLocked(app, name + " after callback");
@@ -62,8 +73,23 @@ public class Phase4ResumeLockTest {
         scenario("unlock_authenticated", 0, 0, false, true);
     }
     static class android { static class R { static class id { static final int content = 1; } } }
+    static class Preferences {
+        final java.util.Map<String, Object> values = new java.util.HashMap<>();
+        boolean getBoolean(String key, boolean fallback) {
+            Object value = values.get(key);
+            return value instanceof Boolean ? (Boolean) value : fallback;
+        }
+        Editor edit() { return new Editor(this); }
+        static class Editor {
+            final Preferences owner;
+            Editor(Preferences owner) { this.owner = owner; }
+            Editor remove(String key) { owner.values.remove(key); return this; }
+            Editor putBoolean(String key, boolean value) { owner.values.put(key, value); return this; }
+            void apply() {}
+        }
+    }
     static class View {
-        static final int GONE = 8;
+        static final int VISIBLE = 0, GONE = 8;
         boolean visible = true;
         void setVisibility(int visibility) { visible = visibility != GONE; }
         void setLayoutParams(Object params) {}
@@ -105,6 +131,8 @@ public class Phase4ResumeLockTest {
     }
     static class WebView {
         java.util.List<String> urls = new java.util.ArrayList<>();
+        int visibility = View.VISIBLE;
+        void setVisibility(int value) { visibility = value; }
         void loadUrl(String url) { urls.add(url); }
     }
     static class Bridge { WebView webView = new WebView(); WebView getWebView() { return webView; } }

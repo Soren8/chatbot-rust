@@ -27,7 +27,10 @@ public final class NativeUnlockGateTest {
     }
     static final class TestContext extends Context {
         final Map<String,Memory> stores=new HashMap<>();
-        public String getString(int id){return "https://fixture.example";}
+        final String origin;
+        TestContext(){this("https://fixture.example");}
+        TestContext(String origin){this.origin=origin;}
+        public String getString(int id){return origin;}
         public SharedPreferences getSharedPreferences(String name,int mode){return stores.computeIfAbsent(name,k->new Memory());}
     }
     static PluginCall call(){PluginCall c=new PluginCall();c.args.put("account",ACCOUNT);return c;}
@@ -60,8 +63,18 @@ public final class NativeUnlockGateTest {
         rejected(missingUnlockAccount,"account is required");check("account is required".equals(missingUnlockAccount.error),"missing unlock account message");
 
         jar.jar.put("remember-"+ACCOUNT,REMEMBER);jar.jar.put("enc_key-"+ACCOUNT,KEY);
+        jar.jar.put("remember",REMEMBER);jar.jar.put("enc_key",KEY);
+        jar.jar.put("session","live-session");
         PluginCall seal=call();plugin.sealCachedCredentials(seal);
         check(seal.rejections==0&&Boolean.TRUE.equals(seal.result.get("sealed")),"real seal failed: "+seal.error);
+        check(Boolean.FALSE.equals(seal.result.get("cookiesPurged")),"seal must report that the active jar was preserved");
+        for(String name:new String[]{"remember-alice","enc_key-alice","remember","enc_key","session"})
+            check(jar.jar.containsKey(name),"sealing must preserve active cookie needed for authenticated redirect/request: "+name);
+        check(NativeSecureKeyPlugin.hasSealedCredentials(context),"selected origin's sealed credential slot must gate cold entry");
+        TestContext otherOrigin=new TestContext("https://other.example");
+        check(!NativeSecureKeyPlugin.hasSealedCredentials(otherOrigin),"sealed credential presence must not cross origins");
+        check(com.chatbot.app.CredentialCookies.hasCredentialCookie("enc_key-alice=K")
+                && !com.chatbot.app.CredentialCookies.hasCredentialCookie("session=S; csrf=C"),"cold cookie gate must distinguish credential bearers");
         plugin.activity=null;
         PluginCall unavailableActivity=call();plugin.unlockCachedLogin(unavailableActivity);
         check(unavailableActivity.rejections==1&&unavailableActivity.resolutions==0&&"activity unavailable".equals(unavailableActivity.error),"activity unavailable result: "+unavailableActivity.error);
@@ -93,18 +106,31 @@ public final class NativeUnlockGateTest {
         prefs.values.put(dataSlot,original);
 
         BiometricPrompt.mode=0;
+        jar.jar.put("remember","other-account-token");
+        jar.jar.put("enc_key","other-account-key");
         PluginCall success=call();plugin.unlockCachedLogin(success);
         check(success.resolutions==1&&success.rejections==0&&Boolean.TRUE.equals(success.result.get("unlocked")),"unlock failed: "+success.error);
         check(success.result.size()==1&&!success.result.containsKey("key"),"JS bridge leaked key: "+success.result);
-        check(!success.keepAlive&&jar.flushes==1&&jar.injected.size()==4,"successful cookie injection count");
-        for(String name:new String[]{"remember-alice","remember","enc_key-alice","enc_key"}) {
+        check(!success.keepAlive&&jar.flushes==1&&jar.injected.size()==2,"successful account-scoped cookie injection count");
+        for(String name:new String[]{"remember-alice","enc_key-alice"}) {
             String expected=name+"="+(name.startsWith("remember")?REMEMBER:KEY);
             check(jar.jar.get(name).equals(name.startsWith("remember")?REMEMBER:KEY),"missing jar cookie: "+name);
             check(jar.injected.stream().anyMatch(s->s.contains(" "+expected+"; Path=/; SameSite=Strict; HttpOnly")),"missing HttpOnly injection: "+name);
         }
+        check("other-account-token".equals(jar.jar.get("remember"))
+                && "other-account-key".equals(jar.jar.get("enc_key")),"cached unlock must not overwrite generic cookies attributed to another account");
         jar.jar.put("remember-bob","bob-remember");jar.jar.put("enc_key-bob","bob-key");
         PluginCall bobSeal=call();bobSeal.args.put("account","bob");plugin.sealCachedCredentials(bobSeal);
         check(bobSeal.resolutions==1&&Boolean.TRUE.equals(bobSeal.result.get("sealed")),"second account seal failed");
+        jar.jar.put("session","live-session");
+        PluginCall purge=call();plugin.purgeCachedCookies(purge);
+        check(purge.resolutions==1&&purge.rejections==0&&Boolean.TRUE.equals(purge.result.get("purged")),"login-page credential purge failed: "+purge.error);
+        check(jar.jar.containsKey("session")&&jar.jar.keySet().stream().noneMatch(com.chatbot.app.CredentialCookies::isCredentialCookie),"credential purge must retain session and remove all credential cookies");
+        check(NativeSecureKeyPlugin.hasSealedCredentials(context),"cookie purge must retain sealed account slots");
+        jar.jar.put("enc_key-bob","bob-key");jar.acknowledge=false;
+        PluginCall failedPurge=call();plugin.purgeCachedCookies(failedPurge);
+        check(failedPurge.rejections==1&&failedPurge.resolutions==0&&"failed to purge cached credentials".equals(failedPurge.error),"purge acknowledgement failure must reject");
+        jar.acknowledge=true;
         resetJar();
         byte[] tamperedBytes=java.util.Base64.getDecoder().decode(original);tamperedBytes[tamperedBytes.length-1]^=1;
         prefs.values.put(dataSlot,java.util.Base64.getEncoder().encodeToString(tamperedBytes));

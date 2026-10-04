@@ -6,7 +6,7 @@ A seven-pass, evidence-backed review for behavior-preserving improvements—not 
 
 | Phase | File | Status | Final gate | Open items |
 | --- | --- | --- | --- | --- |
-| 1. Modularity — ownership and lifecycle boundaries | [modularity.md](modularity.md) | Complete for authorized scope | Full suite `20260919T202846-0908e2daba66` (commit `d55ee5d`) | MOD-001/002, 003, 006, 007, 013–017; see [modularity](modularity.md#open-items) and [findings](findings.md). No phone, vehicle or GPU runtime validation. |
+| 1. Modularity — ownership and lifecycle boundaries | [modularity.md](modularity.md) | Complete for authorized scope | Full suite `20260919T202846-0908e2daba66` (commit `d55ee5d`) | MOD-001/002, 003, 006, 007, 013–017; MOD-006's leased acquired-entry/locked-purge case is resolved, with compatibility semantics still open. See [modularity](modularity.md#open-items) and [findings](findings.md). No phone, vehicle or GPU runtime validation. |
 | 2. Simplicity — redundant branches, copies and indirection | [simplicity.md](simplicity.md) | Complete | Full suite `20260928T080643-0e0c1b195846` (commit `40ac92f`) | No Phase 2 findings; cross-pass items remain with their owners. |
 | 3. Abstractions/reuse — bounded sharing and duplication | [abstractions.md](abstractions.md) | Complete for agreed moderate scope | Full suite `20260928T225818-53da7826b56a` (completion review reaffirmed at `be18093`) | Cross-pass items remain with their owners. |
 | 4. Security/privacy — security and privacy boundaries | [security.md](security.md) | Complete for reviewed scope | Full suite `20260929T043340-482ba1a11f9d` | Accepted device/topology and other boundaries; see [security](security.md#open-items) and [findings](findings.md). |
@@ -17,6 +17,8 @@ A seven-pass, evidence-backed review for behavior-preserving improvements—not 
 ## Post-refactor review
 
 The [whole-codebase post-refactor review](post-refactor.md) at `6c86a98` records new or missed follow-ups after the seven authorized phases, with source/test tracing and disposable-app reproductions. It also records the separate CI secret-scan failure; the full Cargo gate alone does not cover that check. New findings and retained decisions are distinguished in that report.
+
+Final integrated PR gate passed: job `20261004T061453-813f3ffc3d50`, 153 nonzero Rust result blocks, 1,199 passed and 0 failed; nested DNS (34) and voice-service (72) Python tests are separate counts. See [post-refactor.md](post-refactor.md) for logs and verification limits, [findings.md](findings.md) for current cross-pass dispositions, and [coverage.md](coverage.md) for historical Phase 6/7 T/D scope. The gate does not close PR-006's remaining legacy fallback boundary or imply device/GPU/heap verification or all-findings closure.
 
 ## Standing rules
 

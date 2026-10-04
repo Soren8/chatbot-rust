@@ -25,6 +25,10 @@ public class AudioFocusRequest {
             return this;
         }
 
+        public Builder setOnAudioFocusChangeListener(AudioManager.OnAudioFocusChangeListener listener) {
+            return this;
+        }
+
         public AudioFocusRequest build() {
             int usage = audioAttributes != null
                     ? audioAttributes.usage

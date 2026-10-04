@@ -14,6 +14,7 @@ use minijinja::{context, AutoEscape, Environment};
 use serde_json::json;
 use serde_urlencoded::from_bytes;
 use tracing::warn;
+use zeroize::Zeroizing;
 
 use crate::home::page_response_builder;
 use crate::http_error::{
@@ -76,13 +77,13 @@ pub async fn handle_login_post(
         .await
         .map_err(|err| map_body_read_err(err, "login::post"))?;
 
-    let form: HashMap<String, String> =
+    let mut form: HashMap<String, String> =
         from_bytes(&body_bytes).map_err(|err| map_form_parse_err(err, "login::post"))?;
 
+    let storage_key = form.remove("storage_key").map(Zeroizing::new);
     let username_raw = form.get("username").map(|s| s.trim()).unwrap_or("");
     let password = form.get("password").map(|s| s.as_str()).unwrap_or("");
     let csrf_token = form.get("csrf_token").map(|s| s.as_str());
-    let storage_key = form.get("storage_key").map(|s| s.trim());
     let remember_me = matches!(
         form.get("remember_me").map(|s| s.as_str()),
         Some("on") | Some("true") | Some("1")
@@ -117,24 +118,26 @@ pub async fn handle_login_post(
     // off the async worker so streams sharing it keep flowing.
     let blocking_username = username.clone();
     let blocking_password = password.to_owned();
-    let supplied_key = storage_key.map(|key| key.as_bytes().to_vec());
-    let verified = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, UserStoreError> {
-        let username = blocking_username;
-        let password = blocking_password.as_str();
-        if !store.validate_user(&username, password)? {
-            return Ok(None);
-        }
+    let supplied_key = storage_key.map(|key| Zeroizing::new(key.trim().as_bytes().to_vec()));
+    let verified = tokio::task::spawn_blocking(
+        move || -> Result<Option<Zeroizing<Vec<u8>>>, UserStoreError> {
+            let username = blocking_username;
+            let password = blocking_password.as_str();
+            if !store.validate_user(&username, password)? {
+                return Ok(None);
+            }
 
-        // An absent or empty storage key means the same thing: derive it from
-        // the password. Only a non-empty supplied key is used as-is.
-        let encryption_key = match supplied_key {
-            Some(key) if !key.is_empty() => key,
-            _ => store.derive_encryption_key(&username, password)?,
-        };
+            // An absent or empty storage key means the same thing: derive it from
+            // the password. Only a non-empty supplied key is used as-is.
+            let encryption_key = match supplied_key {
+                Some(key) if !key.is_empty() => key,
+                _ => Zeroizing::new(store.derive_encryption_key(&username, password)?),
+            };
 
-        store.ensure_key_verifier(&username, &encryption_key)?;
-        Ok(Some(encryption_key))
-    })
+            store.ensure_key_verifier(&username, encryption_key.as_slice())?;
+            Ok(Some(encryption_key))
+        },
+    )
     .await
     .map_err(|err| {
         log_and_api_error(
@@ -242,7 +245,7 @@ pub async fn handle_login_post(
         }
     }
 
-    if let Ok(key_str) = std::str::from_utf8(&encryption_key) {
+    if let Ok(key_str) = std::str::from_utf8(encryption_key.as_slice()) {
         let max_age = if remember_me {
             remember_store::REMEMBER_MAX_AGE_SECS
         } else {

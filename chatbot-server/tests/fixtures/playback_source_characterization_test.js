@@ -145,7 +145,7 @@ function nativeDrive(steps, opts) {
   const enqueued = [];
   const state = {
     raw: opts.initialRaw || '', ended: 0, finished: 0,
-    observer: null, listener: null, delays: [],
+    observer: null, listener: null, delays: [], generation: 1,
   };
   const chatRequests = conversationState.createChatRequestTracker();
   let liveSeq = chatRequests.begin();
@@ -181,7 +181,7 @@ function nativeDrive(steps, opts) {
     observeChanges: (cb) => { state.observer = cb; return () => { state.observer = null; }; },
     fetchVoiceRetry: (url, options) => new Promise((resolve) => {
       const text = JSON.parse(options.body).text;
-      const entry = { text, resolve(token) { resolve({ headers: { get: () => token }, json: async () => ({ token }) }); } };
+      const entry = { text, done: false, resolve(token) { this.done = true; resolve({ headers: { get: () => token }, json: async () => ({ token }) }); } };
       posts.push(entry);
     }),
     withCsrf: (headers) => headers,
@@ -241,10 +241,21 @@ function nativeDrive(steps, opts) {
         if (state.observer) state.observer();
         await flush();
       }
-      for (let i = 0; i < 12; i++) await flush();
-      posts.forEach((p, i) => p.resolve('tok' + i));
-      await flush();
-      for (let i = 0; i < 12; i++) await flush();
+      let consumed = 0;
+      for (let pass = 0; pass < steps.length * 4 + 50 && state.ended === 0; pass++) {
+        for (let i = 0; i < 12; i++) await flush();
+        posts.forEach((p, i) => { if (!p.done) p.resolve('tok' + i); });
+        for (let i = 0; i < 12; i++) await flush();
+        while (consumed < enqueued.length) {
+          const token = enqueued[consumed++];
+          state.listener({
+            type: 'clipConsumed', generation: state.generation,
+            url: 'https://chat/tts_stream/' + token, outcome: 'played'
+          });
+          for (let i = 0; i < 12; i++) await flush();
+        }
+      }
+      assert.equal(state.ended, 1, 'native drive must play every enqueued clip before ending');
     },
   };
 }

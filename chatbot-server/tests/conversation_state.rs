@@ -364,18 +364,101 @@ fn version_conflict_retries_once_with_authoritative_version() {
         src.contains("return window.performRegeneration(aiMessageElement, userText, pairIndex, { versionRetried: true });"),
         "regenerate retry must preserve the same pair"
     );
-    for (caller, retry_flag) in [
-        ("handleDeleteMessage", "handleDeleteMessage(buttonElement, true)"),
-        ("handleForkMessage", "handleForkMessage(buttonElement, true)"),
-        ("submitResetChat", "submitResetChat(true)"),
-        ("saveSystemPromptNow", "saveSystemPromptNow(sysPromptText, true"),
-        ("saveMemoryNow", "saveMemoryNow(memText, true"),
-        ("submitRenameSet", "submitRenameSet(setId, oldName, newName, true)"),
-        ("submitDeleteSet", "submitDeleteSet(setId, setName, true)"),
+    for (caller, retry_call) in [
+        (
+            "handleDeleteMessage",
+            "return handleDeleteMessage(buttonElement, true, target, binding.setGen);",
+        ),
+        (
+            "handleForkMessage",
+            "return handleForkMessage(buttonElement, true, target, binding.setGen);",
+        ),
+        (
+            "submitResetChat",
+            "return submitResetChat(true, target, binding.setGen);",
+        ),
+        (
+            "saveSystemPromptNow",
+            "return saveSystemPromptNow(sysPromptText, true, target, binding.setGen)",
+        ),
+        (
+            "saveSystemPromptNow",
+            "return saveSystemPromptNow(sysPromptText, true, retryTarget, binding.setGen)",
+        ),
+        (
+            "saveMemoryNow",
+            "return saveMemoryNow(memText, true, target, binding.setGen)",
+        ),
+        (
+            "saveMemoryNow",
+            "return saveMemoryNow(memText, true, retryTarget, binding.setGen)",
+        ),
+        (
+            "submitRenameSet",
+            "return submitRenameSet(setId, oldName, newName, true, target, binding.setGen);",
+        ),
+        (
+            "submitDeleteSet",
+            "return submitDeleteSet(setId, setName, true, target, binding.setGen);",
+        ),
     ] {
         assert!(
-            src.contains(retry_flag),
-            "{caller} must retry once after adopting the authoritative version"
+            function_contains(src, caller, retry_call),
+            "{caller} must retry once with the initiating target and generation"
+        );
+    }
+    for (caller, target_version) in [
+        ("handleDeleteMessage", "target.setVersion = result.data.current_version"),
+        ("handleForkMessage", "target.setVersion = result.data.current_version"),
+        ("submitResetChat", "target.setVersion = result.data.current_version"),
+        ("submitRenameSet", "target.setVersion = data.current_version"),
+        ("submitDeleteSet", "target.setVersion = data.current_version"),
+    ] {
+        assert!(
+            function_contains(src, caller, target_version)
+                && function_contains(src, caller, "isLiveMemoryBinding(binding)"),
+            "{caller} must adopt the authoritative version and fence response application to its initiating view"
+        );
+    }
+    for (caller, retry_target) in [
+        (
+            "saveSystemPromptNow",
+            "var retryTarget = { setName: target.setName, setId: target.setId }",
+        ),
+        (
+            "saveMemoryNow",
+            "var retryTarget = { setName: target.setName, setId: target.setId }",
+        ),
+    ] {
+        assert!(
+            function_contains(src, caller, retry_target)
+                && function_contains(
+                    src,
+                    caller,
+                    "if (auth != null && auth !== '') retryTarget.setVersion = auth;",
+                )
+                && function_contains(
+                    src,
+                    caller,
+                    "else if (target.setVersion != null) retryTarget.setVersion = target.setVersion;",
+                )
+                && function_contains(src, caller, "shouldApplyMemoryResponse(binding, data)")
+                && function_contains(src, caller, "activitySync.request")
+                && function_contains(src, caller, "buildActiveSetPayload(target"),
+            "{caller} must keep the initiating server mutation while fencing stale response application"
+        );
+    }
+    for (caller, request_binding) in [
+        ("handleDeleteMessage", "buildActiveSetPayload(target"),
+        ("handleForkMessage", "buildActiveSetPayload(target"),
+        ("submitResetChat", "buildActiveSetPayload(target"),
+        ("submitRenameSet", "set_id: target.setId || setId"),
+        ("submitDeleteSet", "set_id: target.setId || setId"),
+    ] {
+        assert!(
+            function_contains(src, caller, request_binding)
+                && function_contains(src, caller, "activitySync.request"),
+            "{caller} must keep the original set bound to its mutation retry"
         );
     }
     let unit = unit_js();

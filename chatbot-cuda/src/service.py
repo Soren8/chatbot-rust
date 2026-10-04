@@ -11,9 +11,11 @@ service-owned producer work (daemon thread + bounded asyncio queue,
 never resubmitted, never evicted) and polls it with cancellation. The consumer
 only signals ``cancel`` and never unregisters; the producer unregisters after
 exit. Production non-streaming work (``synthesize_kokoro_async``,
-``transcribe_async``) admits one daemon worker per call in ``_jobs``. Waiter
-cancellation only abandons the future; the running call always continues to
-exit, and the STT file is removed by that worker before the result settles.
+``transcribe_async``, ``transcribe_wav_async``) admits one daemon worker per
+call in ``_jobs``. STT staging and inference share one worker-owned lifetime.
+Waiter cancellation abandons the future; a staging worker skips inference
+when cancellation is observed after writing and removes its file before exit.
+In-flight inference continues to its cooperative boundary.
 Lifespan teardown ``aclose`` joins streams and jobs off the event loop under
 one total ``_SHUTDOWN_JOIN_TIMEOUT`` deadline, warning about and retaining
 still-alive workers.
@@ -413,6 +415,7 @@ class InferenceService:
         *args: Any,
         job_kind: str = "inference",
         cleanup_path: Optional[str] = None,
+        waiter_cancel_event: Optional[threading.Event] = None,
         **kwargs: Any,
     ) -> Any:
         """Admit one worker and await its future.
@@ -465,7 +468,12 @@ class InferenceService:
             if cleanup_path is not None:
                 self._unlink_quietly(cleanup_path)
             raise
-        return await future
+        try:
+            return await future
+        except asyncio.CancelledError:
+            if waiter_cancel_event is not None:
+                waiter_cancel_event.set()
+            raise
 
     def _run_job(
         self,
@@ -622,4 +630,40 @@ class InferenceService:
             audio_path,
             job_kind="STT transcription",
             cleanup_path=audio_path,
+        )
+
+    def _stage_wav(self, wav_bytes: bytes) -> str:
+        """Create a staged WAV and clean it up if the write fails."""
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                path = tmp.name
+                tmp.write(wav_bytes)
+            return path
+        except Exception:
+            if path is not None:
+                self._unlink_quietly(path)
+            raise
+
+    def _transcribe_wav(
+        self, wav_bytes: bytes, cancel_event: threading.Event
+    ) -> str:
+        """Stage and transcribe WAV bytes under one worker-owned lifetime."""
+        path = self._stage_wav(wav_bytes)
+        try:
+            if cancel_event.is_set():
+                raise concurrent.futures.CancelledError()
+            return self.transcribe(path)
+        finally:
+            self._unlink_quietly(path)
+
+    async def transcribe_wav_async(self, wav_bytes: bytes) -> str:
+        """Track STT staging and inference as one cancellable-waiter job."""
+        cancel_event = threading.Event()
+        return await self._run_blocking_job(
+            self._transcribe_wav,
+            wav_bytes,
+            cancel_event,
+            job_kind="STT transcription",
+            waiter_cancel_event=cancel_event,
         )

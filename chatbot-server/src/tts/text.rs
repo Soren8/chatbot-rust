@@ -162,8 +162,16 @@ fn integer_to_words(n: u64) -> String {
     if n <= 999 {
         return small_integer_to_words(n as u32);
     }
-    let mut parts = Vec::new();
     let trillions = n / 1_000_000_000_000;
+    if trillions > 999 {
+        return n
+            .to_string()
+            .bytes()
+            .map(|digit| DIGIT_WORDS[(digit - b'0') as usize])
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    let mut parts = Vec::new();
     let billions = (n % 1_000_000_000_000) / 1_000_000_000;
     let millions = (n % 1_000_000_000) / 1_000_000;
     let thousands = (n % 1_000_000) / 1_000;
@@ -715,6 +723,22 @@ mod tests {
         let input = "The app now runs on Kotlin 1.2.3.";
         let result = sanitize_text(input);
         assert_eq!(result, "The app now runs on Kotlin one point two point three.");
+    }
+
+    #[test]
+    fn decimal_components_above_supported_magnitudes_are_spoken_without_panicking() {
+        assert_eq!(
+            sanitize_text("The value is 999000000000000.0."),
+            "The value is nine hundred ninety nine trillion point zero."
+        );
+        assert_eq!(
+            sanitize_text("The value is 1000000000000000.0."),
+            "The value is one zero zero zero zero zero zero zero zero zero zero zero zero zero zero zero point zero."
+        );
+        assert_eq!(
+            sanitize_text("The value is 18446744073709551615.0."),
+            "The value is one eight four four six seven four four zero seven three seven zero nine five five one six one five point zero."
+        );
     }
 
     #[test]

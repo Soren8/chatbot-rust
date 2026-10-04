@@ -626,17 +626,21 @@ function parseJsonOrEmpty(response) {
 
 /** POST /reset_chat with self-healing: on 409 version_conflict, adopt the
  *  authoritative version from the body and retry once with a fresh payload. */
-function submitResetChat(isRetry) {
+function submitResetChat(isRetry, capturedTarget, capturedGen) {
+  var target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+  var binding = captureMemoryBinding(target, capturedGen);
   return activitySync.request('/reset_chat', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(activeSetPayload({}))
+    body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {}))
   })
     .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
     .then(result => {
+      if (!isLiveMemoryBinding(binding)) return;
       if (result.data && result.data.error === 'version_conflict') {
         noteSetVersionFromResponse(result.data);
-        if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitResetChat(true);
+        target.setVersion = result.data.current_version;
+        if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitResetChat(true, target, binding.setGen);
         appendMessage('The chat was updated elsewhere while resetting. Please try again.', 'error-message');
         return;
       }
@@ -650,7 +654,79 @@ function submitResetChat(isRetry) {
       const errMsg = (result.data && (result.data.message || result.data.error)) || 'Failed to reset chat';
       appendMessage(errMsg, 'error-message');
     })
-    .catch(error => { appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+    .catch(error => { if (isLiveMemoryBinding(binding)) appendMessage(error && error.message ? error.message : String(error), 'error-message'); });
+}
+
+function submitRenameSet(setId, oldName, newName, isRetry, capturedTarget, capturedGen) {
+  const target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+  const binding = captureMemoryBinding(target, capturedGen);
+  activitySync.request('/rename_set', {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      set_id: target.setId || setId,
+      old_name: oldName,
+      new_name: newName,
+      expected_version: target.setVersion != null ? Number(target.setVersion) : undefined
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!isLiveMemoryBinding(binding)) return;
+      if (data.status === 'success') {
+        window.APP_DATA.lastSet = newName;
+        window.APP_DATA.lastSetId = data.set_id || setId;
+        noteSetVersionFromResponse(data);
+        target.setVersion = data.version;
+        loadSets(false).then(() => {
+          if (!isLiveMemoryBinding(binding)) return;
+          $('#set-selector').val(window.APP_DATA.lastSetId);
+          appendMessage('Renamed set to: ' + newName, 'system-message');
+        });
+      } else if (data.error === 'version_conflict') {
+        noteSetVersionFromResponse(data);
+        target.setVersion = data.current_version;
+        if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitRenameSet(setId, oldName, newName, true, target, binding.setGen);
+        appendMessage('The chat was updated elsewhere. Please try renaming again.', 'error-message');
+      } else {
+        appendMessage(data.error || 'Failed to rename set', 'error-message');
+      }
+    })
+    .catch(err => {
+      if (!isLiveMemoryBinding(binding)) return;
+      appendMessage(err && err.message ? err.message : String(err), 'error-message');
+    });
+}
+
+function submitDeleteSet(setId, setName, isRetry, capturedTarget, capturedGen) {
+  const target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+  const binding = captureMemoryBinding(target, capturedGen);
+  activitySync.request('/delete_set', {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      set_id: target.setId || setId,
+      set_name: setName,
+      expected_version: target.setVersion != null ? Number(target.setVersion) : undefined
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!isLiveMemoryBinding(binding)) return;
+      if (data.status === 'success') { loadSets(); appendMessage('Deleted set: ' + setName, 'system-message'); }
+      else if (data.error === 'version_conflict') {
+        noteSetVersionFromResponse(data);
+        target.setVersion = data.current_version;
+        if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitDeleteSet(setId, setName, true, target, binding.setGen);
+        appendMessage('The chat was updated elsewhere. Please try deleting again.', 'error-message');
+      } else {
+        appendMessage(data.error || 'Failed to delete set', 'error-message');
+      }
+    })
+    .catch(err => {
+      if (!isLiveMemoryBinding(binding)) return;
+      appendMessage(err && err.message ? err.message : String(err), 'error-message');
+    });
 }
 
 function showEncKeyGateLoading(message) {
@@ -904,6 +980,13 @@ function copyToClipboard(text) {
 // Owned by static/chat-renderer.js; thin adapter preserves call sites.
 function sanitizeDataImageSrc(src) {
   return ChatRenderer.sanitizeDataImageSrc(src);
+}
+
+function isSupportedChatImageFile(file) {
+  if (!file) return false;
+  const type = String(file.type || '').toLowerCase();
+  const name = String(file.name || '').toLowerCase();
+  return type.startsWith('image/') && type !== 'image/svg+xml' && !/\.svgz?$/.test(name);
 }
 
 // Build the user-message display node without interpreting message text as HTML
@@ -1281,7 +1364,7 @@ function refreshPrivacyControls() {
   $('#chat-privacy-indicator').text(saved
     ? (currentPolicy ? privacyLabel(loadedPrivacy.level) : 'Loading chat privacy…')
     : 'Temporary in this app — providers may retain your requests independently.');
-  $('#privacy-select').prop('disabled', !ready).val(ready ? loadedPrivacy.level : '');
+  $('#privacy-select').prop('disabled', !ready).val(saved && ready && loadedPrivacy ? loadedPrivacy.level : '');
   $('#modelSelect option').each(function() {
     const model = (window.APP_DATA.availableModels || []).find(m => m.provider_name === this.value);
     const reason = !model ? 'Unavailable' : model.tier === 'premium' && window.APP_DATA.userTier !== 'premium'
@@ -2594,7 +2677,9 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       });
 };
 
-function handleDeleteMessage(buttonElement, isRetry) {
+function handleDeleteMessage(buttonElement, isRetry, capturedTarget, capturedGen) {
+  const target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+  const binding = captureMemoryBinding(target, capturedGen);
   const deleteBtn = $(buttonElement);
   const userMessageElement = deleteBtn.closest('.message.user-message');
   if (userMessageElement.length === 0) return;
@@ -2631,7 +2716,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
   activitySync.request('/delete_message', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(activeSetPayload({
+    body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, {
       pair_index: pairIndex,
       user_message: userText
     }))
@@ -2642,10 +2727,12 @@ function handleDeleteMessage(buttonElement, isRetry) {
   })
   .then(result => {
     if (!result) return;
+    if (!isLiveMemoryBinding(binding)) return;
     if (result.data && result.data.error === 'version_conflict') {
       applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
+      target.setVersion = result.data.current_version;
       if (ChatConversationState.shouldRetryVersionOnce(isRetry)) {
-        return handleDeleteMessage(buttonElement, true);
+        return handleDeleteMessage(buttonElement, true, target, binding.setGen);
       }
       return handleVersionConflict(null, result.data);
     }
@@ -2654,7 +2741,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
       if (mismatch) {
         reindexUserPairIndices();
         if (!isRetry) {
-          return handleDeleteMessage(buttonElement, true);
+          return handleDeleteMessage(buttonElement, true, target, binding.setGen);
         }
         var users = document.querySelectorAll('#chat-content .message.user-message');
         var isLast = users.length && users[users.length - 1] === userMessageElement[0];
@@ -2691,6 +2778,7 @@ function handleDeleteMessage(buttonElement, isRetry) {
     appendMessage('Failed to delete message: ' + errMsg, 'error-message');
   })
   .catch(err => {
+    if (!isLiveMemoryBinding(binding)) return;
     console.error('Error deleting message:', err);
     appendMessage('Failed to delete message: ' + (err && err.message ? err.message : String(err)), 'error-message');
   });
@@ -2698,7 +2786,9 @@ function handleDeleteMessage(buttonElement, isRetry) {
 
 // Fork the conversation at a user turn: copies history up to and including
 // that pair into a new chat and switches to it. Source stays untouched.
-function handleForkMessage(buttonElement, isRetry) {
+function handleForkMessage(buttonElement, isRetry, capturedTarget, capturedGen) {
+  const target = capturedTarget || ChatConversationState.snapshotSetIdentity(currentSetIdentity());
+  const binding = captureMemoryBinding(target, capturedGen);
   const $user = $(buttonElement).closest('.message.user-message');
   if (!$user.length) return;
   // Only saved turns can be branched; ghost turns must send first.
@@ -2715,20 +2805,23 @@ function handleForkMessage(buttonElement, isRetry) {
   activitySync.request('/fork_set', {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(activeSetPayload({ pair_index: pairIndex }))
+    body: JSON.stringify(ChatConversationState.buildActiveSetPayload(target, { pair_index: pairIndex }))
   })
   .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
   .then(result => {
+    if (!isLiveMemoryBinding(binding)) return;
     if (result.data && result.data.error === 'version_conflict') {
       applySetVersion(result.data.current_version, result.data.set_id, { allowRewind: true });
-      if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return handleForkMessage(buttonElement, true);
+      target.setVersion = result.data.current_version;
+      if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return handleForkMessage(buttonElement, true, target, binding.setGen);
       return handleVersionConflict(null, result.data);
     }
     if (result.ok && result.data && result.data.status === 'success') {
-      window.APP_DATA.lastSetId = result.data.set_id;
-      window.APP_DATA.lastSet = result.data.name;
       if (typeof loadSets === 'function') {
         loadSets(false).then(function() {
+          if (!isLiveMemoryBinding(binding)) return;
+          window.APP_DATA.lastSetId = result.data.set_id;
+          window.APP_DATA.lastSet = result.data.name;
           $('#set-selector').val(result.data.set_id);
           $('#set-selector').trigger('change');
         });
@@ -2740,6 +2833,7 @@ function handleForkMessage(buttonElement, isRetry) {
     appendMessage('Failed to branch: ' + errMsg, 'error-message');
   })
   .catch(err => {
+    if (!isLiveMemoryBinding(binding)) return;
     appendMessage('Failed to branch: ' + (err && err.message ? err.message : String(err)), 'error-message');
   })
   .then(function() { $btn.prop('disabled', false); });
@@ -2819,8 +2913,9 @@ $(document).ready(function() {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (!file.type.startsWith('image/')) {
+    if (!isSupportedChatImageFile(file)) {
       appendMessage('Please select an image file.', 'error-message');
+      $('#image-input').val('');
       return;
     }
 
@@ -3488,43 +3583,10 @@ $(document).ready(function() {
       }
       const newName = prompt('Enter new name for set:', oldName);
       if (newName && newName !== oldName) {
-        submitRenameSet(setId, oldName, newName, false);
+        submitRenameSet(setId, oldName, newName, false,
+          ChatConversationState.snapshotSetIdentity(currentSetIdentity()), historyWindow.snapshot().setGen);
       }
     });
-
-    function submitRenameSet(setId, oldName, newName, isRetry) {
-      activitySync.request('/rename_set', {
-        method: 'POST',
-        headers: withCsrf({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          set_id: setId,
-          old_name: oldName,
-          new_name: newName,
-          expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
-        })
-      })
-      .then(r => r.json())
-      .then(data => {
-        if (data.status === 'success') {
-          window.APP_DATA.lastSet = newName;
-          window.APP_DATA.lastSetId = data.set_id || setId;
-          noteSetVersionFromResponse(data);
-          loadSets(false).then(() => {
-            $('#set-selector').val(window.APP_DATA.lastSetId);
-            appendMessage('Renamed set to: ' + newName, 'system-message');
-          });
-        } else if (data.error === 'version_conflict') {
-          noteSetVersionFromResponse(data);
-          if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitRenameSet(setId, oldName, newName, true);
-          appendMessage('The chat was updated elsewhere. Please try renaming again.', 'error-message');
-        } else {
-          appendMessage(data.error || 'Failed to rename set', 'error-message');
-        }
-      })
-      .catch(err => {
-        appendMessage(err && err.message ? err.message : String(err), 'error-message');
-      });
-    }
 
     $('#delete-set').on('click', function() {
       const $opt = $('#set-selector option:selected');
@@ -3532,34 +3594,11 @@ $(document).ready(function() {
       const setName = $opt.attr('data-name') || setId;
       if (setName === 'default') { appendMessage('Cannot delete default set', 'error-message'); return; }
       if (confirm('Are you sure you want to delete set: ' + setName + '?')) {
-        submitDeleteSet(setId, setName, false);
+        submitDeleteSet(setId, setName, false,
+          ChatConversationState.snapshotSetIdentity(currentSetIdentity()), historyWindow.snapshot().setGen);
       }
     });
 
-    function submitDeleteSet(setId, setName, isRetry) {
-      activitySync.request('/delete_set', {
-        method: 'POST',
-        headers: withCsrf({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          set_id: setId,
-          set_name: setName,
-          expected_version: window.APP_DATA.setVersion != null ? Number(window.APP_DATA.setVersion) : undefined
-        })
-      })
-        .then(r => r.json())
-        .then(data => {
-          if (data.status === 'success') { loadSets(); appendMessage('Deleted set: ' + setName, 'system-message'); }
-          else if (data.error === 'version_conflict') {
-            noteSetVersionFromResponse(data);
-            if (ChatConversationState.shouldRetryVersionOnce(isRetry)) return submitDeleteSet(setId, setName, true);
-            appendMessage('The chat was updated elsewhere. Please try deleting again.', 'error-message');
-          }
-          else { appendMessage(data.error || 'Failed to delete set', 'error-message'); }
-        })
-        .catch(err => {
-          appendMessage(err && err.message ? err.message : String(err), 'error-message');
-        });
-    }
   }
 
   function activeSetName() {
@@ -4316,18 +4355,18 @@ $(document).ready(function() {
     }).catch(function () {});
   }
 
+  function clearNativeVoiceTtsSession() {
+    const listener = nativeVoiceTtsSessionListener;
+    nativeVoiceTtsSessionListener = null;
+    nativeVoiceTtsSessionPromise = null;
+    return Promise.resolve(listener).then(function (handle) {
+      if (handle && typeof handle.remove === 'function') return handle.remove();
+    }).catch(function () {});
+  }
+
   function invalidateNativeVoiceTts() {
     voiceLifecycle.invalidateNativeSession();
-    if (nativeVoiceTtsSessionListener) {
-      const listener = nativeVoiceTtsSessionListener;
-      nativeVoiceTtsSessionListener = null;
-      Promise.resolve(listener).then(function (handle) {
-        if (handle && typeof handle.remove === 'function') {
-          handle.remove();
-        }
-      }).catch(function () {});
-    }
-    nativeVoiceTtsSessionPromise = null;
+    return clearNativeVoiceTtsSession();
   }
 
   function finishNativeVoiceTts(generation, button) {
@@ -4431,6 +4470,7 @@ $(document).ready(function() {
       getSessionPromise: function () { return nativeVoiceTtsSessionPromise; },
       setSessionPromise: function (pr) { nativeVoiceTtsSessionPromise = pr; },
       setSessionListener: function (l) { nativeVoiceTtsSessionListener = l; },
+      resetNativeSession: function () { return clearNativeVoiceTtsSession(); },
       nativeStop: function () { return window.NativeVoiceTts.stop().catch(function () {}); },
       invalidateNative: function () { invalidateNativeVoiceTts(); },
       finishNative: function (gen, btn) { finishNativeVoiceTts(gen, btn); },

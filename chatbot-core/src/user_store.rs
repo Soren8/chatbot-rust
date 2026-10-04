@@ -20,6 +20,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::{config, fernet_crypto::constant_time_eq};
 
@@ -145,10 +146,7 @@ impl UserStore {
         }
 
         let users_file = base.join("users.json");
-        if !users_file.exists() {
-            let mut file = File::create(&users_file)?;
-            file.write_all(b"{}")?;
-        }
+        ensure_users_file(&users_file)?;
 
         let salts_dir = base.join("salts");
         if !salts_dir.exists() {
@@ -243,10 +241,10 @@ impl UserStore {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let salt = self.get_or_create_salt(&normalised)?;
 
-        let mut derived = [0u8; KEY_LEN];
-        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
-        let encoded = STANDARD.encode(derived);
-        Ok(encoded.into_bytes())
+        let mut derived = Zeroizing::new([0u8; KEY_LEN]);
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived[..]);
+        let encoded = Zeroizing::new(STANDARD.encode(&*derived).into_bytes());
+        Ok(encoded.to_vec())
     }
 
     fn key_verifier_path(&self, normalised_username: &str) -> PathBuf {
@@ -566,4 +564,52 @@ fn publish_once(path: &Path, contents: &[u8]) -> Result<bool, UserStoreError> {
     })();
     let _ = fs::remove_file(&temp);
     result
+}
+
+fn ensure_users_file(path: &Path) -> Result<(), UserStoreError> {
+    ensure_users_file_with(path, || {})
+}
+
+fn ensure_users_file_with(
+    path: &Path,
+    after_missing_check: impl FnOnce(),
+) -> Result<(), UserStoreError> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    // Publishing the empty store through the same non-replacing atomic path
+    // used for salts/verifiers means a delayed opener cannot truncate a
+    // users.json that another opener has already populated. The callback
+    // makes the check/publish interleaving deterministic in the regression;
+    // production has no work between the operations.
+    after_missing_check();
+    publish_once(path, b"{}")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delayed_first_open_initialization_does_not_replace_a_signup() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let users_path = root.path().join("users.json");
+        ensure_users_file_with(&users_path, || {
+            // Model another opener completing signup after this opener's
+            // absence check but before its initialization write.
+            let mut writer = UserStore::open(root.path()).expect("open concurrent writer");
+            writer
+                .create_user("alice", "existing-password-hash")
+                .expect("concurrent signup commit");
+        })
+        .expect("finish delayed initialization");
+
+        let reopened = UserStore::open(root.path()).expect("reopen account store");
+        assert!(reopened
+            .load_users()
+            .expect("load users")
+            .contains_key("alice"));
+    }
 }

@@ -12,6 +12,7 @@ mod common;
 use std::{
     env,
     fs,
+    io::Cursor,
     net::SocketAddr,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -25,12 +26,15 @@ use axum::{
     routing::post,
     Router,
 };
+use base64::Engine;
 use bcrypt::{hash, DEFAULT_COST};
-use chatbot_server::resolve_static_root;
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
 use tower::ServiceExt;
+
+use chatbot_server::resolve_static_root;
 
 static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
@@ -47,6 +51,16 @@ fn clear_generation_env() {
     env::remove_var("CHATBOT_TEST_BRAVE_RESULTS");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     env::remove_var("XAI_API_KEY");
+}
+
+fn valid_png_data_url() -> String {
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(1, 1, Rgb([20, 40, 60])));
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    )
 }
 
 fn set_chunks(chunks: &[&str]) {
@@ -1160,13 +1174,14 @@ async fn chat_xai_multimodal_image_maps_to_input_image() {
 
     let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
+    let image_url = valid_png_data_url();
 
     let (status, body) = post_chat(
         &app,
         &cookie,
         &csrf,
         json!({
-            "message": "Look at this: [IMAGE:data:image/png;base64,abc123]",
+            "message": format!("Look at this: [IMAGE:{image_url}]"),
             "set_name": "default",
             "model_name": "default",
         }),
@@ -1198,7 +1213,7 @@ async fn chat_xai_multimodal_image_maps_to_input_image() {
     );
     assert!(
         content.iter().any(|p| p["type"] == "input_image"
-            && p["image_url"] == "data:image/png;base64,abc123"),
+            && p["image_url"].as_str() == Some(image_url.as_str())),
         "image marker must map to input_image, got: {content:?}"
     );
     assert_eq!(

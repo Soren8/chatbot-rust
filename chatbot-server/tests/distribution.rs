@@ -107,7 +107,8 @@ fn native_tts_url_failures_do_not_log_throwable_content() {
     let section = java_section(NATIVE_TTS, "private void workerLoop(",
         "private AudioClip playUrlToTrackOnce(");
     run_extracted_java("Phase4TtsLogTest", include_str!("fixtures/Phase4TtsLogTest.java"),
-        &format!("private void workerLoop({section}"), None);
+        &format!("private void workerLoop({section}"),
+        Some("android/app/src/main/java/com/chatbot/app/audio/TtsClipOutcome.java"));
 }
 
 #[test]
@@ -128,9 +129,20 @@ fn native_cached_key_is_not_exposed_to_page_js() {
         .split("@PluginMethod")
         .next()
         .unwrap();
+    let injection = SECURE_KEY_PLUGIN
+        .split("private void setCookieValues(")
+        .nth(1)
+        .unwrap()
+        .split("private void expireCookies(")
+        .next()
+        .unwrap();
     assert!(
-        unlock.contains("CredentialCookies.injectCookieValue") && unlock.contains("cm.flush()"),
-        "cached login must still inject credentials into the cookie jar"
+        unlock.contains("CredentialCookies.injectCookieValue(name, rememberVal)")
+            && unlock.contains("CredentialCookies.injectCookieValue(name, encKeyVal)")
+            && unlock.contains("setCookieValues(cm, serverUrl, cookieValues")
+            && injection.contains("cm.setCookie(origin, cookie, one)")
+            && injection.contains("cm.flush()"),
+        "cached login must acknowledge injection of the selected account's cookies"
     );
     assert!(
         !unlock.contains("result.put(\"key\""),
@@ -161,6 +173,64 @@ fn native_cached_login_fails_closed_without_authentication_gate() {
             && SECURE_KEY_PLUGIN.contains("biometricManager.canAuthenticate(authenticators), BiometricManager.BIOMETRIC_SUCCESS"),
         "platform availability result must pass through the executed pure decision"
     );
+    assert!(MAIN_ACTIVITY.contains("NativeUnlockGate.shouldLockEntry(")
+        && MAIN_ACTIVITY.contains("setVisibility(View.INVISIBLE)")
+        && MAIN_ACTIVITY.contains("VoiceModeForegroundSession.get().isConfirmed()"),
+        "cold native entry must hide WebView content when jar or sealed credentials exist");
+    let on_create = MAIN_ACTIVITY.split("protected void onCreate(Bundle savedInstanceState)")
+        .nth(1).unwrap().split("private void installOfflineErrorHandler()").next().unwrap();
+    let hide = on_create.find("hideProtectedWebView()").expect("cold gate must hide before first Activity draw");
+    let prompt = on_create.find("lockApp()").expect("cold gate must prompt after hiding");
+    assert!(hide < prompt, "authenticated WebView must be hidden before showing the unlock prompt");
+    assert!(on_create.contains("PREF_NATIVE_UNLOCK_REQUIRED")
+        && on_create.contains("getBoolean(PREF_NATIVE_UNLOCK_REQUIRED, false)")
+        && on_create.contains("getLong(PREF_NATIVE_BACKGROUND_ELAPSED, 0)"),
+        "lock state and resume age must survive same-process Activity recreation even without a saved Bundle");
+    assert!(!on_create.contains("if (savedInstanceState != null)"),
+        "resume timestamp restoration must not depend on a non-null Android saved Bundle");
+    assert!(on_create.find("getLong(PREF_NATIVE_BACKGROUND_ELAPSED, 0)").unwrap()
+        < on_create.find("super.onCreate(savedInstanceState)").unwrap(),
+        "persisted resume age must be evaluated before Capacitor creates the first page");
+    let load = MAIN_ACTIVITY.split("protected void load() {").nth(1).unwrap()
+        .split("@Override\n    public void onStart()").next().unwrap();
+    assert!(load.find("webView.setVisibility(View.INVISIBLE)").unwrap()
+        < load.find("super.load();").unwrap(),
+        "cold entry must hide the WebView before BridgeActivity starts its navigation");
+    assert!(SECURE_KEY_PLUGIN.contains("public static boolean hasSealedCredentials(Context context)")
+        && MAIN_ACTIVITY.contains("NativeSecureKeyPlugin.hasSealedCredentials(this)"),
+        "cold gate must recognize origin-scoped sealed credentials after cookie purge");
+    let seal = SECURE_KEY_PLUGIN.split("public void sealCachedCredentials(PluginCall call)")
+        .nth(1).unwrap().split("@PluginMethod").next().unwrap();
+    assert!(seal.contains("result.put(\"cookiesPurged\", false)")
+        && !seal.contains("purgeCachedCookies") && !seal.contains("setCookie("),
+        "sealing active credentials must preserve the live request cookies");
+    assert!(SECURE_KEY_PLUGIN.contains("failed to purge cached credentials")
+        && SECURE_KEY_PLUGIN.contains("accepted == null || !accepted"),
+        "login-page credential purge must acknowledge CookieManager failures");
+    assert!(SECURE_KEY_PLUGIN.contains("injectCookieValue(name, rememberVal)")
+        && SECURE_KEY_PLUGIN.contains("injectCookieValue(name, encKeyVal)")
+        && !SECURE_KEY_PLUGIN.contains("injectCookieValue(\"remember\"")
+        && !SECURE_KEY_PLUGIN.contains("injectCookieValue(\"enc_key\""),
+        "cached unlock must inject account-scoped values without clobbering generic cookies");
+}
+
+#[test]
+fn native_tts_clip_consumption_reports_played_expired_or_failed() {
+    let worker = NATIVE_TTS.split("private void workerLoop(").nth(1).unwrap()
+        .split("private AudioClip playUrlToTrackOnce(").next().unwrap();
+    let download = NATIVE_TTS.split("private AudioClip playUrlToTrackOnce(").nth(1).unwrap()
+        .split("private AudioClip streamWavToTrack(").next().unwrap();
+    assert!(worker.contains("event.put(\"type\", \"clipConsumed\")")
+        && worker.contains("event.put(\"outcome\", outcome)"),
+        "legacy slot-release event must carry the explicit terminal clip outcome");
+    assert!(worker.contains("TtsClipOutcome.PLAYED")
+        && worker.contains("TtsClipOutcome.FAILED")
+        && worker.contains("TtsClipOutcome.forFailure(cause)")
+        && worker.contains("if (!TtsClipOutcome.PLAYED.equals(outcome))"),
+        "playback and download errors must not be indistinguishable consumed successes");
+    assert!(download.contains("TtsClipOutcome.isExpiredHttpStatus(code)")
+        && download.contains("throw new TtsClipOutcome.ExpiredToken()"),
+        "expired token must cross retry plumbing as a distinct renewal outcome");
 }
 
 #[test]
@@ -281,11 +351,11 @@ public class Base64 {public static final int DEFAULT=0,NO_WRAP=2; public static 
 import java.util.*;
 public class CookieManager {
  private static final CookieManager INSTANCE=new CookieManager();
- public final Map<String,String> jar=new LinkedHashMap<>(); public final List<String> injected=new ArrayList<>(); public int flushes;
+ public final Map<String,String> jar=new LinkedHashMap<>(); public final List<String> injected=new ArrayList<>(); public int flushes; public boolean acknowledge=true;
  public static CookieManager getInstance(){return INSTANCE;}
  public String getCookie(String url){return String.join("; ",jar.entrySet().stream().map(e->e.getKey()+"="+e.getValue()).toList());}
  public void setCookie(String url,String cookie){setCookie(url,cookie,null);}
- public void setCookie(String url,String cookie,ValueCallback<Boolean> cb){injected.add(url+" "+cookie);String[] pair=cookie.split(";",2)[0].split("=",2); if(cookie.contains("Max-Age=0"))jar.remove(pair[0]);else jar.put(pair[0],pair[1]);if(cb!=null)cb.onReceiveValue(true);}
+ public void setCookie(String url,String cookie,ValueCallback<Boolean> cb){injected.add(url+" "+cookie);if(acknowledge){String[] pair=cookie.split(";",2)[0].split("=",2); if(cookie.contains("Max-Age=0"))jar.remove(pair[0]);else jar.put(pair[0],pair[1]);}if(cb!=null)cb.onReceiveValue(acknowledge);}
  public void removeExpiredCookie(){} public void flush(){flushes++;}
 }"#),
         ("R.java", r#"package com.chatbot.app; public class R {public static class string {public static final int server_url=1;} }"#),
@@ -361,6 +431,84 @@ public class JSONObject {private final Map<String,String> values=new LinkedHashM
         .expect("run native unlock behavior test");
     assert!(run.status.success(), "native unlock behavior: {}\n{}", String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout));
     print!("{}", String::from_utf8_lossy(&run.stdout));
+}
+
+#[test]
+fn native_entry_gates_and_tts_outcomes_run_on_shipped_java() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let compile = Command::new("javac")
+        .args(["-encoding", "UTF-8"])
+        .arg("-d").arg(output_dir.path())
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/util/NativeUnlockGate.java"))
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/audio/TtsClipOutcome.java"))
+        .arg(root.join("chatbot-server/tests/fixtures/NativeBoundaryOutcomeTest.java"))
+        .output().expect("test image must provide javac");
+    assert!(compile.status.success(), "Java compilation: {}", String::from_utf8_lossy(&compile.stderr));
+    let run = Command::new("java").arg("-cp").arg(output_dir.path())
+        .arg("NativeBoundaryOutcomeTest").output().expect("run native boundary fixture");
+    assert!(run.status.success(), "native boundaries: {}\n{}",
+        String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout));
+}
+
+#[test]
+fn advertised_api_24_has_no_unconditional_api_26_audio_focus_or_base64_calls() {
+    let mic = include_str!("../../android/app/src/main/java/com/chatbot/app/NativeMic/NativeMicPlugin.java");
+    let tts = include_str!("../../android/app/src/main/java/com/chatbot/app/NativeVoiceTts/NativeVoiceTtsPlugin.java");
+    let car = include_str!("../../android/app/src/main/java/com/chatbot/app/car/VoiceScreen.java");
+    let setting = include_str!("../../android/app/src/main/java/com/chatbot/app/util/ServerUrlSetting.java");
+    let build = include_str!("../../android/variables.gradle");
+    assert!(build.contains("minSdkVersion = 24"), "retain the advertised API 24 floor");
+    for (name, source) in [("mic", mic), ("handheld TTS", tts), ("Android Auto", car)] {
+        assert!(source.contains("AudioFocusCompat.request("), "{name} must use the API-gated focus adapter");
+        assert!(!source.contains("new AudioFocusRequest.Builder"), "{name} must not construct API-26 focus requests directly");
+        assert!(!source.contains("abandonAudioFocusRequest("), "{name} must not abandon API-26 focus directly");
+    }
+    assert!(!setting.contains("java.util.Base64") && !setting.contains("Base64.getUrlEncoder"),
+        "origin slot encoding must remain available on API 24/25 without app desugaring");
+}
+
+#[test]
+fn audio_focus_adapter_executes_legacy_and_api_26_platform_paths() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let stubs = [
+        ("Build.java", r#"package android.os; public class Build {
+ public static class VERSION { public static int SDK_INT=25; }
+ public static class VERSION_CODES { public static final int O=26; }
+}"#),
+        ("AudioAttributes.java", r#"package android.media; public class AudioAttributes {
+ public static class Builder { public Builder setUsage(int i){return this;} public Builder setContentType(int i){return this;} public AudioAttributes build(){return new AudioAttributes();} }
+}"#),
+        ("AudioFocusRequest.java", r#"package android.media; public class AudioFocusRequest {
+ public static class Builder { public Builder(int i){} public Builder setAudioAttributes(AudioAttributes a){return this;} public Builder setOnAudioFocusChangeListener(AudioManager.OnAudioFocusChangeListener l){return this;} public AudioFocusRequest build(){return new AudioFocusRequest();} }
+}"#),
+        ("AudioManager.java", r#"package android.media; public class AudioManager {
+ public static final int AUDIOFOCUS_GAIN=1, AUDIOFOCUS_REQUEST_GRANTED=1, STREAM_MUSIC=3;
+ public interface OnAudioFocusChangeListener { void onAudioFocusChange(int change); }
+ public int legacyRequests, modernRequests, legacyAbandons, modernAbandons;
+ public int requestAudioFocus(OnAudioFocusChangeListener l,int stream,int gain){legacyRequests++;return AUDIOFOCUS_REQUEST_GRANTED;}
+ public int requestAudioFocus(AudioFocusRequest r){modernRequests++;return AUDIOFOCUS_REQUEST_GRANTED;}
+ public int abandonAudioFocus(OnAudioFocusChangeListener l){legacyAbandons++;return 1;}
+ public int abandonAudioFocusRequest(AudioFocusRequest r){modernAbandons++;return 1;}
+}"#),
+    ];
+    let mut sources = Vec::new();
+    for (name, source) in stubs {
+        let path = output_dir.path().join(name);
+        fs::write(&path, source).unwrap();
+        sources.push(path);
+    }
+    let compile = Command::new("javac").args(["-encoding", "UTF-8"])
+        .arg("-d").arg(output_dir.path()).args(&sources)
+        .arg(root.join("android/app/src/main/java/com/chatbot/app/audio/AudioFocusCompat.java"))
+        .arg(root.join("chatbot-server/tests/fixtures/NativeAudioFocusCompatTest.java"))
+        .output().expect("test image must provide javac");
+    assert!(compile.status.success(), "Java compilation: {}", String::from_utf8_lossy(&compile.stderr));
+    let run = Command::new("java").arg("-cp").arg(output_dir.path())
+        .arg("NativeAudioFocusCompatTest").output().expect("run API focus fixture");
+    assert!(run.status.success(), "audio focus adapter: {}\n{}",
+        String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout));
 }
 
 #[test]

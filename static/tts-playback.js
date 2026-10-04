@@ -22,9 +22,9 @@
   // (static/playback-source.js), published at chat's generation/rendering
   // transitions; queues wake on source.subscribe plus the observeChanges
   // backstop and poll fallback, and never infer progress from buttons/DOM.
-  // No globals, no duplicate mutable authority, no new locks. Error strings,
-  // retry bounds/backoffs, callback order and generation guards match the
-  // original chat.js pumps exactly; protocols/retries are not rewritten.
+  // No globals, no duplicate mutable authority, no new locks. Existing retry
+  // bounds/backoffs, callback order and generation guards are retained; native
+  // expired-token recovery restarts the closed queue from its logical jobs.
   //
   // Desktop clip pipeline deps (createDesktopClipPipeline):
   // isLive(sessionId), sanitize(text), hasPreload(key), getPreload(key),
@@ -707,6 +707,9 @@
     var nativeBackpressure = false;
     var lookahead = MAX_NATIVE_TTS_LOOKAHEAD;
     var queuedNativeClips = new Map();
+    var nativeJobs = [];
+    var nativeRestarting = false;
+    var nativeRestartPromise = null;
     var isFixedList = !!(options.sentences && options.sentences.length);
 
     var generation = voiceLifecycle.beginNativePlayback(button, function () {
@@ -771,7 +774,7 @@
         var nativeStarted = false;
         var listenerPromise = bridge.addListener('playbackState', function (data) {
           if (!data || !live()) return;
-          if (nativeSessionGen && data.generation && data.generation !== nativeSessionGen) return;
+          if (nativeSessionGen && data.generation !== nativeSessionGen) return;
           if (data.type === 'started') {
             nativeStarted = true;
             notifyStarted();
@@ -780,7 +783,26 @@
             if (job) {
               queuedNativeClips.delete(data.url);
               pendingNativeTtsTokens.delete(job.token);
-              releaseSlot(job);
+              var outcome = data.outcome;
+              if (outcome === 'expired') {
+                if (job.renewals < 1) {
+                  job.renewals++;
+                  restartExpiredNativeQueue(job);
+                } else {
+                  failNativeJob(job, new Error('Native TTS token expired after renewal'));
+                }
+              } else if (outcome === 'failed') {
+                failNativeJob(job, new Error('Native TTS clip failed'));
+              } else if (outcome === 'played') {
+                job.completed = true;
+                var jobIndex = nativeJobs.indexOf(job);
+                if (jobIndex >= 0) nativeJobs.splice(jobIndex, 1);
+                releaseSlot(job);
+              } else {
+                // Backpressured native sessions must report the final outcome;
+                // treating a missing/unknown value as played would skip speech.
+                failNativeJob(job, new Error('Native TTS clip returned an unknown outcome'));
+              }
             }
           } else if (data.type === 'ended') {
             if (!nativeStarted && !endRequested) {
@@ -880,8 +902,8 @@
       });
     }
 
-    function requestToken(text) {
-      var sentenceOperation = sentenceOperationId();
+    function requestToken(text, sentenceOperation) {
+      sentenceOperation = sentenceOperation || sentenceOperationId();
       function attempt(n) {
         if (!live()) return Promise.resolve(null);
         return postOneToken(text, sentenceOperation).catch(function (err) {
@@ -902,11 +924,85 @@
       if (live()) pump();
     }
 
+    function failNativeJob(job, err) {
+      if (job.failed || !live()) return;
+      job.failed = true;
+      nativeJobs.forEach(function (pending) {
+        pending.failed = true;
+        queuedNativeClips.delete(pending.url);
+        if (pending.token) {
+          pendingNativeTtsTokens.delete(pending.token);
+          cancelToken(pending.token);
+        }
+      });
+      nativeJobs.length = 0;
+      queuedNativeClips.clear();
+      logError('Native voice TTS sentence failed after retries:', err && err.name);
+      reportVoice('VOICE-ERROR', 'TTS sentence failed (native)');
+      appendMessage('Voice output failed. Try again.', 'error-message');
+      stopped = true;
+      teardownObserver();
+      bridge.stop().catch(function () {});
+      releaseSlot(job);
+      if (typeof deps.finishNative === 'function') deps.finishNative(generation, button);
+      else voiceLifecycle.finishNativePlayback(generation, button);
+    }
+
+    function restartExpiredNativeQueue(expiredJob) {
+      if (nativeRestartPromise) return nativeRestartPromise;
+      nativeRestarting = true;
+      nativeRestartPromise = (async function () {
+        // Drain already-started JS enqueue/admission work before opening the
+        // replacement native generation. The closed native queue will reject
+        // some of these calls; their jobs remain in nativeJobs for replay.
+        await enqueueTail;
+        if (!live()) return;
+        var replay = nativeJobs.filter(function (job) { return !job.completed && !job.failed && !job.released; });
+        if (replay.indexOf(expiredJob) < 0) replay.unshift(expiredJob);
+        var token = await requestToken(expiredJob.text, expiredJob.operation);
+        if (!live()) {
+          if (token) cancelToken(token);
+          return;
+        }
+        if (!token) throw new Error('Native TTS renewal returned no token');
+        expiredJob.token = token;
+        expiredJob.url = streamUrl(token);
+        if (typeof deps.resetNativeSession === 'function') await deps.resetNativeSession();
+        else {
+          if (setSessionPromise) setSessionPromise(null);
+          if (setSessionListener) setSessionListener(null);
+        }
+        if (!live()) { cancelToken(token); return; }
+        sessionReady = false;
+        sessionStarting = false;
+        endRequested = false;
+        queuedNativeClips.clear();
+        await ensureSession();
+        if (!live()) return;
+        sessionReady = true;
+        for (var i = 0; i < replay.length; i++) {
+          var job = replay[i];
+          if (job === expiredJob) job.url = streamUrl(job.token);
+          if (!job.url || !job.token || job.completed || job.failed || job.released) continue;
+          queuedNativeClips.set(job.url, job);
+          await bridge.enqueue(job.url);
+        }
+      }()).catch(function (err) {
+        failNativeJob(expiredJob, err);
+      }).finally(function () {
+        nativeRestartPromise = null;
+        nativeRestarting = false;
+        if (live()) pump();
+      });
+      return nativeRestartPromise;
+    }
+
     function queueSentence(text) {
-      var job = { token: null, released: false };
+      var job = { token: null, text: text, operation: sentenceOperationId(), renewals: 0, released: false, failed: false, completed: false, url: null };
+      nativeJobs.push(job);
       inFlightSentences++;
       pendingEnqueues++;
-      var prepared = requestToken(text).then(function (token) {
+      var prepared = requestToken(text, job.operation).then(function (token) {
         return { token: token };
       }, function (error) { return { error: error }; });
       enqueueTail = enqueueTail.then(function () { return prepared; }).then(function (result) {
@@ -915,6 +1011,7 @@
         if (!result.token) { releaseSlot(job); return; }
         job.token = result.token;
         var url = streamUrl(job.token);
+        job.url = url;
         if (nativeBackpressure) queuedNativeClips.set(url, job);
         var attemptEnqueue = function (attempt) {
           if (!live()) return Promise.resolve();
@@ -930,20 +1027,15 @@
         };
         return attemptEnqueue(0);
       }).catch(function (err) {
+        if (nativeRestarting) return;
+        if (job.failed) return;
         if (job.token) {
           queuedNativeClips.delete(streamUrl(job.token));
           pendingNativeTtsTokens.delete(job.token);
           cancelToken(job.token);
         }
         if (!live()) return;
-          logError('Native voice TTS sentence failed after retries:', err && err.name);
-        reportVoice('VOICE-ERROR', 'TTS sentence failed (native)');
-        appendMessage('Voice output failed. Try again.', 'error-message');
-        stopped = true;
-        teardownObserver();
-        bridge.stop().catch(function () {});
-        if (typeof deps.finishNative === 'function') deps.finishNative(generation, button);
-        else voiceLifecycle.finishNativePlayback(generation, button);
+        failNativeJob(job, err);
       }).then(function () {
         pendingEnqueues--;
         if (live()) pump();
@@ -951,7 +1043,7 @@
     }
 
     function pump() {
-      if (!live() || endRequested) return;
+      if (!live() || endRequested || nativeRestarting) return;
       if (!sessionReady) {
         if (sessionStarting) return;
         sessionStarting = true;
@@ -980,7 +1072,8 @@
           pollTimer = null;
           pump();
         }, disconnectSource ? 1000 : 80);
-      } else if (sentenceQueue.length === 0 && pendingEnqueues === 0) {
+      } else if (sentenceQueue.length === 0 && pendingEnqueues === 0
+        && (!nativeBackpressure || inFlightSentences === 0)) {
         teardownObserver();
         markEndOfQueue();
       }

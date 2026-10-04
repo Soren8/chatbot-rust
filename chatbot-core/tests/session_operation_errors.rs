@@ -264,11 +264,10 @@ fn premium_tier_with_unusable_store_returns_typed_unavailable() {
     );
     let provider = premium_provider();
 
-    // Seed an initialised guest-prefix entry, then present it with a username
-    // so bootstrap (`initialise_session_data`) and the cipher key gate are
-    // both skipped: `requires_cipher` is false and `initialised` is true, so
-    // `build_chat_context` falls through to `ensure_model_allowed`, which
-    // must hit the unusable account root.
+    // Preserve the compatibility ordering for this malformed context: a
+    // premium tier lookup on a guest-prefixed session ID with a different
+    // authenticated username must report the unusable account root before
+    // bootstrap-mismatch or missing-key rejection.
     let session_id = "guest_mod001_tier_store";
     sessions.update_history(session_id, &[("u".to_string(), "a".to_string())]);
     let session = SessionContext {

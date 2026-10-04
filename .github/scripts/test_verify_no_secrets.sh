@@ -4,10 +4,12 @@
 # from the repo root; each case therefore runs the scanner from a fixture
 # root. Scanner path defaults to the sibling script, override with $1.
 #
-# Contract: the vendored SQL "authorization" keyword list must PASS, while
-# every other original keyword (api_key, Bearer + space, OPENAI, OPENROUTER,
-# base_url) still FAILS in first-party AND vendored paths, and the real
-# Authorization header shape (quoted/unquoted/mixed-case + colon) FAILS.
+# Contract: the vendored SQL "authorization" keyword list and the known
+# user-owned Connections DTO uses of `base_url` must PASS, while operator
+# provider `base_url` configuration and every other original keyword
+# (api_key, Bearer + space, OPENAI, OPENROUTER) still FAIL in first-party AND
+# vendored paths. The real Authorization header shape (quoted/unquoted/mixed-
+# case + colon) FAILS.
 #
 # All token-like values below are synthetic (TESTFIXTURE), never real secrets.
 set -euo pipefail
@@ -62,7 +64,35 @@ check "api_key vendored fails" "$R" 1
 
 R="$(new_root)"
 printf '%s\n' 'const u = cfg.base_url;' > "$R/static/app.js"
-check "base_url first-party fails" "$R" 1
+check "operator base_url setting in first-party asset fails" "$R" 1
+
+R="$(new_root)"
+cat > "$R/static/agent-connections.js" <<'EOF'
+invalid_base_url: 'Enter a valid server-reachable URL.'
+url.value = record.base_url;
+details.textContent = record.name + record.base_url;
+var payload = { name: name.value, base_url: url.value, username: username.value };
+EOF
+check "user-owned Connections metadata DTO fields pass" "$R" 0
+
+R="$(new_root)"
+cat > "$R/static/agent-connections.js" <<'EOF'
+const headers = { Authorization: "Bearer TESTFIXTURE0123456789" };
+const operatorKey = "OPENAI_API_KEY";
+EOF
+check "credential and auth markers in Connections asset still fail" "$R" 1
+
+R="$(new_root)"
+printf '%s\n' 'const provider = { base_url: operatorEndpoint };' > "$R/static/agent-connections.js"
+check "operator provider base_url config in Connections asset fails" "$R" 1
+
+R="$(new_root)"
+printf '%s\n' 'const endpoint = record.base_url + provider.base_url;' > "$R/static/agent-connections.js"
+check "operator base_url beside owned metadata on same line fails" "$R" 1
+
+R="$(new_root)"
+printf '%s\n' 'const provider = { base_url: operatorEndpoint };' > "$R/static/provider-settings.js"
+check "operator base_url config elsewhere fails" "$R" 1
 
 R="$(new_root)"
 printf '%s\n' '// vendored bundle' 'var u="base_url";' > "$R/static/deps/bundle.min.js"

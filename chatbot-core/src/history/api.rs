@@ -112,6 +112,8 @@ pub struct HistoryService {
     /// Host data dir containing `user_sets/` for legacy migration.
     data_dir: PathBuf,
     receipt_clock: Arc<dyn ReceiptClock>,
+    #[cfg(test)]
+    default_set_after_check: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl HistoryService {
@@ -153,6 +155,8 @@ impl HistoryService {
             default_system_prompt: default_system_prompt.into(),
             data_dir: data_dir.into(),
             receipt_clock: Arc::new(SystemReceiptClock),
+            #[cfg(test)]
+            default_set_after_check: None,
         })
     }
 
@@ -815,13 +819,32 @@ impl HistoryService {
     }
 
     /// The user's default set, created when missing, without loading it.
-    pub fn ensure_default_set_id(&self, user: &str, key: &EncryptionKey) -> Result<SetId, HistoryError> {
+    pub fn ensure_default_set_id(
+        &self,
+        user: &str,
+        key: &EncryptionKey,
+    ) -> Result<SetId, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
+
+        // Serialize with the other per-user name mutations. Migration remains
+        // outside this lock, and creation below goes straight to the store so
+        // this non-reentrant mutex is not reacquired through `create_set`.
+        let lock_entry = name_mutation_locks()
+            .entry(user.clone())
+            .or_insert_with(|| Mutex::new(()));
+        let _guard = lock_entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         for summary in self.list_sets(&user, key)? {
             if summary.is_default || summary.display_name == "default" {
                 return Ok(summary.set_id);
             }
+        }
+        #[cfg(test)]
+        if let Some(hook) = &self.default_set_after_check {
+            hook();
         }
         let summary = self.store.create_set(
             &user,
@@ -2015,6 +2038,89 @@ mod tests {
         assert_eq!(wins, 1, "exactly one create should succeed");
         assert_eq!(dups, 1, "the other create must see set already exists");
         assert_eq!(svc.list_sets("raceuser", &key).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn concurrent_first_default_initialization_creates_one_undeletable_default() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut service =
+            HistoryService::open_ephemeral(dir.path().join("default-race.redb")).unwrap();
+        let (checked_tx, checked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let checks = Arc::new(AtomicUsize::new(0));
+        let hook_checks = Arc::clone(&checks);
+        service.default_set_after_check = Some(Arc::new(move || {
+            let check = hook_checks.fetch_add(1, Ordering::SeqCst);
+            checked_tx.send(()).unwrap();
+            if check == 0 {
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+        }));
+        let service = Arc::new(service);
+        let key = Arc::new(key());
+
+        let first_service = Arc::clone(&service);
+        let first_key = Arc::clone(&key);
+        let first =
+            thread::spawn(move || first_service.ensure_default_set_id("default-race", &first_key));
+        if checked_rx.recv_timeout(HANDSHAKE_TIMEOUT).is_err() {
+            let _ = release_tx.send(());
+            let _ = first.join();
+            panic!("first initializer did not reach the post-check test seam");
+        }
+
+        let second_service = Arc::clone(&service);
+        let second_key = Arc::clone(&key);
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let second = thread::spawn(move || {
+            second_started_tx.send(()).unwrap();
+            second_service.ensure_default_set_id("default-race", &second_key)
+        });
+        if second_started_rx.recv_timeout(HANDSHAKE_TIMEOUT).is_err() {
+            let _ = release_tx.send(());
+            let _ = first.join();
+            let _ = second.join();
+            panic!("second initializer did not start");
+        }
+        // The first call is held just after observing no default. If the
+        // second reaches the same seam, both initializers observed absence
+        // before either can insert. With the mutation lock, the second stays
+        // behind the first until this bounded wait expires. Do not inspect the
+        // DashMap here: the first initializer still owns its entry guard.
+        let second_checked = checked_rx.recv_timeout(HANDSHAKE_TIMEOUT).is_ok();
+        release_tx.send(()).unwrap();
+
+        let first_id = first.join().unwrap().unwrap();
+        let second_id = second.join().unwrap().unwrap();
+        assert!(
+            !second_checked,
+            "second initializer passed the missing-default check while the first was paused"
+        );
+        assert_eq!(first_id, second_id);
+        let defaults = service
+            .list_sets("default-race", &key)
+            .unwrap()
+            .into_iter()
+            .filter(|summary| summary.is_default)
+            .collect::<Vec<_>>();
+        assert_eq!(defaults.len(), 1);
+        assert!(matches!(
+            service.delete_set(
+                "default-race",
+                defaults[0].set_id,
+                defaults[0].version,
+                &key,
+            ),
+            Err(HistoryError::InvalidInput("cannot delete default set"))
+        ));
     }
 
     #[test]

@@ -47,12 +47,14 @@
     var raw = String(src);
     var m = /^data:image\/([A-Za-z0-9+.-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(raw);
     if (!m) return null;
-    var subtype = m[1].replace(/[^A-Za-z0-9+.-]/g, '');
+    var subtype = m[1].toLowerCase();
     var b64 = m[2].replace(/[^A-Za-z0-9+/=]/g, '');
-    if (!subtype || !b64 || subtype !== m[1] || b64 !== m[2].replace(/[\s]/g, '')) {
+    if (['jpeg', 'jpg', 'png', 'gif', 'webp'].indexOf(subtype) === -1) return null;
+    if (!b64 || b64 !== m[2].replace(/[\s]/g, '')) {
       return null;
     }
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
+    if (subtype === 'jpg') subtype = 'jpeg';
     return 'data:image/' + subtype + ';base64,' + b64;
   }
 

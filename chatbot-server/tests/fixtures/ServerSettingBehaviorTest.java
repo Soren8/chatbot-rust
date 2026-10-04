@@ -111,6 +111,9 @@ public final class ServerSettingBehaviorTest {
     private static void originSlotTokenIsCollisionFree() {
         String token = ServerUrlSetting.originSlotToken("https://a.example.com:8443");
         check(token.matches("[A-Za-z0-9_-]+"), "tokenIsUrlSafeBase64");
+        checkEquals(java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                        "https://a.example.com:8443".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                token, "existingUnpaddedUrlBase64Encoding");
 
         // Distinct scheme, port, and host each get a distinct token.
         check(!ServerUrlSetting.originSlotToken("http://a.example.com:80")

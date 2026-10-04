@@ -27,7 +27,118 @@ fn truncate_search_result(result: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_search_result;
+    use super::{search_augmented_stream, truncate_search_result};
+    use crate::{brave::brave_client_with_key_and_fake, providers::{messages::ChatMessagePayload, openai::OpenAiProvider}};
+    use std::{io::Write, sync::{Arc, Mutex}};
+
+    #[derive(Clone)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedLogs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogs;
+        fn make_writer(&'a self) -> Self::Writer { self.clone() }
+    }
+
+    #[tokio::test]
+    async fn brave_status_failure_logs_and_followup_omit_private_upstream_details() {
+        use axum::{routing::{get, post}, Json, Router};
+        use serde_json::Value;
+
+        let query = "BRAVE_PRIVATE_QUERY_TRACE_7431";
+        let upstream_detail = "BRAVE_PRIVATE_UPSTREAM_BODY_8842";
+        let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured_requests = requests.clone();
+        let mock = Router::new()
+            .route("/context", get(move || async move {
+                (axum::http::StatusCode::BAD_GATEWAY, upstream_detail)
+            }))
+            .route("/v1/chat/completions", post(move |Json(request): Json<Value>| {
+            let captured_requests = captured_requests.clone();
+            async move {
+                let mut requests = captured_requests.lock().unwrap();
+                requests.push(request);
+                let response = if requests.len() == 1 {
+                    format!(
+                        "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"name\":\"brave_web_search\",\"arguments\":\"{{\\\"query\\\":\\\"{query}\\\"}}\"}}}}]}}}}]}}\n\ndata: [DONE]\n\n"
+                    )
+                } else {
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"safe final answer\"}}]}\n\ndata: [DONE]\n\n".to_string()
+                };
+                ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], response)
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+
+        let provider = OpenAiProvider::new_owned(
+            &chatbot_core::config::ProviderConfig {
+                privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
+                provider_name: "test".into(),
+                provider_type: "openai".into(),
+                tier: None,
+                model_name: "test-model".into(),
+                context_size: Some(4096),
+                base_url: format!("http://{address}/v1"),
+                api_key: None,
+                allowed_providers: vec![],
+                request_timeout: Some(5.0),
+                rate_limit_retries: Some(0),
+                rate_limit_max_wait_secs: None,
+                test_chunks: None,
+                search: true,
+                xai_search: false,
+                xai_zdr: false,
+            },
+            None,
+            0,
+            None,
+        ).unwrap();
+        let brave = brave_client_with_key_and_fake(Some("mock-key"), None, true)
+            .unwrap()
+            .with_endpoint(format!("http://{address}/context"));
+
+        let logs = CapturedLogs(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false).with_writer(logs.clone()).finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        let mut stream = search_augmented_stream(
+            &provider,
+            vec![ChatMessagePayload::user("hello".into())],
+            &brave,
+            &[],
+        ).await.unwrap();
+        use futures_util::StreamExt;
+        let mut output = String::new();
+        while let Some(chunk) = stream.next().await {
+            output.push_str(&chunk.unwrap());
+        }
+        let captured = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "expected the tool request and follow-up");
+        let followup = &requests[1];
+        let followup_text = serde_json::to_string(&followup["messages"]).unwrap();
+        assert!(followup_text.contains("Search failed: upstream request unavailable"), "sanitized failure was not injected into follow-up: {followup_text}");
+        assert!(followup_text.contains(query), "search query missing from follow-up: {followup_text}");
+        assert!(!followup_text.contains(upstream_detail), "upstream response body leaked into follow-up: {followup_text}");
+        assert!(!followup_text.contains(&format!("http://{address}")), "upstream URL leaked into follow-up: {followup_text}");
+        for text in [&captured, &output] {
+            assert!(!text.contains(upstream_detail), "upstream response body leaked: {text}");
+        }
+        assert!(!captured.contains(query), "private query entered logs: {captured}");
+        assert!(captured.contains("upstream_request"), "bounded failure category missing: {captured}");
+        assert!(output.contains(query), "the requested query may remain visible in its stream");
+    }
 
     #[test]
     fn truncating_multibyte_results_preserves_characters_and_marks_clipping() {
@@ -104,9 +215,9 @@ pub async fn search_augmented_stream(
             prefix_chunks.push(format!("<think>Searching for: {}...</think>", query));
             debug!("executing brave_web_search");
 
-            let result = brave.search(query).await.unwrap_or_else(|e| {
-                warn!(?e, "Brave Search request failed");
-                format!("Search failed: {e}")
+            let result = brave.search(query).await.unwrap_or_else(|_| {
+                warn!(failure = "upstream_request", "Brave Search request failed");
+                "Search failed: upstream request unavailable".to_string()
             });
 
             let truncated = truncate_search_result(result);

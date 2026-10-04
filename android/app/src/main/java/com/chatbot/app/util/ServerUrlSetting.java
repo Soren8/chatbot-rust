@@ -2,7 +2,6 @@ package com.chatbot.app.util;
 
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Base64;
 import java.util.Locale;
 
 /**
@@ -190,8 +189,23 @@ public final class ServerUrlSetting {
         if (origin == null || origin.isEmpty()) {
             return "";
         }
-        return Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(origin.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] input = origin.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        final char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".toCharArray();
+        StringBuilder encoded = new StringBuilder((input.length * 4 + 2) / 3);
+        for (int i = 0; i < input.length; i += 3) {
+            int first = input[i] & 0xff;
+            int second = i + 1 < input.length ? input[i + 1] & 0xff : 0;
+            int third = i + 2 < input.length ? input[i + 2] & 0xff : 0;
+            encoded.append(alphabet[first >>> 2]);
+            encoded.append(alphabet[((first & 0x03) << 4) | (second >>> 4)]);
+            if (i + 1 < input.length) {
+                encoded.append(alphabet[((second & 0x0f) << 2) | (third >>> 6)]);
+            }
+            if (i + 2 < input.length) {
+                encoded.append(alphabet[third & 0x3f]);
+            }
+        }
+        return encoded.toString();
     }
 
     /**

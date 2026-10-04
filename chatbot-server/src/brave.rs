@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use once_cell::sync::OnceCell;
 use reqwest::Client;
 use serde::Deserialize;
@@ -61,7 +61,7 @@ impl BraveClient {
     }
 
     #[cfg(test)]
-    fn with_endpoint(mut self, endpoint: String) -> Self {
+    pub(crate) fn with_endpoint(mut self, endpoint: String) -> Self {
         self.endpoint = endpoint;
         self
     }
@@ -76,19 +76,22 @@ impl BraveClient {
             return Ok(stub);
         }
 
-        let resp: LlmContextResponse = http_client()
+        let response = http_client()
             .get(&self.endpoint)
             .query(&[("q", query)])
             .header("X-Subscription-Token", &self.api_key)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("Brave LLM Context request failed")?
-            .error_for_status()
-            .context("Brave LLM Context returned error status")?
+            .map_err(|_| anyhow::anyhow!("Brave LLM Context transport request failed"))?;
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!("Brave LLM Context returned HTTP {status}");
+        }
+        let resp: LlmContextResponse = response
             .json()
             .await
-            .context("failed to parse Brave LLM Context response")?;
+            .map_err(|_| anyhow::anyhow!("Brave LLM Context returned invalid JSON"))?;
 
         let items = resp.grounding.map(|g| g.generic).unwrap_or_default();
         if items.is_empty() {
@@ -225,15 +228,33 @@ mod tests {
 
     #[tokio::test]
     async fn non_success_status_returns_contextual_error() {
-        let (endpoint, _) = spawn_mock("500 Internal Server Error", "{}").await;
-        let error = client(endpoint).search("query").await.unwrap_err();
-        assert!(format!("{error:#}").contains("Brave LLM Context returned error status"));
+        let (endpoint, _) = spawn_mock("500 Internal Server Error", "private upstream body").await;
+        let query = "BRAVE_PRIVATE_QUERY_123";
+        let error = client(endpoint).search(query).await.unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("500"), "status should be retained: {message}");
+        assert!(!message.contains(query), "query leaked through error: {message}");
+        assert!(!message.contains("private upstream body"), "body leaked through error: {message}");
     }
 
     #[tokio::test]
     async fn malformed_json_returns_contextual_error() {
-        let (endpoint, _) = spawn_mock("200 OK", "not json").await;
-        let error = client(endpoint).search("query").await.unwrap_err();
-        assert!(format!("{error:#}").contains("failed to parse Brave LLM Context response"));
+        let (endpoint, _) = spawn_mock("200 OK", "not json BRAVE_BODY_SENTINEL").await;
+        let query = "BRAVE_PRIVATE_QUERY_456";
+        let error = client(endpoint).search(query).await.unwrap_err();
+        let message = format!("{error:#}");
+        assert!(!message.contains(query), "query leaked through error: {message}");
+        assert!(!message.contains("BRAVE_BODY_SENTINEL"), "body leaked through error: {message}");
+    }
+
+    #[tokio::test]
+    async fn transport_error_does_not_retain_query_url() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind unused endpoint");
+        let endpoint = format!("http://{}/res/v1/llm/context", listener.local_addr().unwrap());
+        drop(listener);
+        let query = "BRAVE_PRIVATE_QUERY_789";
+        let error = client(endpoint).search(query).await.unwrap_err();
+        let message = format!("{error:#}");
+        assert!(!message.contains(query), "query leaked through error: {message}");
     }
 }

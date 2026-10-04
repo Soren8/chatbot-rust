@@ -4,7 +4,7 @@ webserver:
     tag: latest
     pullPolicy: IfNotPresent
   replicaCount: 1
-  # Chart-only host networking; root Compose instead uses a bridge.
+  # Chart-only host networking; root Compose webserver also uses host networking.
   hostNetwork: true
   service:
     type: ClusterIP

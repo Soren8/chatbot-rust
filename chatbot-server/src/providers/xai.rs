@@ -197,6 +197,18 @@ impl XaiProvider {
                         return;
                     }
                 }
+                super::flush_utf8(&mut buffer, &mut pending_utf8);
+                if !buffer.is_empty() {
+                    buffer.push('\n');
+                    let outcome = extract_sse_payloads(&mut buffer)?;
+                    for chunk in outcome.chunks {
+                        yield chunk;
+                    }
+                    if outcome.done {
+                        return;
+                    }
+                }
+                Err(anyhow::anyhow!("xAI stream ended before a successful terminal event"))?;
             } else {
                 let status = response.status();
                 error!(status = ?status, "xAI error response");
@@ -268,6 +280,9 @@ fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
             // xAI Responses API structure
             if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
                 match msg_type {
+                    "response.failed" | "response.incomplete" | "error" => {
+                        Err(anyhow::anyhow!("xAI response failed"))?;
+                    }
                     "response.output_text.delta" => {
                         if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                             if !delta.is_empty() {
@@ -307,6 +322,9 @@ fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
                     _ => {}
                 }
             }
+            if value.get("error").is_some() && value.get("type").and_then(Value::as_str).is_none() {
+                Err(anyhow::anyhow!("xAI response failed"))?;
+            }
 
             // Fallback to OpenAI standard structure (just in case they support both or mixed)
             let delta = value
@@ -333,6 +351,51 @@ fn extract_sse_payloads(buffer: &mut String) -> Result<ExtractionOutcome> {
 mod tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
+    use tokio::net::TcpListener;
+
+    async fn stream_body(body: &'static str) -> Vec<Result<String>> {
+        use axum::{body::Body, http::StatusCode, response::Response, routing::post, Router};
+        use futures_util::StreamExt;
+
+        let app = Router::new().route("/v1/responses", post(move || async move {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .body(Body::from(body))
+                .unwrap()
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let address = listener.local_addr().expect("mock address");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("mock server") });
+
+        let provider = XaiProvider::new_owned(
+            &ProviderConfig {
+                privacy_level: chatbot_core::config::PrivacyLevel::default_destination(),
+                provider_name: "test".into(),
+                provider_type: "xai".into(),
+                tier: None,
+                model_name: "test-model".into(),
+                context_size: Some(4096),
+                base_url: format!("http://{address}/v1"),
+                api_key: None,
+                allowed_providers: vec![],
+                request_timeout: Some(5.0),
+                rate_limit_retries: None,
+                rate_limit_max_wait_secs: None,
+                test_chunks: None,
+                search: false,
+                xai_search: true,
+                xai_zdr: false,
+            },
+            None,
+        )
+        .expect("provider");
+        provider
+            .stream_chat(vec![], false)
+            .expect("stream setup")
+            .collect()
+            .await
+    }
 
     #[test]
     fn response_request_omits_store_when_zdr_off() {
@@ -377,5 +440,45 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-zero-data-retention", HeaderValue::from_static("false"));
         log_zdr_response_header(&headers);
+    }
+
+    #[test]
+    fn in_band_terminal_failure_events_are_errors_without_upstream_details() {
+        for event_type in ["response.failed", "response.incomplete", "error"] {
+            let mut buffer = format!(
+                "data: {}\n",
+                json!({"type": event_type, "error": {"message": "PRIVATE_UPSTREAM_SENTINEL"}})
+            );
+            let result = extract_sse_payloads(&mut buffer);
+            let error = match result {
+                Ok(_) => panic!("terminal failure must not be treated as a successful chunk"),
+                Err(error) => error,
+            };
+            let message = format!("{error:#}");
+            assert!(!message.contains("PRIVATE_UPSTREAM_SENTINEL"), "upstream detail leaked: {message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn http_200_terminal_failures_and_unterminated_eof_are_stream_errors() {
+        for body in [
+            "data: {\"type\":\"response.failed\",\"error\":{\"message\":\"PRIVATE_UPSTREAM_SENTINEL\"}}\n\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}\n\n",
+            "data: {\"type\":\"error\",\"message\":\"PRIVATE_UPSTREAM_SENTINEL\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}",
+        ] {
+            let items = stream_body(body).await;
+            let error = items.into_iter().find_map(Result::err)
+                .expect("failed/incomplete/error/EOF must not complete successfully");
+            let message = format!("{error:#}");
+            assert!(!message.contains("PRIVATE_UPSTREAM_SENTINEL"), "upstream detail leaked: {message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn http_200_completed_response_remains_successful() {
+        let items = stream_body("data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\ndata: {\"type\":\"response.completed\"}")
+            .await;
+        assert_eq!(items.into_iter().collect::<Result<Vec<_>>>().expect("successful completion"), ["answer"]);
     }
 }

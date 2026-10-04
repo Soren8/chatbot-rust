@@ -3,6 +3,8 @@ package com.chatbot.app;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -14,6 +16,7 @@ import androidx.core.content.ContextCompat;
 import androidx.fragment.app.FragmentActivity;
 
 import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -53,9 +56,41 @@ public class NativeSecureKeyPlugin extends Plugin {
     private static final int KEYSTORE_AUTH_VALIDITY_SECONDS = 86400;
     private static final int PBKDF2_ITERATIONS = 100_000;
     private static final int PBKDF2_KEY_BITS = 256;
+    private static final long COOKIE_CALLBACK_TIMEOUT_MS = 2500;
 
     /** Pending cookie-sealing fallback for a just-stored account key. */
     private static final Map<String, String> unlockedKeys = new ConcurrentHashMap<>();
+
+    /** Whether the selected origin has a sealed credential slot to unlock. */
+    public static boolean hasSealedCredentials(Context context) {
+        if (context == null) return false;
+        try {
+            Context app = context.getApplicationContext();
+            String origin = ServerUrlSettingStore.selected(app);
+            SharedPreferences stored = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            String scopedPrefix = PREF_CREDS_IV + ServerUrlSetting.credentialSlot(origin, null);
+            String scopedDataPrefix = PREF_CREDS_DATA + ServerUrlSetting.credentialSlot(origin, null);
+            Map<String, ?> all = stored.getAll();
+            for (String key : all.keySet()) {
+                if (key.startsWith(scopedPrefix)
+                        && all.containsKey(scopedDataPrefix + key.substring(scopedPrefix.length()))) {
+                    return true;
+                }
+            }
+            if (origin.equals(ServerUrlSettingStore.flavorDefault(app))) {
+                for (String key : all.keySet()) {
+                    if (key.startsWith(PREF_CREDS_IV + ":")
+                            && all.containsKey(PREF_CREDS_DATA + key.substring(PREF_CREDS_IV.length()))) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "sealed credential presence check failed", e);
+            return true;
+        }
+        return false;
+    }
 
     private static String accountSlot(String account) {
         if (account == null || account.isEmpty()) {
@@ -234,9 +269,14 @@ public class NativeSecureKeyPlugin extends Plugin {
                     .putString(originPrefKey(PREF_CREDS_DATA, account), Base64.encodeToString(encrypted, Base64.NO_WRAP))
                     .apply();
 
+            // Sealing stores a protected cached-login copy; the live WebView
+            // still needs its HttpOnly cookies for authenticated requests and
+            // home/session restoration. Login-page cleanup is a separate
+            // acknowledged operation and must never run on this active path.
             Log.i(TAG, "sealed cached credentials into keystore for account=" + account);
             JSObject result = new JSObject();
             result.put("sealed", true);
+            result.put("cookiesPurged", false);
             call.resolve(result);
         } catch (Exception e) {
             Log.e(TAG, "failed to seal cached credentials", e);
@@ -301,26 +341,42 @@ public class NativeSecureKeyPlugin extends Plugin {
                     String rememberVal = payload.remember;
                     String encKeyVal = payload.encKey;
 
-                    String serverUrl = resolveServerUrl();
+                    String serverUrl = originAtSubmit;
                     CookieManager cm = CookieManager.getInstance();
+                    java.util.ArrayList<String> cookieValues = new java.util.ArrayList<>();
+                    java.util.ArrayList<String> cookieNames = new java.util.ArrayList<>();
                     if (!rememberVal.isEmpty()) {
-                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue(
-                                CredentialCookies.rememberCookieName(account), rememberVal));
-                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue("remember", rememberVal));
+                        String name = CredentialCookies.rememberCookieName(account);
+                        cookieNames.add(name);
+                        cookieValues.add(CredentialCookies.injectCookieValue(name, rememberVal));
                     }
                     if (!encKeyVal.isEmpty()) {
-                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue(
-                                CredentialCookies.encKeyCookieName(account), encKeyVal));
-                        cm.setCookie(serverUrl, CredentialCookies.injectCookieValue("enc_key", encKeyVal));
-                        unlockedKeys.put(account, encKeyVal);
+                        String name = CredentialCookies.encKeyCookieName(account);
+                        cookieNames.add(name);
+                        cookieValues.add(CredentialCookies.injectCookieValue(name, encKeyVal));
                     }
-                    cm.flush();
-
-                    Log.i(TAG, "unlocked and injected cached credentials for account=" + account);
-                    JSObject result = new JSObject();
-                    result.put("unlocked", true);
-                    call.setKeepAlive(false);
-                    call.resolve(result);
+                    if (cookieValues.isEmpty()) {
+                        call.setKeepAlive(false);
+                        call.reject("cached credential payload is empty");
+                        return;
+                    }
+                    setCookieValues(cm, serverUrl, cookieValues, injected -> {
+                        if (!injected || !resolveServerUrl().equals(originAtSubmit)) {
+                            expireCookies(cm, serverUrl, cookieNames, ignored -> {
+                                call.setKeepAlive(false);
+                                call.reject(injected
+                                        ? "server changed during credential injection"
+                                        : "failed to inject cached credentials");
+                            });
+                            return;
+                        }
+                        if (!encKeyVal.isEmpty()) unlockedKeys.put(account, encKeyVal);
+                        Log.i(TAG, "unlocked and injected account-scoped credentials for account=" + account);
+                        JSObject result = new JSObject();
+                        result.put("unlocked", true);
+                        call.setKeepAlive(false);
+                        call.resolve(result);
+                    });
                 } catch (Exception e) {
                     Log.e(TAG, "failed to decrypt cached credentials", e);
                     call.setKeepAlive(false);
@@ -343,24 +399,103 @@ public class NativeSecureKeyPlugin extends Plugin {
             CookieManager cm = CookieManager.getInstance();
             String serverUrl = resolveServerUrl();
             String cookieHeader = cm.getCookie(serverUrl);
+            java.util.ArrayList<String> names = new java.util.ArrayList<>();
             if (cookieHeader != null) {
                 for (String part : cookieHeader.split(";")) {
                     String[] kv = part.trim().split("=", 2);
                     if (kv.length >= 1) {
                         String name = kv[0].trim();
-                        if (CredentialCookies.isCredentialCookie(name)) {
-                            cm.setCookie(serverUrl, CredentialCookies.expiredCookieValue(name));
+                        if (CredentialCookies.isCredentialCookie(name) && !names.contains(name)) {
+                            names.add(name);
                         }
                     }
                 }
-                cm.flush();
             }
-            JSObject res = new JSObject();
-            res.put("purged", true);
-            call.resolve(res);
+            call.setKeepAlive(true);
+            expireCookies(cm, serverUrl, names, purged -> {
+                call.setKeepAlive(false);
+                if (!purged) {
+                    call.reject("failed to purge cached credentials");
+                    return;
+                }
+                JSObject res = new JSObject();
+                res.put("purged", true);
+                call.resolve(res);
+            });
         } catch (Exception e) {
             Log.w(TAG, "failed to purge cached cookies", e);
             call.reject("failed to purge cached cookies", e);
+        }
+    }
+
+    private void setCookieValues(CookieManager cm, String origin,
+            java.util.ArrayList<String> cookieValues, ValueCallback<Boolean> done) {
+        if (cookieValues.isEmpty()) {
+            done.onReceiveValue(true);
+            return;
+        }
+        final java.util.concurrent.atomic.AtomicInteger pending =
+                new java.util.concurrent.atomic.AtomicInteger(cookieValues.size());
+        final java.util.concurrent.atomic.AtomicBoolean ok =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        final java.util.concurrent.atomic.AtomicBoolean settled =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (settled.compareAndSet(false, true)) done.onReceiveValue(false);
+        }, COOKIE_CALLBACK_TIMEOUT_MS);
+        ValueCallback<Boolean> one = accepted -> {
+            if (accepted == null || !accepted) ok.set(false);
+            if (pending.decrementAndGet() == 0 && settled.compareAndSet(false, true)) {
+                try {
+                    cm.flush();
+                    done.onReceiveValue(ok.get());
+                } catch (RuntimeException e) {
+                    done.onReceiveValue(false);
+                }
+            }
+        };
+        for (String cookie : cookieValues) {
+            try {
+                cm.setCookie(origin, cookie, one);
+            } catch (RuntimeException e) {
+                one.onReceiveValue(false);
+            }
+        }
+    }
+
+    private void expireCookies(CookieManager cm, String origin,
+            java.util.ArrayList<String> names, ValueCallback<Boolean> done) {
+        if (names.isEmpty()) {
+            done.onReceiveValue(true);
+            return;
+        }
+        final java.util.concurrent.atomic.AtomicInteger pending =
+                new java.util.concurrent.atomic.AtomicInteger(names.size());
+        final java.util.concurrent.atomic.AtomicBoolean ok =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        final java.util.concurrent.atomic.AtomicBoolean settled =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (settled.compareAndSet(false, true)) done.onReceiveValue(false);
+        }, COOKIE_CALLBACK_TIMEOUT_MS);
+        ValueCallback<Boolean> one = accepted -> {
+            if (accepted == null || !accepted) ok.set(false);
+            if (pending.decrementAndGet() == 0 && settled.compareAndSet(false, true)) {
+                try {
+                    cm.removeExpiredCookie();
+                    cm.flush();
+                    done.onReceiveValue(ok.get());
+                } catch (RuntimeException e) {
+                    done.onReceiveValue(false);
+                }
+            }
+        };
+        for (String name : names) {
+            try {
+                cm.setCookie(origin, CredentialCookies.expiredCookieValue(name), one);
+            } catch (RuntimeException e) {
+                one.onReceiveValue(false);
+            }
         }
     }
 
@@ -370,21 +505,29 @@ public class NativeSecureKeyPlugin extends Plugin {
         if (account != null && !account.isEmpty()) {
             // Remove every slot for this account: origin-scoped wraps for any
             // origin plus the legacy untagged format.
-            removeAccountSlots(PREF_IV, account);
-            removeAccountSlots(PREF_DATA, account);
-            removeAccountSlots(PREF_CREDS_IV, account);
-            removeAccountSlots(PREF_CREDS_DATA, account);
-            unlockedKeys.remove(account);
             try {
                 CookieManager cm = CookieManager.getInstance();
                 String serverUrl = resolveServerUrl();
-                cm.setCookie(serverUrl, CredentialCookies.expiredCookieValue(
-                        CredentialCookies.rememberCookieName(account)));
-                cm.setCookie(serverUrl, CredentialCookies.expiredCookieValue(
-                        CredentialCookies.encKeyCookieName(account)));
-                cm.flush();
-            } catch (Exception ignored) {}
-            call.resolve(new JSObject());
+                java.util.ArrayList<String> names = new java.util.ArrayList<>();
+                names.add(CredentialCookies.rememberCookieName(account));
+                names.add(CredentialCookies.encKeyCookieName(account));
+                call.setKeepAlive(true);
+                expireCookies(cm, serverUrl, names, purged -> {
+                    call.setKeepAlive(false);
+                    if (!purged) {
+                        call.reject("failed to purge account credentials");
+                        return;
+                    }
+                    removeAccountSlots(PREF_IV, account);
+                    removeAccountSlots(PREF_DATA, account);
+                    removeAccountSlots(PREF_CREDS_IV, account);
+                    removeAccountSlots(PREF_CREDS_DATA, account);
+                    unlockedKeys.remove(account);
+                    call.resolve(new JSObject());
+                });
+            } catch (Exception e) {
+                call.reject("failed to purge account credentials", e);
+            }
             return;
         }
         // Full wipe: every account slot plus the keystore wrapping key.

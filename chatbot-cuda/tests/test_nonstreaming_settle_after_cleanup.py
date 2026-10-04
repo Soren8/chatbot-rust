@@ -195,9 +195,8 @@ class TestErrorSettlesAfterCleanup(unittest.TestCase):
 
 
 class TestSttStartFailureCleansFile(unittest.TestCase):
-    def test_stt_thread_start_failure_removes_staging_file(self):
-        created = []
-        unlinked = []
+    def test_stt_thread_start_failure_does_not_create_staging_file(self):
+        staged = []
         service = InferenceService(
             _settings("kokoro"),
             kokoro_factory=lambda device: FakeSttModel(["hi"]),
@@ -207,19 +206,11 @@ class TestSttStartFailureCleansFile(unittest.TestCase):
         service._kokoro_pipeline = FakeSttModel(["hi"])
         service._kokoro_loaded = True
         service.load_stt()
-        import src.main as voice_main
+        original_stage = service._stage_wav
 
-        real_tmp = tempfile.NamedTemporaryFile
-        real_unlink = InferenceService._unlink_quietly
-
-        def _recording_tmp(*args, **kwargs):
-            tmp = real_tmp(*args, **kwargs)
-            created.append(tmp.name)
-            return tmp
-
-        def _recording_unlink(path):
-            unlinked.append(path)
-            return real_unlink(path)
+        def _recording_stage(wav_bytes):
+            staged.append(True)
+            return original_stage(wav_bytes)
 
         async def run():
             from fastapi import HTTPException
@@ -229,8 +220,8 @@ class TestSttStartFailureCleansFile(unittest.TestCase):
 
         loop = asyncio.new_event_loop()
         try:
-            # Conversion and staging run on the loop's executor; start its
-            # worker first so only the transcription job's thread start fails.
+            # Conversion uses the loop executor; prime it so only the
+            # transcription worker's thread start fails.
             loop.run_until_complete(loop.run_in_executor(None, lambda: None))
             with (
                 mock.patch.object(
@@ -238,31 +229,21 @@ class TestSttStartFailureCleansFile(unittest.TestCase):
                     "start",
                     side_effect=RuntimeError("no threads"),
                 ),
-                mock.patch.object(
-                    voice_main.tempfile, "NamedTemporaryFile", _recording_tmp
-                ),
-                mock.patch.object(
-                    InferenceService,
-                    "_unlink_quietly",
-                    staticmethod(_recording_unlink),
-                ),
+                mock.patch.object(service, "_stage_wav", _recording_stage),
             ):
                 loop.run_until_complete(run())
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.run_until_complete(loop.shutdown_default_executor())
         finally:
             loop.close()
-        self.assertEqual(len(created), 1)
-        self.assertIn(created[0], unlinked)
-        self.assertFalse(os.path.exists(created[0]))
+        self.assertEqual(staged, [], "rejected worker must not create a WAV")
         self.assertEqual(service.active_job_count(), 0)
         asyncio.run(service.aclose())
 
 
 class TestSttAdmissionRejectionCleansFile(unittest.TestCase):
-    def test_rejected_stt_after_shutdown_removes_staging_file(self):
-        created = []
-        unlinked = []
+    def test_rejected_stt_after_shutdown_does_not_create_staging_file(self):
+        staged = []
         service = InferenceService(
             _settings("kokoro"),
             kokoro_factory=lambda device: FakeSttModel(["hi"]),
@@ -273,38 +254,121 @@ class TestSttAdmissionRejectionCleansFile(unittest.TestCase):
         service._kokoro_loaded = True
         service.load_stt()
         asyncio.run(service.aclose())
-        import src.main as voice_main
+        original_stage = service._stage_wav
 
-        real_tmp = tempfile.NamedTemporaryFile
-        real_unlink = InferenceService._unlink_quietly
-
-        def _recording_tmp(*args, **kwargs):
-            tmp = real_tmp(*args, **kwargs)
-            created.append(tmp.name)
-            return tmp
-
-        def _recording_unlink(path):
-            unlinked.append(path)
-            return real_unlink(path)
+        def _recording_stage(wav_bytes):
+            staged.append(True)
+            return original_stage(wav_bytes)
 
         async def run():
             with self.assertRaisesRegex(Exception, "shut"):
                 await stt(_stt_stub(service, _wav_converter), _FakeAudio(b"r"))
 
-        with (
-            mock.patch.object(
-                voice_main.tempfile, "NamedTemporaryFile", _recording_tmp
-            ),
-            mock.patch.object(
-                InferenceService,
-                "_unlink_quietly",
-                staticmethod(_recording_unlink),
-            ),
-        ):
+        with mock.patch.object(service, "_stage_wav", _recording_stage):
             asyncio.run(run())
+        self.assertEqual(staged, [], "rejected worker must not create a WAV")
+
+
+class TestCancelledSttStagingCleansFile(unittest.TestCase):
+    def test_cancelled_staging_waiter_owns_file_until_staging_exits(self):
+        entered = threading.Event()
+        release = threading.Event()
+        created = []
+        transcribed = []
+        service = InferenceService(
+            _settings("kokoro"),
+            kokoro_factory=lambda device: FakeSttModel(["hi"]),
+            stt_factory=lambda model_id: FakeSttModel(["hi"]),
+            pcm_converter=lambda audio: b"x",
+        )
+        service._kokoro_pipeline = FakeSttModel(["hi"])
+        service._kokoro_loaded = True
+        service.load_stt()
+
+        def gated_stage(_wav_bytes):
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                created.append(tmp.name)
+            entered.set()
+            assert release.wait(timeout=5.0), "test must release staging"
+            return created[0]
+
+        async def run():
+            route_task = asyncio.create_task(
+                stt(_stt_stub(service, _wav_converter), _FakeAudio(b"raw"))
+            )
+            entered_ok = await asyncio.to_thread(entered.wait, 5.0)
+            self.assertTrue(entered_ok, "staging worker must reach its gate")
+            self.assertEqual(service.active_job_count(), 1)
+            route_task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(route_task, timeout=5.0)
+            self.assertTrue(os.path.exists(created[0]))
+            self.assertEqual(service.active_job_count(), 1)
+            release.set()
+            await asyncio.wait_for(service.aclose(), timeout=5.0)
+            self.assertFalse(
+                os.path.exists(created[0]),
+                "abandoned staging file must be removed before worker exit",
+            )
+            self.assertEqual(transcribed, [], "cancelled staging must not infer")
+
+        original_transcribe = service.transcribe
+
+        def recording_transcribe(path):
+            transcribed.append(path)
+            return original_transcribe(path)
+
+        service.transcribe = recording_transcribe
+        try:
+            with mock.patch.object(service, "_stage_wav", gated_stage):
+                asyncio.run(run())
+        finally:
+            release.set()
+            for path in created:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+            asyncio.run(service.aclose())
+
+
+class TestStagingWriteFailureCleansFile(unittest.TestCase):
+    def test_write_failure_removes_newly_created_staging_file(self):
+        created = []
+        real_tmp = voice_service.tempfile.NamedTemporaryFile
+
+        class FailingWriter:
+            def __init__(self, *args, **kwargs):
+                self._file = real_tmp(*args, **kwargs)
+                self.name = self._file.name
+                created.append(self.name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self._file.close()
+
+            def write(self, _payload):
+                raise OSError("disk full")
+
+        with mock.patch.object(
+            voice_service.tempfile, "NamedTemporaryFile", FailingWriter
+        ):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                service = InferenceService(
+                    _settings("kokoro"),
+                    kokoro_factory=lambda device: FakeSttModel(["hi"]),
+                    stt_factory=lambda model_id: FakeSttModel(["hi"]),
+                    pcm_converter=lambda audio: b"x",
+                )
+                service._transcribe_wav(b"wav", threading.Event())
+
         self.assertEqual(len(created), 1)
-        self.assertIn(created[0], unlinked)
-        self.assertFalse(os.path.exists(created[0]))
+        self.assertFalse(
+            os.path.exists(created[0]),
+            "a failed staging write must not leave a plaintext WAV behind",
+        )
 
 
 class TestCancelledTtsShutdownAccounting(unittest.TestCase):

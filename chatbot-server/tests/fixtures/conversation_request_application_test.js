@@ -45,7 +45,11 @@ const slices = [
   ['function refreshSession() {', 'function historyImageUrl(pairIndex, imageIndex) {'],
   ['function withCsrf(headers) {', 'var historyWindow = ChatConversationState.createHistoryWindow'],
   ['function liveUserPairIndex(userMessageElement) {', 'function isLocalOnlyTurn(el) {'],
-  ['function currentSetId() {', 'function currentSetIdentity() {'],
+  ['function syncSelectedOptionVersion(version) {', 'function noteSetVersionFromRead(data) {'],
+  ['function submitResetChat(isRetry, capturedTarget, capturedGen) {', 'function submitRenameSet(setId, oldName, newName, isRetry, capturedTarget, capturedGen) {'],
+  ['function captureMemoryBinding(target, gen) {', 'function finishChatRequest(seq) {'],
+  ['function submitRenameSet(setId, oldName, newName, isRetry, capturedTarget, capturedGen) {', 'function showEncKeyGateLoading(message) {'],
+  ['function isSupportedChatImageFile(file) {', '// Build the user-message display node'],
   ['let loadedPrivacy = null;', 'function refreshPrivacyControls() {'],
   ['async function response401Message(response) {', 'function logoutThisComputer() {'],
   ['function mountChatMessage(hostEl, mountOpts) {', 'function appendSetsLoadError(errorText) {'],
@@ -53,7 +57,9 @@ const slices = [
   ['function fetchHistoryPair(pairIndex, extra) {', 'function sizeEditTextarea(textarea) {'],
   ['function beginChatRequest() {', '// Sanitize raw markdown text for TTS'],
   ['function combinedAiOriginal(fullVisibleText, fullThinkingText) {', 'function getDomPlainText(element) {'],
-  ['window.regenerateMessage = function regenerateMessage(button) {', 'function handleDeleteMessage(buttonElement, isRetry) {'],
+  ['window.regenerateMessage = function regenerateMessage(button) {', 'function handleDeleteMessage(buttonElement, isRetry, capturedTarget, capturedGen) {'],
+  ['function handleDeleteMessage(buttonElement, isRetry, capturedTarget, capturedGen) {', '// Fork the conversation at a user turn'],
+  ['function handleForkMessage(buttonElement, isRetry, capturedTarget, capturedGen) {', '// Long press logic for delete button'],
   ['function saveSystemPromptNow(sysPromptText, isRetry, capturedTarget, capturedGen) {', 'window.sendMessage = sendMessage;'],
 ];
 
@@ -103,7 +109,7 @@ function makeFake(tag) {
     _text: '',
     _classes: {},
     length: 1,
-    calls: { html: [], append: [], attrSet: [] },
+    calls: { html: [], append: [], attrSet: [], remove: 0 },
     attr(k, v) {
       if (v === undefined) return el._attrs[k];
       el._attrs[k] = v;
@@ -136,6 +142,7 @@ function makeFake(tag) {
     next() { return makeFake(tag + '+'); },
     last() { return el._last || el; },
     is() { return !!el._checked; },
+    each(fn) { if (typeof fn === 'function') fn.call(el, 0, el); return el; },
     hasClass(c) { return !!el._classes[c]; },
     addClass(c) { el._classes[c] = true; return el; },
     removeClass(c) { delete el._classes[c]; return el; },
@@ -149,7 +156,7 @@ function makeFake(tag) {
     show() { return el; },
     on() { return el; },
     append(v) { el.calls.append.push(v); return el; },
-    remove() { return el; },
+    remove() { el.calls.remove++; return el; },
     empty() { return el; },
     trigger() { return el; },
   };
@@ -929,6 +936,115 @@ async function scenarioBlockedSendWithoutPolicy() {
   assert.equal(w.chatRequests.isGenerating(), false, 'blocked-send: nothing generates');
 }
 
+async function scenarioGuestPrivacyControls() {
+  const w = makeWorld();
+  w.APP_DATA.loggedIn = false;
+  vm.runInContext('loadedPrivacy = null;', w.ctx);
+  assert.doesNotThrow(() => vm.runInContext('refreshPrivacyControls()', w.ctx),
+    'guest startup must refresh controls without dereferencing saved-set privacy');
+}
+
+async function scenarioSvgUploadRejected() {
+  const w = makeWorld();
+  assert.equal(vm.runInContext("isSupportedChatImageFile({type:'image/svg+xml', name:'photo.svg'})", w.ctx), false,
+    'SVG is rejected by MIME type');
+  assert.equal(vm.runInContext("isSupportedChatImageFile({type:'image/png', name:'photo.svg'})", w.ctx), false,
+    'SVG is rejected even when its MIME type is mislabeled');
+  assert.equal(vm.runInContext("isSupportedChatImageFile({type:'image/png', name:'photo.png'})", w.ctx), true,
+    'ordinary raster uploads remain supported');
+}
+
+async function scenarioResetConflictAfterSetSwitch() {
+  const w = makeWorld();
+  vm.runInContext('submitResetChat(false)', w.ctx);
+  await flush();
+  const first = lastFetch(w);
+  assert.equal(fetchBody(first).set_id, 'set-A', 'reset captures the initiating set');
+  w.switchTo('set-B', 'B', 3);
+  first.resolve(okJson({ error: 'version_conflict', set_id: 'set-A', current_version: 8 }));
+  await flush();
+  assert.equal(w.fetchCalls.length, 1, 'stale conflict is not retried against a replacement view');
+  assert.equal(w.APP_DATA.lastSetId, 'set-B', 'stale reset response cannot rebind the selected set');
+  assert.equal(w.APP_DATA.setVersion, 3, 'stale reset response cannot alter replacement version');
+}
+
+async function staleMutationReply(name, invoke, bodyCheck, payload) {
+  const w = makeWorld();
+  invoke(w);
+  await flush();
+  assert.equal(w.fetchCalls.length, 1, name + ': sends once');
+  assert.equal(fetchBody(lastFetch(w)).set_id, 'set-A', name + ': wire target is the initiating set');
+  if (bodyCheck) bodyCheck(fetchBody(lastFetch(w)));
+  w.switchTo('set-B', 'B', 3);
+  lastFetch(w).resolve(okJson(payload));
+  await flush();
+  assert.equal(w.fetchCalls.length, 1, name + ': stale conflict does not retry against B');
+  assert.equal(w.APP_DATA.lastSetId, 'set-B', name + ': stale reply keeps B selected');
+  assert.equal(w.APP_DATA.setVersion, 3, name + ': stale reply cannot alter B version');
+  assert.equal(w.appended.length, 0, name + ': stale reply does not report status in B');
+  assert.equal(w.userFake.calls.remove, 0, name + ': stale reply does not remove the replacement DOM');
+  assert.equal(w.aiFake.calls.remove, 0, name + ': stale reply does not remove the replacement DOM');
+  return w;
+}
+
+async function scenarioRemainingMutationSwitchFences() {
+  const staleConflict = { error: 'version_conflict', set_id: 'set-A', current_version: 8 };
+  const staleSuccess = { status: 'success', set_id: 'set-A', version: 6, name: 'A fork' };
+  const prepareMessageAction = w => {
+    w.userFake._attrs['data-original'] = 'saved user text';
+    w.userFake.next = () => w.aiFake;
+    w.ctx.liveUserPairIndex = () => 0;
+    w.ctx.isLocalOnlyTurn = () => false;
+    w.ctx.__button = makeFake('message-action');
+    w.ctx.__button._closest = w.userFake;
+  };
+
+  for (const result of [staleConflict, staleSuccess]) {
+    await staleMutationReply('delete-message', w => {
+      prepareMessageAction(w);
+      vm.runInContext('handleDeleteMessage(__button, false)', w.ctx);
+    }, body => assert.equal(body.user_message, 'saved user text'), result);
+    await staleMutationReply('fork', w => {
+      prepareMessageAction(w);
+      vm.runInContext('handleForkMessage(__button, false)', w.ctx);
+    }, body => assert.equal(body.pair_index, 0), result);
+    await staleMutationReply('rename-set', w => {
+      vm.runInContext('submitRenameSet("set-A", "A", "A renamed", false)', w.ctx);
+    }, body => assert.equal(body.new_name, 'A renamed'), result);
+    await staleMutationReply('delete-set', w => {
+      vm.runInContext('submitDeleteSet("set-A", "A", false)', w.ctx);
+    }, body => assert.equal(body.set_name, 'A'), result);
+  }
+}
+
+async function scenarioRemainingMutationConflictRetriesStayBound() {
+  const prepareMessageAction = w => {
+    w.userFake._attrs['data-original'] = 'saved user text';
+    w.userFake.next = () => w.aiFake;
+    w.ctx.liveUserPairIndex = () => 0;
+    w.ctx.isLocalOnlyTurn = () => false;
+    w.ctx.__button = makeFake('message-action');
+    w.ctx.__button._closest = w.userFake;
+  };
+  const scenarios = [
+    ['delete-message', w => { prepareMessageAction(w); vm.runInContext('handleDeleteMessage(__button, false)', w.ctx); }],
+    ['fork', w => { prepareMessageAction(w); vm.runInContext('handleForkMessage(__button, false)', w.ctx); }],
+    ['rename-set', w => vm.runInContext('submitRenameSet("set-A", "A", "A renamed", false)', w.ctx)],
+    ['delete-set', w => vm.runInContext('submitDeleteSet("set-A", "A", false)', w.ctx)],
+  ];
+  for (const [name, invoke] of scenarios) {
+    const w = makeWorld();
+    invoke(w);
+    await flush();
+    lastFetch(w).resolve(okJson({ error: 'version_conflict', set_id: 'set-A', current_version: 8 }));
+    await flush();
+    assert.equal(w.fetchCalls.length, 2, name + ': retries one live conflict');
+    const retry = fetchBody(lastFetch(w));
+    assert.equal(retry.set_id, 'set-A', name + ': retry retains target set');
+    assert.equal(retry.expected_version, 8, name + ': retry uses authoritative version');
+  }
+}
+
 async function scenarioBlockedRegenWithoutPolicy() {
   const w = makeWorld();
   vm.runInContext('loadedPrivacy = null;', w.ctx);
@@ -1297,6 +1413,11 @@ async function scenarioHistoryReplaceMount() {
     ['pair-preread', scenarioPairPreread],
     ['pagination', scenarioPagination],
     ['blocked-send', scenarioBlockedSendWithoutPolicy],
+    ['guest-privacy-controls', scenarioGuestPrivacyControls],
+    ['svg-upload-rejected', scenarioSvgUploadRejected],
+    ['reset-switch-fence', scenarioResetConflictAfterSetSwitch],
+    ['remaining-mutation-switch-fences', scenarioRemainingMutationSwitchFences],
+    ['remaining-mutation-conflict-retries', scenarioRemainingMutationConflictRetriesStayBound],
     ['blocked-regen', scenarioBlockedRegenWithoutPolicy],
     ['switch-load', scenarioBlockedSendBeforePolicyLoadAfterSwitch],
   ];

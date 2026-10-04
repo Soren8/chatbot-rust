@@ -14,6 +14,7 @@ mod common;
 
 use std::{
     env,
+    io::Cursor,
     net::SocketAddr,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -27,11 +28,14 @@ use axum::{
     routing::post,
     Router,
 };
-use chatbot_server::resolve_static_root;
+use base64::Engine;
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
 use tower::ServiceExt;
+
+use chatbot_server::resolve_static_root;
 
 static CSRF_META_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"<meta name=\"csrf-token\" content=\"([^\"]+)\""#).expect("csrf regex")
@@ -48,6 +52,16 @@ fn clear_message_env() {
     env::remove_var("CHATBOT_TEST_BRAVE_RESULTS");
     env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
     env::remove_var("XAI_API_KEY");
+}
+
+fn valid_png_data_url() -> String {
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(1, 1, Rgb([20, 40, 60])));
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    )
 }
 
 fn openai_config(base_url: &str) -> String {
@@ -250,13 +264,14 @@ async fn image_marker_request_uses_text_plus_image_url_parts() {
 
     let (app, _services) = common::workspace_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
+    let image_url = valid_png_data_url();
 
     let (status, body) = post_chat(
         &app,
         &cookie,
         &csrf,
         json!({
-            "message": "Look at this: [IMAGE:data:image/png;base64,abc123]",
+            "message": format!("Look at this: [IMAGE:{image_url}]"),
             "set_name": "default",
             "model_name": "default",
         }),
@@ -284,7 +299,7 @@ async fn image_marker_request_uses_text_plus_image_url_parts() {
         messages[1]["content"],
         json!([
             {"type": "text", "text": "Look at this:"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+            {"type": "image_url", "image_url": {"url": image_url}},
         ])
     );
     assert_eq!(
