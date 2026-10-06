@@ -15,8 +15,6 @@ set -euo pipefail
 
 readonly IMAGE_NAME="chatbot-rust-agent-dev:local"
 readonly CONTAINER_NAME="chatbot-rust-agent-dev"
-readonly CARGO_REGISTRY_VOLUME="chatbot-rust-cargo-registry"
-readonly CARGO_GIT_VOLUME="chatbot-rust-cargo-git"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -57,13 +55,6 @@ build_image() {
     "${SCRIPT_DIR}"
 }
 
-ensure_volumes() {
-  docker volume inspect "${CARGO_REGISTRY_VOLUME}" >/dev/null 2>&1 \
-    || docker volume create "${CARGO_REGISTRY_VOLUME}" >/dev/null
-  docker volume inspect "${CARGO_GIT_VOLUME}" >/dev/null 2>&1 \
-    || docker volume create "${CARGO_GIT_VOLUME}" >/dev/null
-}
-
 run_post_create() {
   docker exec \
     -u agent \
@@ -80,8 +71,6 @@ start_container() {
 
   local docker_gid
   docker_gid="$(docker_socket_gid)"
-
-  ensure_volumes
 
   if container_exists; then
     if container_running; then
@@ -100,14 +89,17 @@ start_container() {
     --hostname "${CONTAINER_NAME}" \
     --group-add "${docker_gid}" \
     -v "${REPO_ROOT}:/workspace" \
-    -v "${CARGO_REGISTRY_VOLUME}:/home/agent/.cargo/registry" \
-    -v "${CARGO_GIT_VOLUME}:/home/agent/.cargo/git" \
+    --mount type=bind,source=/mnt/linux-data/.cargo/home,target=/mnt/linux-data/.cargo/home \
+    --mount type=bind,source=/mnt/linux-data/.cargo/target,target=/mnt/linux-data/.cargo/target \
     -v "${REPO_ROOT}/.devcontainer/stubs/.env:/workspace/.env:ro" \
     -v "${REPO_ROOT}/.config.yml.example:/workspace/.config.yml:ro" \
     -v "${REPO_ROOT}/.devcontainer/stubs/data:/workspace/data:ro" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -w /workspace \
-    -e CARGO_HOME=/home/agent/.cargo \
+    -e CARGO_HOME=/mnt/linux-data/.cargo/home \
+    -e CARGO_HOME_OVERRIDE=/mnt/linux-data/.cargo/home \
+    -e CARGO_INSTALL_ROOT=/home/agent/.cargo \
+    -e 'CARGO_BUILD_BUILD_DIR=/mnt/linux-data/.cargo/target/{workspace-path-hash}' \
     -e CARGO_TARGET_DIR=/workspace/temp/.cargo/target \
     -e RUSTUP_HOME=/home/agent/.rustup \
     -e INSTALL_GROK=1 \

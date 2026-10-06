@@ -9,14 +9,17 @@
   "remoteUser": "agent",
   "updateRemoteUserUID": true,
   "containerEnv": {
-    "CARGO_HOME": "/home/agent/.cargo",
+    "CARGO_HOME": "/mnt/linux-data/.cargo/home",
+    "CARGO_HOME_OVERRIDE": "/mnt/linux-data/.cargo/home",
+    "CARGO_INSTALL_ROOT": "/home/agent/.cargo",
+    "CARGO_BUILD_BUILD_DIR": "/mnt/linux-data/.cargo/target/{workspace-path-hash}",
     "CARGO_TARGET_DIR": "/workspace/temp/.cargo/target",
     "RUSTUP_HOME": "/home/agent/.rustup",
     "INSTALL_GROK": "1"
   },
   "mounts": [
-    "source=PROJECT_SLUG-cargo-registry,target=/home/agent/.cargo/registry,type=volume",
-    "source=PROJECT_SLUG-cargo-git,target=/home/agent/.cargo/git,type=volume"
+    "source=/mnt/linux-data/.cargo/home,target=/mnt/linux-data/.cargo/home,type=bind",
+    "source=/mnt/linux-data/.cargo/target,target=/mnt/linux-data/.cargo/target,type=bind"
   ],
   "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
   "customizations": {

@@ -7,7 +7,7 @@ cd "${WORKSPACE}"
 
 echo "[devcontainer] rust-agent post-create (workspace: ${WORKSPACE})"
 
-# Persist cargo caches under temp/ per project conventions
+# Final Cargo outputs keep their existing path; intermediates use the global cache.
 mkdir -p "${WORKSPACE}/temp/.cargo/target"
 
 # Git safety when the repo is bind-mounted from the host
