@@ -9,9 +9,9 @@ use tracing::debug;
 use super::keys::{chunk_key, chunk_prefix_end, set_chunk_prefix, set_id_key, user_set_key};
 use super::tables::{
     IMAGE_BLOBS, PAIR_BLOBS, SETS_BLOB, SETS_HEADER, SETS_MANIFEST, SETS_META, SETS_NAME,
-    SetMetaValue, THUMB_BLOBS, USER_SETS,
+    SETS_POLICY, SetMetaValue, THUMB_BLOBS, USER_SETS,
 };
-use super::{RedbHistoryStore, StoreError};
+use super::{FORK_RECEIPTS, FORK_RECEIPT_TIMES, RedbHistoryStore, StoreError};
 use crate::chat_images::{
     ExtractedImage, defer_image_payloads, extract_images_from_user_message, materialize_full,
     normalize_pair_for_commit, ui_thumb_jpeg,
@@ -21,8 +21,9 @@ use crate::history::crypto;
 use crate::history::ops::page_history;
 use crate::history::types::{
     BlobFormat, HeaderV1, ImageId, ImagePayloadV1, LogicalSnapshot, ManifestPair, ManifestV1,
-    PairId, PairPayloadV1, SetId, SetPage, SetSnapshot, SetVersion, ThumbPayloadV1,
+    PairId, PairPayloadV1, SetId, SetPage, SetSnapshot, SetSummary, SetVersion, ThumbPayloadV1,
 };
+use crate::operation_receipt::Receipt;
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -562,6 +563,173 @@ impl RedbHistoryStore {
             "history_chunk_migrate"
         );
         Ok(true)
+    }
+
+    /// Write `fork` as a new chunked set holding a prefix of `source_id`.
+    ///
+    /// `fork.history` is the source's logical (ref-form) prefix read at
+    /// `source_version`. Image and thumb payloads are re-sealed under the new
+    /// set id as stored, so nothing is decoded, inlined or re-thumbnailed. A
+    /// `receipt` commits in the same transaction.
+    pub fn create_chunked_fork(
+        &self,
+        user_id: &str,
+        source_id: SetId,
+        source_version: SetVersion,
+        fork: &SetSnapshot,
+        key: &EncryptionKey,
+        receipt: Option<&Receipt>,
+    ) -> Result<SetSummary, StoreError> {
+        let set_id = fork.set_id;
+        let mut sealed_pairs = Vec::with_capacity(fork.history.len());
+        let mut sealed_images = Vec::new();
+        let mut sealed_thumbs = Vec::new();
+        let mut manifest_pairs = Vec::with_capacity(fork.history.len());
+        {
+            let txn = self.db.begin_read()?;
+            let source_key = set_id_key(source_id);
+            let source_meta = txn
+                .open_table(SETS_META)?
+                .get(source_key.as_slice())?
+                .and_then(|value| SetMetaValue::decode(value.value()))
+                .ok_or(StoreError::NotFound)?;
+            if source_meta.user_id != user_id {
+                return Err(StoreError::Forbidden);
+            }
+            if source_meta.version != source_version || !source_meta.blob_format.is_chunked() {
+                return Err(StoreError::Conflict {
+                    current: source_meta.version,
+                });
+            }
+            let manifest_blob = txn
+                .open_table(SETS_MANIFEST)?
+                .get(source_key.as_slice())?
+                .ok_or(StoreError::NotFound)?;
+            let manifest = crypto::open_manifest_v1(
+                user_id,
+                source_id,
+                source_meta.version,
+                manifest_blob.value(),
+                key,
+            )?;
+            if manifest.pairs.len() < fork.history.len() || fork.pair_ids.len() != fork.history.len()
+            {
+                return Err(StoreError::InvalidInput);
+            }
+            let image_table = txn.open_table(IMAGE_BLOBS)?;
+            let thumb_table = txn.open_table(THUMB_BLOBS)?;
+            for (((user, assistant), pair_id), entry) in
+                fork.history.iter().zip(&fork.pair_ids).zip(&manifest.pairs)
+            {
+                for image_id in &entry.image_ids {
+                    let ck = chunk_key(source_id, image_id.as_uuid());
+                    if let Some(blob) = image_table.get(ck.as_slice())? {
+                        let image =
+                            crypto::open_image_v1(user_id, source_id, *image_id, blob.value(), key)?;
+                        sealed_images.push((
+                            *image_id,
+                            crypto::seal_image_v1(user_id, set_id, *image_id, &image, key)?,
+                        ));
+                    }
+                    if let Some(blob) = thumb_table.get(ck.as_slice())? {
+                        let thumb =
+                            crypto::open_thumb_v1(user_id, source_id, *image_id, blob.value(), key)?;
+                        sealed_thumbs.push((
+                            *image_id,
+                            crypto::seal_thumb_v1(user_id, set_id, *image_id, &thumb, key)?,
+                        ));
+                    }
+                }
+                let payload = PairPayloadV1 {
+                    user: user.clone(),
+                    assistant: assistant.clone(),
+                };
+                sealed_pairs.push((
+                    *pair_id,
+                    crypto::seal_pair_v1(user_id, set_id, *pair_id, 0, &payload, key)?,
+                ));
+                manifest_pairs.push(ManifestPair {
+                    pair_id: *pair_id,
+                    generation: 0,
+                    image_ids: entry.image_ids.clone(),
+                });
+            }
+        }
+
+        let header = HeaderV1 {
+            memory: fork.memory.clone(),
+            system_prompt: fork.system_prompt.clone(),
+        };
+        let header_blob = crypto::seal_header_v1(user_id, set_id, 0, &header, key)?;
+        let manifest = ManifestV1 {
+            pairs: manifest_pairs,
+        };
+        let manifest_blob = crypto::seal_manifest_v1(user_id, set_id, fork.version, &manifest, key)?;
+        let name_blob = crypto::seal_name_v1(user_id, set_id, &fork.display_name, key)?;
+        let policy_blob = crypto::seal_policy_v1(user_id, set_id, fork.privacy_level, key)?;
+        let sealed_receipt = receipt
+            .map(|receipt| receipt.seal(user_id, key).map_err(|_| StoreError::Crypto))
+            .transpose()?;
+        let now = now_millis();
+        let meta = SetMetaValue {
+            user_id: user_id.to_owned(),
+            version: fork.version,
+            created_at: now,
+            updated_at: now,
+            is_default: false,
+            blob_format: BlobFormat::AeadChunkedV2,
+            header_generation: 0,
+            pair_count: Some(manifest.pairs.len() as u32),
+        };
+        let id_key = set_id_key(set_id);
+
+        let txn = self.db.begin_write()?;
+        {
+            let mut meta_table = txn.open_table(SETS_META)?;
+            if meta_table.get(id_key.as_slice())?.is_some() {
+                return Err(StoreError::InvalidInput);
+            }
+            meta_table.insert(id_key.as_slice(), meta.encode().as_slice())?;
+            txn.open_table(SETS_HEADER)?
+                .insert(id_key.as_slice(), header_blob.as_slice())?;
+            txn.open_table(SETS_MANIFEST)?
+                .insert(id_key.as_slice(), manifest_blob.as_slice())?;
+            txn.open_table(SETS_NAME)?
+                .insert(id_key.as_slice(), name_blob.as_slice())?;
+            txn.open_table(SETS_POLICY)?
+                .insert(id_key.as_slice(), policy_blob.as_slice())?;
+            let mut pair_table = txn.open_table(PAIR_BLOBS)?;
+            for (pair_id, blob) in &sealed_pairs {
+                pair_table.insert(chunk_key(set_id, pair_id.as_uuid()).as_slice(), blob.as_slice())?;
+            }
+            let mut image_table = txn.open_table(IMAGE_BLOBS)?;
+            for (image_id, blob) in &sealed_images {
+                image_table.insert(chunk_key(set_id, image_id.as_uuid()).as_slice(), blob.as_slice())?;
+            }
+            let mut thumb_table = txn.open_table(THUMB_BLOBS)?;
+            for (image_id, blob) in &sealed_thumbs {
+                thumb_table.insert(chunk_key(set_id, image_id.as_uuid()).as_slice(), blob.as_slice())?;
+            }
+            txn.open_table(USER_SETS)?
+                .insert(user_set_key(user_id, set_id).as_slice(), now)?;
+        }
+        if let (Some(receipt), Some(sealed)) = (receipt, sealed_receipt) {
+            Self::purge_fork_receipts(&txn, receipt.created_at)?;
+            let receipt_id = format!("{user_id}:{}", receipt.operation_id.as_str());
+            txn.open_table(FORK_RECEIPT_TIMES)?
+                .insert(receipt_id.as_str(), receipt.created_at)?;
+            txn.open_table(FORK_RECEIPTS)?
+                .insert(receipt_id.as_str(), sealed.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(SetSummary {
+            set_id,
+            version: fork.version,
+            display_name: fork.display_name.clone(),
+            updated_at: now,
+            is_default: false,
+            privacy_level: fork.privacy_level,
+        })
     }
 
     /// CAS commit of a chunked snapshot. Normalizes pair texts to

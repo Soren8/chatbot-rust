@@ -286,67 +286,6 @@ impl RedbHistoryStore {
         Ok(())
     }
 
-    pub fn create_fork_snapshot(
-        &self,
-        user: &str,
-        snapshot: &SetSnapshot,
-        key: &EncryptionKey,
-        receipt: &Receipt,
-    ) -> Result<SetSummary, StoreError> {
-        let blob = crypto::seal_blob(
-            user,
-            snapshot.set_id,
-            snapshot.version,
-            BlobFormat::AeadV1,
-            &SetPayloadV1::from_snapshot(snapshot),
-            key,
-        )?;
-        let name = crypto::seal_name_v1(user, snapshot.set_id, &snapshot.display_name, key)?;
-        let policy = crypto::seal_policy_v1(user, snapshot.set_id, snapshot.privacy_level, key)?;
-        let sealed = receipt.seal(user, key).map_err(|_| StoreError::Crypto)?;
-        let now = now_millis();
-        let meta = SetMetaValue {
-            user_id: user.to_owned(),
-            version: snapshot.version,
-            created_at: now,
-            updated_at: now,
-            is_default: false,
-            blob_format: BlobFormat::AeadV1,
-            header_generation: 0,
-            pair_count: None,
-        };
-        let tx = self.db.begin_write()?;
-        Self::purge_fork_receipts(&tx, receipt.created_at)?;
-        let id = set_id_key(snapshot.set_id);
-        tx.open_table(SETS_META)?
-            .insert(id.as_slice(), meta.encode().as_slice())?;
-        tx.open_table(SETS_BLOB)?
-            .insert(id.as_slice(), blob.as_slice())?;
-        tx.open_table(SETS_NAME)?
-            .insert(id.as_slice(), name.as_slice())?;
-        tx.open_table(SETS_POLICY)?
-            .insert(id.as_slice(), policy.as_slice())?;
-        tx.open_table(USER_SETS)?
-            .insert(user_set_key(user, snapshot.set_id).as_slice(), now)?;
-        tx.open_table(FORK_RECEIPT_TIMES)?.insert(
-            format!("{user}:{}", receipt.operation_id.as_str()).as_str(),
-            receipt.created_at,
-        )?;
-        tx.open_table(FORK_RECEIPTS)?.insert(
-            format!("{user}:{}", receipt.operation_id.as_str()).as_str(),
-            sealed.as_slice(),
-        )?;
-        tx.commit()?;
-        Ok(SetSummary {
-            set_id: snapshot.set_id,
-            version: snapshot.version,
-            display_name: snapshot.display_name.clone(),
-            updated_at: now,
-            is_default: false,
-            privacy_level: snapshot.privacy_level,
-        })
-    }
-
     /// Load non-sensitive meta only (no blob decrypt). Used for cache validation.
     pub fn load_meta(&self, user_id: &str, set_id: SetId) -> Result<SetMetaValue, StoreError> {
         let txn = self.db.begin_read()?;
@@ -675,6 +614,7 @@ impl RedbHistoryStore {
     /// Writes `snapshot` content at `expected.next()` (snapshot.version field is ignored for CAS check).
     /// Returns the sealed logical shape for the cache: chunked commits come
     /// back ref-normalized, whole-blob commits echo the sealed working copy.
+    #[cfg(test)]
     pub fn commit_snapshot(
         &self,
         user_id: &str,

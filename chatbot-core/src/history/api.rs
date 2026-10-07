@@ -597,8 +597,9 @@ impl HistoryService {
 
     /// Fork a prefix of `source_set_id` (inclusive `up_to_pair_index`) into a new set.
     ///
-    /// Copies memory, system prompt, and history pairs with full fidelity (images
-    /// re-sealed under the new set id). The source set is untouched. `new_name`
+    /// Copies memory, system prompt, and history pairs with full fidelity (stored
+    /// image and thumb payloads re-sealed under the new set id, never decoded).
+    /// The source set is untouched. `new_name`
     /// empty/None auto-derives `<source> - branch` (deduped). CAS-checked against
     /// `expected` when supplied.
     pub fn fork_set(
@@ -612,8 +613,9 @@ impl HistoryService {
     ) -> Result<SetSummary, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        // Materialized (full-res data URLs) so the fork re-seals its own image blobs.
-        let source = self.load(&user, source_set_id, key)?;
+        // Logical (image-ref) shape: the store copies sealed image payloads.
+        let logical = self.load_snapshot_cached(&user, source_set_id, key)?;
+        let source = logical.as_snapshot();
         if let Some(exp) = expected {
             if source.version != exp {
                 return Err(HistoryError::Conflict {
@@ -632,32 +634,18 @@ impl HistoryService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        let mut snap = self.build_fork_snapshot(&user, &source, up_to_pair_index, new_name, key)?;
-        let new_id = snap.set_id;
-        let summary = self.store.create_set_with_policy(
+        let snap = self.build_fork_snapshot(&user, source, up_to_pair_index, new_name, key)?;
+        let summary = self.store.create_chunked_fork(
             &user,
-            new_id,
-            &snap.display_name,
-            &snap.system_prompt,
-            false,
-            snap.privacy_level,
+            source_set_id,
+            source.version,
+            &snap,
             key,
+            None,
         )?;
-        snap.version = summary.version;
-        let (v, committed) = self
-            .store
-            .commit_snapshot(&user, summary.version, snap, key)?;
-        let final_summary = SetSummary {
-            set_id: new_id,
-            version: v,
-            display_name: committed.as_snapshot().display_name.clone(),
-            updated_at: summary.updated_at,
-            is_default: false,
-            privacy_level: source.privacy_level,
-        };
-        self.remember(&user, committed);
-        self.cache.put_summary(&user, &final_summary);
-        Ok(final_summary)
+        self.remember(&user, LogicalSnapshot::from_normalized(snap));
+        self.cache.put_summary(&user, &summary);
+        Ok(summary)
     }
 
     fn build_fork_snapshot(
@@ -759,7 +747,8 @@ impl HistoryService {
             }
             return Ok(receipt);
         }
-        let source = self.load(&user, source_id, key)?;
+        let logical = self.load_snapshot_cached(&user, source_id, key)?;
+        let source = logical.as_snapshot();
         let rejection = if expected.is_some_and(|expected| source.version != expected) {
             Some((409, Self::version_conflict_body(source_id, source.version)))
         } else if pair_index >= source.history.len() {
@@ -781,7 +770,7 @@ impl HistoryService {
             self.store.record_fork_rejection(&user, key, &receipt)?;
             return Ok(receipt);
         }
-        let snap = match self.build_fork_snapshot(&user, &source, pair_index, new_name, key) {
+        let snap = match self.build_fork_snapshot(&user, source, pair_index, new_name, key) {
             Ok(snapshot) => snapshot,
             Err(HistoryError::InvalidInput(message)) => {
                 let body = serde_json::json!({"status":"error","error":message});
@@ -799,11 +788,15 @@ impl HistoryService {
         };
         let body = serde_json::to_vec(&serde_json::json!({"status":"success", "set_id":snap.set_id.to_string(), "name":snap.display_name, "version":snap.version.get(), "privacy_level":snap.privacy_level})).map_err(|_| HistoryError::Internal)?;
         let receipt = Receipt::new(request, ReceiptOutcome::Applied, 200, body, now);
-        let summary = self
-            .store
-            .create_fork_snapshot(&user, &snap, key, &receipt)?;
-        let committed = self.load_snapshot_cached(&user, snap.set_id, key)?;
-        self.remember(&user, committed);
+        let summary = self.store.create_chunked_fork(
+            &user,
+            source_id,
+            source.version,
+            &snap,
+            key,
+            Some(&receipt),
+        )?;
+        self.remember(&user, LogicalSnapshot::from_normalized(snap));
         self.cache.put_summary(&user, &summary);
         Ok(receipt)
     }
@@ -2256,5 +2249,60 @@ mod tests {
             .fork_set("forker", created.set_id, None, 9, None, &key)
             .unwrap_err();
         assert!(matches!(err, HistoryError::InvalidInput(_)));
+    }
+
+    /// A fork is written chunked with the source's sealed image and thumb
+    /// payloads copied, so it never inlines full-res images into a whole-set
+    /// blob that the next load must re-decode and re-thumbnail.
+    #[test]
+    fn fork_writes_chunked_set_and_copies_image_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let created = svc.create_set("forker", "pics", &key).unwrap();
+        let jpeg = crate::chat_images::fixture_jpeg_data_url(64, 64);
+        let mut v = svc
+            .append_pair(
+                "forker",
+                created.set_id,
+                created.version,
+                &format!("look\n[IMAGE:{jpeg}]"),
+                "a1",
+                &key,
+            )
+            .unwrap();
+        v = svc
+            .append_pair("forker", created.set_id, v, "two", "a2", &key)
+            .unwrap();
+        let source = svc.load("forker", created.set_id, &key).unwrap();
+        let source_thumb = svc.load_thumb("forker", created.set_id, 0, 0, &key).unwrap();
+
+        let plain = svc
+            .fork_set("forker", created.set_id, Some(v), 0, None, &key)
+            .unwrap();
+        let request = OperationRequest::new(
+            crate::operation_receipt::OperationId::parse("fork-operation-0001").unwrap(),
+            "/fork_set",
+            &serde_json::json!({"pair_index": 1}),
+        );
+        let receipt = svc
+            .fork_operation("forker", created.set_id, Some(v), 1, None, &key, &request)
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&receipt.body).unwrap();
+        let op_id = SetId::parse(body["set_id"].as_str().unwrap()).unwrap();
+
+        for (fork_id, pairs) in [(plain.set_id, 1), (op_id, 2)] {
+            let meta = svc.store.load_meta("forker", fork_id).unwrap();
+            assert!(meta.blob_format.is_chunked(), "fork must be stored chunked");
+            assert_eq!(meta.version, SetVersion(2));
+            let fork = svc.load("forker", fork_id, &key).unwrap();
+            assert_eq!(fork.history, source.history[..pairs].to_vec());
+            assert_eq!(
+                svc.load_thumb("forker", fork_id, 0, 0, &key).unwrap(),
+                source_thumb
+            );
+        }
+        let after = svc.load("forker", created.set_id, &key).unwrap();
+        assert_eq!(after.history, source.history);
     }
 }
