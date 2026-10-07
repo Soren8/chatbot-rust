@@ -4,6 +4,7 @@
 //! never in store keys or plain metadata used for indexing.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -376,6 +377,20 @@ pub struct HeaderV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ManifestV1 {
     pub pairs: Vec<ManifestPair>,
+    /// Set whose AAD sealed each pair/image blob copied verbatim from another
+    /// set (fork), keyed by pair/image uuid. Absent: sealed under this set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sealed_in: BTreeMap<Uuid, SetId>,
+    /// Set whose AAD sealed a header copied verbatim from another set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_sealed_in: Option<SetId>,
+}
+
+impl ManifestV1 {
+    /// AAD set id for the blob `id` stored under `own`.
+    pub fn sealed_in(&self, own: SetId, id: Uuid) -> SetId {
+        self.sealed_in.get(&id).copied().unwrap_or(own)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -27,6 +27,19 @@ pub const IMAGE_BLOBS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new(
 /// chunk_key(set_id, image_id) → sealed ThumbPayloadV1 (binary plaintext).
 pub const THUMB_BLOBS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("thumb_blobs");
 
+/// shared_key(kind, origin set, blob uuid, generation) → number of other sets
+/// whose manifest points at that sealed pair/image blob (copy-on-write forks).
+pub const BLOB_REFS: TableDefinition<'_, &[u8], u64> = TableDefinition::new("blob_refs");
+
+/// holder set_id || shared_key → (): the shared blobs one set points at, so
+/// deleting it releases them without opening its manifest.
+pub const HELD_REFS: TableDefinition<'_, &[u8], ()> = TableDefinition::new("held_refs");
+
+/// shared_key → ciphertext its origin overwrote or deleted while another set
+/// still pointed at it. Removed when the last reference is released.
+pub const PRESERVED_BLOBS: TableDefinition<'_, &[u8], &[u8]> =
+    TableDefinition::new("preserved_blobs");
+
 /// set_id (16 bytes) → sealed display name (no history / memory / prompt).
 ///
 /// Separate from `SETS_META` (plaintext structure) and `SETS_BLOB` (full snapshot)

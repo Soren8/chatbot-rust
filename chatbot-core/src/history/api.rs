@@ -15,7 +15,7 @@ use tracing::error;
 use super::cache::SetCache;
 use super::migration;
 use super::ops::{self, OpsError};
-use super::store::{RedbHistoryStore, StoreError};
+use super::store::{ForkSpec, RedbHistoryStore, StoreError};
 use super::types::{ImageId, LogicalSnapshot, PrepareCapture, SetId, SetSnapshot, SetSummary, SetVersion};
 use crate::chat_images::{collect_image_refs, encode_data_url, materialize_full, ImageFidelity};
 use crate::config::app_config;
@@ -24,6 +24,14 @@ use crate::enc_key::EncryptionKey;
 use crate::operation_receipt::{
     OperationRequest, Receipt, ReceiptClock, ReceiptOutcome, SystemReceiptClock,
 };
+
+/// Source facts read for a fork.
+struct ForkSource {
+    set_id: SetId,
+    version: SetVersion,
+    pair_count: usize,
+    summary: SetSummary,
+}
 
 /// Serializes create/rename uniqueness checks per user (names live only in ciphertext).
 fn name_mutation_locks() -> &'static DashMap<String, Mutex<()>> {
@@ -613,9 +621,7 @@ impl HistoryService {
     ) -> Result<SetSummary, HistoryError> {
         let user = normalise_user(user)?;
         self.ensure_migrated(&user, key)?;
-        // Logical (image-ref) shape: the store copies sealed image payloads.
-        let logical = self.load_snapshot_cached(&user, source_set_id, key)?;
-        let source = logical.as_snapshot();
+        let source = self.fork_source(&user, source_set_id, key)?;
         if let Some(exp) = expected {
             if source.version != exp {
                 return Err(HistoryError::Conflict {
@@ -623,7 +629,7 @@ impl HistoryService {
                 });
             }
         }
-        if source.history.is_empty() || up_to_pair_index >= source.history.len() {
+        if up_to_pair_index >= source.pair_count {
             return Err(HistoryError::InvalidInput("pair_index out of range"));
         }
 
@@ -634,31 +640,55 @@ impl HistoryService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        let snap = self.build_fork_snapshot(&user, source, up_to_pair_index, new_name, key)?;
+        let name = self.fork_name(&user, &source.summary.display_name, new_name, key)?;
+        let spec = ForkSpec {
+            set_id: SetId::new(),
+            version: SetVersion(2),
+            display_name: &name,
+            privacy_level: source.summary.privacy_level,
+        };
         let summary = self.store.create_chunked_fork(
             &user,
             source_set_id,
             source.version,
-            &snap,
+            up_to_pair_index + 1,
+            &spec,
             key,
             None,
         )?;
-        self.remember(&user, LogicalSnapshot::from_normalized(snap));
-        self.cache.put_summary(&user, &summary);
+        self.remember_fork(&user, &source, up_to_pair_index + 1, &summary);
         Ok(summary)
     }
 
-    fn build_fork_snapshot(
+    /// What a fork needs from its source: meta, name and policy only. No
+    /// history payload is opened.
+    fn fork_source(
         &self,
         user: &str,
-        source: &SetSnapshot,
-        pair_index: usize,
+        source_id: SetId,
+        key: &EncryptionKey,
+    ) -> Result<ForkSource, HistoryError> {
+        self.ensure_chunked(user, source_id, key)?;
+        let meta = self.store.load_meta(user, source_id)?;
+        let summary = self
+            .summary_of(user, source_id, None, key)?
+            .ok_or(HistoryError::Forbidden)?;
+        Ok(ForkSource {
+            set_id: source_id,
+            version: meta.version,
+            pair_count: meta.pair_count.unwrap_or(0) as usize,
+            summary,
+        })
+    }
+
+    /// Requested or `<source> - branch` name, deduped among the user's sets.
+    fn fork_name(
+        &self,
+        user: &str,
+        source_name: &str,
         new_name: Option<&str>,
         key: &EncryptionKey,
-    ) -> Result<SetSnapshot, HistoryError> {
-        if pair_index >= source.history.len() {
-            return Err(HistoryError::InvalidInput("pair_index out of range"));
-        }
+    ) -> Result<String, HistoryError> {
         let base = match new_name.map(str::trim).filter(|name| !name.is_empty()) {
             Some(name) => {
                 if name.eq_ignore_ascii_case("default") {
@@ -669,27 +699,39 @@ impl HistoryService {
                 }
                 name.to_owned()
             }
-            None => ops::branch_name_for(&source.display_name),
+            None => ops::branch_name_for(source_name),
         };
         let existing = self.list_sets(user, key)?;
-        let name = ops::dedup_name(&base, |name| {
+        Ok(ops::dedup_name(&base, |name| {
             existing.iter().any(|set| set.display_name == name)
-        });
-        let history = source.history[..=pair_index].to_vec();
-        let pair_ids = (0..history.len())
-            .map(|_| super::types::PairId::new())
-            .collect();
-        Ok(SetSnapshot {
-            set_id: SetId::new(),
-            version: SetVersion(2),
-            display_name: name,
-            memory: source.memory.clone(),
-            system_prompt: source.system_prompt.clone(),
-            history,
-            pair_ids,
-            is_default: false,
-            privacy_level: source.privacy_level,
-        })
+        }))
+    }
+
+    /// Cache the fork's logical shape when the source's is already cached.
+    fn remember_fork(&self, user: &str, source: &ForkSource, pair_count: usize, summary: &SetSummary) {
+        if let Some(cached) = self
+            .cache
+            .get_snapshot_if_version(user, source.set_id, source.version)
+        {
+            let src = cached.as_snapshot();
+            if src.history.len() >= pair_count && src.pair_ids.len() >= pair_count {
+                self.remember(
+                    user,
+                    LogicalSnapshot::from_normalized(SetSnapshot {
+                        set_id: summary.set_id,
+                        version: summary.version,
+                        display_name: summary.display_name.clone(),
+                        memory: src.memory.clone(),
+                        system_prompt: src.system_prompt.clone(),
+                        history: src.history[..pair_count].to_vec(),
+                        pair_ids: src.pair_ids[..pair_count].to_vec(),
+                        is_default: false,
+                        privacy_level: summary.privacy_level,
+                    }),
+                );
+            }
+        }
+        self.cache.put_summary(user, summary);
     }
 
     pub fn with_receipt_clock(mut self, clock: Arc<dyn ReceiptClock>) -> Self {
@@ -747,11 +789,10 @@ impl HistoryService {
             }
             return Ok(receipt);
         }
-        let logical = self.load_snapshot_cached(&user, source_id, key)?;
-        let source = logical.as_snapshot();
+        let source = self.fork_source(&user, source_id, key)?;
         let rejection = if expected.is_some_and(|expected| source.version != expected) {
             Some((409, Self::version_conflict_body(source_id, source.version)))
-        } else if pair_index >= source.history.len() {
+        } else if pair_index >= source.pair_count {
             Some((
                 404,
                 serde_json::json!({"status":"error","error":"pair_index out of range"}),
@@ -770,8 +811,8 @@ impl HistoryService {
             self.store.record_fork_rejection(&user, key, &receipt)?;
             return Ok(receipt);
         }
-        let snap = match self.build_fork_snapshot(&user, source, pair_index, new_name, key) {
-            Ok(snapshot) => snapshot,
+        let name = match self.fork_name(&user, &source.summary.display_name, new_name, key) {
+            Ok(name) => name,
             Err(HistoryError::InvalidInput(message)) => {
                 let body = serde_json::json!({"status":"error","error":message});
                 let receipt = Receipt::new(
@@ -786,18 +827,24 @@ impl HistoryService {
             }
             Err(error) => return Err(error),
         };
-        let body = serde_json::to_vec(&serde_json::json!({"status":"success", "set_id":snap.set_id.to_string(), "name":snap.display_name, "version":snap.version.get(), "privacy_level":snap.privacy_level})).map_err(|_| HistoryError::Internal)?;
+        let spec = ForkSpec {
+            set_id: SetId::new(),
+            version: SetVersion(2),
+            display_name: &name,
+            privacy_level: source.summary.privacy_level,
+        };
+        let body = serde_json::to_vec(&serde_json::json!({"status":"success", "set_id":spec.set_id.to_string(), "name":spec.display_name, "version":spec.version.get(), "privacy_level":spec.privacy_level})).map_err(|_| HistoryError::Internal)?;
         let receipt = Receipt::new(request, ReceiptOutcome::Applied, 200, body, now);
         let summary = self.store.create_chunked_fork(
             &user,
             source_id,
             source.version,
-            &snap,
+            pair_index + 1,
+            &spec,
             key,
             Some(&receipt),
         )?;
-        self.remember(&user, LogicalSnapshot::from_normalized(snap));
-        self.cache.put_summary(&user, &summary);
+        self.remember_fork(&user, &source, pair_index + 1, &summary);
         Ok(receipt)
     }
 
@@ -2305,4 +2352,112 @@ mod tests {
         let after = svc.load("forker", created.set_id, &key).unwrap();
         assert_eq!(after.history, source.history);
     }
+
+    fn chat_with_image(svc: &HistoryService, key: &EncryptionKey) -> (SetId, SetVersion) {
+        let created = svc.create_set("forker", "pics", key).unwrap();
+        let jpeg = crate::chat_images::fixture_jpeg_data_url(64, 64);
+        let v = svc
+            .append_pair(
+                "forker",
+                created.set_id,
+                created.version,
+                &format!("look\n[IMAGE:{jpeg}]"),
+                "a1",
+                key,
+            )
+            .unwrap();
+        let v = svc
+            .append_pair("forker", created.set_id, v, "two", "a2", key)
+            .unwrap();
+        (created.set_id, v)
+    }
+
+    fn set_assistant(
+        svc: &HistoryService,
+        set_id: SetId,
+        expected: SetVersion,
+        pair_index: usize,
+        text: &str,
+        key: &EncryptionKey,
+    ) -> SetVersion {
+        svc.mutate_content("forker", set_id, expected, key, |snap| {
+            let mut snap = Arc::unwrap_or_clone(snap).into_snapshot();
+            snap.history[pair_index].1 = text.to_owned();
+            Ok(snap)
+        })
+        .unwrap()
+    }
+
+    /// Branching is copy-on-write: the fork points at the source's sealed
+    /// blobs, so it opens, copies and seals no pair, image or thumb.
+    #[test]
+    fn fork_shares_source_blobs_without_opening_or_copying() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let (source_id, v) = chat_with_image(&svc, &key);
+        let source = svc.store.load_logical("forker", source_id, &key).unwrap();
+        let image = svc.load_image("forker", source_id, 0, 0, &key).unwrap();
+        let thumb = svc.load_thumb("forker", source_id, 0, 0, &key).unwrap();
+        let rows = svc.store.test_blob_rows().unwrap();
+
+        crate::history::cost::take_blob_opens();
+        let fork = svc
+            .fork_set("forker", source_id, Some(v), 1, None, &key)
+            .unwrap();
+        assert_eq!(
+            crate::history::cost::take_blob_opens(),
+            crate::history::cost::BlobOpens::default(),
+            "fork must not open history blobs"
+        );
+        let after = svc.store.test_blob_rows().unwrap();
+        assert_eq!(after[..4], rows[..4], "fork must not copy history blobs");
+
+        let forked = svc.store.load_logical("forker", fork.set_id, &key).unwrap();
+        assert_eq!(forked.as_snapshot().history, source.as_snapshot().history);
+        assert_eq!(forked.as_snapshot().memory, source.as_snapshot().memory);
+        assert_eq!(svc.load_image("forker", fork.set_id, 0, 0, &key).unwrap(), image);
+        assert_eq!(svc.load_thumb("forker", fork.set_id, 0, 0, &key).unwrap(), thumb);
+    }
+
+    /// Edits on either side stay on that side, and a fork outlives the
+    /// source it shares blobs with.
+    #[test]
+    fn fork_and_source_diverge_and_fork_survives_source_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = HistoryService::open_ephemeral(dir.path().join("h.redb")).unwrap();
+        let key = key();
+        let (source_id, v) = chat_with_image(&svc, &key);
+        let original = svc.store.load_logical("forker", source_id, &key).unwrap();
+        let original = original.as_snapshot().history.clone();
+        let image = svc.load_image("forker", source_id, 0, 0, &key).unwrap();
+        let thumb = svc.load_thumb("forker", source_id, 0, 0, &key).unwrap();
+        let fork = svc
+            .fork_set("forker", source_id, Some(v), 1, None, &key)
+            .unwrap();
+
+        // Source overwrites a shared pair and drops another.
+        let v = set_assistant(&svc, source_id, v, 0, "a1 edited", &key);
+        svc.delete_pair("forker", source_id, v, 1, "two", &key).unwrap();
+        let forked = svc.store.load_logical("forker", fork.set_id, &key).unwrap();
+        assert_eq!(forked.as_snapshot().history, original);
+
+        // Fork edits stay out of the source.
+        let fv = set_assistant(&svc, fork.set_id, fork.version, 1, "a2 forked", &key);
+        let source = svc.store.load_logical("forker", source_id, &key).unwrap();
+        assert_eq!(source.as_snapshot().history.len(), 1);
+        assert_eq!(source.as_snapshot().history[0].1, "a1 edited");
+
+        let meta = svc.store.load_meta("forker", source_id).unwrap();
+        svc.delete_set("forker", source_id, meta.version, &key).unwrap();
+        let forked = svc.store.load_logical("forker", fork.set_id, &key).unwrap();
+        assert_eq!(forked.as_snapshot().history[0], original[0]);
+        assert_eq!(forked.as_snapshot().history[1].1, "a2 forked");
+        assert_eq!(svc.load_image("forker", fork.set_id, 0, 0, &key).unwrap(), image);
+        assert_eq!(svc.load_thumb("forker", fork.set_id, 0, 0, &key).unwrap(), thumb);
+
+        svc.delete_set("forker", fork.set_id, fv, &key).unwrap();
+        assert_eq!(svc.store.test_blob_rows().unwrap(), [0; 5]);
+    }
+
 }

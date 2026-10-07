@@ -251,8 +251,8 @@ fn fork_with_image_preserves_prefix_and_source() {
     let source_cold = cold_svc.load("snap-user", created.set_id, &key).unwrap();
     assert_eq!(source_cold.history.len(), 2);
 
-    // Fork image bytes equal the source prefix bytes; fork pair id is fresh
-    // (bound to the new set, absent from the source id list).
+    // Fork image bytes equal the source prefix bytes; the fork shares the
+    // source's sealed pair (copy-on-write), so it keeps the source pair id.
     let (_, fork_bytes) = decoded_first_image_bytes(&fork_cold.history[0].0);
     let (_, source_bytes) = decoded_first_image_bytes(&source_cold.history[0].0);
     assert_eq!(fork_bytes, source_bytes);
@@ -267,9 +267,10 @@ fn fork_with_image_preserves_prefix_and_source() {
         .load_logical("snap-user", created.set_id, &key)
         .unwrap();
     assert_eq!(source_logical_cold.pair_ids.len(), 2);
-    assert!(!source_logical_cold
-        .pair_ids
-        .contains(&fork_logical_cold.pair_ids[0]));
+    assert_eq!(
+        fork_logical_cold.pair_ids[0],
+        source_logical_cold.pair_ids[0]
+    );
 }
 
 /// Undecodable `[IMAGE:...]` sequences are opaque text by design: the commit

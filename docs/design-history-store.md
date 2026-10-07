@@ -509,7 +509,13 @@ The first authenticated payload operation on a format-0/1 set takes its per-set 
 
 Chunked `load_page` opens header, manifest, and only the requested pair range. `limit`/`before` use the shared history-page rules (default 40, maximum 200); `history_total` comes from the manifest. With thumbnails enabled, pair images are deferred for the client’s thumbnail requests; otherwise full images for the page are materialized. `load_pair` opens one pair and its image payloads; `/history_pair` can also request an individual image. `/history_image/{set}/{version}/{pair}/{image}` loads one image, or `?size=thumb` loads the stored thumbnail (falling back to resizing the full image if the thumb row is absent). The URL version is a browser cache key, not CAS. Materialization replaces missing image references with `[IMAGE:unavailable]`, never exposing internal `img:` references on the wire. Compatibility `load()` materializes the full history; guests remain RAM-only.
 
-Pair removal and replacement delete media rows referenced by the prior manifest; set deletion attempts a set-prefix range cleanup after removing the set metadata. There is no separate background orphan collector, and the post-delete range cleanup is best-effort.
+Pair removal and replacement delete the set's own media rows referenced by the prior manifest; set deletion attempts a set-prefix range cleanup after removing the set metadata. There is no separate background orphan collector, and the post-delete range cleanup is best-effort.
+
+### Copy-on-write forks
+
+`create_chunked_fork` writes only the fork's meta, manifest, name, policy, `USER_SETS` row and optional receipt, in one write transaction that also checks the source version. The header ciphertext is copied verbatim. Pair, image and thumb blobs are shared: no history payload is opened, copied or sealed, and the fork keeps the source's pair and image ids, generations and header generation. The manifest's `sealed_in` map records, per pair/image UUID, the origin set whose chunk key holds the blob and whose id is in its AAD; `header_sealed_in` does the same for a copied header. A fork of a fork points at the original origin.
+
+`BLOB_REFS` counts, per `(kind, origin, uuid, generation)`, the other sets pointing at a blob; `HELD_REFS` lists each holder's references so set deletion can release them without the key. Before a set overwrites or deletes one of its own blobs that is still referenced, the ciphertext moves to `PRESERVED_BLOBS` under that key; readers of a shared blob check `PRESERVED_BLOBS` first, then the origin's live row. Commits seal only changed pairs and new images under the committing set and drop those ids from `sealed_in`; references a commit no longer needs are released, and the last release removes the preserved copy. The fork relationship (which set's blobs another set references) is plaintext structure, like the chunk keys themselves.
 
 ## Versioning & schema evolution
 

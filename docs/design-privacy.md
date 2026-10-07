@@ -83,7 +83,7 @@ The server validates the presented key against a per-user **key verifier** (HMAC
 
 ### In-Memory Plaintext Handling & RAM Lifecycle
 
-This is not end-to-end encryption: an LLM must read plaintext, so the server handles plaintext while serving a request. Within that constraint, this design is as close to E2E encryption as this stack allows. Durable history is stored in `redb` as AES-256-GCM ciphertext, with keys derived from the user's key via HKDF and AAD binding user, set, kind and identity; set names are sealed too.
+This is not end-to-end encryption: an LLM must read plaintext, so the server handles plaintext while serving a request. Within that constraint, this design is as close to E2E encryption as this stack allows. Durable history is stored in `redb` as AES-256-GCM ciphertext, with keys derived from the user's key via HKDF and AAD binding user, set, kind and identity (a forked chat shares blobs still bound to the set that sealed them); set names are sealed too.
 
 The server stores no standing data key. The data key is client-side (HttpOnly `enc_key` / `enc_key-{username}` cookies; native app via the OS secure-key plugin), arriving only with requests from an active session. At password login the client derives it from the password and sends it once; only when Web Crypto is unavailable (a non-native, insecure origin) does the server derive it. The server then sets the HttpOnly cookie. The server validates it per request against the HMAC-SHA256 verifier and zeroizes it after the request. Plaintext necessarily exists in server RAM during request processing, including prompt assembly and LLM calls.
 

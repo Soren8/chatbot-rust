@@ -608,7 +608,7 @@ mod tests {
         let key = test_key();
         let set_id = SetId::new();
         let version = SetVersion((1u64 << 32) | 1);
-        let manifest = ManifestV1 { pairs: vec![] };
+        let manifest = ManifestV1::default();
         let blob = seal_manifest_v1("alice", set_id, version, &manifest, &key).unwrap();
         let opened = open_manifest_v1("alice", set_id, version, &blob, &key).unwrap();
         assert_eq!(opened, manifest);

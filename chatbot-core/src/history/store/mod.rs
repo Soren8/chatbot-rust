@@ -2,7 +2,10 @@
 
 mod chunks;
 mod keys;
+mod shared;
 mod tables;
+
+pub use chunks::ForkSpec;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -228,6 +231,9 @@ impl RedbHistoryStore {
             let _ = txn.open_table(tables::PAIR_BLOBS)?;
             let _ = txn.open_table(tables::IMAGE_BLOBS)?;
             let _ = txn.open_table(tables::THUMB_BLOBS)?;
+            let _ = txn.open_table(tables::BLOB_REFS)?;
+            let _ = txn.open_table(tables::HELD_REFS)?;
+            let _ = txn.open_table(tables::PRESERVED_BLOBS)?;
         }
         txn.commit()?;
         Ok(())
@@ -906,6 +912,20 @@ impl RedbHistoryStore {
         pairs.sort();
         images.sort();
         Ok((pairs, images))
+    }
+
+    /// Row counts of pair, image, thumb, preserved-blob and blob-ref tables.
+    #[cfg(test)]
+    pub fn test_blob_rows(&self) -> Result<[u64; 5], StoreError> {
+        use redb::ReadableTableMetadata;
+        let txn = self.db.begin_read()?;
+        Ok([
+            txn.open_table(tables::PAIR_BLOBS)?.len()?,
+            txn.open_table(tables::IMAGE_BLOBS)?.len()?,
+            txn.open_table(tables::THUMB_BLOBS)?.len()?,
+            txn.open_table(tables::PRESERVED_BLOBS)?.len()?,
+            txn.open_table(tables::BLOB_REFS)?.len()?,
+        ])
     }
 
     #[cfg(test)]
