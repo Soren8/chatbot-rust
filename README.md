@@ -50,6 +50,7 @@ Not a single line of code in this repository was written manually. Human work in
 ## Configuration
 - Provider and environment settings live in `.config.yml`; secrets should be injected through environment variables where possible.
 - Environment variables from `.env`/`.env.example` are consumed by Docker Compose for development defaults.
+- Every `.env` key is passed to the webserver container, so a new OpenAI-compatible provider needs only a key in `.env` (e.g. `LITHOS_API_KEY=...`) and a `.config.yml` entry with `api_key: "${LITHOS_API_KEY}"`.
 
 ## Documentation
 - Overview and roadmap: `docs/design.md`

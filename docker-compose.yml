@@ -52,6 +52,11 @@ services:
       cache_to:
         - type=local,dest=./temp/.docker/webserver,mode=max
     restart: always
+    # Every .env key reaches the app so .config.yml can reference any ${VAR}
+    # (e.g. a new provider's api_key) without a compose change.
+    env_file:
+      - path: .env
+        required: false
     depends_on:
       dns:
         condition: service_healthy

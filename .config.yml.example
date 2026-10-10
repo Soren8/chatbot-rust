@@ -71,6 +71,15 @@ llms:
     # rate_limit_retries: 5          # extra attempts after a 429 (0 disables retrying)
     # rate_limit_max_wait_secs: 30.0 # cap on honoring the upstream Retry-After hint
 
+  # Any OpenAI-compatible provider: add its key to .env and reference it here.
+  # - provider_name: "Lithos"
+  #   type: "openai"
+  #   base_url: "https://api.example.com/v1"
+  #   api_key: "${LITHOS_API_KEY}"
+  #   model_name: "model-id"
+  #   tier: "premium"
+  #   privacy_level: non_private
+
   - provider_name: "Grok (XAI)"
     type: "xai"
     api_key: "${XAI_API_KEY}"
