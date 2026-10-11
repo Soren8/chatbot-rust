@@ -908,8 +908,13 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-voice_service_host: "{}"
-voice_service_port: {}
+tts:
+  base_url: "http://{0}:{1}/v1"
+  voice: af_heart
+  health_url: "http://{0}:{1}/health"
+stt:
+  base_url: "http://{0}:{1}/v1"
+  health_url: "http://{0}:{1}/health"
 "#,
         addr.ip(),
         addr.port()

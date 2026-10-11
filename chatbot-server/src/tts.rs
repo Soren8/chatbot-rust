@@ -277,10 +277,7 @@ fn capture_tts_destination(
     let policy = services.tts_policy();
     let synthesis = policy.synthesis();
     TtsDestination {
-        provider: synthesis.provider,
-        voice: synthesis.voice,
-        voice_service_base_url: synthesis.voice_service_base_url,
-        tts_base_url: policy.tts_base_url(),
+        synthesis,
         codec: policy.codec(),
         required,
     }
@@ -294,10 +291,7 @@ fn current_tts_destination(services: &AppServices) -> TtsDestination {
 }
 
 fn tts_destination_unchanged(captured: &TtsDestination, current: &TtsDestination) -> bool {
-    captured.provider == current.provider
-        && captured.voice == current.voice
-        && captured.voice_service_base_url == current.voice_service_base_url
-        && captured.tts_base_url == current.tts_base_url
+    captured.synthesis == current.synthesis
         && captured.codec == current.codec
 }
 
@@ -389,10 +383,7 @@ pub async fn handle_tts_stream(
     let owned_policy = crate::policy::TtsPolicy::new(
         services.tts_policy().access(),
         admitted_destination.codec.clone(),
-        admitted_destination.provider.clone(),
-        admitted_destination.voice.clone(),
-        admitted_destination.tts_base_url.clone(),
-        admitted_destination.voice_service_base_url.clone(),
+        admitted_destination.synthesis.clone(),
     );
     let result = backend::synthesize_pcm(cleaned.clone(), &owned_policy).await;
     match result {

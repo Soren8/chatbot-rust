@@ -12,10 +12,3 @@ services:
       LOG_FORMAT: json
       LOG_ANSI: "false"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    depends_on:
-      voice-service:
-        condition: service_healthy
-
-  voice-service:
-    environment:
-      LOG_LEVEL: ${LOG_LEVEL:-info}

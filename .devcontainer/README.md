@@ -32,7 +32,7 @@ alias agent-dev='$PWD/.devcontainer/agent-container.sh'  # run from repo root
 # then: agent-dev up && agent-dev shell
 ```
 
-**Full stack (webserver / voice-service):** only on the **host**, with real `.env` — not from the agent container. Agents must not run live compose up/build; ask the user to redeploy when needed. See root `AGENTS.md`.
+**Full stack (webserver):** only on the **host**, with real `.env` — not from the agent container. Agents must not run live compose up/build; ask the user to redeploy when needed. See root `AGENTS.md`.
 
 ## Cursor / VS Code (optional)
 
@@ -54,7 +54,7 @@ Agents using **Read/grep** never see real secrets. **Compose** invoked from `/wo
 
 - **Host socket** via [docker-outside-of-docker](https://github.com/devcontainers/features/tree/main/src/docker-outside-of-docker) (`enableNonRootDocker` so user `agent` can run `docker`).
 - **`tests` service** — does not depend on workspace `.env` (keys are set in `docker-compose.yml`).
-- **GPU / voice-service** — still runs on the host daemon; no extra GPU wiring in the devcontainer.
+- **GPU voice** — the standalone chatbot-voice repo runs on the host daemon; no extra GPU wiring in the devcontainer.
 
 ### Running the integration suite inside the agent container
 

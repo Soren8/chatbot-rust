@@ -53,38 +53,21 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
 tts_codec: wav
-voice_service_host: "{voice_host}"
-voice_service_port: {voice_port}
+tts:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  voice: af_heart
+  health_url: "http://{voice_host}:{voice_port}/health"
+stt:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  health_url: "http://{voice_host}:{voice_port}/health"
 "#
     )
-}
-
-fn fish_wav_config() -> &'static str {
-    r#"
-llms:
-  - provider_name: "default"
-    type: "openai"
-    model_name: "gpt-test"
-    base_url: "https://api.openai.com/v1"
-    api_key: "${OPENAI_API_KEY}"
-    context_size: 4096
-tts_provider: fish
-tts_codec: wav
-"#
 }
 
 fn begin_kokoro_wav_workspace(voice_host: &str, voice_port: u16) -> TestWorkspace {
     env::set_var("SECRET_KEY", "integration_test_secret");
     TestWorkspace::with_config(&kokoro_wav_config(voice_host, voice_port))
-}
-
-fn begin_fish_wav_workspace(tts_host: &str, tts_port: u16) -> TestWorkspace {
-    env::set_var("SECRET_KEY", "integration_test_secret");
-    env::set_var("TTS_HOST", tts_host);
-    env::set_var("TTS_PORT", tts_port.to_string());
-    TestWorkspace::with_config(fish_wav_config())
 }
 
 async fn guest_session(app: &axum::Router) -> (String, String) {
@@ -210,14 +193,14 @@ async fn spawn_voice_stub(router: Router) -> (SocketAddr, oneshot::Sender<()>, J
 }
 
 #[tokio::test]
-async fn fish_wav_preserves_backend_rate_bytes_and_replays_from_cache() {
+async fn provider_declared_rate_is_preserved_and_replays_from_cache() {
     common::init_tracing();
     let _lock = tts_boundary_lock();
 
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
     let stub_wav = Arc::new(ramp_wav(16_000, 960));
     let router = Router::new().route(
-        "/v1/tts",
+        "/v1/audio/speech",
         post({
             let captured = captured.clone();
             let stub_wav = stub_wav.clone();
@@ -228,8 +211,14 @@ async fn fish_wav_preserves_backend_rate_bytes_and_replays_from_cache() {
                     captured.lock().await.push(payload);
                     (
                         StatusCode::OK,
-                        [(header::CONTENT_TYPE, "audio/wav")],
-                        stub_wav.as_slice().to_vec(),
+                        [
+                            (header::CONTENT_TYPE, "application/octet-stream"),
+                            (
+                                header::HeaderName::from_static("x-sample-rate"),
+                                "16000",
+                            ),
+                        ],
+                        stub_wav[44..].to_vec(),
                     )
                 }
             }
@@ -237,11 +226,11 @@ async fn fish_wav_preserves_backend_rate_bytes_and_replays_from_cache() {
     );
 
     let (addr, shutdown, handle) = spawn_voice_stub(router).await;
-    let _workspace = begin_fish_wav_workspace(&addr.ip().to_string(), addr.port());
+    let _workspace = begin_kokoro_wav_workspace(&addr.ip().to_string(), addr.port());
     let app = build_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
-    let token = post_tts_token(&app, &cookie, &csrf, "Hello Fish WAV").await;
+    let token = post_tts_token(&app, &cookie, &csrf, "Hello declared rate").await;
     let response = get_stream(&app, &token).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -265,10 +254,11 @@ async fn fish_wav_preserves_backend_rate_bytes_and_replays_from_cache() {
     assert_eq!(first_clip.len(), stub_wav.len());
     assert_eq!(&first_clip[0..4], b"RIFF");
     assert_eq!(wav_rate(&first_clip), 16_000);
+    // The 5 ms fade at 16 kHz spans 80 samples (160 bytes) at each edge.
     assert_eq!(
-        &first_clip[44..],
-        &stub_wav[44..],
-        "fish PCM must pass through unfaded, including edge samples"
+        &first_clip[44 + 160..first_clip.len() - 160],
+        &stub_wav[44 + 160..stub_wav.len() - 160],
+        "fade must leave the middle of the clip untouched"
     );
 
     let retry = get_stream(&app, &token).await;
@@ -280,10 +270,8 @@ async fn fish_wav_preserves_backend_rate_bytes_and_replays_from_cache() {
 
     let captured_payloads = captured.lock().await;
     assert_eq!(captured_payloads.len(), 1, "replay must not resynthesize");
-    assert_eq!(captured_payloads[0]["text"], "Hello Fish WAV");
-    assert_eq!(captured_payloads[0]["reference_id"], "default");
-    assert_eq!(captured_payloads[0]["format"], "wav");
-    assert_eq!(captured_payloads[0]["streaming"], false);
+    assert_eq!(captured_payloads[0]["input"], "Hello declared rate");
+    assert_eq!(captured_payloads[0]["response_format"], "pcm");
 
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");
@@ -304,7 +292,7 @@ async fn kokoro_wav_uses_voice_service_rate_with_edge_fade_and_replays() {
     );
     assert_ne!(&stub_pcm[0..2], &[0, 0], "ramp must start nonzero for the fade pin");
     let router = Router::new().route(
-        "/v1/tts/kokoro",
+        "/v1/audio/speech",
         post({
             let captured = captured.clone();
             let stub_pcm = stub_pcm.clone();
@@ -372,7 +360,7 @@ async fn kokoro_wav_uses_voice_service_rate_with_edge_fade_and_replays() {
 
     let captured_payloads = captured.lock().await;
     assert_eq!(captured_payloads.len(), 1, "replay must not resynthesize");
-    assert_eq!(captured_payloads[0]["text"], "Hello Kokoro WAV");
+    assert_eq!(captured_payloads[0]["input"], "Hello Kokoro WAV");
     assert_eq!(captured_payloads[0]["voice"], KOKORO_DEFAULT_VOICE);
 
     shutdown.send(()).ok();
@@ -388,7 +376,7 @@ async fn kokoro_wav_defaults_to_24k_without_sample_rate_header() {
     // is skipped and the backend bytes must pass through exactly.
     let stub_pcm = Arc::new(vec![3u8; 200]);
     let router = Router::new().route(
-        "/v1/tts/kokoro",
+        "/v1/audio/speech",
         post({
             let stub_pcm = stub_pcm.clone();
             move |Json(_payload): Json<Value>| {
@@ -429,12 +417,12 @@ async fn oversize_encoded_clip_is_rejected_but_token_stays_retryable() {
     common::init_tracing();
     let _lock = tts_boundary_lock();
 
-    // 8.4 MB of WAV encodes to 8.4 MB of wire WAV, over the 8 MB encoded
+    // 8.4 MB of PCM encodes to 8.4 MB of wire WAV, over the 8 MB encoded
     // cache cap. The token must stay usable so a retry can re-synthesize.
     let stub_wav = Arc::new(ramp_wav(16_000, 4_200_000));
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
     let router = Router::new().route(
-        "/v1/tts",
+        "/v1/audio/speech",
         post({
             let captured = captured.clone();
             let stub_wav = stub_wav.clone();
@@ -445,8 +433,14 @@ async fn oversize_encoded_clip_is_rejected_but_token_stays_retryable() {
                     captured.lock().await.push(payload);
                     (
                         StatusCode::OK,
-                        [(header::CONTENT_TYPE, "audio/wav")],
-                        stub_wav.as_slice().to_vec(),
+                        [
+                            (header::CONTENT_TYPE, "application/octet-stream"),
+                            (
+                                header::HeaderName::from_static("x-sample-rate"),
+                                "16000",
+                            ),
+                        ],
+                        stub_wav[44..].to_vec(),
                     )
                 }
             }
@@ -454,7 +448,7 @@ async fn oversize_encoded_clip_is_rejected_but_token_stays_retryable() {
     );
 
     let (addr, shutdown, handle) = spawn_voice_stub(router).await;
-    let _workspace = begin_fish_wav_workspace(&addr.ip().to_string(), addr.port());
+    let _workspace = begin_kokoro_wav_workspace(&addr.ip().to_string(), addr.port());
     let app = build_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 

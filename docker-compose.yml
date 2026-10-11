@@ -1,45 +1,6 @@
 name: chatbot
 
 services:
-  voice-service:
-    build:
-      context: ./chatbot-cuda
-    restart: always
-    depends_on:
-      dns:
-        condition: service_healthy
-    dns:
-      - ${DNS_ADDRESS:-172.29.0.53}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    volumes:
-      - ./chatbot-cuda/data:/app/data
-      # Persistent model cache — downloaded once on first startup, reused across rebuilds
-      - ./chatbot-cuda/model_cache:/app/model_cache
-      - type: bind
-        source: ./.config.yml
-        target: /app/.config.yml
-        read_only: true
-        bind:
-          create_host_path: false
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5100/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      # First-run model downloads can take 20–30 min on a slow connection.
-      # Warm starts (cache hit) are ready in ~60s.
-      start_period: 1800s
-    ports:
-      - "127.0.0.1:5100:5100"
-    environment:
-      NEMO_CACHE_DIR: /app/model_cache/nemo
-
   webserver:
     image: chatbot-rust
     build:

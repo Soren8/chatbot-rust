@@ -4,26 +4,41 @@ vars:
   LOCAL_HOST: localhost
   LOCAL_PORT: 11434
 
-# TTS / Voice configuration
-tts_provider: "kokoro"  # Options: kokoro, fish
-tts_voice: "bf_emma"   # Voice for Kokoro. Other options: af_heart, af_bella, am_adam, bm_george
+# Voice: any OpenAI-compatible audio API. Defaults (blocks omitted) target the
+# standalone chatbot-voice service at localhost:5100.
 # Wire codec for /tts_stream responses: opus (Ogg-Opus, ~11x smaller, default)
 # or wav (uncompressed PCM fallback for players without an Opus decoder).
 tts_codec: "opus"
-stt_enabled: true
-# Classification covers the complete configured processing path. Default is non_private.
-stt_privacy_level: non_private
-tts_privacy_level: non_private
 # Who may use POST /tts: anyone (guests OK), authenticated (logged-in only), premium.
 # Default is anyone — suitable for LAN / local-models deploys. Use authenticated or
 # premium on internet-facing hosts that pay for GPU voice.
 tts_access: anyone
-# Voice service connection (the vertically integrated chatbot-cuda container)
-voice_service_host: localhost
-voice_service_port: 5100
-# GPU device index (as shown by nvidia-smi) for the voice service.
-# Set to 0 for the first GPU, 1 for the second, etc.
-voice_gpu_device: 0
+tts:
+  type: openai
+  base_url: http://localhost:5100/v1     # POST {base_url}/audio/speech (pcm)
+  model_name: kokoro
+  voice: bf_emma                          # Kokoro: af_heart, af_bella, am_adam, bm_george
+  sample_rate: 24000                      # Used when the provider sends no X-Sample-Rate
+  health_url: http://localhost:5100/health  # Optional; probed by /health?deep=true
+  # api_key: '${VOICE_API_KEY}'           # Env reference only; plaintext is refused
+  # Classification covers the complete configured processing path. Default is non_private.
+  privacy_level: non_private
+stt:
+  type: openai
+  base_url: http://localhost:5100/v1     # POST {base_url}/audio/transcriptions
+  model_name: parakeet-tdt-0.6b-v2
+  health_url: http://localhost:5100/health
+  privacy_level: non_private
+# Hosted alternative (OpenRouter):
+# tts:
+#   base_url: https://openrouter.ai/api/v1
+#   api_key: '${OPENROUTER_API_KEY}'
+#   model_name: openai/gpt-4o-mini-tts
+#   voice: alloy
+# stt:
+#   base_url: https://openrouter.ai/api/v1
+#   api_key: '${OPENROUTER_API_KEY}'
+#   model_name: openai/whisper-large-v3-turbo
 
 # Search destinations are shared across LLMs; absent classifications default to non_private.
 search_providers:

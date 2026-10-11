@@ -1,9 +1,9 @@
 //! Live-config characterization for MOD-003 TTS/rate policy ownership.
 //!
-//! Given the global router, when `TTS_ACCESS` / `TTS_CODEC` / `TTS_PROVIDER` /
-//! `RATE_LIMIT_*` change mid-process, then the next request follows the new
-//! value with no router rebuild. Custom `tts_voice` reaches the Kokoro
-//! backend as-is; the global 429 shape carries the scope message plus
+//! Given the global router, when `TTS_ACCESS` / `TTS_CODEC` / the `tts:`
+//! block / `RATE_LIMIT_*` change mid-process, then the next request follows
+//! the new value with no router rebuild. A custom `tts.voice` reaches the
+//! speech backend as-is; the global 429 shape carries the scope message plus
 //! `retry_after` JSON and a `Retry-After` header.
 //!
 //! These tests pin the exact live-lookup timing the split owners
@@ -48,7 +48,7 @@ use chatbot_core::{config::TtsAccess, session_identity::HttpSessionStore};
 use chatbot_server::{
     build_router, build_router_with_services,
     identity::RequestIdentity,
-    policy::{RatePolicy, TtsPolicy},
+    policy::{RatePolicy, TtsPolicy, TtsSynthesis},
     resolve_static_root,
     services::AppServices,
 };
@@ -82,9 +82,6 @@ fn clear_policy_env() {
     for key in [
         "TTS_ACCESS",
         "TTS_CODEC",
-        "TTS_PROVIDER",
-        "TTS_HOST",
-        "TTS_PORT",
         "RATE_LIMIT_PER_USER_PER_MINUTE",
         "RATE_LIMIT_GLOBAL_PER_MINUTE",
     ] {
@@ -109,9 +106,13 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
-voice_service_host: "{voice_host}"
-voice_service_port: {voice_port}
+tts:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  voice: af_heart
+  health_url: "http://{voice_host}:{voice_port}/health"
+stt:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  health_url: "http://{voice_host}:{voice_port}/health"
 "#
     )
 }
@@ -126,10 +127,13 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
-tts_voice: {voice}
-voice_service_host: "{voice_host}"
-voice_service_port: {voice_port}
+tts:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  voice: {voice}
+  health_url: "http://{voice_host}:{voice_port}/health"
+stt:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  health_url: "http://{voice_host}:{voice_port}/health"
 "#
     )
 }
@@ -217,7 +221,7 @@ async fn post_client_logs(app: &Router, cookie: &str) -> axum::response::Respons
 
 fn kokoro_stub(captured: Arc<AsyncMutex<Vec<Value>>>, pcm: Arc<Vec<u8>>) -> Router {
     Router::new().route(
-        "/v1/tts/kokoro",
+        "/v1/audio/speech",
         post({
             let captured = captured.clone();
             let pcm = pcm.clone();
@@ -236,46 +240,6 @@ fn kokoro_stub(captured: Arc<AsyncMutex<Vec<Value>>>, pcm: Arc<Vec<u8>>) -> Rout
                             ),
                         ],
                         pcm.as_slice().to_vec(),
-                    )
-                }
-            }
-        }),
-    )
-}
-
-fn tiny_silence_wav(rate: u32, samples: u32) -> Vec<u8> {
-    let mut wav = Vec::with_capacity(44 + samples as usize * 2);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&((36 + samples * 2) as u32).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&rate.to_le_bytes());
-    wav.extend_from_slice(&(rate * 2).to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&(samples * 2).to_le_bytes());
-    wav.extend(std::iter::repeat(0).take(samples as usize * 2));
-    wav
-}
-
-fn fish_stub(captured: Arc<AsyncMutex<Vec<Value>>>, wav: Arc<Vec<u8>>) -> Router {
-    Router::new().route(
-        "/v1/tts",
-        post({
-            let captured = captured.clone();
-            let wav = wav.clone();
-            move |Json(payload): Json<Value>| {
-                let captured = captured.clone();
-                let wav = wav.clone();
-                async move {
-                    captured.lock().await.push(payload);
-                    (
-                        StatusCode::OK,
-                        [(header::CONTENT_TYPE, "audio/wav")],
-                        wav.as_slice().to_vec(),
                     )
                 }
             }
@@ -540,56 +504,60 @@ async fn custom_tts_voice_reaches_kokoro_backend() {
 }
 
 #[tokio::test]
-async fn live_tts_provider_flip_routes_to_other_backend_without_rebuild() {
+async fn live_tts_backend_flip_routes_to_other_backend_without_rebuild() {
     common::init_tracing();
     let _guard = lock_tests();
     env::set_var("SECRET_KEY", "integration_test_secret");
     clear_policy_env();
 
-    let kokoro_captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
-    let (kaddr, kshutdown, khandle) = spawn_stub(kokoro_stub(
-        kokoro_captured.clone(),
+    let first_captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
+    let (faddr, fshutdown, fhandle) = spawn_stub(kokoro_stub(
+        first_captured.clone(),
         Arc::new(vec![0_u8; 4800]),
     ))
     .await;
-    let fish_captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
-    let fish_wav = Arc::new(tiny_silence_wav(25_200, 480));
-    let (faddr, fshutdown, fhandle) =
-        spawn_stub(fish_stub(fish_captured.clone(), fish_wav)).await;
+    let second_captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
+    let (saddr, sshutdown, shandle) = spawn_stub(kokoro_stub(
+        second_captured.clone(),
+        Arc::new(vec![0_u8; 4800]),
+    ))
+    .await;
 
-    env::set_var("TTS_HOST", faddr.ip().to_string());
-    env::set_var("TTS_PORT", faddr.port().to_string());
-    let _workspace =
-        TestWorkspace::with_config(&kokoro_config(&kaddr.ip().to_string(), kaddr.port()));
+    let workspace =
+        TestWorkspace::with_config(&kokoro_config(&faddr.ip().to_string(), faddr.port()));
     disable_rate_limits();
 
     let app = build_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
 
-    let token = post_tts_token(&app, &cookie, &csrf, "Hello kokoro").await;
+    let token = post_tts_token(&app, &cookie, &csrf, "Hello first").await;
     assert_eq!(get_stream(&app, &token).await.status(), StatusCode::OK);
-    assert_eq!(kokoro_captured.lock().await.len(), 1);
-    assert_eq!(fish_captured.lock().await.len(), 0);
+    assert_eq!(first_captured.lock().await.len(), 1);
+    assert_eq!(second_captured.lock().await.len(), 0);
 
-    env::set_var("TTS_PROVIDER", "fish");
+    std::fs::write(
+        workspace.path().join(".config.yml"),
+        kokoro_config_with_voice(&saddr.ip().to_string(), saddr.port(), "alternate_voice"),
+    )
+    .expect("rewrite config");
     chatbot_core::config::reset();
 
-    let token = post_tts_token(&app, &cookie, &csrf, "Hello fish").await;
+    let token = post_tts_token(&app, &cookie, &csrf, "Hello second").await;
     assert_eq!(get_stream(&app, &token).await.status(), StatusCode::OK);
     assert_eq!(
-        kokoro_captured.lock().await.len(),
+        first_captured.lock().await.len(),
         1,
-        "flipped synthesis must not hit kokoro"
+        "flipped synthesis must not hit the first backend"
     );
-    assert_eq!(fish_captured.lock().await.len(), 1);
-    assert_eq!(fish_captured.lock().await[0]["reference_id"], "default");
+    assert_eq!(second_captured.lock().await.len(), 1);
+    assert_eq!(second_captured.lock().await[0]["voice"], "alternate_voice");
 
     clear_policy_env();
     disable_rate_limits();
-    kshutdown.send(()).ok();
     fshutdown.send(()).ok();
-    khandle.join().expect("join kokoro stub");
-    fhandle.join().expect("join fish stub");
+    sshutdown.send(()).ok();
+    fhandle.join().expect("join first stub");
+    shandle.join().expect("join second stub");
 }
 
 // --- Owned-policy isolation (separate RatePolicy / TtsPolicy owners) ---
@@ -681,18 +649,24 @@ async fn owned_tts_access_isolates_per_router_without_touching_live() {
     let gated = TtsPolicy::new(
         TtsAccess::Authenticated,
         "opus".to_string(),
-        "kokoro".to_string(),
-        None,
-        "http://127.0.0.1:9".to_string(),
-        "http://127.0.0.1:9".to_string(),
+        TtsSynthesis {
+            base_url: "http://127.0.0.1:9".to_string(),
+            api_key: None,
+            model: "kokoro".to_string(),
+            voice: None,
+            sample_rate: 24_000,
+        },
     );
     let open = TtsPolicy::new(
         TtsAccess::Anyone,
         "opus".to_string(),
-        "kokoro".to_string(),
-        None,
-        "http://127.0.0.1:9".to_string(),
-        "http://127.0.0.1:9".to_string(),
+        TtsSynthesis {
+            base_url: "http://127.0.0.1:9".to_string(),
+            api_key: None,
+            model: "kokoro".to_string(),
+            voice: None,
+            sample_rate: 24_000,
+        },
     );
     let app_gated = build_router_with_services(
         resolve_static_root(),
@@ -756,18 +730,24 @@ async fn owned_tts_codec_isolates_per_router() {
     let wav_policy = TtsPolicy::new(
         TtsAccess::Anyone,
         "wav".to_string(),
-        "kokoro".to_string(),
-        None,
-        "http://127.0.0.1:9".to_string(),
-        voice_base.clone(),
+        TtsSynthesis {
+            base_url: format!("{}/v1", voice_base),
+            api_key: None,
+            model: "kokoro".to_string(),
+            voice: None,
+            sample_rate: 24_000,
+        },
     );
     let opus_policy = TtsPolicy::new(
         TtsAccess::Anyone,
         "opus".to_string(),
-        "kokoro".to_string(),
-        None,
-        "http://127.0.0.1:9".to_string(),
-        voice_base,
+        TtsSynthesis {
+            base_url: format!("{}/v1", voice_base),
+            api_key: None,
+            model: "kokoro".to_string(),
+            voice: None,
+            sample_rate: 24_000,
+        },
     );
     let app_wav = build_router_with_services(
         resolve_static_root(),
@@ -840,72 +820,80 @@ async fn owned_tts_synthesis_ignores_live_config_and_routes_to_explicit_backend(
         Arc::new(vec![0_u8; 4800]),
     ))
     .await;
-    let fish_captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
-    let fish_wav = Arc::new(tiny_silence_wav(25_200, 480));
-    let (faddr, fshutdown, fhandle) =
-        spawn_stub(fish_stub(fish_captured.clone(), fish_wav)).await;
+    let remote_captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
+    let (raddr, rshutdown, rhandle) = spawn_stub(kokoro_stub(
+        remote_captured.clone(),
+        Arc::new(vec![0_u8; 4800]),
+    ))
+    .await;
 
-    // Live config says fish, yet the owned kokoro router must still reach
-    // kokoro with its explicit voice: owned synthesis never reads ambient.
-    env::set_var("TTS_HOST", faddr.ip().to_string());
-    env::set_var("TTS_PORT", faddr.port().to_string());
+    // Live config points at the remote stub, yet the owned kokoro router must
+    // still reach kokoro with its explicit voice: owned synthesis never reads
+    // ambient config.
     let _workspace =
-        TestWorkspace::with_config(&kokoro_config(&kaddr.ip().to_string(), kaddr.port()));
-    env::set_var("TTS_PROVIDER", "fish");
+        TestWorkspace::with_config(&kokoro_config(&raddr.ip().to_string(), raddr.port()));
     disable_rate_limits();
 
     let kokoro_owned = TtsPolicy::new(
         TtsAccess::Anyone,
         "opus".to_string(),
-        "kokoro".to_string(),
-        Some("owned-voice".to_string()),
-        "http://127.0.0.1:9".to_string(),
-        format!("http://{}:{}", kaddr.ip(), kaddr.port()),
+        TtsSynthesis {
+            base_url: format!("http://{}:{}/v1", kaddr.ip(), kaddr.port()),
+            api_key: None,
+            model: "kokoro".to_string(),
+            voice: Some("owned-voice".to_string()),
+            sample_rate: 24_000,
+        },
     );
-    let fish_owned = TtsPolicy::new(
+    let remote_owned = TtsPolicy::new(
         TtsAccess::Anyone,
         "opus".to_string(),
-        "fish".to_string(),
-        None,
-        format!("http://{}:{}", faddr.ip(), faddr.port()),
-        "http://127.0.0.1:9".to_string(),
+        TtsSynthesis {
+            base_url: format!("http://{}:{}/v1", raddr.ip(), raddr.port()),
+            api_key: Some("owned-key".to_string()),
+            model: "openai/gpt-4o-mini-tts".to_string(),
+            voice: Some("alloy".to_string()),
+            sample_rate: 24_000,
+        },
     );
     let app_kokoro = build_router_with_services(
         resolve_static_root(),
         owned_services(RatePolicy::global(), kokoro_owned),
     );
-    let app_fish = build_router_with_services(
+    let app_remote = build_router_with_services(
         resolve_static_root(),
-        owned_services(RatePolicy::global(), fish_owned),
+        owned_services(RatePolicy::global(), remote_owned),
     );
 
     let (cookie_k, csrf_k) = guest_session(&app_kokoro).await;
-    let (cookie_f, csrf_f) = guest_session(&app_fish).await;
+    let (cookie_r, csrf_r) = guest_session(&app_remote).await;
 
     let token = post_tts_token(&app_kokoro, &cookie_k, &csrf_k, "Hello owned kokoro").await;
     assert_eq!(get_stream(&app_kokoro, &token).await.status(), StatusCode::OK);
     assert_eq!(kokoro_captured.lock().await.len(), 1);
     assert_eq!(kokoro_captured.lock().await[0]["voice"], "owned-voice");
+    assert_eq!(kokoro_captured.lock().await[0]["model"], "kokoro");
     assert_eq!(
-        fish_captured.lock().await.len(),
+        remote_captured.lock().await.len(),
         0,
-        "owned kokoro must not touch the live fish backend"
+        "owned kokoro must not touch the live backend"
     );
 
-    let token = post_tts_token(&app_fish, &cookie_f, &csrf_f, "Hello owned fish").await;
-    assert_eq!(get_stream(&app_fish, &token).await.status(), StatusCode::OK);
-    assert_eq!(fish_captured.lock().await.len(), 1);
-    assert_eq!(fish_captured.lock().await[0]["reference_id"], "default");
+    let token = post_tts_token(&app_remote, &cookie_r, &csrf_r, "Hello owned remote").await;
+    assert_eq!(get_stream(&app_remote, &token).await.status(), StatusCode::OK);
+    assert_eq!(remote_captured.lock().await.len(), 1);
+    assert_eq!(remote_captured.lock().await[0]["model"], "openai/gpt-4o-mini-tts");
+    assert_eq!(remote_captured.lock().await[0]["voice"], "alloy");
     assert_eq!(
         kokoro_captured.lock().await.len(),
         1,
-        "owned fish must not touch kokoro"
+        "owned remote must not touch kokoro"
     );
 
     clear_policy_env();
     disable_rate_limits();
     kshutdown.send(()).ok();
-    fshutdown.send(()).ok();
+    rshutdown.send(()).ok();
     khandle.join().expect("join kokoro stub");
-    fhandle.join().expect("join fish stub");
+    rhandle.join().expect("join remote stub");
 }

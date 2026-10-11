@@ -36,7 +36,7 @@ use axum::{
 };
 use chatbot_core::{
     account_service::AccountService,
-    config::ProviderConfig,
+    config::{ProviderConfig, SttConfig},
     config_source::ConfigSource,
     session::{ChatSessionStore, ChatService},
     session_identity::HttpSessionStore,
@@ -920,18 +920,25 @@ async fn two_routers_isolate_voice_endpoint_for_deep_health() {
         axum::serve(listener, voice_app).await.expect("serve voice");
     });
 
+    let voice_at = |base: &str| SttConfig {
+        base_url: format!("{base}/v1"),
+        health_url: Some(format!("{base}/health")),
+        ..SttConfig::default()
+    };
     let config_a = ConfigSource::new(
         true,
         3600,
         "prompt".to_string(),
-        format!("http://{addr}"),
-    );
+        format!("http://{addr}/v1"),
+    )
+    .with_stt(voice_at(&format!("http://{addr}")));
     let config_b = ConfigSource::new(
         true,
         3600,
         "prompt".to_string(),
-        "http://127.0.0.1:1".to_string(),
-    );
+        "http://127.0.0.1:1/v1".to_string(),
+    )
+    .with_stt(voice_at("http://127.0.0.1:1"));
     let deps = || {
         deps_from_entries(
             vec![test_provider_with_chunks("default", &["voice-marker"])],

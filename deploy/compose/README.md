@@ -13,7 +13,6 @@ docker compose \
 
 - Release Rust build
 - JSON logs (`LOG_FORMAT=json`, `LOG_ANSI=false`)
-- Webserver waits for voice-service health
 
 ## Development
 
@@ -29,4 +28,4 @@ docker compose \
 
 ## Environment
 
-Secrets and `SECRET_KEY` still come from the host `.env` consumed by Compose. Data persists under `./data` (webserver) and `./chatbot-cuda/data` (voice).
+Secrets and `SECRET_KEY` still come from the host `.env` consumed by Compose. Data persists under `./data`. Voice runs separately from the chatbot-voice repo's compose.

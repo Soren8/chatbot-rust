@@ -23,7 +23,10 @@ fn webserver_uses_host_network_with_sidecar_resolver() {
     assert_eq!(resolver["source"].as_str(), Some("${WEB_RESOLV_CONF:-./dns/host-resolv.conf}"));
     assert_eq!(resolver["read_only"].as_bool(), Some(true));
     assert_eq!(include_str!("../../dns/host-resolv.conf"), "nameserver 172.29.0.53\n");
-    assert_eq!(compose["services"]["voice-service"]["ports"], serde_yaml::to_value(["127.0.0.1:5100:5100"]).unwrap());
+    assert!(
+        compose["services"]["voice-service"].is_null(),
+        "voice runs from the standalone chatbot-voice repo, not this compose"
+    );
 }
 
 const DOCKERFILE: &str = include_str!("../../Dockerfile");

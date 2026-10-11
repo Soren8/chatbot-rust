@@ -77,7 +77,7 @@ fn json_request(session: &Session, uri: &str, payload: Value) -> Request<Body> {
 }
 
 async fn voice_stub() -> SocketAddr {
-    let router = Router::new().route("/v1/stt", post(|| async { axum::Json(json!({"text":"stub transcript"})) }));
+    let router = Router::new().route("/v1/audio/transcriptions", post(|| async { axum::Json(json!({"text":"stub transcript"})) }));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -96,12 +96,16 @@ llms:
     base_url: https://api.openai.com/v1
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
 tts_codec: wav
-stt_privacy_level: non_private
-tts_privacy_level: non_private
-voice_service_host: "{}"
-voice_service_port: {}
+tts:
+  base_url: "http://{0}:{1}/v1"
+  voice: af_heart
+  health_url: "http://{0}:{1}/health"
+  privacy_level: non_private
+stt:
+  base_url: "http://{0}:{1}/v1"
+  health_url: "http://{0}:{1}/health"
+  privacy_level: non_private
 "#, voice.ip(), voice.port()));
     UserStore::new().unwrap().create_user(USER, &hash(PASSWORD, DEFAULT_COST).unwrap()).unwrap();
     let root: std::path::PathBuf = env::var("HOST_DATA_DIR").unwrap().into();

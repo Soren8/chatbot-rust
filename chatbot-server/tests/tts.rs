@@ -54,11 +54,15 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
 # Local stub: no retention, so Private-eligible for legacy voice tests.
-tts_privacy_level: private
-voice_service_host: "{voice_host}"
-voice_service_port: {voice_port}
+tts:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  voice: af_heart
+  health_url: "http://{voice_host}:{voice_port}/health"
+  privacy_level: private
+stt:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  health_url: "http://{voice_host}:{voice_port}/health"
 "#
     )
 }
@@ -73,30 +77,48 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
 tts_access: {tts_access}
 # Local stub: no retention, so Private-eligible for legacy voice tests.
-tts_privacy_level: private
-voice_service_host: "{voice_host}"
-voice_service_port: {voice_port}
+tts:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  voice: af_heart
+  health_url: "http://{voice_host}:{voice_port}/health"
+  privacy_level: private
+stt:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  health_url: "http://{voice_host}:{voice_port}/health"
 "#
     )
 }
 
-fn fish_test_config() -> &'static str {
-    r#"
+/// Hosted OpenAI-compatible provider (OpenRouter-shaped path) with a bearer
+/// key, WAV wire codec and a configured fallback rate; the stub sends no
+/// `X-Sample-Rate`.
+fn remote_test_config(tts_host: &str, tts_port: u16) -> String {
+    format!(
+        r#"
 llms:
   - provider_name: "default"
     type: "openai"
     model_name: "gpt-test"
     base_url: "https://api.openai.com/v1"
-    api_key: "${OPENAI_API_KEY}"
+    api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: fish
-# Local stub: no retention, so Private-eligible for legacy voice tests.
-tts_privacy_level: private
+tts_codec: wav
+tts:
+  base_url: "http://{tts_host}:{tts_port}/api/v1"
+  api_key: "${{REMOTE_TTS_TEST_KEY}}"
+  model_name: openai/gpt-4o-mini-tts
+  voice: alloy
+  sample_rate: {REMOTE_SAMPLE_RATE}
+  # Local stub: no retention, so Private-eligible for voice tests.
+  privacy_level: private
 "#
+    )
 }
+
+const REMOTE_SAMPLE_RATE: u32 = 16_000;
+const REMOTE_TTS_KEY: &str = "remote-tts-test-key";
 
 fn begin_kokoro_workspace(voice_host: &str, voice_port: u16) -> TestWorkspace {
     env::set_var("SECRET_KEY", "integration_test_secret");
@@ -116,11 +138,10 @@ fn begin_kokoro_workspace_with_access(
     ))
 }
 
-fn begin_fish_workspace(tts_host: &str, tts_port: u16) -> TestWorkspace {
+fn begin_remote_workspace(tts_host: &str, tts_port: u16) -> TestWorkspace {
     env::set_var("SECRET_KEY", "integration_test_secret");
-    env::set_var("TTS_HOST", tts_host);
-    env::set_var("TTS_PORT", tts_port.to_string());
-    TestWorkspace::with_config(fish_test_config())
+    env::set_var("REMOTE_TTS_TEST_KEY", REMOTE_TTS_KEY);
+    TestWorkspace::with_config(&remote_test_config(tts_host, tts_port))
 }
 
 async fn guest_session(app: &axum::Router) -> (String, String) {
@@ -250,17 +271,26 @@ async fn login_session(app: &axum::Router, username: &str, password: &str) -> (S
     (cookie_header, csrf)
 }
 
+/// Request JSON plus the `Authorization` header under `_authorization`.
+fn with_authorization(mut payload: Value, headers: &header::HeaderMap) -> Value {
+    payload["_authorization"] = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map_or(Value::Null, |value| Value::String(value.to_owned()));
+    payload
+}
+
 fn kokoro_voice_router(captured: Arc<AsyncMutex<Vec<Value>>>, pcm: Arc<Vec<u8>>) -> Router {
     Router::new().route(
-        "/v1/tts/kokoro",
+        "/v1/audio/speech",
         post({
             let captured = captured.clone();
             let pcm = pcm.clone();
-            move |Json(payload): Json<Value>| {
+            move |headers: header::HeaderMap, Json(payload): Json<Value>| {
                 let captured = captured.clone();
                 let pcm = pcm.clone();
                 async move {
-                    captured.lock().await.push(payload);
+                    captured.lock().await.push(with_authorization(payload, &headers));
                     (
                         StatusCode::OK,
                         [
@@ -278,39 +308,21 @@ fn kokoro_voice_router(captured: Arc<AsyncMutex<Vec<Value>>>, pcm: Arc<Vec<u8>>)
     )
 }
 
-/// Minimal valid mono 16-bit WAV of `samples` silent frames at `rate` Hz.
-fn tiny_silence_wav(rate: u32, samples: u32) -> Vec<u8> {
-    let mut wav = Vec::with_capacity(44 + samples as usize * 2);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&((36 + samples * 2) as u32).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&rate.to_le_bytes());
-    wav.extend_from_slice(&(rate * 2).to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&(samples * 2).to_le_bytes());
-    wav.extend(std::iter::repeat(0).take(samples as usize * 2));
-    wav
-}
-
-fn fish_speech_router(captured: Arc<AsyncMutex<Vec<Value>>>, wav_body: Arc<Vec<u8>>) -> Router {    Router::new().route(
-        "/v1/tts",
+fn remote_speech_router(captured: Arc<AsyncMutex<Vec<Value>>>, pcm: Arc<Vec<u8>>) -> Router {
+    Router::new().route(
+        "/api/v1/audio/speech",
         post({
             let captured = captured.clone();
-            let wav_body = wav_body.clone();
-            move |Json(payload): Json<Value>| {
+            let pcm = pcm.clone();
+            move |headers: header::HeaderMap, Json(payload): Json<Value>| {
                 let captured = captured.clone();
-                let wav_body = wav_body.clone();
+                let pcm = pcm.clone();
                 async move {
-                    captured.lock().await.push(payload);
+                    captured.lock().await.push(with_authorization(payload, &headers));
                     (
                         StatusCode::OK,
-                        [(header::CONTENT_TYPE, "audio/wav")],
-                        wav_body.as_slice().to_vec(),
+                        [(header::CONTENT_TYPE, "audio/pcm")],
+                        pcm.as_slice().to_vec(),
                     )
                 }
             }
@@ -320,7 +332,7 @@ fn fish_speech_router(captured: Arc<AsyncMutex<Vec<Value>>>, wav_body: Arc<Vec<u
 
 fn kokoro_error_router() -> Router {
     Router::new().route(
-        "/v1/tts/kokoro",
+        "/v1/audio/speech",
         post(|Json(_payload): Json<Value>| async move {
             let body = serde_json::to_vec(&json!({
                 "error": "CUDA error: out of memory during Kokoro inference"
@@ -569,7 +581,10 @@ async fn kokoro_tts_returns_wav_audio_and_allows_retry_after_transport_failure()
 
     let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("kokoro payload captured");
-    assert_eq!(payload["text"], "Hello");
+    assert_eq!(payload["input"], "Hello");
+    assert_eq!(payload["model"], "kokoro");
+    assert_eq!(payload["response_format"], "pcm");
+    assert_eq!(payload["_authorization"], Value::Null, "keyless provider must not get a bearer header");
     assert_eq!(payload["voice"], KOKORO_DEFAULT_VOICE);
 
     shutdown.send(()).ok();
@@ -698,15 +713,15 @@ async fn kokoro_tts_returns_error_when_service_fails() {
 }
 
 #[tokio::test]
-async fn fish_tts_returns_clean_error_when_service_fails() {
+async fn remote_tts_returns_clean_error_when_provider_fails() {
     common::init_tracing();
     let _lock = tts_test_lock();
 
     let router = Router::new().route(
-        "/v1/tts",
+        "/api/v1/audio/speech",
         post(|| async move {
             let body =
-                serde_json::to_vec(&json!({"error": "Fish Speech worker crashed: model load failed"}))
+                serde_json::to_vec(&json!({"error": "Upstream provider crashed: model load failed"}))
                     .unwrap();
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -716,7 +731,7 @@ async fn fish_tts_returns_clean_error_when_service_fails() {
         }),
     );
     let (addr, shutdown, handle) = spawn_voice_stub(router).await;
-    let _workspace = begin_fish_workspace(&addr.ip().to_string(), addr.port());
+    let _workspace = begin_remote_workspace(&addr.ip().to_string(), addr.port());
 
     let static_root = resolve_static_root();
     let app = build_router(static_root);
@@ -765,7 +780,7 @@ async fn fish_tts_returns_clean_error_when_service_fails() {
     assert_eq!(payload["error"], "TTS backend provider error");
     let body_text = payload["error"].as_str().expect("error is a string");
     assert!(
-        !body_text.contains("Fish Speech"),
+        !body_text.contains("Upstream provider"),
         "raw upstream detail must stay in server logs, not the client body: {body_text}"
     );
 
@@ -1135,14 +1150,12 @@ async fn kokoro_strips_markdown_formatting() {
     let captured_payloads = captured.lock().await;
     let payload = captured_payloads.first().expect("kokoro payload captured");
 
-    assert_eq!(payload["text"], expected_text, "Markdown should be stripped");
+    assert_eq!(payload["input"], expected_text, "Markdown should be stripped");
     assert_eq!(payload["voice"], KOKORO_DEFAULT_VOICE);
 
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");
 }
-
-// --- Fish Speech (deprecated provider) ---
 
 /// Log-capturing writer for asserting the router's 5xx catch-all fires.
 #[derive(Clone)]
@@ -1282,18 +1295,16 @@ async fn http_5xx_responses_log_error_level_with_request_context() {
 }
 
 #[tokio::test]
-async fn fish_tts_via_presign_generates_opus_audio() {
+async fn remote_tts_sends_bearer_and_falls_back_to_configured_rate() {
     common::init_tracing();
     let _lock = tts_test_lock();
 
     let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
-    // One opus frame of silence as a valid WAV: the fish backend still
-    // speaks WAV; the server transcodes to Ogg-Opus for the wire.
-    let wav_data = Arc::new(tiny_silence_wav(25_200, 480));
-    let router = fish_speech_router(captured.clone(), wav_data.clone());
+    let pcm = Arc::new(vec![0_u8; 960]);
+    let router = remote_speech_router(captured.clone(), pcm);
 
     let (addr, shutdown, handle) = spawn_voice_stub(router).await;
-    let _workspace = begin_fish_workspace(&addr.ip().to_string(), addr.port());
+    let _workspace = begin_remote_workspace(&addr.ip().to_string(), addr.port());
 
     let app = build_router(resolve_static_root());
     let (cookie, csrf) = guest_session(&app).await;
@@ -1308,7 +1319,7 @@ async fn fish_tts_via_presign_generates_opus_audio() {
                 .header("X-CSRF-Token", &csrf)
                 .header(header::COOKIE, &cookie)
                 .body(Body::from(
-                    serde_json::to_vec(&json!({"text": "Hello Fish"})).expect("payload"),
+                    serde_json::to_vec(&json!({"text": "Hello remote"})).expect("payload"),
                 ))
                 .unwrap(),
         )
@@ -1339,26 +1350,28 @@ async fn fish_tts_via_presign_generates_opus_audio() {
     let body_bytes = axum::body::to_bytes(stream_response.into_body(), 4096)
         .await
         .expect("read body");
+    assert_eq!(&body_bytes[0..4], b"RIFF", "tts_codec wav must return WAV");
+    let wire_rate = u32::from_le_bytes(body_bytes[24..28].try_into().unwrap());
     assert_eq!(
-        &body_bytes[0..4],
-        b"OggS",
-        "fish clip must be transcoded to Ogg-Opus"
+        wire_rate, REMOTE_SAMPLE_RATE,
+        "missing X-Sample-Rate must fall back to tts.sample_rate"
     );
 
     let captured_payloads = captured.lock().await;
-    let payload = captured_payloads.first().expect("fish payload captured");
-    assert_eq!(payload["text"], "Hello Fish");
-    assert_eq!(payload["reference_id"], "default");
-    assert_eq!(payload["format"], "wav");
-    assert_eq!(payload["streaming"], false);
+    let payload = captured_payloads.first().expect("remote payload captured");
+    assert_eq!(payload["input"], "Hello remote");
+    assert_eq!(payload["model"], "openai/gpt-4o-mini-tts");
+    assert_eq!(payload["voice"], "alloy");
+    assert_eq!(payload["response_format"], "pcm");
+    assert_eq!(payload["_authorization"], format!("Bearer {REMOTE_TTS_KEY}"));
 
     shutdown.send(()).ok();
-    handle.join().expect("join fish stub thread");
+    handle.join().expect("join remote stub thread");
 }
 
 fn slow_kokoro_voice_router(pcm: Arc<Vec<u8>>) -> Router {
     Router::new().route(
-        "/v1/tts/kokoro",
+        "/v1/audio/speech",
         post({
             let pcm = pcm.clone();
             move |Json(_payload): Json<Value>| {

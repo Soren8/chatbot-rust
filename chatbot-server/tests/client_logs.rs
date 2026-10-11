@@ -52,7 +52,6 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     context_size: 4096
-tts_provider: kokoro
 "#
     .to_string()
 }

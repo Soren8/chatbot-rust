@@ -99,21 +99,21 @@ async fn voice_stub() -> (SocketAddr, Arc<AtomicUsize>, Arc<AtomicUsize>, onesho
     let tts_hits = Arc::new(AtomicUsize::new(0));
     let stt_counter = stt_hits.clone();
     let tts_counter = tts_hits.clone();
-    let router = Router::new().route("/v1/stt", post(move |mut form: axum::extract::Multipart| {
+    let router = Router::new().route("/v1/audio/transcriptions", post(move |mut form: axum::extract::Multipart| {
         let hits = stt_counter.clone();
         async move {
             let mut audio = None;
             while let Some(field) = form.next_field().await.unwrap() {
-                if field.name() == Some("audio") { audio = Some(field.bytes().await.unwrap()); }
+                if field.name() == Some("file") { audio = Some(field.bytes().await.unwrap()); }
             }
             assert_eq!(audio.as_deref(), Some(&b"fakeaudio"[..]));
             hits.fetch_add(1, Ordering::SeqCst);
             axum::Json(json!({"text":"stub transcript"}))
         }
-    })).route("/v1/tts/kokoro", post(move |axum::Json(payload): axum::Json<Value>| {
+    })).route("/v1/audio/speech", post(move |axum::Json(payload): axum::Json<Value>| {
         let hits = tts_counter.clone();
         async move {
-            assert!(payload["text"].is_string());
+            assert!(payload["input"].is_string());
             hits.fetch_add(1, Ordering::SeqCst);
             (StatusCode::OK, [(header::CONTENT_TYPE, "application/octet-stream"),
                 (header::HeaderName::from_static("x-sample-rate"), "24000")], vec![0_u8; 480])
@@ -132,11 +132,11 @@ async fn paused_tts_stub() -> (SocketAddr, Arc<AtomicUsize>, oneshot::Receiver<(
     let (started_tx, started_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
     let gate = Arc::new(tokio::sync::Mutex::new(Some((started_tx, release_rx))));
-    let router = Router::new().route("/v1/tts/kokoro", post(move |axum::Json(payload): axum::Json<Value>| {
+    let router = Router::new().route("/v1/audio/speech", post(move |axum::Json(payload): axum::Json<Value>| {
         let hits = counter.clone();
         let gate = gate.clone();
         async move {
-            assert_eq!(payload["text"], "Hold synthesis open");
+            assert_eq!(payload["input"], "Hold synthesis open");
             hits.fetch_add(1, Ordering::SeqCst);
             let (started, release) = gate.lock().await.take().expect("one synthesis request");
             started.send(()).unwrap();
@@ -165,12 +165,16 @@ llms:
     base_url: https://api.openai.com/v1
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
 tts_codec: wav
-stt_privacy_level: {voice_level}
-tts_privacy_level: {voice_level}
-voice_service_host: "{}"
-voice_service_port: {}
+tts:
+  base_url: "http://{0}:{1}/v1"
+  voice: af_heart
+  health_url: "http://{0}:{1}/health"
+  privacy_level: {voice_level}
+stt:
+  base_url: "http://{0}:{1}/v1"
+  health_url: "http://{0}:{1}/health"
+  privacy_level: {voice_level}
 "#, address.ip(), address.port())
 }
 
@@ -429,7 +433,7 @@ async fn tts_backend_config_change_between_post_and_get_fails_closed() {
     assert_eq!(original_hits.load(Ordering::SeqCst), 0);
     assert_eq!(replacement_hits.load(Ordering::SeqCst), 0);
 
-    fs::write(workspace.path().join(".config.yml"), format!("{}tts_voice: alternate_test_voice\n", app_config(replacement))).unwrap();
+    fs::write(workspace.path().join(".config.yml"), app_config(replacement).replace("  voice: af_heart\n", "  voice: alternate_test_voice\n")).unwrap();
     chatbot_core::config::reset();
     let response = app.clone().oneshot(Request::builder().uri(format!("/tts_stream/{token}"))
         .body(Body::empty()).unwrap()).await.unwrap();

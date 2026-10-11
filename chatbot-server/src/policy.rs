@@ -64,7 +64,7 @@ impl RatePolicy {
 ///
 /// `Clone` shares one `Arc` of owned policy. Global resolves each operation
 /// from live config on every call; synthesis inputs come from a single read
-/// so provider, voice and endpoint stay coherent.
+/// so model, voice and endpoint stay coherent.
 #[derive(Clone)]
 pub struct TtsPolicy {
     owned: Option<Arc<OwnedTtsPolicy>>,
@@ -73,42 +73,41 @@ pub struct TtsPolicy {
 struct OwnedTtsPolicy {
     access: TtsAccess,
     codec: String,
-    provider: String,
-    voice: Option<String>,
-    tts_base_url: String,
-    voice_service_base_url: String,
+    synthesis: TtsSynthesis,
 }
 
-/// Coherent synthesis inputs from a single read: provider selection, the
-/// configured voice and the voice-service endpoint. The legacy/fish backend
-/// base is resolved separately via [`TtsPolicy::tts_base_url`].
-#[derive(Clone, Debug)]
+/// Coherent synthesis inputs from one config read: an OpenAI-compatible
+/// `/audio/speech` endpoint plus the model, voice and fallback PCM rate.
+#[derive(Clone, PartialEq, Eq)]
 pub struct TtsSynthesis {
-    pub provider: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub model: String,
     pub voice: Option<String>,
-    pub voice_service_base_url: String,
+    pub sample_rate: u32,
+}
+
+impl std::fmt::Debug for TtsSynthesis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TtsSynthesis")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model", &self.model)
+            .field("voice", &self.voice)
+            .field("sample_rate", &self.sample_rate)
+            .finish()
+    }
 }
 
 impl TtsPolicy {
-    /// Explicit owner: access gate plus wire codec plus synthesis provider
-    /// plus voice plus both backend endpoints. Touches no config or env;
-    /// inputs are used as-is.
-    pub fn new(
-        access: TtsAccess,
-        codec: String,
-        provider: String,
-        voice: Option<String>,
-        tts_base_url: String,
-        voice_service_base_url: String,
-    ) -> Self {
+    /// Explicit owner for isolated routers. Configured values are supplied by
+    /// the caller and are never resolved from ambient config or env.
+    pub fn new(access: TtsAccess, codec: String, synthesis: TtsSynthesis) -> Self {
         Self {
             owned: Some(Arc::new(OwnedTtsPolicy {
                 access,
                 codec,
-                provider,
-                voice,
-                tts_base_url,
-                voice_service_base_url,
+                synthesis,
             })),
         }
     }
@@ -135,32 +134,24 @@ impl TtsPolicy {
         }
     }
 
-    /// Coherent dispatch inputs from one live read. Owned clones its
-    /// explicit values without touching config or env.
+    /// Coherent dispatch inputs from one live config read.
     pub fn synthesis(&self) -> TtsSynthesis {
         match &self.owned {
-            Some(owned) => TtsSynthesis {
-                provider: owned.provider.clone(),
-                voice: owned.voice.clone(),
-                voice_service_base_url: owned.voice_service_base_url.clone(),
-            },
+            Some(owned) => owned.synthesis.clone(),
             None => {
                 let config = app_config();
                 TtsSynthesis {
-                    provider: config.tts_provider.clone(),
-                    voice: config.tts_voice.clone(),
-                    voice_service_base_url: config.voice_service_base_url.clone(),
+                    base_url: config.tts.base_url.clone(),
+                    api_key: config
+                        .tts
+                        .api_key
+                        .clone()
+                        .filter(|key| !key.trim().is_empty()),
+                    model: config.tts.model_name.clone(),
+                    voice: config.tts.voice.clone(),
+                    sample_rate: config.tts.sample_rate,
                 }
             }
-        }
-    }
-
-    /// Legacy/fish backend base URL. Global reads live config on each call;
-    /// owned uses only its explicit endpoint.
-    pub fn tts_base_url(&self) -> String {
-        match &self.owned {
-            Some(owned) => owned.tts_base_url.clone(),
-            None => app_config().tts_base_url.clone(),
         }
     }
 }

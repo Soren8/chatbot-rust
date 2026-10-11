@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use chatbot_core::{config::PrivacyLevel, history::SetId};
 
+use crate::policy::TtsSynthesis;
+
 const MAX_PENDING_TTS: usize = 128;
 const TTS_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
 // Initial transfer plus three retries, matching NativeVoiceTts MAX_CLIP_ATTEMPTS.
@@ -55,10 +57,7 @@ pub(crate) enum TtsBinding {
 /// destination instead of a newly selected backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TtsDestination {
-    pub(crate) provider: String,
-    pub(crate) voice: Option<String>,
-    pub(crate) voice_service_base_url: String,
-    pub(crate) tts_base_url: String,
+    pub(crate) synthesis: TtsSynthesis,
     pub(crate) codec: String,
     pub(crate) required: PrivacyLevel,
 }
@@ -66,10 +65,13 @@ pub(crate) struct TtsDestination {
 impl TtsDestination {
     pub(crate) fn fallback() -> Self {
         Self {
-            provider: String::new(),
-            voice: None,
-            voice_service_base_url: String::new(),
-            tts_base_url: String::new(),
+            synthesis: TtsSynthesis {
+                base_url: String::new(),
+                api_key: None,
+                model: String::new(),
+                voice: None,
+                sample_rate: 0,
+            },
             codec: "opus".to_string(),
             required: PrivacyLevel::NonPrivate,
         }

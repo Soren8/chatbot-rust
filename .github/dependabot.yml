@@ -37,7 +37,6 @@ updates:
     directories:
       - /
       - /.devcontainer
-      - /chatbot-cuda
     schedule:
       interval: weekly
       day: monday
@@ -46,21 +45,6 @@ updates:
       - dependencies
     commit-message:
       prefix: "docker"
-      include: scope
-    groups:
-      all:
-        patterns: ["*"]
-
-  - package-ecosystem: pip
-    directory: /chatbot-cuda
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 10
-    labels:
-      - dependencies
-    commit-message:
-      prefix: "deps"
       include: scope
     groups:
       all:
@@ -80,4 +64,3 @@ updates:
     groups:
       all:
         patterns: ["*"]
-

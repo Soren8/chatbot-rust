@@ -17,7 +17,7 @@ use chatbot_core::{config::TtsAccess, session_identity::HttpSessionStore};
 use chatbot_server::{
     build_router_with_services,
     identity::RequestIdentity,
-    policy::{RatePolicy, TtsPolicy},
+    policy::{RatePolicy, TtsPolicy, TtsSynthesis},
     resolve_static_root,
     services::AppServices,
 };
@@ -31,7 +31,7 @@ const SENTENCES: usize = 35;
 
 fn kokoro_stub() -> Router {
     Router::new().route(
-        "/v1/tts/kokoro",
+        "/v1/audio/speech",
         post(|| async {
             (
                 StatusCode::OK,
@@ -134,10 +134,13 @@ async fn tts_stream_and_cancel_do_not_consume_the_per_user_budget() {
     let tts = TtsPolicy::new(
         TtsAccess::Anyone,
         "opus".to_string(),
-        "kokoro".to_string(),
-        None,
-        "http://127.0.0.1:9".to_string(),
-        format!("http://{}:{}", addr.ip(), addr.port()),
+        TtsSynthesis {
+            base_url: format!("http://{}:{}/v1", addr.ip(), addr.port()),
+            api_key: None,
+            model: "kokoro".to_string(),
+            voice: None,
+            sample_rate: 24_000,
+        },
     );
     let identity =
         RequestIdentity::with_store_and_csrf(Arc::new(HttpSessionStore::new(3600)), true);

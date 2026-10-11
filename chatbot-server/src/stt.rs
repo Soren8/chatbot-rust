@@ -216,9 +216,8 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
     }
 
     let config = services.config_source();
-    let base = config.voice_service_base_url();
-    let base = base.trim_end_matches('/');
-    let url = format!("{base}/v1/stt");
+    let stt = config.stt();
+    let url = format!("{}/audio/transcriptions", stt.base_url.trim_end_matches('/'));
 
     let audio_part = reqwest::multipart::Part::bytes(audio_bytes)
         .file_name(audio_file_name)
@@ -232,33 +231,40 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
             )
         })?;
 
-    let form = reqwest::multipart::Form::new().part("audio", audio_part);
+    let form = reqwest::multipart::Form::new()
+        .part("file", audio_part)
+        .text("model", stt.model_name.clone());
 
-    let response = HTTP_CLIENT
-        .post(&url)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach voice service for STT");
-            api_error(StatusCode::BAD_GATEWAY, "STT backend provider unreachable")
-        })?;
+    let mut request = HTTP_CLIENT.post(&url).multipart(form);
+    if let Some(key) = stt.api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+        request = request.bearer_auth(key);
+    }
+    let response = request.send().await.map_err(|err| {
+        error!(?err, "failed to reach STT backend");
+        api_error(StatusCode::BAD_GATEWAY, "STT backend provider unreachable")
+    })?;
 
     let status = response.status();
     let body_bytes = response.bytes().await.map_err(|err| {
-        error!(?err, "failed to read voice service STT response");
+        error!(?err, "failed to read STT backend response");
         api_error(StatusCode::BAD_GATEWAY, "STT backend provider error")
     })?;
 
     if !status.is_success() {
         let message = extract_error(status, &body_bytes);
-        error!(?status, error_len = message.len(), "voice service STT returned error");
+        error!(?status, error_len = message.len(), "STT backend returned error");
         return Err(api_error(StatusCode::BAD_GATEWAY, "STT backend provider error"));
     }
 
-    // The voice service returns {"text": "..."} — forward it directly
-    let parsed: Value = serde_json::from_slice(&body_bytes)
+    // OpenAI-compatible providers may add fields such as `usage`; clients
+    // only receive the transcript.
+    let upstream: Value = serde_json::from_slice(&body_bytes)
         .map_err(|err| map_json_parse_err(err, "stt::post::voice_response"))?;
+    let Some(text) = upstream.get("text").and_then(Value::as_str) else {
+        error!("STT backend response missing text");
+        return Err(api_error(StatusCode::BAD_GATEWAY, "STT backend provider error"));
+    };
+    let parsed = serde_json::json!({ "text": text });
 
     if let Some(operation) = &operation {
         registry.record(&owner, operation, StatusCode::OK, &parsed);

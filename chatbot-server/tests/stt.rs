@@ -44,9 +44,13 @@ llms:
     base_url: "https://api.openai.com/v1"
     api_key: "${{OPENAI_API_KEY}}"
     context_size: 4096
-tts_provider: kokoro
-voice_service_host: "{voice_host}"
-voice_service_port: {voice_port}
+tts:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  voice: af_heart
+  health_url: "http://{voice_host}:{voice_port}/health"
+stt:
+  base_url: "http://{voice_host}:{voice_port}/v1"
+  health_url: "http://{voice_host}:{voice_port}/health"
 "#
     )
 }
@@ -81,7 +85,7 @@ fn stt_error_router() -> (Router, Arc<std::sync::Mutex<bool>>) {
     let route_hit = hit.clone();
     (
         Router::new().route(
-            "/v1/stt",
+            "/v1/audio/transcriptions",
             post(move || {
                 let hit = route_hit.clone();
                 async move {
@@ -190,12 +194,12 @@ fn stt_success_router() -> (Router, Arc<std::sync::Mutex<usize>>) {
     let bytes_clone = received_bytes.clone();
     (
         Router::new().route(
-            "/v1/stt",
+            "/v1/audio/transcriptions",
             post(move |mut multipart: axum::extract::Multipart| {
                 let bytes_clone = bytes_clone.clone();
                 async move {
                     while let Ok(Some(field)) = multipart.next_field().await {
-                        if field.name() == Some("audio") {
+                        if field.name() == Some("file") {
                             if let Ok(bytes) = field.bytes().await {
                                 *bytes_clone.lock().unwrap() = bytes.len();
                             }
@@ -219,7 +223,7 @@ async fn stt_replays_transcript_without_second_backend_call() {
     let _lock = STT_TEST_MUTEX.lock().unwrap();
     let calls = Arc::new(std::sync::Mutex::new(0));
     let count = calls.clone();
-    let router = Router::new().route("/v1/stt", post(move || {
+    let router = Router::new().route("/v1/audio/transcriptions", post(move || {
         let count = count.clone();
         async move { *count.lock().unwrap() += 1; Json(json!({"text":"one transcript"})) }
     }));
@@ -243,6 +247,106 @@ async fn stt_replays_transcript_without_second_backend_call() {
     }
     assert_eq!(*calls.lock().unwrap(), 1);
     shutdown.send(()).ok(); handle.join().unwrap();
+}
+
+#[derive(Debug, Default, Clone)]
+struct CapturedTranscription {
+    authorization: Option<String>,
+    model: Option<String>,
+    file_bytes: Option<usize>,
+}
+
+fn capturing_transcription_router(captured: Arc<std::sync::Mutex<Vec<CapturedTranscription>>>) -> Router {
+    Router::new().route(
+        "/api/v1/audio/transcriptions",
+        post(move |headers: axum::http::HeaderMap, mut multipart: axum::extract::Multipart| {
+            let captured = captured.clone();
+            async move {
+                let mut seen = CapturedTranscription {
+                    authorization: headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned),
+                    ..Default::default()
+                };
+                while let Ok(Some(field)) = multipart.next_field().await {
+                    match field.name() {
+                        Some("model") => seen.model = field.text().await.ok(),
+                        Some("file") => seen.file_bytes = field.bytes().await.ok().map(|b| b.len()),
+                        _ => {}
+                    }
+                }
+                captured.lock().unwrap().push(seen);
+                Json(json!({ "text": "remote transcript" }))
+            }
+        }),
+    )
+}
+
+async fn post_stt_audio(app: &Router) -> (StatusCode, Value) {
+    let home = app.clone().oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+    let cookie = common::extract_cookie(home.headers()[header::SET_COOKIE].to_str().unwrap());
+    let body = axum::body::to_bytes(home.into_body(), 256 * 1024).await.unwrap();
+    let csrf = META_TOKEN_RE.captures(std::str::from_utf8(&body).unwrap()).unwrap()[1].to_owned();
+    let multipart = "--remote\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\naudio\r\n--remote--\r\n";
+    let result = app.clone().oneshot(Request::builder().method(Method::POST).uri("/stt")
+        .header(header::CONTENT_TYPE, "multipart/form-data; boundary=remote")
+        .header(header::COOKIE, &cookie).header("X-CSRF-Token", &csrf)
+        .body(Body::from(multipart)).unwrap()).await.unwrap();
+    let status = result.status();
+    let body = axum::body::to_bytes(result.into_body(), 128 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+#[tokio::test]
+async fn stt_sends_openai_multipart_with_model_and_optional_bearer() {
+    common::init_tracing();
+    let _lock = STT_TEST_MUTEX.lock().unwrap();
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (addr, shutdown, handle) = spawn_voice_stub(capturing_transcription_router(captured.clone())).await;
+    let base = format!("http://{}:{}/api/v1", addr.ip(), addr.port());
+    let config = |api_key: &str| format!(
+        r#"
+llms:
+  - provider_name: "default"
+    type: "openai"
+    model_name: "gpt-test"
+    base_url: "https://api.openai.com/v1"
+    api_key: "${{OPENAI_API_KEY}}"
+    context_size: 4096
+stt:
+  base_url: "{base}"
+  model_name: openai/whisper-large-v3-turbo
+  # Local stub: no retention.
+  privacy_level: private
+{api_key}"#
+    );
+
+    std::env::set_var("REMOTE_STT_TEST_KEY", "remote-stt-key");
+    {
+        let _workspace = TestWorkspace::with_config(&config("  api_key: '${REMOTE_STT_TEST_KEY}'\n"));
+        let (status, payload) = post_stt_audio(&build_router(resolve_static_root())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload, json!({ "text": "remote transcript" }));
+    }
+    {
+        let _workspace = TestWorkspace::with_config(&config(""));
+        let (status, _) = post_stt_audio(&build_router(resolve_static_root())).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    std::env::remove_var("REMOTE_STT_TEST_KEY");
+
+    let seen = captured.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].authorization.as_deref(), Some("Bearer remote-stt-key"));
+    assert_eq!(seen[1].authorization, None, "no bearer without a configured key");
+    for request in &seen {
+        assert_eq!(request.model.as_deref(), Some("openai/whisper-large-v3-turbo"));
+        assert_eq!(request.file_bytes, Some(5));
+    }
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
 }
 
 #[tokio::test]
@@ -425,7 +529,7 @@ async fn authenticated_legacy_stt_requires_valid_user_key_before_dispatch() {
     let (addr, shutdown, handle) = spawn_voice_stub(router).await;
     let config = stt_test_config(&addr.ip().to_string(), addr.port());
     let _workspace = TestWorkspace::with_config(&config.replace(
-        "tts_provider: kokoro", "tts_provider: kokoro\n# Local stub: no retention.\nstt_privacy_level: private",
+        "stt:\n", "stt:\n  # Local stub: no retention.\n  privacy_level: private\n",
     ));
     let app = build_router(resolve_static_root());
     let mut users = UserStore::new().unwrap();

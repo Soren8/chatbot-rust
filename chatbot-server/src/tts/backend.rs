@@ -16,7 +16,7 @@ use tracing::{debug, error};
 use crate::http_error::{api_error, HttpError};
 use crate::policy::TtsPolicy;
 
-const SAMPLE_RATE_HZ: u32 = 25_200;
+const SAMPLE_RATE_HZ: u32 = 24_000;
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
@@ -41,26 +41,17 @@ pub(super) struct SynthesizedPcm {
 }
 
 #[derive(Debug, Serialize)]
-struct BackendRequest {
-    text: String,
+struct SpeechRequest {
+    model: String,
+    input: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    voice_file: Option<String>,
+    voice: Option<String>,
+    response_format: &'static str,
 }
 
-#[derive(Debug, Serialize)]
-struct FishSpeechRequest {
-    text: String,
-    reference_id: String,
-    streaming: bool,
-    format: String,
-}
-
-#[derive(Debug, Serialize)]
-struct KokoroTtsRequest {
-    text: String,
-    voice: String,
-}
-
+/// Synthesize through an OpenAI-compatible `POST {base_url}/audio/speech`
+/// with `response_format: "pcm"`. The rate comes from `X-Sample-Rate` when
+/// the provider sends it, else the configured `sample_rate`.
 pub(super) async fn synthesize_pcm(
     cleaned: String,
     policy: &TtsPolicy,
@@ -71,65 +62,53 @@ pub(super) async fn synthesize_pcm(
             sample_rate: SAMPLE_RATE_HZ,
         });
     }
-    // One coherent capture for dispatch, the legacy voice file and the
-    // Kokoro call.
     let synthesis = policy.synthesis();
-    debug!(provider = %synthesis.provider, "handling /tts_stream request");
-    if synthesis.provider == "kokoro" {
-        return handle_kokoro_tts(
-            cleaned,
-            synthesis.voice,
-            synthesis.voice_service_base_url,
-        )
-        .await;
-    }
-    // DEPRECATED: legacy external TTS provider
-    if synthesis.provider == "fish" {
-        let tts_base_url = policy.tts_base_url();
-        return handle_fish_speech(cleaned, tts_base_url).await;
-    }
+    let url = format!("{}/audio/speech", synthesis.base_url.trim_end_matches('/'));
+    debug!(url = %url, model = %synthesis.model, "sending TTS request");
 
-    debug!("using legacy external backend for /tts_stream");
-    let backend_request = BackendRequest {
-        text: cleaned,
-        voice_file: synthesis.voice,
+    let request = SpeechRequest {
+        model: synthesis.model,
+        input: cleaned,
+        voice: synthesis.voice,
+        response_format: "pcm",
     };
+    let mut builder = HTTP_CLIENT.post(&url).json(&request);
+    if let Some(key) = synthesis.api_key.as_deref() {
+        builder = builder.bearer_auth(key);
+    }
+    let response = builder.send().await.map_err(|err| {
+        error!(?err, "failed to reach TTS backend");
+        api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
+    })?;
 
-    // The endpoint is resolved fresh on each call.
-    let tts_base_url = policy.tts_base_url();
-    // We use the non-streaming endpoint to get the full bytes so we can apply a fade
-    let response = match post_backend(&backend_request, tts_base_url).await {
-        Ok(response) => response,
-        Err(err) => {
-            error!(?err, "failed to reach TTS backend for /tts_stream");
-            return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
-        }
-    };
+    let sample_rate: u32 = response
+        .headers()
+        .get("X-Sample-Rate")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .filter(|rate| *rate > 0)
+        .unwrap_or(synthesis.sample_rate);
 
     let status = response.status();
-    let mut bytes = response.bytes().await.map_err(|err| {
-        error!(?err, "failed to read /tts_stream backend response body");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
-    })?.to_vec();
+    let mut bytes = response
+        .bytes()
+        .await
+        .map_err(|err| {
+            error!(?err, "failed to read TTS response body");
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
+        })?
+        .to_vec();
 
     if !status.is_success() {
         let message = extract_backend_error(status, &bytes);
-        error!(?status, error_len = message.len(), "TTS backend returned error for /tts_stream");
-        return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "TTS generation failed"));
+        error!(?status, error_len = message.len(), "TTS backend returned error");
+        return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
     }
 
-    // Check for RIFF header and strip it if present to get raw PCM
-    if bytes.len() >= 44 && &bytes[0..4] == b"RIFF" {
-        debug!("stripping existing WAV header from backend response");
-        bytes = bytes.split_off(44);
-    }
-
-    // Apply a tiny fade to the PCM data to eliminate clicks
-    apply_pcm_fade(&mut bytes, SAMPLE_RATE_HZ);
-
+    apply_pcm_fade(&mut bytes, sample_rate);
     Ok(SynthesizedPcm {
         pcm: bytes,
-        sample_rate: SAMPLE_RATE_HZ,
+        sample_rate,
     })
 }
 
@@ -158,132 +137,6 @@ fn apply_pcm_fade(pcm: &mut [u8], sample_rate: u32) {
         let out_bytes = sample.to_le_bytes();
         pcm[end_idx * 2] = out_bytes[0];
         pcm[end_idx * 2 + 1] = out_bytes[1];
-    }
-}
-
-async fn handle_fish_speech(text: String, tts_base_url: String) -> Result<SynthesizedPcm, HttpError> {
-    let request = FishSpeechRequest {
-        text,
-        reference_id: "default".to_string(),
-        streaming: false,
-        format: "wav".to_string(),
-    };
-
-    let base = tts_base_url.trim_end_matches('/');
-    let url = format!("{base}/v1/tts");
-
-    debug!(url = %url, "sending request to fish speech backend");
-
-    let response = HTTP_CLIENT
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach Fish Speech backend");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let bytes = response.bytes().await.unwrap_or_default();
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, error_len = message.len(), "Fish Speech backend returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
-    }
-
-    let bytes = response.bytes().await.map_err(|err| {
-        error!(?err, "failed to read Fish Speech response body");
-        api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
-    })?;
-
-    let (pcm, rate) = wav_pcm_and_rate(&bytes);
-    Ok(SynthesizedPcm {
-        pcm: pcm.to_vec(),
-        sample_rate: rate,
-    })
-}
-
-async fn handle_kokoro_tts(
-    text: String,
-    voice: Option<String>,
-    voice_service_base_url: String,
-) -> Result<SynthesizedPcm, HttpError> {
-    let base = voice_service_base_url.trim_end_matches('/');
-    let url = format!("{base}/v1/tts/kokoro");
-
-    let voice = voice.unwrap_or_else(|| "af_heart".to_string());
-    let request = KokoroTtsRequest { text, voice };
-
-    debug!(url = %url, "sending request to Kokoro TTS voice service");
-
-    let response = HTTP_CLIENT
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach Kokoro TTS voice service");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
-        })?;
-
-    let sample_rate: u32 = response
-        .headers()
-        .get("X-Sample-Rate")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(24_000);
-
-    let status = response.status();
-    let mut bytes = response
-        .bytes()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to read Kokoro TTS response body");
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, "response read error")
-        })?
-        .to_vec();
-
-    if !status.is_success() {
-        let message = extract_backend_error(status, &bytes);
-        error!(?status, error_len = message.len(), "Kokoro TTS voice service returned error");
-        return Err(api_error(StatusCode::BAD_GATEWAY, "TTS backend provider error"));
-    }
-
-    apply_pcm_fade(&mut bytes, sample_rate);
-    Ok(SynthesizedPcm {
-        pcm: bytes,
-        sample_rate,
-    })
-}
-
-async fn post_backend(
-    payload: &BackendRequest,
-    tts_base_url: String,
-) -> Result<reqwest::Response, HttpError> {
-    let base = tts_base_url.trim_end_matches('/');
-    let url = format!("{base}/api/tts");
-
-    HTTP_CLIENT
-        .post(url)
-        .json(payload)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(?err, "failed to reach TTS backend");
-            api_error(StatusCode::BAD_GATEWAY, "TTS backend provider unreachable")
-        })
-}
-
-/// Split backend WAV bytes into raw PCM plus its declared rate. Passes
-/// headerless PCM through with the default rate.
-fn wav_pcm_and_rate(bytes: &[u8]) -> (&[u8], u32) {
-    if bytes.len() >= 44 && &bytes[0..4] == b"RIFF" {
-        let rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-        let rate = if rate > 0 { rate } else { SAMPLE_RATE_HZ };
-        (&bytes[44..], rate)
-    } else {
-        (bytes, SAMPLE_RATE_HZ)
     }
 }
 

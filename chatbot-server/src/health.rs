@@ -44,7 +44,10 @@ pub(crate) async fn handle_health(
     // no extra `redb` open), while owned routers check only their explicit
     // history without initializing the unrelated global database.
     let history_ok = services.chat().history().is_ok();
-    let voice_ok = probe_voice_service_with_base(&services.config_source().voice_service_base_url()).await;
+    let mut voice_ok = true;
+    for url in services.config_source().voice_health_urls() {
+        voice_ok &= probe_voice_health(&url).await;
+    }
 
     let checks = json!({
         "history": if history_ok { "ok" } else { "unavailable" },
@@ -72,8 +75,7 @@ pub(crate) async fn handle_health(
     )
 }
 
-async fn probe_voice_service_with_base(base_url: &str) -> bool {
-    let url = format!("{}/health", base_url.trim_end_matches('/'));
+async fn probe_voice_health(url: &str) -> bool {
 
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -86,7 +88,7 @@ async fn probe_voice_service_with_base(base_url: &str) -> bool {
         }
     };
 
-    match client.get(&url).send().await {
+    match client.get(url).send().await {
         Ok(response) if response.status().is_success() => true,
         Ok(response) => {
             warn!(

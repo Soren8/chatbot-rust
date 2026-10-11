@@ -1062,13 +1062,13 @@ fn helm_voice_service_enabled_is_sample_only_without_template() {
 }
 
 #[test]
-fn stt_enabled_is_parsed_but_unused_by_stt_route() {
+fn stt_enabled_is_removed_and_unused_by_stt_route() {
     assert!(
         !STT_ROUTE.contains("stt_enabled"),
-        "the /stt route must not gate on stt_enabled (parsed-but-unused is documented, not fixed here)"
+        "the /stt route must not gate on stt_enabled"
     );
     assert!(
-        HELM_README.contains("stt_enabled"),
-        "Helm README must document that stt_enabled is parsed but unused"
+        HELM_README.contains("`stt_enabled` is a removed"),
+        "Helm README must document that stt_enabled is a removed key"
     );
 }

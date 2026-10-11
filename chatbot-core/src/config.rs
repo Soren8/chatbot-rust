@@ -244,20 +244,109 @@ impl TtsAccess {
     }
 }
 
+/// OpenAI-compatible text-to-speech provider (`POST {base_url}/audio/speech`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TtsConfig {
+    #[serde(rename = "type", default = "default_voice_type")]
+    pub provider_type: String,
+    #[serde(default = "default_voice_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_tts_model")]
+    pub model_name: String,
+    #[serde(default)]
+    pub voice: Option<String>,
+    /// PCM rate used when the provider sends no `X-Sample-Rate` header.
+    #[serde(default = "default_tts_sample_rate")]
+    pub sample_rate: u32,
+    #[serde(default = "PrivacyLevel::default_destination")]
+    pub privacy_level: PrivacyLevel,
+    #[serde(default)]
+    pub health_url: Option<String>,
+}
+
+/// OpenAI-compatible speech-to-text provider
+/// (`POST {base_url}/audio/transcriptions`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SttConfig {
+    #[serde(rename = "type", default = "default_voice_type")]
+    pub provider_type: String,
+    #[serde(default = "default_voice_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_stt_model")]
+    pub model_name: String,
+    #[serde(default = "PrivacyLevel::default_destination")]
+    pub privacy_level: PrivacyLevel,
+    #[serde(default)]
+    pub health_url: Option<String>,
+}
+
+/// An omitted `tts:` block targets the local chatbot-voice service.
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            provider_type: default_voice_type(),
+            base_url: default_voice_base_url(),
+            api_key: None,
+            model_name: default_tts_model(),
+            voice: None,
+            sample_rate: default_tts_sample_rate(),
+            privacy_level: PrivacyLevel::default_destination(),
+            health_url: Some(DEFAULT_VOICE_HEALTH_URL.to_string()),
+        }
+    }
+}
+
+/// An omitted `stt:` block targets the local chatbot-voice service.
+impl Default for SttConfig {
+    fn default() -> Self {
+        Self {
+            provider_type: default_voice_type(),
+            base_url: default_voice_base_url(),
+            api_key: None,
+            model_name: default_stt_model(),
+            privacy_level: PrivacyLevel::default_destination(),
+            health_url: Some(DEFAULT_VOICE_HEALTH_URL.to_string()),
+        }
+    }
+}
+
+const DEFAULT_VOICE_HEALTH_URL: &str = "http://localhost:5100/health";
+
+fn default_voice_type() -> String {
+    "openai".to_string()
+}
+
+fn default_voice_base_url() -> String {
+    "http://localhost:5100/v1".to_string()
+}
+
+fn default_tts_model() -> String {
+    "kokoro".to_string()
+}
+
+fn default_stt_model() -> String {
+    "parakeet-tdt-0.6b-v2".to_string()
+}
+
+fn default_tts_sample_rate() -> u32 {
+    24_000
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub external_connections: ExternalConnectionsConfig,
     pub secret_key: String,
     pub host_data_dir: PathBuf,
     pub log_level: String,
-    pub tts_base_url: String,
-    pub tts_provider: String,
-    pub tts_voice: Option<String>,
+    pub tts: TtsConfig,
+    pub stt: SttConfig,
     /// Wire codec for /tts_stream responses: "opus" (Ogg-Opus, default) or
     /// "wav" (uncompressed PCM fallback for players without an Opus decoder).
     pub tts_codec: String,
-    pub voice_service_base_url: String,
-    pub stt_enabled: bool,
     /// Policy for who may use TTS on the webserver.
     pub tts_access: TtsAccess,
     pub default_system_prompt: String,
@@ -267,8 +356,6 @@ pub struct AppConfig {
     pub send_thoughts: bool,
     pub brave_api_key: Option<String>,
     pub search_providers: SearchProvidersConfig,
-    pub stt_privacy_level: PrivacyLevel,
-    pub tts_privacy_level: PrivacyLevel,
     /// Max requests per identity per rolling minute (`0` disables).
     pub rate_limit_per_user_per_minute: u32,
     /// Max requests across all identities per rolling minute (`0` disables).
@@ -349,10 +436,10 @@ struct RawConfig {
     llms: Vec<ProviderConfig>,
     #[serde(default)]
     search_providers: SearchProvidersConfig,
-    #[serde(default = "PrivacyLevel::default_destination")]
-    stt_privacy_level: PrivacyLevel,
-    #[serde(default = "PrivacyLevel::default_destination")]
-    tts_privacy_level: PrivacyLevel,
+    #[serde(default)]
+    tts: TtsConfig,
+    #[serde(default)]
+    stt: SttConfig,
     #[serde(default)]
     default_llm: Option<String>,
     #[serde(default)]
@@ -374,24 +461,9 @@ struct RawConfig {
     )]
     send_thoughts: Option<bool>,
     #[serde(default)]
-    tts_provider: Option<String>,
-    #[serde(default)]
     tts_codec: Option<String>,
     #[serde(default)]
-    tts_voice: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
-    stt_enabled: Option<bool>,
-    #[serde(default)]
     tts_access: Option<String>,
-    #[serde(default)]
-    voice_service_host: Option<String>,
-    #[serde(default)]
-    voice_service_port: Option<u16>,
-    /// Consumed by Compose / voice-service; accepted so schema validation stays
-    /// aligned with `.config.yml.example`.
-    #[serde(default)]
-    #[allow(dead_code)]
-    voice_gpu_device: Option<u32>,
     #[serde(default)]
     rate_limit_per_user_per_minute: Option<u32>,
     #[serde(default)]
@@ -485,36 +557,8 @@ fn load_app_config() -> AppConfig {
     let host_data_dir =
         PathBuf::from(env::var("HOST_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
     let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "INFO".to_string());
-    let tts_host = env::var("TTS_HOST").unwrap_or_else(|_| "localhost".to_string());
-    let tts_port = env::var("TTS_PORT").unwrap_or_else(|_| "5000".to_string());
-    let tts_base_url = format!("http://{tts_host}:{tts_port}");
-
     let raw_config = load_yaml_config().unwrap_or_default();
-
-    let voice_service_host = raw_config
-        .voice_service_host
-        .as_deref()
-        .unwrap_or("localhost")
-        .to_string();
-    let voice_service_port = raw_config.voice_service_port.unwrap_or(5100);
-    let voice_service_base_url = format!("http://{voice_service_host}:{voice_service_port}");
-
-    // TTS provider: env var overrides YAML, which defaults to kokoro
-    let tts_provider: String = if let Ok(env_value) = env::var("TTS_PROVIDER") {
-        env_value
-            .split('#')
-            .next()
-            .unwrap_or("kokoro")
-            .trim()
-            .to_lowercase()
-    } else if let Some(yaml_value) = raw_config.tts_provider {
-        yaml_value.to_lowercase()
-    } else {
-        "kokoro".to_string()
-    };
-    validate_tts_provider(&tts_provider);
-
-    debug!(tts_provider = %tts_provider, "loaded TTS provider configuration");
+    validate_voice_config(&raw_config.tts, &raw_config.stt);
 
     let mut providers = raw_config
         .llms
@@ -566,7 +610,6 @@ fn load_app_config() -> AppConfig {
 
     let save_thoughts = raw_config.save_thoughts.unwrap_or(true);
     let send_thoughts = raw_config.send_thoughts.unwrap_or(false);
-    let tts_voice = raw_config.tts_voice;
     let tts_codec = if let Ok(env_value) = env::var("TTS_CODEC") {
         validate_tts_codec(&env_value);
         env_value.trim().to_ascii_lowercase()
@@ -576,7 +619,6 @@ fn load_app_config() -> AppConfig {
     } else {
         "opus".to_string()
     };
-    let stt_enabled = raw_config.stt_enabled.unwrap_or(true);
     let tts_access = if let Ok(env_value) = env::var("TTS_ACCESS") {
         TtsAccess::parse(&env_value)
     } else if let Some(ref value) = raw_config.tts_access {
@@ -600,7 +642,6 @@ fn load_app_config() -> AppConfig {
         "effective config values for thinking tokens"
     );
 
-    debug!(tts_voice = ?tts_voice, "loaded TTS voice configuration");
 
     if brave_api_key.is_some() {
         info!("Brave Search configured");
@@ -623,12 +664,9 @@ fn load_app_config() -> AppConfig {
         secret_key,
         host_data_dir,
         log_level,
-        tts_base_url,
-        tts_provider,
-        tts_voice,
+        tts: raw_config.tts.clone(),
+        stt: raw_config.stt.clone(),
         tts_codec,
-        voice_service_base_url,
-        stt_enabled,
         tts_access,
         default_system_prompt,
         session_timeout,
@@ -637,8 +675,6 @@ fn load_app_config() -> AppConfig {
         send_thoughts,
         brave_api_key,
         search_providers: raw_config.search_providers,
-        stt_privacy_level: raw_config.stt_privacy_level,
-        tts_privacy_level: raw_config.tts_privacy_level,
         rate_limit_per_user_per_minute,
         rate_limit_global_per_minute,
         provider_order,
@@ -693,6 +729,7 @@ fn load_yaml_config_from_read(result: Result<String, std::io::Error>) -> Option<
 fn parse_yaml_config_contents(contents: &str) -> RawConfig {
     match serde_yaml::from_str::<Value>(contents) {
         Ok(value) => {
+            refuse_removed_voice_keys(&value);
             // Fail closed before substitution so plaintext secrets never load.
             refuse_plaintext_provider_secrets(&value);
 
@@ -722,18 +759,7 @@ const ALLOWED_PROVIDER_TIERS: &[&str] = &["free", "premium"];
 /// Upper bound for the per-provider `rate_limit_retries` key; guards against a
 /// pathological config hammering an upstream that is already rejecting us.
 const MAX_PROVIDER_RATE_LIMIT_RETRIES: u32 = 10;
-const ALLOWED_TTS_PROVIDERS: &[&str] = &["kokoro", "fish"];
 const ALLOWED_TTS_CODECS: &[&str] = &["opus", "wav"];
-
-fn validate_tts_provider(value: &str) {
-    let normalized = value.trim().to_lowercase();
-    if !ALLOWED_TTS_PROVIDERS.contains(&normalized.as_str()) {
-        panic!(
-            "invalid tts_provider '{value}'; expected one of {}",
-            ALLOWED_TTS_PROVIDERS.join(", ")
-        );
-    }
-}
 
 fn validate_tts_codec(value: &str) {
     let normalized = value.trim().to_lowercase();
@@ -750,10 +776,6 @@ fn validate_raw_config(config: &RawConfig) {
         if timeout == 0 {
             panic!("session_timeout must be greater than 0");
         }
-    }
-
-    if let Some(tts) = config.tts_provider.as_deref() {
-        validate_tts_provider(tts);
     }
 
     if let Some(access) = config.tts_access.as_deref() {
@@ -804,6 +826,59 @@ fn validate_raw_config(config: &RawConfig) {
     }
 }
 
+/// Top-level voice keys replaced by the `tts:` and `stt:` provider blocks.
+const REMOVED_VOICE_KEYS: &[&str] = &[
+    "tts_provider",
+    "tts_voice",
+    "voice_service_host",
+    "voice_service_port",
+    "voice_gpu_device",
+    "stt_enabled",
+    "stt_privacy_level",
+    "tts_privacy_level",
+];
+
+fn refuse_removed_voice_keys(value: &Value) {
+    let Value::Mapping(root) = value else {
+        return;
+    };
+    for key in REMOVED_VOICE_KEYS {
+        if root.contains_key(Value::String((*key).to_string())) {
+            panic!("deprecated config key {key}; configure voice in the tts: and stt: blocks");
+        }
+    }
+}
+
+fn validate_secret_value(api_key_val: &Value, path: &str, user_vars: &HashMap<String, String>) {
+    match api_key_val {
+        Value::Null => {}
+        Value::String(raw) if raw.trim().is_empty() => {}
+        Value::String(raw) => match env_var_ref_name(raw) {
+            Some(var_name) if user_vars.contains_key(var_name) => panic!(
+                "{path}.api_key references vars:{var_name}; API keys must use environment variables only"
+            ),
+            Some(_) => {}
+            None => panic!(
+                "{path}.api_key must be an environment variable reference, not a plaintext secret"
+            ),
+        },
+        _ => panic!(
+            "{path}.api_key must be a string environment variable reference, got a non-string value"
+        ),
+    }
+}
+
+fn validate_voice_config(tts: &TtsConfig, stt: &SttConfig) {
+    for (name, kind) in [("tts", &tts.provider_type), ("stt", &stt.provider_type)] {
+        if kind.trim().to_ascii_lowercase() != "openai" {
+            panic!("{name}.type must be openai");
+        }
+    }
+    if tts.sample_rate == 0 {
+        panic!("tts.sample_rate must be positive");
+    }
+}
+
 /// If `value` is exactly `${VAR}`, return `VAR`. Otherwise `None`.
 fn env_var_ref_name(value: &str) -> Option<&str> {
     static ENV_REF_RE: Lazy<Regex> =
@@ -820,10 +895,17 @@ fn refuse_plaintext_provider_secrets(value: &Value) {
     let Value::Mapping(root) = value else {
         return;
     };
+    let user_vars = extract_user_vars(value);
+    for block in ["tts", "stt"] {
+        if let Some(Value::Mapping(provider)) = root.get(Value::String(block.to_string())) {
+            if let Some(key) = provider.get(Value::String("api_key".to_string())) {
+                validate_secret_value(key, block, &user_vars);
+            }
+        }
+    }
     let Some(Value::Sequence(llms)) = root.get(Value::String("llms".to_string())) else {
         return;
     };
-    let user_vars = extract_user_vars(value);
 
     for (idx, entry) in llms.iter().enumerate() {
         let Value::Mapping(provider) = entry else {
@@ -1275,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid tts_provider")]
+    #[should_panic(expected = "deprecated config key tts_provider")]
     fn refuses_invalid_tts_provider() {
         let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1309,14 +1391,14 @@ mod tests {
     }
 
     #[test]
-    fn accepts_voice_gpu_device_and_valid_enums() {
+    fn accepts_valid_enums_without_voice_blocks() {
         let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".config.yml");
         let mut file = fs::File::create(&path).expect("create config");
         writeln!(
             file,
-            "tts_provider: kokoro\nvoice_gpu_device: 0\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    tier: free\n"
+            "llms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n    tier: free\n"
         )
         .expect("write config");
 
@@ -1324,7 +1406,7 @@ mod tests {
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         reset();
         let config = app_config();
-        assert_eq!(config.tts_provider, "kokoro");
+        assert_eq!(config.tts.model_name, "kokoro");
         assert_eq!(config.default_provider().tier.as_deref(), Some("free"));
         reset();
     }
@@ -1403,7 +1485,7 @@ mod tests {
         let _xai_guard = EnvVarGuard::set("XAI_API_KEY", "test-xai");
         reset();
         let config = app_config();
-        assert_eq!(config.tts_provider, "kokoro");
+        assert_eq!(config.tts.model_name, "kokoro");
         assert_eq!(config.session_timeout, 3600);
         assert!(config.csrf);
         assert_eq!(config.tts_access, TtsAccess::Anyone);
@@ -1585,19 +1667,93 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid tts_provider")]
-    fn refuses_invalid_tts_provider_env_override() {
+    #[should_panic(expected = "deprecated config key tts_voice")]
+    fn refuses_removed_tts_voice_key() {
         let _lock = test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(
             dir.path(),
-            "tts_provider: kokoro\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n",
+            "tts_voice: af_heart\nllms:\n  - provider_name: 'p'\n    type: 'openai'\n    model_name: 'm'\n",
         );
         let _cwd_guard = CwdGuard::change_to(dir.path());
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
-        let _tts_guard = EnvVarGuard::set("TTS_PROVIDER", "not-a-provider");
         reset();
         let _ = app_config();
+    }
+
+    #[test]
+    fn refuses_every_removed_voice_key() {
+        for key in REMOVED_VOICE_KEYS {
+            let contents = format!("{key}: x\nllms: []\n");
+            let panic = std::panic::catch_unwind(|| parse_yaml_config_contents(&contents))
+                .expect_err("removed voice key must panic");
+            let message = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                message.contains(&format!("deprecated config key {key}")),
+                "{key}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_voice_blocks_target_local_voice_service() {
+        let raw = parse_yaml_config_contents("llms: []\n");
+        assert_eq!(raw.tts.base_url, "http://localhost:5100/v1");
+        assert_eq!(raw.tts.model_name, "kokoro");
+        assert_eq!(raw.tts.sample_rate, 24_000);
+        assert_eq!(raw.tts.api_key, None);
+        assert_eq!(raw.tts.health_url.as_deref(), Some("http://localhost:5100/health"));
+        assert_eq!(raw.stt.base_url, "http://localhost:5100/v1");
+        assert_eq!(raw.stt.model_name, "parakeet-tdt-0.6b-v2");
+        assert_eq!(raw.stt.health_url.as_deref(), Some("http://localhost:5100/health"));
+    }
+
+    #[test]
+    fn parses_openrouter_voice_blocks_with_env_keys() {
+        let _lock = test_lock();
+        let _key_guard = EnvVarGuard::set("OPENROUTER_VOICE_TEST_KEY", "or-test-key");
+        let raw = parse_yaml_config_contents(
+            "tts:\n  type: openai\n  base_url: https://openrouter.ai/api/v1\n  api_key: '${OPENROUTER_VOICE_TEST_KEY}'\n  model_name: openai/gpt-4o-mini-tts\n  voice: alloy\n  privacy_level: non_private\nstt:\n  base_url: https://openrouter.ai/api/v1\n  api_key: '${OPENROUTER_VOICE_TEST_KEY}'\n  model_name: openai/whisper-large-v3-turbo\nllms: []\n",
+        );
+        assert_eq!(raw.tts.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(raw.tts.api_key.as_deref(), Some("or-test-key"));
+        assert_eq!(raw.tts.model_name, "openai/gpt-4o-mini-tts");
+        assert_eq!(raw.tts.voice.as_deref(), Some("alloy"));
+        assert_eq!(raw.tts.sample_rate, 24_000);
+        assert_eq!(raw.tts.privacy_level, PrivacyLevel::NonPrivate);
+        assert_eq!(raw.tts.health_url, None);
+        assert_eq!(raw.stt.api_key.as_deref(), Some("or-test-key"));
+        assert_eq!(raw.stt.model_name, "openai/whisper-large-v3-turbo");
+        assert_eq!(raw.stt.health_url, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "tts.api_key must be an environment variable reference")]
+    fn refuses_plaintext_tts_api_key() {
+        parse_yaml_config_contents("tts:\n  api_key: sk-plaintext\nllms: []\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "stt.api_key references vars:VOICE_KEY")]
+    fn refuses_vars_backed_stt_api_key() {
+        parse_yaml_config_contents(
+            "vars:\n  VOICE_KEY: sk-plaintext\nstt:\n  api_key: '${VOICE_KEY}'\nllms: []\n",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "stt.type must be openai")]
+    fn refuses_non_openai_voice_type() {
+        validate_voice_config(
+            &TtsConfig::default(),
+            &SttConfig {
+                provider_type: "fish".to_string(),
+                ..SttConfig::default()
+            },
+        );
     }
 
     #[test]
@@ -1700,15 +1856,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(
             dir.path(),
-            "tts_provider: kokoro\ndefault_llm: grok\nllms:\n  - provider_name: grok\n    type: xai\n    model_name: grok-3\n    tier: premium\n    api_key: '${XAI_API_KEY}'\n",
+            "default_llm: grok\nllms:\n  - provider_name: grok\n    type: xai\n    model_name: grok-3\n    tier: premium\n    api_key: '${XAI_API_KEY}'\n",
         );
         let _cwd_guard = CwdGuard::change_to(dir.path());
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         let _xai_guard = EnvVarGuard::set("XAI_API_KEY", "xai-test-key");
-        let _tts_guard = EnvVarGuard::set("TTS_PROVIDER", "fish");
         reset();
         let config = app_config();
-        assert_eq!(config.tts_provider, "fish");
         assert_eq!(config.default_provider().provider_type, "xai");
         assert_eq!(config.default_provider().tier.as_deref(), Some("premium"));
         assert_eq!(

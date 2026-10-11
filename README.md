@@ -30,7 +30,7 @@ Not a single line of code in this repository was written manually. Human work in
 
 ## Development Workflow
 1. Copy `.config.yml.example` to `.config.yml` and adjust provider settings.
-   Set `voice_service_host: localhost` in existing configs; the bridge voice service publishes only `127.0.0.1:5100`. The host-networked webserver uses `localhost` for host-based providers, not `host.docker.internal`.
+   Voice uses the `tts:` and `stt:` blocks (any OpenAI-compatible audio API, e.g. OpenRouter). Omitted blocks default to the standalone [chatbot-voice](../chatbot-voice) service on `localhost:5100`, started from that repo's compose. The host-networked webserver uses `localhost` for host-based providers, not `host.docker.internal`.
 1. Add API keys to environment variables or copy `.env.example` to `.env` and adjust.
 1. Run the integration and unit tests:
    ```bash
@@ -41,7 +41,7 @@ Not a single line of code in this repository was written manually. Human work in
    ```bash
    docker compose up --build
    ```
-   Webserver uses host networking and listens directly on port 80 by default; `CHATBOT_BIND_ADDR` controls the host listener (with `CHATBOT_PORT` as its default port). DNS, voice-service and tests remain on the Compose bridge. Webserver mounts `dns/host-resolv.conf` read-only to use the DNS sidecar. If `172.29.0.0/16` overlaps your network, set `DNS_SUBNET` and `DNS_ADDRESS` together, recreate the Compose default network, and set `WEB_RESOLV_CONF` to a host resolver file containing `nameserver <DNS_ADDRESS>`; Compose cannot substitute variables inside that file.
+   Webserver uses host networking and listens directly on port 80 by default; `CHATBOT_BIND_ADDR` controls the host listener (with `CHATBOT_PORT` as its default port). DNS and tests remain on the Compose bridge. Webserver mounts `dns/host-resolv.conf` read-only to use the DNS sidecar. If `172.29.0.0/16` overlaps your network, set `DNS_SUBNET` and `DNS_ADDRESS` together, recreate the Compose default network, and set `WEB_RESOLV_CONF` to a host resolver file containing `nameserver <DNS_ADDRESS>`; Compose cannot substitute variables inside that file.
    RUST_BUILD_TARGET=debug by default, you may want to set it to release.
 1. Keep caches under `temp/` as described in `AGENTS.md`.
 

@@ -2,7 +2,7 @@
 //!
 //! One [`ConfigSource`] handle selects the remaining route configuration for
 //! independently configured routers: CSRF policy, session-timeout seconds,
-//! the default system prompt and the voice-service endpoint. The global
+//! the default system prompt and the voice provider endpoints. The global
 //! handle touches neither config nor env on construction; each operation
 //! reads live globals when needed. Owned handles carry explicit values and
 //! never read ambient config or env.
@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use crate::config::{app_config, PrivacyLevel, ProviderConfig, SearchProvidersConfig};
+use crate::config::{app_config, PrivacyLevel, ProviderConfig, SearchProvidersConfig, SttConfig};
 
 /// Request configuration handle: global or owned.
 ///
@@ -26,7 +26,7 @@ struct OwnedRequestConfig {
     csrf: bool,
     session_timeout_secs: u64,
     default_system_prompt: String,
-    voice_service_base_url: String,
+    stt: SttConfig,
     destination_policy: Option<Arc<DestinationPolicy>>,
 }
 
@@ -71,21 +71,25 @@ impl DestinationPolicy {
 
 impl ConfigSource {
     /// Explicit owner: CSRF flag plus raw `session_timeout` seconds plus
-    /// default prompt plus voice-service base URL. Touches no config or env;
+    /// default prompt plus voice provider endpoints. Touches no config or env;
     /// inputs are used as-is. Callers apply the HTTP 60s floor (`max(60)`)
     /// at the same site as before when building cookie max-age.
     pub fn new(
         csrf: bool,
         session_timeout_secs: u64,
         default_system_prompt: String,
-        voice_service_base_url: String,
+        stt_base_url: String,
     ) -> Self {
         Self {
             owned: Some(Arc::new(OwnedRequestConfig {
                 csrf,
                 session_timeout_secs,
                 default_system_prompt,
-                voice_service_base_url,
+                stt: SttConfig {
+                    base_url: stt_base_url,
+                    health_url: None,
+                    ..SttConfig::default()
+                },
                 destination_policy: None,
             })),
         }
@@ -109,7 +113,7 @@ impl ConfigSource {
                     config.provider_names().iter().filter_map(|name| {
                         config.provider(name).map(|provider| (provider.provider_name.clone(), provider.privacy_level))
                     }),
-                    &config.search_providers, config.stt_privacy_level, config.tts_privacy_level,
+                    &config.search_providers, config.stt.privacy_level, config.tts.privacy_level,
                 )))
             }
         }
@@ -159,13 +163,40 @@ impl ConfigSource {
         }
     }
 
-    /// Voice-service base URL for STT proxying and deep-health probing.
-    /// Global reads live config on each call.
-    pub fn voice_service_base_url(&self) -> String {
+    /// Replaces the owned STT provider (endpoint, key, model, health URL).
+    pub fn with_stt(mut self, stt: SttConfig) -> Self {
+        let mut owned = self.owned.as_deref().cloned().expect("STT config requires owned ConfigSource");
+        owned.stt = stt;
+        self.owned = Some(Arc::new(owned));
+        self
+    }
+
+    /// STT provider for proxying. Global reads live config on each call.
+    pub fn stt(&self) -> SttConfig {
         match &self.owned {
-            Some(owned) => owned.voice_service_base_url.clone(),
-            None => app_config().voice_service_base_url.clone(),
+            Some(owned) => owned.stt.clone(),
+            None => app_config().stt.clone(),
         }
+    }
+
+    /// Distinct voice health URLs for deep health. Global reads live config
+    /// on each call; owned probes only its STT health URL.
+    pub fn voice_health_urls(&self) -> Vec<String> {
+        let candidates = match &self.owned {
+            Some(owned) => vec![owned.stt.health_url.clone()],
+            None => {
+                let config = app_config();
+                vec![config.tts.health_url.clone(), config.stt.health_url.clone()]
+            }
+        };
+        let mut urls: Vec<String> = Vec::new();
+        for url in candidates.into_iter().flatten() {
+            let url = url.trim().to_string();
+            if !url.is_empty() && !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
     }
 
     /// `Secure` cookie flag fragment (`" Secure;"` when CSRF is on, else
