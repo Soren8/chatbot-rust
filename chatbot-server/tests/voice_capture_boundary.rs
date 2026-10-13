@@ -1,11 +1,11 @@
 //! Contract for `static/voice-capture.js`: single owned browser voice
-//! capture (native PCM utterance VAD + desktop Silero factory) behind
+//! capture (native Silero-scored PCM + desktop Silero factory) behind
 //! explicit native-audio/lifecycle/clock/error/log/recorder hooks.
 //! `static/chat.js` keeps platform composition (bridge pointer, stop
 //! rendezvous, permission helper, voice-mode session UI) and thin adapters.
 //! Thresholds live in `static/native-audio.js` and the Silero config;
-//! the unit redefines none. Phase gates stay split: record at speech-like
-//! start, barge in only on confirmed real speech.
+//! the unit redefines none. Native probabilities control capture; barge-in
+//! remains a separate confirmed-speech duration gate.
 
 use std::path::Path;
 use std::process::Command;
@@ -144,11 +144,7 @@ fn voice_capture_single_authority_behind_explicit_hooks() {
         !unit.contains("window.") && !unit.contains("document."),
         "the shared unit must not touch window/document"
     );
-    for redefined in [
-        "SPEECH_START_FRAMES =",
-        "SPEECH_RMS_THRESHOLD =",
-        "REAL_SPEECH_MS =",
-    ] {
+    for redefined in ["SPEECH_START_MS =", "REAL_SPEECH_MS ="] {
         assert!(
             !unit.contains(redefined),
             "thresholds live in native-audio.js; the unit must use them, never redefine {redefined}"
@@ -165,17 +161,14 @@ fn voice_capture_single_authority_behind_explicit_hooks() {
     );
 }
 
-/// Phase gates stay split exactly as shipped: speech-like starts recording
-/// (voicing excluded), barge-in needs confirmed real speech on the
-/// flags-only session, and completion never barges in.
+/// Native Silero starts capture and confirmed neural speech interrupts TTS on the
+/// flags-only session; completion never triggers barge-in.
 #[test]
 fn voice_capture_gates_stay_split_on_the_flags_only_session() {
     let unit = capture_js();
     assert!(
-        function_contains(unit, "_maybeStartUtterance", "pcm16IsSpeechLike")
-            && !function_contains(unit, "_maybeStartUtterance", "pcm16IsVoicedSpeech")
-            && !function_contains(unit, "_maybeStartUtterance", "pcm16RealSpeechDetected"),
-        "recording start is speech-like only (coughs may record; they must not barge in)"
+        unit.contains("probability >= 0.3") && unit.contains("SPEECH_START_MS"),
+        "native recording start uses Silero confidence"
     );
     assert!(
         !function_contains(unit, "_beginUtterance", "onBargeIn"),
@@ -183,18 +176,18 @@ fn voice_capture_gates_stay_split_on_the_flags_only_session() {
     );
     assert!(
         function_contains(unit, "_maybeBargeIn", "onBargeIn")
-            && function_contains(unit, "_maybeBargeIn", "pcm16RealSpeechDetected")
+            && function_contains(unit, "_maybeBargeIn", "REAL_SPEECH_MS")
             && function_contains(unit, "_maybeBargeIn", "hasActiveVoiceSession")
             && function_contains(unit, "_accumulateUtterance", "_maybeBargeIn")
             && function_contains(unit, "_beginUtterance", "_maybeBargeIn"),
-        "barge-in at real-speech confirm on the flags-only session, checked as audio accumulates"
+        "barge-in at neural speech confirmation on the flags-only session"
     );
     assert!(
         !function_contains(unit, "_endUtterance", "onBargeIn"),
         "do not wait for the utterance to finish before stopping TTS"
     );
     assert!(
-        function_contains(unit, "_onNativePcm", "_maybeStartUtterance")
+        function_contains(unit, "_onNativePcm", "speechEvidenceMs")
             && function_contains(unit, "_onNativePcm", "hasActiveVoiceSession"),
         "speech start during a TTS session uses the utterance start gate on the owned flags-only session"
     );

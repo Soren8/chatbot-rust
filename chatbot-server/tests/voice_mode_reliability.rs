@@ -570,16 +570,14 @@ fn voice_mode_leaves_bluetooth_route_alone() {
     );
 }
 
-/// Far-field speech is much quieter than close-talk. 1400 RMS required the
-/// mouth on the phone; speakerphone VAD must accept table-distance speech.
+/// Native speech classification uses Silero confidence rather than a PCM energy floor.
 #[test]
-fn native_vad_rms_threshold_accepts_speakerphone_distance() {
+fn native_vad_uses_model_scores_independent_of_pcm_level() {
     let native_audio = include_str!("../../static/native-audio.js");
-    let threshold = parse_js_int_const(native_audio, "SPEECH_RMS_THRESHOLD")
-        .expect("SPEECH_RMS_THRESHOLD must be declared in native-audio.js");
     assert!(
-        (300..=800).contains(&threshold),
-        "SPEECH_RMS_THRESHOLD={threshold} is not a speakerphone-distance gate"
+        !native_audio.contains("SPEECH_RMS_THRESHOLD")
+            && native_audio.contains("SPEECH_MIN_ACTIVE_MS = 400"),
+        "native PCM amplitude must not classify speech; Silero scores provide the gate"
     );
 }
 
@@ -744,10 +742,10 @@ fn sticky_scrollback_yields_to_upward_user_scroll() {
     );
 }
 
-/// Record from speech-like start (Silero onSpeechStart). Stop TTS only when
-/// real speech is confirmed (onSpeechRealStart / REAL_SPEECH_MS), immediately
+/// Record from native Silero confidence. Stop TTS only when
+/// speech is confirmed (REAL_SPEECH_MS), immediately
 /// at that point — not on cough/"hey", not when the utterance ends.
-/// SPEECH_MIN_ACTIVE_MS is only for sending to STT. Desktop Silero is unchanged.
+/// SPEECH_MIN_ACTIVE_MS gates STT acceptance. Desktop Silero is unchanged.
 #[test]
 fn native_tts_barge_in_on_initial_speech() {
     let chat_js = include_str!("../../static/chat.js");
@@ -763,18 +761,15 @@ fn native_tts_barge_in_on_initial_speech() {
         "TTS barge-in must not trip on a short RMS energy burst"
     );
     assert!(
-        native_audio.contains("function pcm16IsSpeechLike")
-            && native_audio.contains("function pcm16IsVoicedSpeech")
-            && native_audio.contains("function pcm16RealSpeechDetected")
-            && native_audio.contains("REAL_SPEECH_MS")
-            && native_audio.contains("SPEECH_PERIODICITY_MIN"),
-        "native VAD must separate recording-start from real-speech barge-in"
+        !native_audio.contains("function pcm16IsSpeechLike")
+            && !native_audio.contains("function pcm16IsVoicedSpeech")
+            && native_audio.contains("REAL_SPEECH_MS"),
+        "native VAD must use Silero confidence and keep the separate barge-in gate"
     );
     assert!(
-        function_contains(capture_js, "_maybeStartUtterance", "pcm16IsSpeechLike")
-            && !function_contains(capture_js, "_maybeStartUtterance", "pcm16IsVoicedSpeech")
-            && !function_contains(capture_js, "_maybeStartUtterance", "pcm16RealSpeechDetected"),
-        "recording start is speech-like only (coughs may record; they must not barge in)"
+        capture_js.contains("probability >= 0.3")
+            && capture_js.contains("SPEECH_START_MS"),
+        "recording start uses fresh native Silero confidence"
     );
     assert!(
         !function_contains(capture_js, "_beginUtterance", "onBargeIn"),
@@ -782,10 +777,10 @@ fn native_tts_barge_in_on_initial_speech() {
     );
     assert!(
         function_contains(capture_js, "_maybeBargeIn", "onBargeIn")
-            && function_contains(capture_js, "_maybeBargeIn", "pcm16RealSpeechDetected")
+            && function_contains(capture_js, "_maybeBargeIn", "REAL_SPEECH_MS")
             && function_contains(capture_js, "_accumulateUtterance", "_maybeBargeIn")
-            && function_contains(capture_js, "_beginUtterance", "_maybeBargeIn"),
-        "barge-in at real-speech confirm, checked as audio accumulates, not at end-of-speech"
+            && function_contains(capture_js, "_accumulateUtterance", "speechLikeMs"),
+        "barge-in uses sustained neural speech and is checked during capture, not at end-of-speech"
     );
     assert!(
         !function_contains(capture_js, "_endUtterance", "onBargeIn"),
@@ -795,16 +790,16 @@ fn native_tts_barge_in_on_initial_speech() {
         .expect("REAL_SPEECH_MS must be declared in native-audio.js");
     assert!(
         (500..=700).contains(&real_ms),
-        "REAL_SPEECH_MS={real_ms} should be ~1.5× desktop minSpeechMs (400)"
+        "REAL_SPEECH_MS={real_ms} preserves the delayed barge-in confirmation"
     );
     assert!(
         capture_js.contains("minSpeechMs: 400") || capture_js.contains("minSpeechMs:400"),
-        "desktop Silero minSpeechMs stays 400; native duration is the looser energy gate"
+        "desktop Silero minSpeechMs stays 400"
     );
     assert!(
-        function_contains(capture_js, "_onNativePcm", "_maybeStartUtterance")
+        function_contains(capture_js, "_onNativePcm", "speechEvidenceMs")
             && function_contains(capture_js, "_onNativePcm", "hasActiveVoiceSession"),
-        "speech start during a TTS session must use the utterance start gate on the owned flags-only session"
+        "speech start during TTS uses the native Silero gate on the owned flags-only session"
     );
     let voice_lifecycle = include_str!("../../static/voice-lifecycle.js");
     assert!(
@@ -834,17 +829,17 @@ fn native_tts_barge_in_on_initial_speech() {
             && chat_js.contains("function createVAD("),
         "chat must delegate owned capture to the shared unit via thin adapters"
     );
-    let start_frames = parse_js_int_const(native_audio, "SPEECH_START_FRAMES")
-        .expect("SPEECH_START_FRAMES must be declared in native-audio.js");
+    let start_frames = parse_js_int_const(native_audio, "SPEECH_START_MS")
+        .expect("SPEECH_START_MS must be declared in native-audio.js");
     assert!(
-        (3..=8).contains(&start_frames),
-        "SPEECH_START_FRAMES={start_frames} should be a short initial-speech gate"
+        (100..=160).contains(&start_frames),
+        "SPEECH_START_MS={start_frames} should remain a short initial-speech gate"
     );
     let min_speech_ms = parse_js_int_const(native_audio, "SPEECH_MIN_ACTIVE_MS")
         .expect("SPEECH_MIN_ACTIVE_MS must be declared in native-audio.js");
     assert!(
         min_speech_ms >= 300,
-        "SPEECH_MIN_ACTIVE_MS={min_speech_ms} is too short to reject noise bursts at STT"
+        "SPEECH_MIN_ACTIVE_MS={min_speech_ms} is too short to reject short sounds at STT"
     );
     let dual = include_str!("native_vad_speech_like.rs");
     assert!(
@@ -879,19 +874,14 @@ fn native_vad_keeps_leading_audio_and_longer_end_silence() {
         "SPEECH_PREROLL_SAMPLES={preroll} must cover ~300ms so unvoiced onsets reach STT"
     );
 
-    assert!(
-        function_contains(capture_js, "_maybeStartUtterance", "startGateChunks")
-            && function_contains(capture_js, "_beginUtterance", "startChunks"),
-        "speech-like start-gate frames must be kept for the utterance"
-    );
+    assert!(capture_js.contains("preRollBuffer.snapshotChunks()"), "pre-roll PCM is kept for STT");
     assert!(
         function_contains(capture_js, "_beginUtterance", "startChunks")
             && !capture_js.contains("utterance begin (during TTS, no pre-roll)"),
         "TTS barge-in must keep start-gate audio, not start the utterance empty"
     );
     assert!(
-        !function_contains(capture_js, "_maybeStartUtterance", "vadSttInProgress")
-            && !function_contains(capture_js, "_beginUtterance", "vadSttInProgress"),
+        !function_contains(capture_js, "_beginUtterance", "vadSttInProgress"),
         "STT in flight must not drop the start of the next utterance"
     );
     assert!(

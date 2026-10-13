@@ -193,6 +193,8 @@ public class NativeMicPlugin extends Plugin {
             return;
         }
 
+        final boolean vadEnabled = Boolean.TRUE.equals(call.getBoolean("vad"));
+        SileroVadStream vadStream = null;
         int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
         if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
             Log.e(TAG, "Invalid buffer size: " + bufferSize);
@@ -223,6 +225,11 @@ public class NativeMicPlugin extends Plugin {
                 return;
             }
 
+            if (vadEnabled) {
+                vadStream = new SileroVadStream(
+                        SileroVadOnnxModel.fromAssets(getContext().getAssets()));
+            }
+
             FileLogger.log(TAG, "AudioRecord source=" + recording.getAudioSource()
                     + " routeActive=" + sessionCoordinator.isRouteActive());
             enableAudioEffects(recording.getAudioSessionId());
@@ -232,29 +239,70 @@ public class NativeMicPlugin extends Plugin {
             isRecording = true;
 
             final int readSamples = NativeMicCapture.readSamples(bufferSize);
+            final SileroVadStream captureVadStream = vadStream;
             recordingThread = new Thread(() -> {
-                int readError = NativeMicCapture.run(
-                        (buffer, offset, length) -> recording.read(buffer, offset, length),
-                        readSamples,
-                        () -> isRecording && audioRecord == recording,
-                        pcm -> notifyAudioData(pcm, generation));
-                if (readError < 0) {
-                    onCaptureReadError(readError, generation);
+                try {
+                    int readError = NativeMicCapture.run(
+                            (buffer, offset, length) -> recording.read(buffer, offset, length),
+                            readSamples,
+                            () -> isRecording && audioRecord == recording,
+                            pcm -> {
+                                SileroVadStream.Evidence evidence;
+                                try {
+                                    evidence = captureVadStream == null
+                                            ? SileroVadStream.Evidence.none()
+                                            : captureVadStream.accept(pcm);
+                                } catch (Exception error) {
+                                    throw new IllegalStateException(
+                                            "Native Silero VAD inference failed", error);
+                                }
+                                notifyAudioData(pcm, generation,
+                                        captureVadStream == null ? null : evidence);
+                            });
+                    if (readError < 0) {
+                        onCaptureReadError(readError, generation);
+                    }
+                } catch (Exception | LinkageError error) {
+                    if (captureVadStream != null) {
+                        onVadInferenceError(generation);
+                    } else {
+                        FileLogger.log(TAG, "Audio capture callback failed", error);
+                    }
+                } finally {
+                    if (captureVadStream != null) {
+                        try {
+                            captureVadStream.close();
+                        } catch (Exception error) {
+                            FileLogger.log(TAG, "Silero VAD session close failed", error);
+                        }
+                    }
                 }
             });
             recordingThread.start();
+            // The capture thread now owns the session and closes it after leaving its read loop.
+            vadStream = null;
 
             JSObject result = new JSObject();
             result.put("started", true);
+            result.put("vadEnabled", vadEnabled);
             ClientLogReporter.report("VOICE", "voice: mic capture started routeActive="
                     + sessionCoordinator.isRouteActive());
             call.resolve(result);
 
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
+            if (vadStream != null) {
+                try {
+                    vadStream.close();
+                } catch (Exception closeError) {
+                    FileLogger.log(TAG, "Silero VAD startup cleanup failed", closeError);
+                }
+            }
             FileLogger.log(TAG, "ERROR start: " + e.getMessage(), e);
             ClientLogReporter.report("VOICE-ERROR", "voice: mic start threw");
             stopRecording();
-            call.reject("Failed to start recording: " + e.getMessage());
+            call.reject(vadEnabled
+                    ? "Native Silero VAD failed to initialize; Voice Mode was not started"
+                    : "Failed to start recording: " + e.getMessage());
         }
     }
 
@@ -783,7 +831,8 @@ public class NativeMicPlugin extends Plugin {
         });
     }
 
-    private void notifyAudioData(byte[] pcmData, long generation) {
+    private void notifyAudioData(byte[] pcmData, long generation,
+            SileroVadStream.Evidence evidence) {
         mainHandler.post(() -> {
             if (!isRecording || generation != recordingGeneration.get()) {
                 return;
@@ -791,7 +840,27 @@ public class NativeMicPlugin extends Plugin {
             JSObject ret = new JSObject();
             ret.put("type", "audioData");
             ret.put("data", android.util.Base64.encodeToString(pcmData, android.util.Base64.NO_WRAP));
+            if (evidence != null) {
+                ret.put("vadDurationMs", evidence.durationMs());
+                if (evidence.hasScore()) {
+                    ret.put("vadProbability", evidence.probability());
+                }
+            }
             notifyListeners("nativeMicData", ret);
+        });
+    }
+
+    private void onVadInferenceError(long generation) {
+        mainHandler.post(() -> {
+            if (!isRecording || generation != recordingGeneration.get()) {
+                return;
+            }
+            JSObject error = new JSObject();
+            error.put("type", "vadError");
+            error.put("message", "Native Silero VAD failed during capture");
+            notifyListeners("nativeMicError", error);
+            ClientLogReporter.report("VOICE-ERROR", "voice: native Silero VAD failed");
+            stopRecording();
         });
     }
 

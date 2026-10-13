@@ -1,202 +1,212 @@
 'use strict';
-// Dual invariant on the SHIPPED native capture (static/voice-capture.js) with
-// the SHIPPED thresholds (static/native-audio.js) and the REAL voice
-// lifecycle owner: a cough and a short "hey" must record but never stop TTS;
-// sustained noisy speech must stop TTS at real-speech confirm
-// (REAL_SPEECH_MS), not at utterance start or end-of-speech. No simulation of
-// the gate logic here — the assertions drive the actual class frame by frame.
-// Deterministic synth below ports native_vad_speech_like.rs exactly.
+// Drives the shipped native capture state machine using the same 20 ms PCM
+// events and sparse 32 ms Silero metadata emitted by NativeMic.
 const assert = require('node:assert/strict');
-
-const capturePath = process.argv[2];
-const nativeAudioPath = process.argv[3];
-const lifecyclePath = process.argv[4];
-const vadBundlePath = capturePath && require('node:path').join(require('node:path').dirname(capturePath), 'deps/vad/bundle.min.js');
-assert(
-  capturePath && nativeAudioPath && lifecyclePath && vadBundlePath,
-  'usage: node voice_capture_test.js <static/voice-capture.js> <static/native-audio.js> <static/voice-lifecycle.js>'
-);
-const capture = require(capturePath);
-require(nativeAudioPath);
-const NativeAudio = globalThis.NativeAudio;
-assert(NativeAudio && typeof NativeAudio.pcm16IsSpeechLike === 'function',
-  'native-audio.js must set globalThis.NativeAudio');
-const lifecycleMod = require(lifecyclePath);
 const fs = require('node:fs');
 const vm = require('node:vm');
+const path = require('node:path');
+const capture = require(process.argv[2]);
+require(process.argv[3]);
+const NativeAudio = globalThis.NativeAudio;
+const lifecycleMod = require(process.argv[4]);
 const vadGlobal = { ort: {}, console };
 vadGlobal.self = vadGlobal;
-vm.runInNewContext(fs.readFileSync(vadBundlePath, 'utf8'), vadGlobal);
+vm.runInNewContext(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'deps/vad/bundle.min.js'), 'utf8'), vadGlobal);
 const vadBundle = vadGlobal.vad;
 
-const SR = 16000;
-const FRAME = 320; // 20 ms @ 16 kHz
-const FRAME_MS = 20;
-
-function lcgWhite(i) {
-  let bits = (Math.imul((i + 1) >>> 0, 747796405) + 2891336453) >>> 0;
-  bits ^= bits >>> 16;
-  bits >>>= 0;
-  bits = Math.imul(bits, 2246822519) >>> 0;
-  bits ^= bits >>> 13;
-  bits >>>= 0;
-  return (bits / 4294967295) * 2 - 1;
-}
-
-function sineFrame(freqHz, amp, n, sampleRate) {
-  const out = new Int16Array(n);
-  for (let i = 0; i < n; i++) {
-    out[i] = Math.round(Math.sin(2 * Math.PI * freqHz * i / sampleRate) * amp);
-  }
-  return out;
-}
-
-function noisyVowel(freqHz, amp, n, sampleRate, noiseGain) {
-  let lp = 0;
-  const out = new Int16Array(n);
-  for (let i = 0; i < n; i++) {
-    const s = Math.sin(2 * Math.PI * freqHz * i / sampleRate) * amp;
-    lp = lp * 0.75 + lcgWhite(i + 99) * 0.25;
-    out[i] = Math.max(-32768, Math.min(32767, Math.round(s + lp * noiseGain * 8000)));
-  }
-  return out;
-}
-
-function coughBurst(n, sampleRate) {
-  let lp = 0;
-  const out = new Int16Array(n);
-  for (let i = 0; i < n; i++) {
-    if (i === 0) { out[i] = 25000; continue; }
-    if (i === 1) { out[i] = -20000; continue; }
-    const white = lcgWhite(i);
-    lp = lp * 0.75 + white * 0.25;
-    const t = i / sampleRate;
-    const env = Math.exp(-t / 0.10);
-    out[i] = Math.max(-32768, Math.min(32767, Math.round(lp * env * 16000)));
-  }
-  return out;
-}
-
-function framesOf(pcm, frameSize) {
-  const frames = [];
-  for (let i = 0; i + frameSize <= pcm.length; i += frameSize) {
-    frames.push(pcm.slice(i, i + frameSize));
-  }
-  return frames;
-}
-
-function makeLifecycle(voiceModeActive) {
+const FRAME_SAMPLES = 320;
+const scoreCadence = [0, 32, 0, 32, 32];
+let scoreCadenceIndex = 0;
+function makeLifecycle(ttsActive) {
   const lifecycle = lifecycleMod.createVoiceLifecycle({
-    now: () => Date.now(),
-    createAudio: () => null,
-    createAbortController: () => new AbortController(),
-    revokeUrl: () => {},
-    resetPlayButton: () => {},
-    clearMessageUi: () => {},
-    syncSendButton: () => {},
-    isVoiceModeActive: () => !!voiceModeActive,
-    stopNativePlayback: () => {},
+    now: () => Date.now(), createAudio: () => null,
+    createAbortController: () => new AbortController(), revokeUrl: () => {},
+    resetPlayButton: () => {}, clearMessageUi: () => {}, syncSendButton: () => {},
+    isVoiceModeActive: () => true, stopNativePlayback: () => {},
   });
   lifecycle.stopDesktopPlayback();
-  if (voiceModeActive) lifecycle.beginDesktopPlayback({});
+  if (ttsActive) lifecycle.beginDesktopPlayback({});
   return lifecycle;
 }
-
 function makeHost(lifecycle, hooks) {
   hooks = hooks || {};
   return {
-    nativeAudio: NativeAudio,
-    voiceLifecycle: lifecycle,
-    now: () => Date.now(),
-    log: () => {},
-    report: () => {},
-    reportThrottled: () => {},
+    nativeAudio: NativeAudio, voiceLifecycle: lifecycle,
+    now: () => Date.now(), log: () => {}, report: () => {}, reportThrottled: () => {},
     isVoiceModeActive: () => true,
     onBargeIn: hooks.onBargeIn || (() => {}),
     onUtteranceEnd: hooks.onUtteranceEnd || (() => {}),
     onUtteranceStartedAt: hooks.onUtteranceStartedAt || (() => {}),
     recorder: {
-      ensurePermission: async () => {},
-      start: async () => {},
-      stop: async () => {},
-      addListener: () => ({ remove() {} }),
+      ensurePermission: async () => {}, start: async (options) => { hooks.startOptions = options; return { vadEnabled: true }; },
+      stop: async () => { hooks.stops = (hooks.stops || 0) + 1; },
+      addListener: (name, callback) => {
+        hooks.listeners = hooks.listeners || {};
+        hooks.listeners[name] = callback;
+        return { remove() { delete hooks.listeners[name]; } };
+      },
     },
     registry: {
-      isCurrent: () => true,
-      getStopPromise: () => null,
-      setStopPromise: () => {},
+      isCurrent: (inst) => hooks.current === inst,
+      getStopPromise: () => hooks.stopPromise || null,
+      setStopPromise: (promise) => { hooks.stopPromise = promise; },
     },
   };
 }
-
-function feedAll(vad, frames) {
-  for (const frame of frames) vad._onNativePcm(frame);
+function sendPacket(vad, durationMs, probability, amplitude) {
+  vad._onNativePcm(new Int16Array(FRAME_SAMPLES).fill(amplitude || 0),
+    durationMs ? probability : null, durationMs);
+}
+function feedFresh(vad, probability, count, amplitude) {
+  for (let n = 0; n < count; n++) {
+    let duration;
+    do {
+      duration = scoreCadence[scoreCadenceIndex++ % scoreCadence.length];
+      sendPacket(vad, duration, probability, amplitude);
+    } while (duration === 0);
+  }
+}
+function readyVad(tts, hooks) {
+  hooks = hooks || {};
+  const host = makeHost(makeLifecycle(tts), hooks);
+  const vad = new capture.NativeMicUtteranceVAD(host, hooks && hooks.onError);
+  hooks.current = vad;
+  vad.isRecording = true;
+  return { vad, host };
 }
 
 (async () => {
   const failures = [];
-  const check = (name, fn) => {
-    try { fn(); } catch (error) {
-      failures.push(name + ': ' + (error && error.message ? error.message : String(error)));
-    }
-  };
-  const checkAsync = async (name, fn) => {
-    try { await fn(); } catch (error) {
-      failures.push(name + ': ' + (error && error.message ? error.message : String(error)));
-    }
-  };
+  const check = (name, fn) => { try { fn(); } catch (e) { failures.push(name + ': ' + e.message); } };
+  const checkAsync = async (name, fn) => { try { await fn(); } catch (e) { failures.push(name + ': ' + e.message); } };
 
-  // Preconditions on the shipped classifiers (same bar as the Rust dual test:
-  // duration+voicing must reject the cough, not the start gate).
-  const cough = framesOf(coughBurst(FRAME * 16, SR), FRAME);
-  check('cough body is speech-like (start gate reaches it)', () => {
-    let body = 0;
-    for (let f = 1; f < 9; f++) {
-      if (NativeAudio.pcm16IsSpeechLike(cough[f])) body++;
-    }
-    assert(body >= 6, 'cough body speech-like ' + body + '/8');
-  });
-  check('cough rolling window is not voiced', () => {
-    const win = NativeAudio.mergePcm16Chunks(cough.slice(1, 1 + 5));
-    assert(!NativeAudio.pcm16IsVoicedSpeech(win), 'cough window must not look voiced');
+  check('loud confidence-negative coughs and background noise never start capture', () => {
+    const { vad } = readyVad(false);
+    feedFresh(vad, 0.05, 100, 24000); // 3.2 seconds of loud negative frames
+    assert.equal(vad.inSpeech, false);
+    assert.equal(vad.hasSpeechCapture(), false);
   });
 
-  const speech = noisyVowel(200.0, 1200, FRAME * 40, SR, 0.35);
-  const speechFrames = framesOf(speech, FRAME);
-  const hey = speechFrames.slice(0, 10);
+  check('positive neural speech starts capture after 120 ms evidence', () => {
+    const { vad } = readyVad(false);
+    feedFresh(vad, 0.5, 3, 1000);
+    assert.equal(vad.inSpeech, false, '96 ms must not pass the start gate');
+    feedFresh(vad, 0.5, 1, 1000);
+    assert.equal(vad.inSpeech, true, '128 ms fresh neural evidence starts capture');
+    assert(vad.hasSpeechCapture(), 'pre-roll PCM is retained');
+  });
 
-  check('high-energy non-speech after utterance reaches end-of-speech', () => {
+  check('short hey records without stopping TTS', () => {
+    let barges = 0;
+    const { vad } = readyVad(true, { onBargeIn: () => { barges++; } });
+    feedFresh(vad, 0.8, 6, 1800); // 192 ms
+    assert.equal(vad.inSpeech, true);
+    assert.equal(barges, 0);
+  });
+
+  check('sustained speech stops TTS at 600 ms confirmation, before silence', () => {
+    let barges = 0;
+    let at = 0;
+    const hooks = { onBargeIn: () => { barges++; at = vad.speechLikeMs; } };
+    const { vad } = readyVad(true, hooks);
+    feedFresh(vad, 0.7, 19, 1300); // 608 ms total positive evidence
+    assert.equal(barges, 1);
+    assert(at >= 600 && at < 640, 'confirm at ' + at + ' ms');
+    assert.equal(vad.inSpeech, true, 'barge-in occurs during capture, before end silence');
+  });
+
+  check('idle listen records without barging in', () => {
+    let barges = 0;
+    const { vad } = readyVad(false, { onBargeIn: () => { barges++; } });
+    feedFresh(vad, 0.7, 100, 1200); // sustained speech while no TTS session is active
+    assert(vad.inSpeech, 'idle listen records speech');
+    assert.equal(barges, 0, 'idle listen never interrupts');
+  });
+
+  check('cough and hey do not barge in; sustained speech does at confirmation', () => {
+    let barges = 0;
+    const cough = readyVad(true, { onBargeIn: () => { barges++; } }).vad;
+    feedFresh(cough, 0.05, 24, 24000); // repeated loud cough/noise confidence negatives
+    assert.equal(cough.inSpeech, false);
+    assert.equal(barges, 0);
+
+    const hey = readyVad(true, { onBargeIn: () => { barges++; } }).vad;
+    feedFresh(hey, 0.8, 6, 1800); // 192 ms
+    assert.equal(hey.inSpeech, true);
+    assert.equal(barges, 0, 'short hey does not interrupt');
+
+    const talk = readyVad(true, { onBargeIn: () => { barges++; } }).vad;
+    feedFresh(talk, 0.7, 19, 1300);
+    assert.equal(barges, 1, 'sustained speech interrupts exactly once');
+    assert(talk.inSpeech, 'barge-in occurs before silence/end-of-utterance');
+  });
+
+  check('negative confidence ends a valid sentence after 1.5 seconds', () => {
     let ended = 0;
-    const vad = new capture.NativeMicUtteranceVAD(
-      makeHost(makeLifecycle(false), { onUtteranceEnd: () => { ended++; } }), () => {});
-    vad.isRecording = true;
-    feedAll(vad, framesOf(noisyVowel(200.0, 1200, FRAME * 30, SR, 0.35), FRAME));
-    assert(vad.inSpeech, 'speech fixture must start an utterance');
-    const hiss = sineFrame(4000, 4000, FRAME, SR);
-    const endFrames = Math.ceil(NativeAudio.SPEECH_END_SILENCE_MS / FRAME_MS);
-    for (let i = 0; i < endFrames; i++) vad._onNativePcm(hiss);
-    assert.equal(ended, 1, 'sustained high-RMS hiss must not keep silence at zero forever');
-    assert.equal(vad.inSpeech, false, 'utterance should end after non-speech silence threshold');
+    const { vad } = readyVad(false, { onUtteranceEnd: () => { ended++; } });
+    feedFresh(vad, 0.8, 16, 900); // 512 ms speech
+    assert.equal(vad.inSpeech, true);
+    feedFresh(vad, 0.05, 48, 18000);
+    assert.equal(vad.inSpeech, false);
+    assert.equal(ended, 1);
   });
 
-  await checkAsync('desktop Silero starts normal speech before a short trailing phrase can misfire', async () => {
+  await checkAsync('voice-mode opts into native Silero and rejects an old APK response', async () => {
+    const calls = [];
+    const hooks = { current: null };
+    const host = makeHost(makeLifecycle(false), hooks);
+    host.recorder.start = async (options) => { calls.push(options); return { vadEnabled: true }; };
+    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
+    hooks.current = vad;
+    await vad.start();
+    assert.deepEqual(calls, [{ vad: true }]);
+    await vad.stop();
+
+    const oldHooks = { current: null };
+    const oldHost = makeHost(makeLifecycle(false), oldHooks);
+    oldHost.recorder.start = async () => ({ started: true });
+    const oldVad = new capture.NativeMicUtteranceVAD(oldHost, () => {});
+    oldHooks.current = oldVad;
+    oldHost.registry.isCurrent = (inst) => inst === oldVad;
+    await assert.rejects(() => oldVad.start(), /Native Silero VAD unavailable/);
+    assert.equal(oldHooks.stops, 1, 'old plugin that started recording must be stopped');
+  });
+
+  await checkAsync('permission resolves before native Silero capture starts', async () => {
+    const calls = [];
+    const hooks = { current: null };
+    const host = makeHost(makeLifecycle(false), hooks);
+    host.recorder.ensurePermission = async () => { calls.push('permission'); };
+    host.recorder.start = async (options) => { calls.push('start'); assert.deepEqual(options, { vad: true }); return { vadEnabled: true }; };
+    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
+    hooks.current = vad;
+    await vad.start();
+    assert.deepEqual(calls, ['permission', 'start']);
+    await vad.stop();
+  });
+
+  await checkAsync('permission denial never starts native capture', async () => {
+    const calls = [];
+    const hooks = { current: null };
+    const host = makeHost(makeLifecycle(false), hooks);
+    host.recorder.ensurePermission = async () => { calls.push('permission'); throw new Error('Microphone permission denied'); };
+    host.recorder.start = async () => { calls.push('start'); return { vadEnabled: true }; };
+    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
+    hooks.current = vad;
+    await assert.rejects(() => vad.start(), /permission/i);
+    assert.deepEqual(calls, ['permission']);
+  });
+
+  await checkAsync('desktop Silero ordinary speech starts promptly and preserves onset padding', async () => {
     let probability = 0.5;
     const host = makeHost(makeLifecycle(false));
-    host.vadLib = {
-      MicVAD: {
-        new: async (providedOptions) => {
-          const defaults = vadBundle.getDefaultRealTimeVADOptions('v5');
-          return new vadBundle.FrameProcessor(
-            async () => ({ isSpeech: probability }),
-            () => {},
-            Object.assign({}, defaults, providedOptions),
-            32
-          );
-        },
-      },
-    };
+    host.vadLib = { MicVAD: { new: async (provided) => {
+      const defaults = vadBundle.getDefaultRealTimeVADOptions('v5');
+      return new vadBundle.FrameProcessor(async () => ({ isSpeech: probability }), () => {},
+        Object.assign({}, defaults, provided), 32);
+    } } };
     host.isTtsActive = () => false;
-    const processor = await capture.createVAD(host, { id: 'desktop-test' });
+    const processor = await capture.createVAD(host, { id: 'desktop-regression' });
     processor.resume();
     const events = [];
     const frame = new Float32Array(512);
@@ -206,15 +216,15 @@ function feedAll(vad, frames) {
     for (let i = 0; i < 100; i++) await processor.process(frame, (event) => events.push({ event, frame: 16 + i }));
     probability = 0.8;
     for (let i = 0; i < 7; i++) await processor.process(frame, (event) => events.push({ event, frame: 116 + i }));
-    probability = 0.0;
+    probability = 0;
     for (let i = 0; i < 50; i++) await processor.process(frame, (event) => events.push({ event, frame: 123 + i }));
-    const speechStart = events.find(({ event }) => event.msg === vadBundle.Message.SpeechStart);
-    const speechEnd = events.find(({ event }) => event.msg === vadBundle.Message.SpeechEnd);
-    assert(speechStart, 'ordinary speech confidence should start capture');
-    assert.equal(speechStart.frame, 16, 'capture should start on the first ordinary speech frame, not after several seconds');
-    assert(speechEnd, 'normal sentence should finish as speech');
-    assert(!events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire), 'normal sentence must not be reported as a VAD misfire');
-    assert(speechEnd.event.audio.length >= 168 * 512, 'speech result should retain onset padding, the sentence, and its end silence');
+    const started = events.find(({ event }) => event.msg === vadBundle.Message.SpeechStart);
+    const ended = events.find(({ event }) => event.msg === vadBundle.Message.SpeechEnd);
+    assert(started, 'ordinary speech starts capture');
+    assert.equal(started.frame, 16, 'capture starts with first ordinary speech frame');
+    assert(ended, 'sentence ends normally');
+    assert(!events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire));
+    assert(ended.event.audio.length >= 168 * 512, 'onset padding and sentence audio are retained');
 
     processor.reset();
     events.length = 0;
@@ -222,203 +232,36 @@ function feedAll(vad, frames) {
     for (let i = 0; i < 16; i++) await processor.process(frame, (event) => events.push({ event, frame: i }));
     probability = 0.5;
     for (let i = 0; i < 7; i++) await processor.process(frame, (event) => events.push({ event, frame: 16 + i }));
-    probability = 0.0;
+    probability = 0;
     for (let i = 0; i < 50; i++) await processor.process(frame, (event) => events.push({ event, frame: 23 + i }));
-    assert(events.some(({ event }) => event.msg === vadBundle.Message.SpeechStart), 'short sound should still enter the speech candidate state');
-    assert(events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire), 'short sound below minSpeechMs should still be rejected');
-    assert(!events.some(({ event }) => event.msg === vadBundle.Message.SpeechEnd), 'short sound must not be submitted as speech');
-  });
-  check('noisy table vowel frames are speech-like', () => {
-    for (const frame of hey) assert(NativeAudio.pcm16IsSpeechLike(frame), 'hey frame must start recording');
-  });
-  check('noisy table vowel window is voiced', () => {
-    const win = NativeAudio.mergePcm16Chunks(hey.slice(0, 5));
-    assert(NativeAudio.pcm16IsVoicedSpeech(win), 'hey window must look voiced');
+    assert(events.some(({ event }) => event.msg === vadBundle.Message.SpeechStart), 'short sound enters candidate state');
+    assert(events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire), '224 ms sound remains a misfire');
+    assert(!events.some(({ event }) => event.msg === vadBundle.Message.SpeechEnd), 'misfire is not submitted as speech');
   });
 
-  // Cough records but never barges in.
-  check('cough records but never barges in', () => {
-    const lifecycle = makeLifecycle(true);
-    let barges = 0;
-    const vad = new capture.NativeMicUtteranceVAD(
-      makeHost(lifecycle, { onBargeIn: () => { barges++; } }), () => {});
-    vad.isRecording = true;
-    for (const frame of cough) {
-      vad._onNativePcm(frame);
-      assert.equal(barges, 0, 'cough must not barge in (likeMs=' + vad.speechLikeMs + ' voicedMs=' + vad.voicedMs + ')');
-    }
-    assert(vad.inSpeech, 'cough must still start recording');
+  await checkAsync('missing VAD metadata fails closed and stops capture despite an error callback', async () => {
+    let errors = 0;
+    const hooks = { onError: () => { errors++; } };
+    const { vad } = readyVad(false, hooks);
+    sendPacket(vad, undefined, undefined, 0);
+    assert.equal(vad.isRecording, false);
+    assert.equal(errors, 1);
+    await hooks.stopPromise;
+    assert.equal(hooks.stops, 1, 'native capture stops even when the callback only reports the error');
   });
 
-  // Short hey records but never barges in.
-  check('short hey records but never barges in', () => {
-    const lifecycle = makeLifecycle(true);
-    let barges = 0;
-    const vad = new capture.NativeMicUtteranceVAD(
-      makeHost(lifecycle, { onBargeIn: () => { barges++; } }), () => {});
-    vad.isRecording = true;
-    feedAll(vad, hey);
-    assert(vad.inSpeech, 'a short hey must still start recording');
-    assert.equal(barges, 0, 'a short hey must not stop TTS (likeMs=' + vad.speechLikeMs + ' voicedMs=' + vad.voicedMs + ')');
-  });
-
-  // Sustained noisy speech barges in once, at real-speech confirm.
-  check('sustained noisy speech barges in at confirm', () => {
-    const lifecycle = makeLifecycle(true);
-    let bargeAt = null;
-    let barges = 0;
-    const vad = new capture.NativeMicUtteranceVAD(
-      makeHost(lifecycle, { onBargeIn: () => { barges++; } }), () => {});
-    vad.isRecording = true;
-    speechFrames.forEach((frame, i) => {
-      vad._onNativePcm(frame);
-      if (barges > 0 && bargeAt === null) bargeAt = (i + 1) * FRAME_MS;
-    });
-    assert(bargeAt !== null, 'sustained noisy speech must barge in');
-    const realMs = NativeAudio.REAL_SPEECH_MS;
-    assert(bargeAt >= realMs - 40 && bargeAt <= realMs + 120,
-      'barge-in at ' + bargeAt + ' ms must be at real-speech confirm (~' + realMs + '), not start or end-of-speech');
-    assert.equal(barges, 1, 'barge-in fires exactly once');
-  });
-
-  // Idle listen records without barging in.
-  check('idle listen records without barging in', () => {
-    const lifecycle = makeLifecycle(false);
-    let barges = 0;
-    const host = makeHost(lifecycle, { onBargeIn: () => { barges++; } });
-    host.isVoiceModeActive = () => true;
-    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
-    vad.isRecording = true;
-    feedAll(vad, hey);
-    assert(vad.inSpeech && barges === 0, 'idle listen must record a short utterance without barging in');
-  });
-
-  // Voicing (pcm16PitchPeriodicity autocorrelation, one per evaluated
-  // window) feeds only the barge-in gate, so it runs only while barge-in is
-  // armed: an active TTS session that has not fired yet. 3 s utterance.
-  const longSpeech = framesOf(noisyVowel(200.0, 1200, FRAME * 150, SR, 0.35), FRAME);
-  const countingAudio = (stats) => Object.assign({}, NativeAudio, {
-    pcm16IsVoicedSpeech: (pcm) => { stats.evals++; return NativeAudio.pcm16IsVoicedSpeech(pcm); },
-    pcm16VoicedMsFromChunks: (chunks, ms) => {
-      const w = NativeAudio.SPEECH_VOICED_WINDOW_FRAMES;
-      if (chunks && chunks.length >= w) stats.evals += chunks.length - w + 1;
-      return NativeAudio.pcm16VoicedMsFromChunks(chunks, ms);
-    },
-  });
-
-  check('idle listen runs no voicing autocorrelation', () => {
-    const stats = { evals: 0 };
-    const host = makeHost(makeLifecycle(false), { onBargeIn: () => { stats.barges = (stats.barges || 0) + 1; } });
-    host.nativeAudio = countingAudio(stats);
-    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
-    vad.isRecording = true;
-    feedAll(vad, longSpeech);
-    assert(vad.inSpeech, 'idle 3 s speech must record');
-    assert.equal(stats.barges || 0, 0, 'idle listen never barges in');
-    assert.equal(stats.evals, 0, 'no voicing windows without an armed barge-in, got ' + stats.evals);
-  });
-
-  check('voicing runs while barge-in is armed and stops once it fires', () => {
-    const stats = { evals: 0 };
-    let bargeFrame = -1;
-    const host = makeHost(makeLifecycle(true), { onBargeIn: () => { bargeFrame = cursor; } });
-    host.nativeAudio = countingAudio(stats);
-    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
-    vad.isRecording = true;
-    let cursor = -1;
-    const perFrame = [];
-    longSpeech.forEach((frame, i) => {
-      cursor = i;
-      const before = stats.evals;
-      vad._onNativePcm(frame);
-      perFrame.push(stats.evals - before);
-    });
-    assert(bargeFrame >= 0, 'sustained speech during TTS must barge in');
-    const bargeAt = (bargeFrame + 1) * FRAME_MS;
-    const realMs = NativeAudio.REAL_SPEECH_MS;
-    assert(bargeAt >= realMs - 40 && bargeAt <= realMs + 120,
-      'barge-in at ' + bargeAt + ' ms must stay at real-speech confirm (~' + realMs + ')');
-    const armed = perFrame.slice(0, bargeFrame + 1).reduce((a, b) => a + b, 0);
-    const after = perFrame.slice(bargeFrame + 1).reduce((a, b) => a + b, 0);
-    assert(armed > 0, 'armed frames still evaluate voicing before barge-in');
-    assert.equal(after, 0, 'no voicing windows after barge-in fired, got ' + after + ' (armed=' + armed + ', bargeFrame=' + bargeFrame + ')');
-  });
-
-  // start() awaits the permission gate before touching the recorder.
-  await checkAsync('start awaits permission before recorder start', async () => {
-    const lifecycle = makeLifecycle(true);
-    const calls = [];
-    let current = null;
-    const host = makeHost(lifecycle, {});
-    host.recorder = {
-      ensurePermission: async () => { calls.push('permission'); },
-      start: async () => { calls.push('start'); },
-      stop: async () => {},
-      addListener: () => ({ remove() {} }),
-    };
-    host.registry = {
-      isCurrent: (inst) => current === inst,
-      getStopPromise: () => null,
-      setStopPromise: () => {},
-    };
-    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
-    current = vad;
-    await vad.start();
-    assert.deepEqual(calls, ['permission', 'start'], 'permission gate runs before recorder start: ' + JSON.stringify(calls));
-  });
-
-  // start() fails closed on deny without touching the recorder.
-  await checkAsync('start fails closed on permission deny', async () => {
-    const lifecycle = makeLifecycle(true);
-    const calls = [];
-    let current = null;
-    const host = makeHost(lifecycle, {});
-    host.recorder = {
-      ensurePermission: async () => { calls.push('permission'); throw new Error('Microphone permission denied'); },
-      start: async () => { calls.push('start'); },
-      stop: async () => {},
-      addListener: () => ({ remove() {} }),
-    };
-    host.registry = {
-      isCurrent: (inst) => current === inst,
-      getStopPromise: () => null,
-      setStopPromise: () => {},
-    };
-    const vad = new capture.NativeMicUtteranceVAD(host, () => {});
-    current = vad;
-    await assert.rejects(() => vad.start(), /permission/i);
-    assert.deepEqual(calls, ['permission'], 'denied permission must not reach recorder start');
-  });
-
-  // stop() of a stale bridge never stops the newer recorder.
-  await checkAsync('stale bridge stop never stops the newer recorder', async () => {
-    const lifecycle = makeLifecycle(true);
-    const stops = [];
-    let current = null;
-    let stopPromise = null;
-    const host = makeHost(lifecycle, {});
-    host.recorder = {
-      ensurePermission: async () => {},
-      start: async () => {},
-      stop: async () => { stops.push(1); },
-      addListener: () => ({ remove() {} }),
-    };
-    host.registry = {
-      isCurrent: (inst) => current === inst,
-      getStopPromise: () => stopPromise,
-      setStopPromise: (promise) => { stopPromise = promise; },
-    };
-    const older = new capture.NativeMicUtteranceVAD(host, () => {});
-    older.isRecording = true;
-    older.nativeListener = { remove() {} };
-    const newer = new capture.NativeMicUtteranceVAD(host, () => {});
-    newer.isRecording = true;
-    newer.nativeListener = { remove() {} };
-    current = newer;
-    await older.stop();
-    assert.equal(stops.length, 0, 'stale stop must not touch the newer recorder');
-    await newer.stop();
-    assert.equal(stops.length, 1, 'current stop still stops the recorder');
+  await checkAsync('stale bridge stop never stops the replacement recorder', async () => {
+    const hooks = { stops: 0, current: null };
+    const host = makeHost(makeLifecycle(true), hooks);
+    const oldVad = new capture.NativeMicUtteranceVAD(host, () => {});
+    const newVad = new capture.NativeMicUtteranceVAD(host, () => {});
+    oldVad.isRecording = true;
+    newVad.isRecording = true;
+    hooks.current = newVad;
+    await oldVad.stop();
+    assert.equal(hooks.stops || 0, 0);
+    await newVad.stop();
+    assert.equal(hooks.stops, 1);
   });
 
   if (failures.length) {
@@ -426,5 +269,5 @@ function feedAll(vad, frames) {
     process.exitCode = 1;
     return;
   }
-  console.error('voice capture: cough/hey record without barge-in, sustained speech barges in at confirm');
-})().catch(error => { console.error(error); process.exitCode = 1; });
+  console.error('voice capture: native Silero confidence, timing, fail-stop, and stale-session checks passed');
+})().catch((e) => { console.error(e); process.exitCode = 1; });

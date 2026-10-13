@@ -10,7 +10,7 @@ The web frontend is the only interface. This creates three issues:
 
 ## Constraints
 
-- Voice mode uses VAD barge-in: Silero on desktop/browser; energy + speech-like + voiced-pitch (`NativeMicUtteranceVAD`) on Capacitor. Android Auto `VoiceScreen` is still RMS-only.
+- Voice mode uses Silero VAD barge-in on desktop/browser and handheld Capacitor: browser inference runs in the browser; native inference runs on CPU through ONNX Runtime and reports frame probabilities to the WebView. Android Auto `VoiceScreen` remains RMS-only.
 - Android Auto requires a native `CarAppService` — no framework bypasses this.
 - iOS support is low priority but desired as a side effect.
 - Existing web UI (`static/chat.js`, Bootstrap/jQuery) must be reused with minimal changes.
@@ -72,10 +72,10 @@ the host.
 │  │     Capacitor WebView       │    │    Android Auto      │  │
 │  │  ┌───────────────────────┐  │    │    (Native Java)     │  │
 │  │  │  chat.js              │  │    │                      │  │
-│  │  │  - NativeMicUtterance │  │    │  ChatbotCarAppService│  │
-│  │  │    VAD (RMS)          │  │    │  - Voice input (RMS) │  │
-│  │  │  - NativeVoiceTts     │  │    │  - REST / TTS        │  │
-│  │  │  - Chat UI            │  │    │  - Exit button        │  │
+│  │  │  - Native Silero VAD  │  │    │  ChatbotCarAppService│  │
+│  │  │  - NativeVoiceTts     │  │    │  - Voice input (RMS) │  │
+│  │  │  - Chat UI            │  │    │  - REST / TTS        │  │
+│  │  │                       │  │    │  - Exit button       │  │
 │  │  └───────────┬───────────┘  │    └──────────────────────┘  │
 │  │              │              │                             │
 │  │              ▼              │                             │
@@ -161,19 +161,19 @@ Capacitor is the only option that preserves the existing web UI unchanged.
      - The same session holds `FLAG_KEEP_SCREEN_ON` (`VoiceSessionKeepAwake` via `enterVoiceRoute` / `exitVoiceRoute`) so auto screen sleep cannot pause the WebView VAD/STT/TTS loop. `chat.js` also requests a Screen Wake Lock (HTTPS / browser).
      - Power-button / pocket lock starts `VoiceModeForegroundService` (microphone FGS + `PARTIAL_WAKE_LOCK` + `ConnectivityManager.requestNetwork` with `CHANGE_NETWORK_STATE` permission; `START_NOT_STICKY` with null-intent safety for killed processes) from the same `enterVoiceRoute` / `exitVoiceRoute` pair. `enterVoiceRoute` requests `POST_NOTIFICATIONS` on API 33+ so the notice can post (Android 13+ hides FGS chips without it). It also prompts `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (GrapheneOS/AOSP **Unrestricted**): Doze Light still cuts network after a couple of minutes for **Optimized** apps even with an FGS. Set Tailscale to Unrestricted too if the server is reached over the VPN. MainActivity keeps the WebView resumed (`resumeTimers`, `RENDERER_PRIORITY_IMPORTANT`) and reasserts `View.VISIBLE` while that session is active so Chromium does not apply hidden-WebView throttling. Capacitor is forced to use `useLegacyBridge` because Chromium/Vanadium throttles the newer WebMessage bridge in the background even with an FGS. The FGS re-resumes the WebView every 15s and pokes JS; a one-shot `onPause` resume is not enough. The lock-screen control is `Notification.CallStyle.forOngoingCall` (`VISIBILITY_PUBLIC` / `IMPORTANCE_HIGH`) so it stays a hangup bar instead of a collapsed FGS row. Do not attach a `MediaSession`: SystemUI moves that into the media player and GrapheneOS/AOSP hide it unless real `USAGE_MEDIA` audio is playing, so the shade row vanishes too. Hangup/Stop is a broadcast. Do not use an Activity pending intent for Stop.
 
-2. `NativeMicUtteranceVAD` in `static/voice-capture.js` (constructed by `static/chat.js`; shipped path — not Silero):
-   - Operates on native PCM chunks; no WebView `AudioContext` / Silero on the native path
-   - 300 ms PCM pre-roll. Record from speech-like start (~120 ms, Silero `onSpeechStart`). Barge-in only after **real speech** (`REAL_SPEECH_MS` 600 + voiced windows; desktop Silero `minSpeechMs` stays 400). A cough or short "hey" does not stop TTS; confirmed speech stops it immediately, not at end-of-speech.
-   - **1500 ms** end-of-speech silence (short mid-sentence pauses do not split); **400 ms** cooldown after TTS ends on its own (not after barge-in / GUI stop)
+2. Handheld native Silero VAD:
+   - Native 16 kHz PCM is scored by Java `SileroVadStream` on CPU with the existing pinned browser v5 ONNX asset. It assembles 512-sample (32 ms) inference frames from 20 ms native PCM callbacks. The WebView receives nullable `vadProbability` plus `vadDurationMs` on each `nativeMicData` callback; 32 marks a newly completed inference and 0 means no score is ready yet. Native VAD does not use WebView `AudioContext`.
+   - Manual `NativeMic.start()` capture does not enable VAD; voice mode opts in with `NativeMic.start({vad: true})` and requires the start result to confirm `vadEnabled: true`.
+   - Native uses the same thresholds as desktop: `positiveSpeechThreshold: 0.3` and `negativeSpeechThreshold: 0.25`. Capture starts after 120 ms of speech probability, accepted speech requires 400 ms, and TTS barge-in requires 600 ms of confirmed speech. A cough or short "hey" may start recording but does not stop TTS; confirmed speech stops it immediately, not at end-of-speech.
+   - **500 ms** PCM pre-roll preserves speech onset; **1500 ms** end-of-speech silence avoids splitting short mid-sentence pauses; **400 ms** cooldown applies after TTS ends on its own (not after barge-in / GUI stop).
    - One `stopAllTtsPlayback` path for play/stop, message click, Send/Stop, barge-in, and disabling voice mode (desktop HTML audio + native `AudioTrack`)
     - Desktop voice mode uses the same `playTTS` / `playOneTtsUtterance` HTML `Audio` path as the play button. Android voice mode uses the `NativeVoiceTts` AudioTrack queue because a hidden WebView can pause HTML audio after the screen locks. Both paths use `POST /tts` then `GET /tts_stream/{token}`. Mic capture stays `VOICE_COMMUNICATION`.
 
 3. Desktop/browser still uses Silero VAD (`static/deps/vad/`) with `getUserMedia` when not on Capacitor.
 
-**Key Bugs Fixed**:
-1. Early experiments feeding Silero via ScriptProcessor/`NativeMicVADBridge` were abandoned on native: Silero + WebView audio breaks during TTS; RMS matches Android Auto `VoiceScreen`.
-2. After speech detection, restarting Silero (`pause`/`start` or recreate) broke subsequent detection on WebView — native path avoids Silero entirely.
-3. `AudioSource.MIC` captured speaker output causing TTS self-loop. Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance; native VAD barges in on confirmed real speech during TTS (same as desktop Silero `onSpeechRealStart`; native `REAL_SPEECH_MS` 600) and uses a post-TTS cooldown only when playback ends on its own. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
+Handheld Silero VAD requires an updated Android APK containing ONNX Runtime and the model asset, plus a rebuilt `webserver` image serving the matching `static/` JavaScript. An older APK that does not report `vadEnabled: true` fails voice-mode startup visibly; there is no RMS fallback.
+
+Handheld voice mode uses `VOICE_COMMUNICATION` + session-held speakerphone routing so the far-field mic works at table distance. Native VAD barges in on confirmed real speech during TTS and uses a post-TTS cooldown only when playback ends on its own. Software AEC/AGC attach when the device provides them; do **not** stack `NoiseSuppressor` on this source (it treats distant speech as noise). Android Auto `VoiceScreen` stays on `VOICE_RECOGNITION` + `USAGE_MEDIA` (car, not handheld speakerphone).
 
 **Effort**: ~1 week.
 
@@ -182,7 +182,7 @@ Capacitor is the only option that preserves the existing web UI unchanged.
 ### Phase 3: Android Auto Module ⚠️ partial
 **Goal**: App appears on AA head unit as a voice-only interface.
 
-**Done:** native `CarAppService` / `VoiceSession` / `VoiceScreen`, RMS voice path, REST chat/TTS, DHU/emulator testing path.  
+**Done:** native `CarAppService` / `VoiceSession` / `VoiceScreen`, Android Auto RMS voice path, REST chat/TTS, DHU/emulator testing path.
 **Failure bounds** (pure decisions in `car/CarVoicePolicy`, run under `javac` by `car_voice_failure_modes`): a negative `AudioRecord.read` stops capture and empty reads back off one frame with rate-limited logging; one turn runs at a time with at most one pending utterance (newer speech replaces it); the TTS drain waits only for audio still inside the `AudioTrack` buffer; expired `/tts_stream` tokens renew at most `MAX_TTS_OPENS` times with backoff; screen destroy stops capture and shuts down both executors.  
 **Not done for production:** `HostValidator` is still `ALLOW_ALL_HOSTS_VALIDATOR` (local/DHU only); real AA requires Play-trusted install + production host allowlist (see distribution section below).
 
@@ -245,10 +245,10 @@ The data key is stored in HttpOnly `enc_key` / `enc_key-{username}` cookies. Pag
 
 2. **`static/native-audio.js`** — Audio encoding and buffering helpers for STT upload. To maximize efficiency over spotty/mobile links and eliminate uncompressed PCM overhead, `encodeAudioForStt` uses hardware-accelerated `AudioEncoder` (WebCodecs) when available to compress captured PCM into AAC-LC with 7-byte ADTS framing (`audio/aac`), falling back to PCM16 WAV. Every encode decision is logged with a machine-readable reason (`STT codec: aac ...` on success; `STT codec fallback: reason=no-webcodecs|insecure-context|unsupported-config|empty-output|encoder-error` on fallback) to the browser console and adb logcat via `nativeLog` — `reason=insecure-context` on every utterance means the origin is plain HTTP and WebCodecs can never engage. The server overrides Axum's default 2MB body limit on `/stt` up to 50MB (`MAX_AUDIO_BYTES`), permitting arbitrary utterance lengths without 400 Bad Request errors, and logs every received upload at info level (`STT audio received`, with a `compressed=true/false` flag) so a silent client-side WAV fallback is visible in host logs.
 
-3. **`NativeMicUtteranceVAD`** (`static/voice-capture.js`, constructed by `static/chat.js`) — energy + speech-like + voiced-pitch on native PCM (handheld). Android Auto `VoiceScreen` stays RMS-only:
-   - No Silero / WebView `AudioContext` on the native path
-   - 300 ms PCM pre-roll; during TTS keep start-gate frames (not empty); record at speech-like start; barge-in only on real speech (~600 ms speech-like + voicing). Cough/"hey" do not barge in. **1500 ms** end silence; **400 ms** post-TTS cooldown (not after barge-in). STT in flight does not drop the next utterance.
-   - Self-heal: `NativeMic.start()` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
+3. **Handheld Silero VAD** — `NativeMicPlugin.java` runs the existing pinned browser v5 ONNX asset through native CPU ONNX Runtime. It assembles 512-sample (32 ms) frames from 20 ms native PCM callbacks and returns nullable `vadProbability` plus `vadDurationMs` (`32` for a newly completed inference, `0` while waiting for a score) on `nativeMicData`. The WebView owns the utterance and TTS decisions; it does not run an `AudioContext` for native VAD. Manual `NativeMic.start()` remains capture-only; voice mode calls `NativeMic.start({vad: true})` and requires `vadEnabled: true` in the start result:
+   - Native uses the desktop's positive threshold 0.3 and negative threshold 0.25; capture starts at 120 ms, accepted speech is 400 ms, and confirmed TTS barge-in is 600 ms.
+   - Keep 500 ms of PCM pre-roll and 1500 ms end-silence. A cough or short "hey" can start recording but must not stop TTS; confirmed sustained speech stops TTS immediately. **400 ms** post-TTS cooldown applies only when playback ends on its own. STT in flight does not drop the next utterance.
+   - Self-heal: voice-mode `NativeMic.start({vad: true})` restarts leftover capture after Capacitor reload; `chatbotVoiceModeWanted` resumes voice mode without a second tap
    - STT that starts within **2s** of the last speech end **amends** the last user turn and regenerates (retry 429). After that window, stop generation/TTS (`[Stopped]`) and send a **new** `/chat`
 
 4. **Voice-mode TTS** — desktop uses `playTTS` HTML `Audio` (`playOneTtsUtterance`) with in-memory `Blob` object URLs and prefetching (`preloadDesktopTtsSentence`), preventing mid-sentence drops and inter-sentence latency over spotty remote links. Android uses the ordered `NativeVoiceTtsPlugin` `AudioTrack` queue so playback survives screen lock and WebView suspension. Native TTS decouples clip fetching (`downloaderThread`) from playback (`workerThread`) via an in-memory `audioQueue` of fully decoded `AudioClip`s. Both paths use the pre-signed `/tts_stream` URL; the server retains a generated clip for a short, bounded retry window so a truncated mobile download does not skip a sentence. Spotty-link rules (do not regress these):
@@ -274,20 +274,16 @@ Android errors are visible in host logs instead of only opaque adb logcat:
 
 ### TTS barge-in dual invariant (do not oscillate)
 
-Handheld native VAD has no Silero. Energy-only start stops TTS on coughs; extra ANDs on *start* kill table-distance speech. Both of these must stay true at once:
+Handheld native VAD uses Silero probabilities to recognize speech, but recording and interruption remain separate decisions. A cough or short "hey" may start recording; it must not stop TTS. Sustained real speech must stop TTS when confirmed, not after end-of-speech silence:
 
 1. A cough or short "hey" does **not** stop TTS (may still start recording).
-2. Sustained real speech **does** stop TTS **when confirmed** (`REAL_SPEECH_MS` ~600 ms + voicing), not after end-of-speech silence.
+2. Sustained real speech **does** stop TTS **when confirmed** (`REAL_SPEECH_MS` ~600 ms), not after end-of-speech silence.
 
-Desktop already splits this: `onSpeechStart` records, `onSpeechRealStart` / `minSpeechMs` 400 barges in. Native mirrors that with `_beginUtterance` vs `_maybeBargeIn`. Do not barge in from `_beginUtterance` or `_endUtterance`. Do not require voicing/`pcm16IsVoicedSpeech` to *start* capture.
+Desktop already splits this: `onSpeechStart` records, `onSpeechRealStart` / `minSpeechMs` 400 barges in. Native must preserve the same record-versus-interrupt split. Do not barge in at capture start or utterance end.
 
-The lock is one test that covers **both** sides: `cough_and_hey_do_not_barge_in_sustained_noisy_speech_does` in `chatbot-server/tests/native_vad_speech_like.rs`. Do not split it into a cough-only or speech-only test.
+The record-versus-interrupt invariant is covered by `cough_and_hey_do_not_barge_in_sustained_noisy_speech_does` in `chatbot-server/tests/native_vad_speech_like.rs`. The Java test also runs the packaged ONNX model against silence; Java stream and JS voice fixtures supply controlled probabilities to verify frame and boundary handling. These checks do not validate real cough rejection or far-field speech on an Android device.
 
-### VAD Evaluation
-
-Car environments are noisy. If RMS misses too often:
-- Tune RMS thresholds / hangover in `NativeMicUtteranceVAD` (`static/voice-capture.js`) / `VoiceScreen`
-- Or implement a native Kotlin VAD (ONNX Runtime Mobile) — still optional, not baseline
+Android Auto remains RMS-based and has separate car-noise limitations. Handheld native voice mode uses Silero; probability fixtures verify the stream logic, while cough rejection and far-field performance still require real-device validation.
 
 ---
 
@@ -461,7 +457,7 @@ Product flavors configure `server_url` string resource:
 | `android/.../util/ClientLogReporter.java` | Modify — per-call origin resolution for report uploads |
 | `android/.../car/VoiceScreen.java` | Modify — per-turn (capture at turn start) origin for /stt /chat /tts |
 | `chatbot-server/tests/fixtures/ServerSettingBehaviorTest.java` | Create — javac behavior fixture for the selection policy (run by `distribution.rs`) |
-| `static/voice-capture.js` | Modify — `NativeMicUtteranceVAD` (RMS); constructed by `static/chat.js` for voice-mode TTS and native bridge |
+| `static/voice-capture.js` | Modify — native Silero VAD event handling; constructed by `static/chat.js` for voice-mode TTS and native bridge |
 | `static/deps/vad/` | Create — Silero VAD WASM assets |
 | `.gitignore` | Modify — exclude Capacitor build artifacts |
 
@@ -472,7 +468,7 @@ Product flavors configure `server_url` string resource:
 | Phase | Deliverable | Status |
 |-------|-------------|--------|
 | 1 | Capacitor Android shell (server-pull) | ✅ Complete |
-| 2 | Native mic plugin + NativeMicUtteranceVAD (RMS) | ✅ Complete |
+| 2 | Native mic plugin + native Silero VAD | ✅ Complete |
 | 3 | Android Auto voice module | ⚠️ Partial — code/DHU done; production HostValidator + Play-trusted real-AA install still open |
 | 4 | iOS build (same codebase) | Pending |
 

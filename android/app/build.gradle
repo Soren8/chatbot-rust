@@ -1,4 +1,5 @@
 import groovy.json.JsonSlurper
+import org.gradle.api.artifacts.type.ArtifactTypeDefinition
 
 apply plugin: 'com.android.application'
 
@@ -11,6 +12,12 @@ apply plugin: 'com.android.application'
 // serverUrls block never becomes a WebView override.)
 def capacitorConfigFile = rootProject.file('../capacitor.config.json')
 def capacitorConfig = new JsonSlurper().parse(capacitorConfigFile)
+def sileroModelFile = rootProject.file('../static/deps/vad/silero_vad_v5.onnx')
+def generatedSileroAssets = layout.buildDirectory.dir('generated/sileroVadAssets/main')
+def copySileroVadModel = tasks.register('copySileroVadModel', Copy) {
+    from sileroModelFile
+    into generatedSileroAssets
+}
 def emulatorServerUrl = capacitorConfig?.serverUrls?.emulator
 def physicalServerUrl = capacitorConfig?.serverUrls?.physical
 if (!(emulatorServerUrl instanceof String) || emulatorServerUrl.isEmpty()
@@ -47,6 +54,14 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    sourceSets {
+        main.assets.srcDir(generatedSileroAssets)
+    }
+    testOptions {
+        unitTests.all {
+            systemProperty 'chatbot.sileroModelPath', sileroModelFile.absolutePath
+        }
+    }
     flavorDimensions += "environment"
     productFlavors {
         emulator {
@@ -58,6 +73,23 @@ android {
             resValue "string", "server_url", physicalServerUrl
         }
     }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn(copySileroVadModel)
+}
+
+// Resolve unit-test runtime dependencies during compilation for offline test runs.
+def resolvePhysicalUnitTestRuntime = tasks.register('resolvePhysicalUnitTestRuntime') {
+    doLast {
+        configurations.named('physicalDebugUnitTestRuntimeClasspath').get()
+                .incoming.artifactView {
+                    attributes.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, 'android-classes-jar')
+                }.files.files
+    }
+}
+tasks.matching { it.name == 'compilePhysicalDebugUnitTestJavaWithJavac' }.configureEach {
+    dependsOn(resolvePhysicalUnitTestRuntime)
 }
 
 repositories {
@@ -82,6 +114,15 @@ dependencies {
 
     implementation "androidx.car.app:app:1.4.0"
     implementation "androidx.car.app:app-projected:1.4.0"
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.30.0'
+    // Desktop native runtime lets JVM unit tests execute the exact packaged Silero model.
+    testImplementation 'com.microsoft.onnxruntime:onnxruntime:1.30.0'
+}
+
+configurations.configureEach { configuration ->
+    if (configuration.name.endsWith('UnitTestRuntimeClasspath')) {
+        configuration.exclude group: 'com.microsoft.onnxruntime', module: 'onnxruntime-android'
+    }
 }
 
 apply from: 'capacitor.build.gradle'

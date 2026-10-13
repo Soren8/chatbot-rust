@@ -8,41 +8,14 @@
   const NATIVE_MIC_SAMPLE_RATE = 16000;
   /** Minimum buffered audio before starting Silero VAD (avoids initial underruns). */
   const VAD_PREFETCH_SAMPLES = 4800; // 300 ms @ 16 kHz
-  /** Pre-roll so unvoiced onsets before the speech-like gate reach STT. */
+  /** Pre-roll so unvoiced onset samples reach STT after Silero confirms speech. */
   const SPEECH_PREROLL_SAMPLES = 8000; // 500 ms @ 16 kHz
-  /**
-   * Two-phase native VAD (desktop Silero analog). Do not collapse these gates.
-   * Phase 1 SPEECH_START_FRAMES: start *recording*. Coughs may enter this. Do
-   *   not stop TTS here; do not AND extra classifiers onto start or table speech
-   *   never records.
-   * Phase 2 REAL_SPEECH_MS + voicing: barge-in. A cough or short "hey" must fail;
-   *   sustained speech must pass immediately, not at end-of-speech.
-   * Dual test: cough_and_hey_do_not_barge_in_sustained_noisy_speech_does.
-   */
-  /** Speakerphone-distance energy floor. Speech-like shape is required on top. */
-  const SPEECH_RMS_THRESHOLD = 500;
-  const SPEECH_START_FRAMES = 6; // ~120 ms of speech-like frames before *recording* (like Silero onSpeechStart)
-  /** Consecutive non-speech-like energy frames that reset the start counter (allows one plosive). */
-  const SPEECH_START_MISS_FRAMES = 2;
-  /** Voiced-speech ZCR band at 16 kHz. Below is rumble/DC; above is hiss/noise. */
-  const SPEECH_ZCR_MIN = 0.01;
-  const SPEECH_ZCR_MAX = 0.30;
-  /** Peak/RMS above this is an impulse (cough, clap), not sustained speech. */
-  const SPEECH_CREST_MAX = 9;
-  /** Peak normalized autocorr in the 80–400 Hz band. Loose enough for noisy table speech. */
-  const SPEECH_PERIODICITY_MIN = 0.15;
-  /** Autocorr lags at 16 kHz: 400 Hz → 40 samples, 80 Hz → 200 samples. */
-  const SPEECH_PITCH_LAG_MIN = 40;
-  const SPEECH_PITCH_LAG_MAX = 200;
-  /** Rolling window for voiced evidence (~100 ms). */
-  const SPEECH_VOICED_WINDOW_FRAMES = 5;
-  /** Speech-like duration before barge-in. Longer than desktop minSpeechMs (400) because native has no Silero. */
+  /** Silero-positive duration before interrupting TTS. */
   const REAL_SPEECH_MS = 600;
-  /** Voiced-window hits required inside that span. A cough/"hey" does not reach this. */
-  const REAL_SPEECH_VOICED_MS = 120;
+  const SPEECH_START_MS = 120;
   const SPEECH_END_SILENCE_MS = 1500;
-  /** Minimum ms with RMS above SPEECH_RMS_THRESHOLD before sending to STT. */
-  const SPEECH_MIN_ACTIVE_MS = 350;
+  /** Minimum Silero-positive duration before sending to STT. */
+  const SPEECH_MIN_ACTIVE_MS = 400;
   /** Min PCM bytes (excl. WAV header), aligned with VoiceScreen (~125 ms floor). */
   const SPEECH_MIN_PCM_BYTES = 4000;
   /**
@@ -80,101 +53,6 @@
       out[i] = pcm16[i] / 32768;
     }
     return out;
-  }
-
-  function pcm16Rms(pcm16) {
-    if (!pcm16 || pcm16.length === 0) return 0;
-    let sum = 0;
-    for (let i = 0; i < pcm16.length; i++) {
-      sum += pcm16[i] * pcm16[i];
-    }
-    return Math.sqrt(sum / pcm16.length);
-  }
-
-  function pcm16ZeroCrossingRate(pcm16) {
-    if (!pcm16 || pcm16.length < 2) return 0;
-    let crossings = 0;
-    for (let i = 1; i < pcm16.length; i++) {
-      const prev = pcm16[i - 1];
-      const cur = pcm16[i];
-      if ((prev >= 0 && cur < 0) || (prev < 0 && cur >= 0)) {
-        if (prev !== 0 || cur !== 0) crossings++;
-      }
-    }
-    return crossings / (pcm16.length - 1);
-  }
-
-  function pcm16PeakAbs(pcm16) {
-    if (!pcm16 || pcm16.length === 0) return 0;
-    let peak = 0;
-    for (let i = 0; i < pcm16.length; i++) {
-      const a = pcm16[i] < 0 ? -pcm16[i] : pcm16[i];
-      if (a > peak) peak = a;
-    }
-    return peak;
-  }
-
-  /** True when the frame has speech shape (voiced band + not an impulse), not just energy. */
-  function pcm16IsSpeechLike(pcm16, rms) {
-    if (!pcm16 || pcm16.length === 0) return false;
-    const energy = rms == null ? pcm16Rms(pcm16) : rms;
-    if (energy < SPEECH_RMS_THRESHOLD) return false;
-    const zcr = pcm16ZeroCrossingRate(pcm16);
-    if (zcr < SPEECH_ZCR_MIN || zcr > SPEECH_ZCR_MAX) return false;
-    return pcm16PeakAbs(pcm16) / energy <= SPEECH_CREST_MAX;
-  }
-
-  /** Peak normalized autocorrelation in the pitch-lag band (voiced speech). */
-  function pcm16PitchPeriodicity(pcm16) {
-    const n = pcm16 && pcm16.length ? pcm16.length : 0;
-    if (n < 80) return 0;
-    const maxLag = Math.min(SPEECH_PITCH_LAG_MAX, (n >> 1) - 1);
-    if (maxLag < SPEECH_PITCH_LAG_MIN) return 0;
-    const energyPrefix = new Float64Array(n + 1);
-    for (let i = 0; i < n; i++) {
-      const x = pcm16[i];
-      energyPrefix[i + 1] = energyPrefix[i] + x * x;
-    }
-    let best = 0;
-    for (let lag = SPEECH_PITCH_LAG_MIN; lag <= maxLag; lag++) {
-      const limit = n - lag;
-      let corr = 0;
-      for (let i = 0; i < limit; i++) {
-        corr += pcm16[i] * pcm16[i + lag];
-      }
-      const e1 = energyPrefix[limit];
-      const e2 = energyPrefix[n] - energyPrefix[lag];
-      if (e1 < 1 || e2 < 1) continue;
-      const norm = corr / Math.sqrt(e1 * e2);
-      if (norm > best) best = norm;
-    }
-    return best;
-  }
-
-  /** True when a short window looks periodic (vowel), not a cough body. */
-  function pcm16IsVoicedSpeech(pcm16) {
-    if (!pcm16 || pcm16.length < 640) return false;
-    if (pcm16Rms(pcm16) < SPEECH_RMS_THRESHOLD) return false;
-    return pcm16PitchPeriodicity(pcm16) >= SPEECH_PERIODICITY_MIN;
-  }
-
-  /** Voiced evidence (ms) from overlapping SPEECH_VOICED_WINDOW_FRAMES slices. */
-  function pcm16VoicedMsFromChunks(chunks, frameMs) {
-    const w = SPEECH_VOICED_WINDOW_FRAMES;
-    const ms = frameMs == null ? 20 : frameMs;
-    if (!chunks || chunks.length < w) return 0;
-    let voicedMs = 0;
-    for (let i = w; i <= chunks.length; i++) {
-      if (pcm16IsVoicedSpeech(mergePcm16Chunks(chunks.slice(i - w, i)))) {
-        voicedMs += ms;
-      }
-    }
-    return voicedMs;
-  }
-
-  /** Desktop onSpeechRealStart analog: sustained speech-like + some voicing. */
-  function pcm16RealSpeechDetected(speechLikeMs, voicedMs) {
-    return speechLikeMs >= REAL_SPEECH_MS && voicedMs >= REAL_SPEECH_VOICED_MS;
   }
 
   /** Rolling buffer of PCM16 chunks; retains the most recent maxSamples. */
@@ -791,35 +669,17 @@
   }
 
   global.NativeAudio = {
-    VOICE_MODE_NATIVE_VAD_VERSION: 13,
+    VOICE_MODE_NATIVE_VAD_VERSION: 14,
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,
-    SPEECH_RMS_THRESHOLD: SPEECH_RMS_THRESHOLD,
-    SPEECH_START_FRAMES: SPEECH_START_FRAMES,
-    SPEECH_START_MISS_FRAMES: SPEECH_START_MISS_FRAMES,
-    SPEECH_ZCR_MIN: SPEECH_ZCR_MIN,
-    SPEECH_ZCR_MAX: SPEECH_ZCR_MAX,
-    SPEECH_CREST_MAX: SPEECH_CREST_MAX,
-    SPEECH_PERIODICITY_MIN: SPEECH_PERIODICITY_MIN,
-    SPEECH_PITCH_LAG_MIN: SPEECH_PITCH_LAG_MIN,
-    SPEECH_PITCH_LAG_MAX: SPEECH_PITCH_LAG_MAX,
-    SPEECH_VOICED_WINDOW_FRAMES: SPEECH_VOICED_WINDOW_FRAMES,
     REAL_SPEECH_MS: REAL_SPEECH_MS,
-    REAL_SPEECH_VOICED_MS: REAL_SPEECH_VOICED_MS,
+    SPEECH_START_MS: SPEECH_START_MS,
     SPEECH_END_SILENCE_MS: SPEECH_END_SILENCE_MS,
     SPEECH_MIN_ACTIVE_MS: SPEECH_MIN_ACTIVE_MS,
     SPEECH_MIN_PCM_BYTES: SPEECH_MIN_PCM_BYTES,
     decodeNativePcmBase64: decodeNativePcmBase64,
     pcm16ToFloat32: pcm16ToFloat32,
-    pcm16Rms: pcm16Rms,
-    pcm16ZeroCrossingRate: pcm16ZeroCrossingRate,
-    pcm16PeakAbs: pcm16PeakAbs,
-    pcm16IsSpeechLike: pcm16IsSpeechLike,
-    pcm16PitchPeriodicity: pcm16PitchPeriodicity,
-    pcm16IsVoicedSpeech: pcm16IsVoicedSpeech,
-    pcm16VoicedMsFromChunks: pcm16VoicedMsFromChunks,
-    pcm16RealSpeechDetected: pcm16RealSpeechDetected,
     mergePcm16Chunks: mergePcm16Chunks,
     pcm16ToWavBlob: pcm16ToWavBlob,
     float32ToWavBlob: float32ToWavBlob,

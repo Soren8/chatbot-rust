@@ -214,7 +214,7 @@ Optional `Idempotency-Key` operation IDs give fork mutations encrypted, owner-sc
 
 - **Voice Mode** — Default TTS provider is `kokoro`.
   - [x] Silero VAD voice activity detection on **desktop/browser** (`static/deps/vad/`, `chat.js`).
-  - [x] Native mobile VAD — record from speech-like start; barge-in on real speech (`REAL_SPEECH_MS`) in `NativeMicUtteranceVAD` (no Silero in WebView). Dual invariant: cough/"hey" must not stop TTS; sustained speech must, at confirm. See [mobile-apps.md](mobile-apps.md#tts-barge-in-dual-invariant-do-not-oscillate). Android Auto `VoiceScreen` stays RMS.
+  - [x] Native handheld Silero VAD — CPU ONNX inference on native 16 kHz PCM; the WebView consumes probability/duration metadata for the shared record-versus-interrupt policy and does not use `AudioContext`. Cough/"hey" must not stop TTS; sustained speech must, at confirmation. See [mobile-apps.md](mobile-apps.md#tts-barge-in-dual-invariant-do-not-oscillate). Android Auto `VoiceScreen` stays RMS.
   - [ ] Whisper Large v3 turbo.
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml`. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.

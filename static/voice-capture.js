@@ -30,10 +30,8 @@
   // - desktop host: vadLib (vad.MicVAD), log, voiceLifecycle
   //   (noteFrameProcessed), onBargeIn, onSpeechEnd, onSpeechStart,
   //   isTtsActive (message-specific active check)
-  // No window/document access inside. Phase gates stay split exactly as
-  // shipped: record at speech-like start, barge in only on
-  // pcm16RealSpeechDetected (REAL_SPEECH_MS + voicing) — a cough or short
-  // "hey" records but never stops TTS; sustained speech stops it at confirm.
+  // No window/document access inside. Native Silero scores determine speech;
+  // capture start and confirmed barge-in retain separate duration gates.
   // Desktop Silero config (thresholds/paths/model) is unchanged.
 
 function NativeMicUtteranceVAD(host, onError) {
@@ -43,57 +41,28 @@ function NativeMicUtteranceVAD(host, onError) {
   this.utteranceChunks = [];
   this.startGateChunks = [];
   this.inSpeech = false;
-  this.speechAboveCount = 0;
-  this.nonSpeechLikeCount = 0;
+  this.speechEvidenceMs = 0;
+  this.modelSpeech = false;
   this.bargeInFired = false;
   this.silenceMs = 0;
   this.speechActiveMs = 0;
   this.speechLikeMs = 0;
-  this.voicedMs = 0;
-  this.voicedWindow = [];
   this.nativeListener = null;
+  this.nativeErrorListener = null;
   this.isRecording = false;
+  this.vadFailed = false;
   this.chunkCount = 0;
   this._firstFrameReported = false;
 }
 
 NativeMicUtteranceVAD.prototype._resetSpeechCounters = function () {
-  this.speechAboveCount = 0;
-  this.nonSpeechLikeCount = 0;
+  this.speechEvidenceMs = 0;
+  this.modelSpeech = false;
   this.startGateChunks = [];
   this.bargeInFired = false;
   this.silenceMs = 0;
   this.speechActiveMs = 0;
   this.speechLikeMs = 0;
-  this.voicedMs = 0;
-  this.voicedWindow = [];
-};
-
-/** Phase 1: start capture on speech-like energy. Does not stop TTS. */
-NativeMicUtteranceVAD.prototype._maybeStartUtterance = function _maybeStartUtterance(pcm16, rms, skipPreRoll) {
-  var host = this._host;
-  if (this.inSpeech) return false;
-  if (host.nativeAudio.pcm16IsSpeechLike(pcm16, rms)) {
-    this.startGateChunks.push(pcm16.slice());
-    this.speechAboveCount++;
-    this.nonSpeechLikeCount = 0;
-    if (this.speechAboveCount >= host.nativeAudio.SPEECH_START_FRAMES) {
-      host.log('VAD', (skipPreRoll ? 'tts ' : '') + 'utterance start rms=' + Math.round(rms));
-      this._beginUtterance();
-      return true;
-    }
-  } else if (rms > host.nativeAudio.SPEECH_RMS_THRESHOLD) {
-    this.nonSpeechLikeCount++;
-    if (this.nonSpeechLikeCount >= host.nativeAudio.SPEECH_START_MISS_FRAMES) {
-      this.speechAboveCount = 0;
-      this.startGateChunks = [];
-    }
-  } else {
-    this.speechAboveCount = 0;
-    this.nonSpeechLikeCount = 0;
-    this.startGateChunks = [];
-  }
-  return false;
 };
 
 /** Phase 2: stop TTS now if real speech is confirmed. Not called from _endUtterance. */
@@ -101,35 +70,23 @@ NativeMicUtteranceVAD.prototype._maybeBargeIn = function _maybeBargeIn() {
   var host = this._host;
   if (this.bargeInFired) return;
   if (!host.voiceLifecycle.hasActiveVoiceSession()) return;
-  if (!host.nativeAudio.pcm16RealSpeechDetected(this.speechLikeMs, this.voicedMs)) return;
+  if (this.speechLikeMs < host.nativeAudio.REAL_SPEECH_MS) return;
   this.bargeInFired = true;
-  host.log('VAD', 'barge-in on real speech likeMs=' + this.speechLikeMs
-    + ' voicedMs=' + this.voicedMs);
+  host.log('VAD', 'barge-in on Silero speechMs=' + this.speechLikeMs);
   host.onBargeIn();
 };
 
-NativeMicUtteranceVAD.prototype._noteVoicedFrame = function _noteVoicedFrame(copy, frameMs) {
-  var host = this._host;
-  this.voicedWindow.push(copy);
-  const w = host.nativeAudio.SPEECH_VOICED_WINDOW_FRAMES;
-  if (this.voicedWindow.length > w) this.voicedWindow.shift();
-  if (this.voicedWindow.length >= w && host.voiceLifecycle.hasActiveVoiceSession() && !this.bargeInFired) {
-    const win = host.nativeAudio.mergePcm16Chunks(this.voicedWindow);
-    if (host.nativeAudio.pcm16IsVoicedSpeech(win)) this.voicedMs += frameMs;
-  }
-};
-
-NativeMicUtteranceVAD.prototype._accumulateUtterance = function _accumulateUtterance(copy, rms, frameMs) {
+NativeMicUtteranceVAD.prototype._accumulateUtterance = function _accumulateUtterance(copy, probability, durationMs) {
   var host = this._host;
   this.utteranceChunks.push(copy);
-  if (host.nativeAudio.pcm16IsSpeechLike(copy, rms)) {
+  if (probability >= 0.3) this.modelSpeech = true;
+  else if (probability <= 0.25) this.modelSpeech = false;
+  if (this.modelSpeech) {
     this.silenceMs = 0;
-    this.speechActiveMs += frameMs;
-    this.speechLikeMs += frameMs;
-    this._noteVoicedFrame(copy, frameMs);
-  } else {
-    this.silenceMs += frameMs;
-    this.voicedWindow = [];
+    this.speechActiveMs += durationMs;
+    this.speechLikeMs += durationMs;
+  } else if (probability <= 0.25) {
+    this.silenceMs += durationMs;
     if (this.silenceMs >= host.nativeAudio.SPEECH_END_SILENCE_MS) {
       this._endUtterance();
       return;
@@ -138,55 +95,74 @@ NativeMicUtteranceVAD.prototype._accumulateUtterance = function _accumulateUtter
   this._maybeBargeIn();
 };
 
-NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16) {
+NativeMicUtteranceVAD.prototype._onNativePcm = function _onNativePcm(pcm16, probability, durationMs) {
   var host = this._host;
   if (!this.isRecording || !host.isVoiceModeActive()) {
-    // Button-green-but-deaf detector: frames arrive yet the session drops
-    // them (stale listener after restart, flag mismatch). Throttled.
     host.reportThrottled('pcm-dropped', 10000, 'VOICE-ERROR',
       'dropping PCM frames isRecording=' + this.isRecording
       + ' voiceModeActive=' + !!host.isVoiceModeActive()
       + ' chunks=' + this.chunkCount);
     return;
   }
+  if (durationMs !== 0 && durationMs !== 32) return this._failVad('invalid Silero frame duration');
+  if (durationMs === 32 && (typeof probability !== 'number' || !Number.isFinite(probability)
+      || probability < 0 || probability > 1)) return this._failVad('missing Silero probability');
+  if (durationMs === 0 && probability != null) return this._failVad('probability without fresh Silero frame');
   if (!this._firstFrameReported) {
     this._firstFrameReported = true;
     host.report('VOICE', 'first PCM frame received, capture live');
   }
   const copy = pcm16.slice();
-  const rms = host.nativeAudio.pcm16Rms(copy);
-  const frameMs = 20;
-
   this.preRollBuffer.push(copy);
   this.chunkCount++;
+  if (durationMs === 0) {
+    if (this.inSpeech) this.utteranceChunks.push(copy);
+    return;
+  }
 
-  // During TTS: record from speech-like start (Silero onSpeechStart). Barge-in
-  // only after real speech (REAL_SPEECH_MS + voicing), not on cough/"hey".
   if (host.voiceLifecycle.hasActiveVoiceSession()) {
-    const started = this._maybeStartUtterance(copy, rms, true);
-    if (this.inSpeech && !started) {
-      this._accumulateUtterance(copy, rms, frameMs);
+    if (this.inSpeech) {
+      this._accumulateUtterance(copy, probability, durationMs);
+    } else if (probability >= 0.3) {
+      this.startGateChunks.push(copy);
+      this.speechEvidenceMs += durationMs;
+      if (this.speechEvidenceMs >= host.nativeAudio.SPEECH_START_MS) this._beginUtterance();
+    } else if (probability <= 0.25) {
+      this.speechEvidenceMs = 0;
+      this.startGateChunks = [];
     }
-    if (this.chunkCount % 50 === 0) {
-      host.log('VAD', 'pcm#' + this.chunkCount + ' ttsSess=1 ttsPlay=' + host.voiceLifecycle.snapshot().playing
-        + ' inSpeech=' + this.inSpeech + ' speechMs=' + this.speechActiveMs
-        + ' rms=' + Math.round(rms));
-    }
+    if (this.chunkCount % 50 === 0) host.log('VAD', 'pcm#' + this.chunkCount
+      + ' ttsSess=1 ttsPlay=' + host.voiceLifecycle.snapshot().playing
+      + ' inSpeech=' + this.inSpeech + ' speechMs=' + this.speechActiveMs);
     return;
   }
 
-  if (host.voiceLifecycle.isInCooldown()) {
-    return;
+  if (host.voiceLifecycle.isInCooldown()) return;
+  if (this.inSpeech) {
+    this._accumulateUtterance(copy, probability, durationMs);
+  } else if (probability >= 0.3) {
+    this.startGateChunks.push(copy);
+    this.speechEvidenceMs += durationMs;
+    if (this.speechEvidenceMs >= host.nativeAudio.SPEECH_START_MS) this._beginUtterance();
+  } else if (probability <= 0.25) {
+    this.speechEvidenceMs = 0;
+    this.startGateChunks = [];
   }
+  if (this.chunkCount % 50 === 0) host.log('VAD', 'pcm#' + this.chunkCount
+    + ' inSpeech=' + this.inSpeech + ' ttsPlay=' + host.voiceLifecycle.snapshot().playing);
+};
 
-  const started = this._maybeStartUtterance(copy, rms, false);
-  if (this.inSpeech && !started) {
-    this._accumulateUtterance(copy, rms, frameMs);
-  }
-
-  if (this.chunkCount % 50 === 0) {
-    host.log('VAD', 'pcm#' + this.chunkCount + ' inSpeech=' + this.inSpeech
-      + ' ttsPlay=' + host.voiceLifecycle.snapshot().playing + ' rms=' + Math.round(rms));
+NativeMicUtteranceVAD.prototype._failVad = function _failVad(message) {
+  var host = this._host;
+  if (this.vadFailed || !host.registry.isCurrent(this)) return;
+  this.vadFailed = true;
+  this.isRecording = false;
+  host.log('VAD', 'native Silero data error: ' + message);
+  host.report('VOICE-ERROR', 'native Silero data error: ' + message);
+  try {
+    if (typeof this.onError === 'function') this.onError(message);
+  } finally {
+    this.stop();
   }
 };
 
@@ -197,16 +173,15 @@ NativeMicUtteranceVAD.prototype._beginUtterance = function _beginUtterance() {
   this.inSpeech = true;
   const startChunks = this.startGateChunks;
   this.startGateChunks = [];
+  const initialSpeechMs = this.speechEvidenceMs;
   this._resetSpeechCounters();
+  this.modelSpeech = true;
+  this.speechEvidenceMs = initialSpeechMs;
   this.utteranceStartedAt = host.now();
   this.utteranceBinding = host.captureBinding ? host.captureBinding() : null;
   host.onUtteranceStartedAt(this.utteranceStartedAt);
-  this.speechActiveMs = startChunks.length * 20;
-  this.speechLikeMs = startChunks.length * 20;
-  this.voicedMs = host.voiceLifecycle.hasActiveVoiceSession()
-    ? host.nativeAudio.pcm16VoicedMsFromChunks(startChunks, 20)
-    : 0;
-  this.voicedWindow = startChunks.slice(-host.nativeAudio.SPEECH_VOICED_WINDOW_FRAMES);
+  this.speechActiveMs = initialSpeechMs;
+  this.speechLikeMs = initialSpeechMs;
   const preRoll = this.preRollBuffer.snapshotChunks();
   this.utteranceChunks = preRoll.length ? preRoll : startChunks;
   host.log('VAD', 'utterance begin (startChunks=' + startChunks.length + ' preRoll=' + this.utteranceChunks.length + ')');
@@ -217,13 +192,10 @@ NativeMicUtteranceVAD.prototype._endUtterance = function _endUtterance() {
   var host = this._host;
   if (!this.inSpeech) return;
   this.inSpeech = false;
-  this.speechAboveCount = 0;
-  this.nonSpeechLikeCount = 0;
   this.silenceMs = 0;
   this.bargeInFired = false;
   this.speechLikeMs = 0;
-  this.voicedMs = 0;
-  this.voicedWindow = [];
+  this.speechEvidenceMs = 0;
   if (this.speechActiveMs < host.nativeAudio.SPEECH_MIN_ACTIVE_MS) {
     host.log('VAD', 'utterance rejected: speechActiveMs=' + this.speechActiveMs
       + ' min=' + host.nativeAudio.SPEECH_MIN_ACTIVE_MS);
@@ -270,13 +242,14 @@ NativeMicUtteranceVAD.prototype.start = async function () {
     throw new Error('native-audio.js not loaded');
   }
   try {
-    host.log('VAD', 'NativeMicUtteranceVAD start (RMS v' + host.nativeAudio.VOICE_MODE_NATIVE_VAD_VERSION + ')');
+    host.log('VAD', 'NativeMicUtteranceVAD start (native Silero)');
     this.preRollBuffer.clear();
     this.utteranceChunks = [];
     this.completedBinding = null;
     this.startGateChunks = [];
     this.inSpeech = false;
     this._resetSpeechCounters();
+    this.vadFailed = false;
     this.chunkCount = 0;
     this._firstFrameReported = false;
 
@@ -293,12 +266,33 @@ NativeMicUtteranceVAD.prototype.start = async function () {
     if (!host.registry.isCurrent(this)) {
       throw new Error('native VAD start superseded');
     }
+    this.nativeListener = host.recorder.addListener('nativeMicData', function (data) {
+      if (!self.isRecording || !host.isVoiceModeActive()) return;
+      if (!data || !data.data) return;
+      try {
+        self._onNativePcm(host.nativeAudio.decodeNativePcmBase64(data.data), data.vadProbability, data.vadDurationMs);
+      } catch (err) {
+        host.log('VAD', 'PCM decode error: ' + err.message);
+      }
+    });
+    this.nativeErrorListener = host.recorder.addListener('nativeMicError', function (data) {
+      if (!self.isRecording || !data || data.type !== 'vadError') return;
+      self._failVad(data.message || 'Native Silero inference failed');
+    });
+    this.isRecording = true;
     try {
-      await host.recorder.start();
+      const result = await host.recorder.start({ vad: true });
+      if (!result || result.vadEnabled !== true) {
+        if (host.registry.isCurrent(this)) await host.recorder.stop();
+        const unavailable = new Error('Native Silero VAD unavailable; update the app');
+        unavailable.noRetry = true;
+        throw unavailable;
+      }
     } catch (first) {
       const firstMsg = first && first.message ? first.message : String(first);
-      if (/permission/i.test(firstMsg)) throw first;
+      if (/permission/i.test(firstMsg) || (first && first.noRetry)) throw first;
       host.log('VAD', 'NativeMic.start retry after: ' + firstMsg);
+      this.isRecording = false;
       if (!host.registry.isCurrent(this)) {
         throw new Error('native VAD start superseded');
       }
@@ -316,24 +310,28 @@ NativeMicUtteranceVAD.prototype.start = async function () {
       if (!host.registry.isCurrent(this)) {
         throw new Error('native VAD start superseded');
       }
-      await host.recorder.start();
+      this.isRecording = true;
+      const result = await host.recorder.start({ vad: true });
+      if (!result || result.vadEnabled !== true) {
+        if (host.registry.isCurrent(this)) await host.recorder.stop();
+        throw new Error('Native Silero VAD unavailable; update the app');
+      }
     }
 
     if (!host.registry.isCurrent(this)) {
       throw new Error('native VAD start superseded');
     }
-    this.nativeListener = host.recorder.addListener('nativeMicData', function (data) {
-      if (!self.isRecording || !host.isVoiceModeActive()) return;
-      if (!data || !data.data) return;
-      try {
-        self._onNativePcm(host.nativeAudio.decodeNativePcmBase64(data.data));
-      } catch (err) {
-        host.log('VAD', 'PCM decode error: ' + err.message);
-      }
-    });
-    this.isRecording = true;
     host.report('VOICE', 'native VAD capture started');
   } catch (err) {
+    this.isRecording = false;
+    if (this.nativeListener) {
+      this.nativeListener.remove();
+      this.nativeListener = null;
+    }
+    if (this.nativeErrorListener) {
+      this.nativeErrorListener.remove();
+      this.nativeErrorListener = null;
+    }
     host.log('VAD', 'NativeMicUtteranceVAD start failed: ' + (err && err.message ? err.message : err));
     host.report('VOICE-ERROR', 'native VAD start failed: ' + (err && err.message ? err.message : err));
     throw err;
@@ -349,6 +347,10 @@ NativeMicUtteranceVAD.prototype.stop = async function () {
     if (this.nativeListener) {
       this.nativeListener.remove();
       this.nativeListener = null;
+    }
+    if (this.nativeErrorListener) {
+      this.nativeErrorListener.remove();
+      this.nativeErrorListener = null;
     }
 
     this.preRollBuffer.clear();
@@ -375,7 +377,7 @@ NativeMicUtteranceVAD.prototype.stop = async function () {
 
 NativeMicUtteranceVAD.prototype.reinitialize = async function () {
   var host = this._host;
-  host.log('VAD', 'reinitialize: native RMS VAD always running');
+  host.log('VAD', 'reinitialize: native Silero always running');
 };
 
 NativeMicUtteranceVAD.prototype.onTtsPlaybackStarted = function () {

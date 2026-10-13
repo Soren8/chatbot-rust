@@ -167,8 +167,8 @@ if (window.EncKey && window.EncKey.purgeNonRememberedSlots && (!window.APP_DATA 
       isRecording: function() {
         return window.Capacitor.nativePromise('NativeMic', 'isRecording', {});
       },
-      start: function() {
-        return window.Capacitor.nativePromise('NativeMic', 'start', {});
+      start: function(options) {
+        return window.Capacitor.nativePromise('NativeMic', 'start', options || {});
       },
       stop: function() {
         return window.Capacitor.nativePromise('NativeMic', 'stop', {});
@@ -4262,10 +4262,8 @@ $(document).ready(function() {
     }
   });
 
-  // Capacitor voice mode: native PCM VAD (not Silero; WebView AudioContext breaks during TTS).
-  // Record at speech-like start (_beginUtterance). Stop TTS only in _maybeBargeIn
-  // after REAL_SPEECH_MS of confirmed speech. Coughs/"hey" may start capture; they
-  // must not barge in. Do not glue the gates.
+  // Capacitor voice mode uses Silero on the native PCM stream. Start recording
+  // after speech evidence; stop TTS only after the separate confirmed-speech gate.
   function ensureNativeMicPermission() {
     if (!window.NativeMic || typeof window.NativeMic.requestPermission !== 'function') {
       return Promise.resolve();
@@ -4299,7 +4297,7 @@ $(document).ready(function() {
       onUtteranceStartedAt: function (ts) { lastVoiceUtteranceStartedAt = ts; },
       recorder: {
         ensurePermission: function () { return ensureNativeMicPermission(); },
-        start: function () { return window.NativeMic.start(); },
+        start: function (options) { return window.NativeMic.start(options); },
         stop: function () { return window.NativeMic.stop(); },
         addListener: function (eventName, callback) { return window.NativeMic.addListener(eventName, callback); }
       },
@@ -4573,7 +4571,11 @@ $(document).ready(function() {
             + ' foregroundConfirmed=' + (routeRes && routeRes.foregroundConfirmed));
         }
         startingNativeBridge = new ChatVoiceCapture.NativeMicUtteranceVAD(createNativeVadHost(), function (err) {
+          if (sessionGeneration !== voiceModeSessionGeneration || nativeMicBridge !== startingNativeBridge) return;
           nativeLog('VAD', err == null ? 'Native mic error' : String(err));
+          reportVoice('VOICE-ERROR', 'Native Silero VAD stopped');
+          appendMessage('Voice mode failed: Native Silero VAD stopped. Restart voice mode to try again.', 'error-message');
+          stopVoiceMode();
         });
         nativeMicBridge = startingNativeBridge;
         await startingNativeBridge.start();
