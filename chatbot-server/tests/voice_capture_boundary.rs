@@ -156,12 +156,12 @@ fn voice_capture_single_authority_behind_explicit_hooks() {
     }
     let desktop = function_body(unit, "createVAD").expect("createVAD");
     assert!(
-        desktop.contains("positiveSpeechThreshold: 0.7")
-            && desktop.contains("negativeSpeechThreshold: 0.4")
+        desktop.contains("positiveSpeechThreshold: 0.3")
+            && desktop.contains("negativeSpeechThreshold: 0.25")
             && desktop.contains("redemptionMs: 1500")
             && desktop.contains("minSpeechMs: 400")
-            && desktop.contains("preSpeechPadFrames: 16"),
-        "desktop Silero config stays exactly as shipped; got: {desktop}"
+            && desktop.contains("preSpeechPadMs: 500"),
+        "desktop Silero uses bundled speech thresholds and 500 ms pre-roll; got: {desktop}"
     );
 }
 

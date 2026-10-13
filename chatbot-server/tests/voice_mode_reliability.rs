@@ -1629,7 +1629,7 @@ fn native_voice_tts_queues_audio_ahead_without_skipping_sentences() {
 ///    network latency gaps.
 /// 3. While voice mode is active, transient failures must retry persistently
 ///    rather than giving up after 3 attempts and skipping the sentence.
-/// 4. Silero VAD must configure preSpeechPadFrames for pre-roll speech onset parity.
+/// 4. Silero VAD must configure preSpeechPadMs for pre-roll speech onset parity.
 #[test]
 fn desktop_voice_tts_queues_audio_ahead_and_prevents_mid_sentence_cutoffs() {
     let playback_js = include_str!("../../static/tts-playback.js");
@@ -1661,8 +1661,8 @@ fn desktop_voice_tts_queues_audio_ahead_and_prevents_mid_sentence_cutoffs() {
     );
     let capture_js = include_str!("../../static/voice-capture.js");
     assert!(
-        function_contains(capture_js, "createVAD", "preSpeechPadFrames"),
-        "owned desktop Silero factory must configure preSpeechPadFrames to capture speech onset pre-roll"
+        function_contains(capture_js, "createVAD", "preSpeechPadMs"),
+        "owned desktop Silero factory must configure millisecond pre-roll to capture speech onset"
     );
 }
 

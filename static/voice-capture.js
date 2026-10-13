@@ -394,11 +394,11 @@ function createVAD(host, stream, hooks) {
     model: 'v5',
     baseAssetPath: '/static/deps/vad/',
     onnxWASMBasePath: '/static/deps/vad/ort/',
-    positiveSpeechThreshold: 0.7,
-    negativeSpeechThreshold: 0.4,
+    positiveSpeechThreshold: 0.3,
+    negativeSpeechThreshold: 0.25,
     redemptionMs: 1500,
     minSpeechMs: 400,
-    preSpeechPadFrames: 16,
+    preSpeechPadMs: 500,
     getStream: async () => stream,
     onSpeechStart: hooks.onSpeechStart || function () {
       host.log('VAD', 'onSpeechStart');

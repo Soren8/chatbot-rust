@@ -11,8 +11,9 @@ const assert = require('node:assert/strict');
 const capturePath = process.argv[2];
 const nativeAudioPath = process.argv[3];
 const lifecyclePath = process.argv[4];
+const vadBundlePath = capturePath && require('node:path').join(require('node:path').dirname(capturePath), 'deps/vad/bundle.min.js');
 assert(
-  capturePath && nativeAudioPath && lifecyclePath,
+  capturePath && nativeAudioPath && lifecyclePath && vadBundlePath,
   'usage: node voice_capture_test.js <static/voice-capture.js> <static/native-audio.js> <static/voice-lifecycle.js>'
 );
 const capture = require(capturePath);
@@ -21,6 +22,12 @@ const NativeAudio = globalThis.NativeAudio;
 assert(NativeAudio && typeof NativeAudio.pcm16IsSpeechLike === 'function',
   'native-audio.js must set globalThis.NativeAudio');
 const lifecycleMod = require(lifecyclePath);
+const fs = require('node:fs');
+const vm = require('node:vm');
+const vadGlobal = { ort: {}, console };
+vadGlobal.self = vadGlobal;
+vm.runInNewContext(fs.readFileSync(vadBundlePath, 'utf8'), vadGlobal);
+const vadBundle = vadGlobal.vad;
 
 const SR = 16000;
 const FRAME = 320; // 20 ms @ 16 kHz
@@ -170,6 +177,56 @@ function feedAll(vad, frames) {
     for (let i = 0; i < endFrames; i++) vad._onNativePcm(hiss);
     assert.equal(ended, 1, 'sustained high-RMS hiss must not keep silence at zero forever');
     assert.equal(vad.inSpeech, false, 'utterance should end after non-speech silence threshold');
+  });
+
+  await checkAsync('desktop Silero starts normal speech before a short trailing phrase can misfire', async () => {
+    let probability = 0.5;
+    const host = makeHost(makeLifecycle(false));
+    host.vadLib = {
+      MicVAD: {
+        new: async (providedOptions) => {
+          const defaults = vadBundle.getDefaultRealTimeVADOptions('v5');
+          return new vadBundle.FrameProcessor(
+            async () => ({ isSpeech: probability }),
+            () => {},
+            Object.assign({}, defaults, providedOptions),
+            32
+          );
+        },
+      },
+    };
+    host.isTtsActive = () => false;
+    const processor = await capture.createVAD(host, { id: 'desktop-test' });
+    processor.resume();
+    const events = [];
+    const frame = new Float32Array(512);
+    probability = 0.1;
+    for (let i = 0; i < 16; i++) await processor.process(frame, (event) => events.push({ event, frame: i }));
+    probability = 0.5;
+    for (let i = 0; i < 100; i++) await processor.process(frame, (event) => events.push({ event, frame: 16 + i }));
+    probability = 0.8;
+    for (let i = 0; i < 7; i++) await processor.process(frame, (event) => events.push({ event, frame: 116 + i }));
+    probability = 0.0;
+    for (let i = 0; i < 50; i++) await processor.process(frame, (event) => events.push({ event, frame: 123 + i }));
+    const speechStart = events.find(({ event }) => event.msg === vadBundle.Message.SpeechStart);
+    const speechEnd = events.find(({ event }) => event.msg === vadBundle.Message.SpeechEnd);
+    assert(speechStart, 'ordinary speech confidence should start capture');
+    assert.equal(speechStart.frame, 16, 'capture should start on the first ordinary speech frame, not after several seconds');
+    assert(speechEnd, 'normal sentence should finish as speech');
+    assert(!events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire), 'normal sentence must not be reported as a VAD misfire');
+    assert(speechEnd.event.audio.length >= 168 * 512, 'speech result should retain onset padding, the sentence, and its end silence');
+
+    processor.reset();
+    events.length = 0;
+    probability = 0.1;
+    for (let i = 0; i < 16; i++) await processor.process(frame, (event) => events.push({ event, frame: i }));
+    probability = 0.5;
+    for (let i = 0; i < 7; i++) await processor.process(frame, (event) => events.push({ event, frame: 16 + i }));
+    probability = 0.0;
+    for (let i = 0; i < 50; i++) await processor.process(frame, (event) => events.push({ event, frame: 23 + i }));
+    assert(events.some(({ event }) => event.msg === vadBundle.Message.SpeechStart), 'short sound should still enter the speech candidate state');
+    assert(events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire), 'short sound below minSpeechMs should still be rejected');
+    assert(!events.some(({ event }) => event.msg === vadBundle.Message.SpeechEnd), 'short sound must not be submitted as speech');
   });
   check('noisy table vowel frames are speech-like', () => {
     for (const frame of hey) assert(NativeAudio.pcm16IsSpeechLike(frame), 'hey frame must start recording');
