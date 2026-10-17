@@ -220,6 +220,7 @@ fn hold_generation_lock(services: &chatbot_server::services::AppServices, cookie
         model_name: None,
         encrypted: false,
         send_thoughts: false,
+        repeat_system_prompt: false,
     };
     let result = services.chat().chat_prepare(&ctx, &request, &provider, None);
     assert!(

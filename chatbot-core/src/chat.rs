@@ -141,6 +141,7 @@ pub struct PromptInput<'a> {
     pub memory_text: &'a str,
     pub history: &'a [(String, String)],
     pub send_thoughts: bool,
+    pub repeat_system_prompt: bool,
     pub context_size: usize,
 }
 
@@ -248,15 +249,27 @@ pub fn prepare_prompt_messages_with(
     }
     messages.push(ChatMessage::system(system_content));
 
+    // Optional per-turn reminder: repeat the (possibly truncated) system prompt
+    // before every user turn. History storage is untouched; only the packed
+    // outbound messages carry the reminder.
+    let reminder = input
+        .repeat_system_prompt
+        .then(|| system_prompt.trim().to_owned());
+    let reminder = reminder.filter(|prompt| !prompt.is_empty());
+    let with_reminder = |user_text: &str| match &reminder {
+        Some(prompt) => format!("{prompt}\n\n{user_text}"),
+        None => user_text.to_owned(),
+    };
+
     for (user, assistant) in truncated_history.iter() {
-        messages.push(ChatMessage::user(user.clone()));
+        messages.push(ChatMessage::user(with_reminder(user)));
         if !assistant.is_empty() {
             messages.push(ChatMessage::assistant(assistant.clone()));
         }
     }
 
     // New user turn is always appended at full fidelity (including full-res image).
-    messages.push(ChatMessage::user(new_user_message.to_owned()));
+    messages.push(ChatMessage::user(with_reminder(new_user_message)));
 
     // Apply a final, uniform outbound policy after history resolution and
     // thumbnail selection. Only user messages are parsed for image parts by
@@ -299,6 +312,7 @@ pub fn prepare_chat_messages(
         memory_text: &context.memory_text,
         history: &context.history,
         send_thoughts: context.send_thoughts,
+        repeat_system_prompt: context.repeat_system_prompt,
         context_size,
     };
     prepare_prompt_messages_with(&input, new_user_message, context.image_resolver.as_ref())
@@ -400,6 +414,7 @@ mod tests {
             },
             test_chunks: None,
             send_thoughts: false,
+            repeat_system_prompt: false,
             prepare_capture: None,
             image_resolver: None,
         }

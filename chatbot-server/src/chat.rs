@@ -49,6 +49,8 @@ struct ChatRequest {
     save_thoughts: Option<bool>,
     #[serde(default)]
     send_thoughts: Option<bool>,
+    #[serde(default)]
+    repeat_system_prompt: Option<bool>,
 }
 
 pub(crate) fn persist_setup_error(
@@ -352,6 +354,7 @@ pub(crate) async fn handle_chat_legacy(request: Request<Body>) -> Result<Respons
         model_name: Some(selected_model.as_str()),
         encrypted: payload.encrypted.unwrap_or(false),
         send_thoughts,
+        repeat_system_prompt: payload.repeat_system_prompt.unwrap_or(false),
     };
 
     if session_context.username.is_none() {

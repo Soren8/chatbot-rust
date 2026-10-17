@@ -54,6 +54,7 @@ fn test_context(
         provider: test_provider(context_size),
         test_chunks: None,
         send_thoughts,
+        repeat_system_prompt: false,
         prepare_capture: None,
         image_resolver: None,
     }
@@ -76,6 +77,7 @@ fn prompt_input_merges_system_and_memory_into_single_system_message() {
         memory_text: "Remember this.",
         history: &history,
         send_thoughts: false,
+        repeat_system_prompt: false,
         context_size: 8_192,
     };
 
@@ -106,6 +108,7 @@ fn prompt_input_with_empty_memory_emits_bare_system_prompt() {
         memory_text: "",
         history: &history,
         send_thoughts: false,
+        repeat_system_prompt: false,
         context_size: 8_192,
     };
 
@@ -127,6 +130,7 @@ fn prompt_input_strips_think_tags_when_send_thoughts_disabled() {
         memory_text: "",
         history: &history,
         send_thoughts: false,
+        repeat_system_prompt: false,
         context_size: 8_192,
     };
 
@@ -146,6 +150,7 @@ fn prompt_input_keeps_think_tags_when_send_thoughts_enabled() {
         memory_text: "",
         history: &history,
         send_thoughts: true,
+        repeat_system_prompt: false,
         context_size: 8_192,
     };
 
@@ -168,6 +173,7 @@ fn prompt_input_truncates_history_to_most_recent_under_small_budget() {
         memory_text: "",
         history: &history,
         send_thoughts: false,
+        repeat_system_prompt: false,
         context_size: 600,
     };
 
@@ -203,6 +209,7 @@ fn prompt_input_keeps_new_image_full_while_history_thumbnails() {
         memory_text: "",
         history: &history,
         send_thoughts: false,
+        repeat_system_prompt: false,
         context_size: 32_768,
     };
 
@@ -263,6 +270,7 @@ fn wrapper_without_provider_size_packs_with_default_context_size() {
             memory_text: "Remember this.",
             history: &history,
             send_thoughts: false,
+            repeat_system_prompt: false,
             context_size: DEFAULT_CONTEXT_SIZE,
         },
         "Next?",
@@ -277,10 +285,111 @@ fn wrapper_without_provider_size_packs_with_default_context_size() {
             memory_text: "Remember this.",
             history: &history,
             send_thoughts: false,
+            repeat_system_prompt: false,
             context_size: 600,
         },
         "Next?",
     );
     assert_eq!(small.truncated_history_pairs, 1);
     assert!(small.was_truncated());
+}
+
+#[test]
+fn repeat_system_prompt_prefixes_every_user_turn_but_not_stored_history() {
+    let history = vec![
+        ("first question".to_string(), "first answer".to_string()),
+        ("second question".to_string(), "second answer".to_string()),
+    ];
+    let input = PromptInput {
+        system_prompt: "Follow the rules.",
+        memory_text: "",
+        history: &history,
+        send_thoughts: false,
+        repeat_system_prompt: true,
+        context_size: 8_192,
+    };
+
+    let prepared = prepare_prompt_messages(&input, "third question");
+
+    let users: Vec<_> = prepared
+        .messages
+        .iter()
+        .filter(|m| matches!(m.role, ChatMessageRole::User))
+        .collect();
+    assert_eq!(users.len(), 3);
+    for user in &users {
+        assert!(
+            user.content.starts_with("Follow the rules.\n\n"),
+            "each packed user turn must carry the reminder, got: {}",
+            user.content
+        );
+    }
+    assert!(users[0].content.ends_with("first question"));
+    assert!(users[2].content.ends_with("third question"));
+    // Stored history snapshot is untouched: no reminder persisted.
+    assert_eq!(
+        prepared.truncated_history,
+        vec![
+            ("first question".to_string(), "first answer".to_string()),
+            ("second question".to_string(), "second answer".to_string()),
+        ]
+    );
+    // The leading system message still carries the prompt exactly once.
+    let systems = system_messages(&prepared);
+    assert_eq!(systems.len(), 1);
+    assert_eq!(systems[0], "Follow the rules.");
+}
+
+#[test]
+fn repeat_system_prompt_disabled_leaves_user_text_alone() {
+    let history = vec![("Hello".to_string(), "Hi".to_string())];
+    let input = PromptInput {
+        system_prompt: "You are helpful.",
+        memory_text: "",
+        history: &history,
+        send_thoughts: false,
+        repeat_system_prompt: false,
+        context_size: 8_192,
+    };
+
+    let prepared = prepare_prompt_messages(&input, "How are you?");
+
+    assert_eq!(prepared.messages[1].content, "Hello");
+    assert_eq!(prepared.messages.last().unwrap().content, "How are you?");
+}
+
+#[test]
+fn repeat_system_prompt_with_empty_prompt_adds_no_prefix() {
+    let history = vec![("Hello".to_string(), "Hi".to_string())];
+    let input = PromptInput {
+        system_prompt: "   ",
+        memory_text: "",
+        history: &history,
+        send_thoughts: false,
+        repeat_system_prompt: true,
+        context_size: 8_192,
+    };
+
+    let prepared = prepare_prompt_messages(&input, "How are you?");
+
+    assert_eq!(prepared.messages[1].content, "Hello");
+    assert_eq!(prepared.messages.last().unwrap().content, "How are you?");
+}
+
+#[test]
+fn wrapper_repeats_system_prompt_when_context_requests_it() {
+    let history = vec![("Hello".to_string(), "Hi".to_string())];
+    let mut context = test_context(history, "", "You are helpful.", false, Some(8_192));
+    context.repeat_system_prompt = true;
+
+    let prepared = prepare_chat_messages(&context, "How are you?");
+
+    let users: Vec<_> = prepared
+        .messages
+        .iter()
+        .filter(|m| matches!(m.role, ChatMessageRole::User))
+        .collect();
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[0].content, "You are helpful.\n\nHello");
+    assert_eq!(users[1].content, "You are helpful.\n\nHow are you?");
 }

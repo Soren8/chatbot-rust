@@ -45,6 +45,7 @@ fn chat_request<'a>(message: &'a str) -> ChatRequestData<'a> {
         model_name: None,
         encrypted: false,
         send_thoughts: false,
+        repeat_system_prompt: false,
     }
 }
 

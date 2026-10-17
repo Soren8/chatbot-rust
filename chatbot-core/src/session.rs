@@ -91,6 +91,7 @@ pub struct ChatContext {
     pub provider: ProviderConfig,
     pub test_chunks: Option<Vec<String>>,
     pub send_thoughts: bool,
+    pub repeat_system_prompt: bool,
     /// Immutable prepare snapshot for authenticated durable commits.
     pub prepare_capture: Option<PrepareCapture>,
     /// Resolves stored image refs in `history` for the model prompt.
@@ -111,6 +112,7 @@ pub struct ChatRequestData<'a> {
     pub model_name: Option<&'a str>,
     pub encrypted: bool,
     pub send_thoughts: bool,
+    pub repeat_system_prompt: bool,
 }
 
 pub struct RegeneratePrepareResult {
@@ -129,6 +131,7 @@ pub struct RegenerateRequestData<'a> {
     pub encrypted: bool,
     pub pair_index: Option<i32>,
     pub send_thoughts: bool,
+    pub repeat_system_prompt: bool,
 }
 
 /// Pure prepare-time validation failures.
@@ -1065,6 +1068,7 @@ impl ChatService {
             provider: provider.clone(),
             test_chunks,
             send_thoughts: request.send_thoughts,
+            repeat_system_prompt: request.repeat_system_prompt,
             prepare_capture,
             image_resolver,
         })
@@ -1572,6 +1576,7 @@ impl ChatService {
             provider: provider.clone(),
             test_chunks,
             send_thoughts: request.send_thoughts,
+            repeat_system_prompt: request.repeat_system_prompt,
             prepare_capture,
             image_resolver: durable_owner
                 .map(|(username, set_id, key)| self.image_resolver(username, set_id, key)),
@@ -3161,6 +3166,7 @@ mod tests {
             encrypted: false,
             pair_index: Some(1),
             send_thoughts: false,
+            repeat_system_prompt: false,
         };
 
         let result = regenerate_prepare(&session, &request, &provider, None);
@@ -3236,6 +3242,7 @@ mod tests {
             encrypted: false,
             pair_index: Some(1),
             send_thoughts: false,
+            repeat_system_prompt: false,
         };
 
         let result = regenerate_prepare(&session, &request, &provider, None);
@@ -3295,6 +3302,7 @@ mod tests {
             model_name: None,
             encrypted: false,
             send_thoughts: false,
+            repeat_system_prompt: false,
         }
     }
 
@@ -3448,6 +3456,7 @@ mod tests {
             model_name: None,
             encrypted: false,
             send_thoughts: false,
+            repeat_system_prompt: false,
         };
 
         let prepared = chat_prepare_leased(&session, &bad, &provider, None);
@@ -3486,6 +3495,7 @@ mod tests {
             encrypted: false,
             pair_index: Some(0),
             send_thoughts: false,
+            repeat_system_prompt: false,
         };
 
         let prepared = regenerate_prepare_leased(&session, &request, &provider, None);

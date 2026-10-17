@@ -136,6 +136,7 @@ fn chat_request<'a>(message: &'a str) -> ChatRequestData<'a> {
         model_name: None,
         encrypted: false,
         send_thoughts: false,
+        repeat_system_prompt: false,
     }
 }
 
@@ -539,6 +540,7 @@ fn authed_regenerate_uses_capture_without_disturbing_peer() {
         encrypted: false,
         pair_index: Some(1),
         send_thoughts: false,
+        repeat_system_prompt: false,
     };
     let prepared = a.service.regenerate_prepare_leased(
         &session,
@@ -606,6 +608,7 @@ fn owned_prepare_rejects_empty_message_and_releases_lock() {
         model_name: None,
         encrypted: false,
         send_thoughts: false,
+        repeat_system_prompt: false,
     };
 
     let prepared = owned.service.chat_prepare_leased(&session, &bad, &provider, None);

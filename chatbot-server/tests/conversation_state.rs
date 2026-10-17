@@ -534,6 +534,7 @@ fn request_shapes_match_server_contract() {
         "web_search: $('#web-search-toggle').hasClass('btn-primary')",
         "save_thoughts: $('#check-save-thoughts').is(':checked')",
         "send_thoughts: $('#check-send-thoughts').is(':checked')",
+        "repeat_system_prompt: $('#check-repeat-system-prompt').is(':checked')",
         "pair_index: pairIndex",
         "user_message: userText",
         "set_id: setId",
