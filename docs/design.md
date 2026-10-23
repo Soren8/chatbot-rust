@@ -159,7 +159,7 @@ Optional `Idempotency-Key` operation IDs give fork mutations encrypted, owner-sc
   - [x] Store all API keys and sensitive settings in environment variables only — Compose/`.config.yml` use `${VAR}` substitution; boot refuses plaintext provider `api_key` values and `vars:`-backed key refs.
   - [x] Validate `.config.yml` against a schema to catch missing or invalid fields.
   - [x] Protect `.env` and `.config.yml` from AI agent access via the **agent devcontainer** (Docker isolation + secret bind-mount overlays). Run cloud-connected agents only in that environment — see [`.devcontainer/README.md`](../.devcontainer/README.md). Do not run agents on the host against the live workspace.
-  - [x] Dependabot (`.github/dependabot.yml`): weekly PRs for Cargo, GitHub Actions, and Docker base images — **review/merge only**, no automerge. Direct crate deps pinned to current `Cargo.lock` versions.
+  - [x] Dependabot (`.github/dependabot.yml`): one grouped weekly PR per ecosystem (Cargo, GitHub Actions, Docker base images across all Dockerfile directories, pip, npm) — **review/merge only**, no automerge. Direct crate deps pinned to current `Cargo.lock` versions.
   - [x] CodeQL security scanning via advanced setup (`.github/workflows/codeql.yml` + `.github/codeql/codeql-config.yml`). Disable GitHub “default setup” for this repo to avoid duplicate scans. Test trees (`**/tests/**`, etc.) are path-ignored so fixture passwords do not trip `rust/hard-coded-cryptographic-value`; production code still runs that query. Bulk-dismiss leftover *test* alerts with `scripts/dismiss-codeql-hardcoded-alerts.sh` if needed.
   - [ ] Implement hybrid chat-history encryption:
         - [x] Derive a per-user data key from a user-supplied passphrase.
