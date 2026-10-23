@@ -1,12 +1,12 @@
-fastapi==0.141.1
-uvicorn[standard]==0.53.0
+fastapi==0.156.0
+uvicorn[standard]==0.54.0
 nemo_toolkit[asr]==3.0.0
 kokoro==0.9.4
 misaki[en]==0.9.4
 spacy==3.8.16
 pydub==0.25.1
 python-multipart==0.0.32
-numpy==2.5.3
+numpy==2.5.4
 soundfile==0.14.0
 librosa==1.0.0
-huggingface_hub==1.32.0
+huggingface_hub==2.2.0
