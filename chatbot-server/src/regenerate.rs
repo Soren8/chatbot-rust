@@ -51,6 +51,8 @@ struct RegenerateRequest {
     save_thoughts: Option<bool>,
     #[serde(default)]
     send_thoughts: Option<bool>,
+    #[serde(default)]
+    repeat_system_prompt: Option<bool>,
 }
 
 pub async fn handle_regenerate(request: Request<Body>) -> Result<Response<Body>, HttpError> {
@@ -224,6 +226,7 @@ pub(crate) async fn handle_regenerate_legacy(
         encrypted: payload.encrypted.unwrap_or(false),
         pair_index: payload.pair_index,
         send_thoughts,
+        repeat_system_prompt: payload.repeat_system_prompt.unwrap_or(false),
     };
 
     if session_context.username.is_none() {

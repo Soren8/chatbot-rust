@@ -115,6 +115,7 @@ fn chat_request<'a>(message: &'a str) -> ChatRequestData<'a> {
         model_name: None,
         encrypted: false,
         send_thoughts: false,
+        repeat_system_prompt: false,
     }
 }
 
@@ -128,6 +129,7 @@ fn regenerate_request<'a>(message: &'a str) -> RegenerateRequestData<'a> {
         encrypted: false,
         pair_index: Some(0),
         send_thoughts: false,
+        repeat_system_prompt: false,
     }
 }
 

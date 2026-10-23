@@ -294,6 +294,7 @@ function makeWorld() {
     '#web-search-toggle': makeFake('#web-search-toggle'),
     '#check-save-thoughts': makeFake('#check-save-thoughts'),
     '#check-send-thoughts': makeFake('#check-send-thoughts'),
+    '#check-repeat-system-prompt': makeFake('#check-repeat-system-prompt'),
     '#set-selector': setSelector,
     '#set-selector option:selected': optionFake,
     '#send-button': sendButton,

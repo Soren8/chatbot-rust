@@ -2500,7 +2500,8 @@ if (window.APP_DATA.autoplayTTS || window.voiceModeActive) {
       pair_index: pairIndex,
       web_search: $('#web-search-toggle').hasClass('btn-primary'),
       save_thoughts: $('#check-save-thoughts').is(':checked'),
-      send_thoughts: $('#check-send-thoughts').is(':checked')
+      send_thoughts: $('#check-send-thoughts').is(':checked'),
+      repeat_system_prompt: $('#check-repeat-system-prompt').is(':checked')
     }))
   })
   .then(response => {
@@ -3765,7 +3766,8 @@ $(document).ready(function() {
       model_name: $('#modelSelect').val(),
       web_search: $('#web-search-toggle').hasClass('btn-primary'),
       save_thoughts: $('#check-save-thoughts').is(':checked'),
-      send_thoughts: $('#check-send-thoughts').is(':checked')
+      send_thoughts: $('#check-send-thoughts').is(':checked'),
+      repeat_system_prompt: $('#check-repeat-system-prompt').is(':checked')
     });
 
     const seq = beginChatRequest();

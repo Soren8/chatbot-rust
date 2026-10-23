@@ -21,7 +21,7 @@ fn png_url(width: u32, height: u32) -> String {
 fn input(history: &[(String, String)]) -> PromptInput<'_> {
     PromptInput {
         system_prompt: "Describe the images.", memory_text: "", history,
-        send_thoughts: false, context_size: 32768,
+        send_thoughts: false, repeat_system_prompt: false, context_size: 32768,
     }
 }
 
@@ -169,6 +169,7 @@ fn image_marker_literals_in_system_and_assistant_text_are_preserved() {
         memory_text: "",
         history: &history,
         send_thoughts: true,
+        repeat_system_prompt: false,
         context_size: 32_768,
     };
 
