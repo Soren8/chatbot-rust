@@ -31,7 +31,7 @@ reqwest = { version = "0.12.23", default-features = false, features = ["json", "
 tokio-stream = "0.1.17"
 async-stream = "0.3.6"
 futures-util = "0.3.31"
-minijinja = { version = "2.21.0", features = ["builtins", "json"] }
+minijinja = { version = "3.0.1", features = ["builtins", "json"] }
 pulldown-cmark = "0.13.4"
 async-openai = "0.42.0"
 audiopus = "0.2.0"
