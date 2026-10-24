@@ -334,7 +334,7 @@ const delta = (seq, text) => ({ seq, type: 'delta', text });
   console.log('PASS interruption and image routing wiring');
   let imageFetches = 0, renderedSrc;
   const imageHarness = harness(async () => { if (++imageFetches === 1) throw new TypeError('offline image'); return { ok: true, status: 200, blob: async () => ({}) }; });
-  const imageCtx = vm.createContext({ activitySync: imageHarness.sync, historyWindow: { snapshot: () => ({ setGen: 1 }), isLiveGen: n => n === 1 }, URL: { createObjectURL: () => 'blob:retried-image', revokeObjectURL() {} } });
+  const imageCtx = vm.createContext({ imageSources: new WeakMap(), activitySync: imageHarness.sync, historyWindow: { snapshot: () => ({ setGen: 1 }), isLiveGen: n => n === 1 }, URL: { createObjectURL: () => 'blob:retried-image', revokeObjectURL() {} } });
   vm.runInContext(slice('function loadHistoryImage(', 'function startDeferredThumbs('), imageCtx);
   imageCtx.image = { isConnected: true, setAttribute: (name, value) => { if (name === 'src') renderedSrc = value; } };
   vm.runInContext("loadHistoryImage(image, '/history_image/s/1/0/0')", imageCtx); await tick();
