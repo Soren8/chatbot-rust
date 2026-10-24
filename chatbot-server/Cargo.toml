@@ -31,7 +31,7 @@ reqwest = { version = "0.12.23", default-features = false, features = ["json", "
 tokio-stream = "0.1.17"
 async-stream = "0.3.6"
 futures-util = "0.3.31"
-minijinja = { version = "3.0.1", features = ["builtins", "json"] }
+minijinja = { version = "3.0.1", features = ["builtins", "json", "serde"] }
 pulldown-cmark = "0.13.4"
 async-openai = "0.42.0"
 audiopus = "0.2.0"
@@ -45,6 +45,6 @@ tempfile = "3.22.0"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
 tracing-appender = "0.2.3"
 chatbot-test-support = { path = "../chatbot-test-support" }
-oxc_allocator = "0.153.0"
+oxc_allocator = "0.155.0"
 oxc_parser = "0.155.0"
-oxc_span = "0.153.0"
+oxc_span = "0.155.0"

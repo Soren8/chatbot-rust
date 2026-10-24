@@ -3,7 +3,7 @@ use axum::{
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use chatbot_core::{account_service::AccountService, config::{PrivacyLevel, TtsAccess}, remember_store, session};
-use minijinja::{context, AutoEscape, Environment};
+use minijinja::{context, value::Serde, AutoEscape, Environment};
 use serde::Serialize;
 use std::sync::OnceLock;
 use tracing::warn;
@@ -319,15 +319,15 @@ fn render_template(
     let rendered = template.render(context! {
         logged_in => logged_in,
         agent_connections_enabled => agent_connections_enabled,
-        username => user_details.username,
-        user_tier => user_details.tier,
-        last_set => user_details.last_set,
-        last_model => user_details.last_model,
+        username => &user_details.username,
+        user_tier => &user_details.tier,
+        last_set => &user_details.last_set,
+        last_model => &user_details.last_model,
         render_markdown => user_details.render_markdown,
         autoplay_tts => user_details.autoplay_tts,
         web_search => user_details.web_search,
         voice_mode => user_details.voice_mode,
-        available_llms => available_models,
+        available_llms => Serde(available_models),
         default_system_prompt => default_prompt,
         csrf_token => csrf_token,
         save_thoughts => save_thoughts,
