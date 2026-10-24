@@ -1519,8 +1519,21 @@ function updateLoadOlderBar() {
   }
 }
 
+// Sanitized source per chat image, published by loadHistoryImage and read by
+// the lightbox click handler. The DOM `src` holds only a blob object URL, so
+// sources are never read back from it (CodeQL js/xss-through-dom).
+var imageSources = new WeakMap();
+
 function loadHistoryImage(image, url) {
-  if (url.indexOf('/history_image/') !== 0) { image.setAttribute('src', url); return; }
+  imageSources.set(image, url);
+  if (url.indexOf('/history_image/') !== 0) {
+    // Data images still reach the sink as a blob object URL, never the URL text.
+    var objectUrl = chatRenderer.dataImageObjectUrl(url);
+    if (!objectUrl) return;
+    image.onload = image.onerror = function () { URL.revokeObjectURL(objectUrl); };
+    image.setAttribute('src', objectUrl);
+    return;
+  }
   var binding = historyWindow.snapshot().setGen;
   activitySync.request(url).then(function (response) {
     if (!response.ok) throw new Error('History image unavailable');
@@ -1689,9 +1702,9 @@ function sanitizeLightboxSrc(src) {
 }
 
 function openImageLightbox(src) {
-  // src may come from img.getAttribute('src') (DOM text). Only assign a
-  // reconstructed data:image URL or same-origin /history_image/... path
-  // (CodeQL js/xss-through-dom).
+  // src is the sanitized source recorded by loadHistoryImage, never DOM text.
+  // Only a reconstructed data:image URL or same-origin /history_image/... path
+  // reaches the image sink (CodeQL js/xss-through-dom).
   const safeSrc = sanitizeLightboxSrc(src);
   if (!safeSrc) return;
   const $overlay = ensureImageLightbox();
@@ -2932,7 +2945,8 @@ $(document).ready(function() {
 
       // Show preview in the UI
       const $preview = $('<div class="image-preview-container" style="position: relative; display: inline-block; margin: 5px 0;"></div>');
-      const $img = $('<img>').attr('src', imgData).css({'max-width': '200px', 'max-height': '150px', 'border-radius': '8px', 'border': '1px solid #444'});
+      const $img = $('<img>').css({'max-width': '200px', 'max-height': '150px', 'border-radius': '8px', 'border': '1px solid #444'});
+      loadHistoryImage($img[0], imgData);
       const $removeBtn = $('<button class="btn btn-sm btn-danger" style="position: absolute; top: -8px; right: -8px; border-radius: 50%; width: 24px; height: 24px; padding: 0; line-height: 24px;">&times;</button>');
       $preview.append($img).append($removeBtn);
 
@@ -3046,7 +3060,9 @@ $(document).ready(function() {
       openImageLightbox(historyImageUrl(Number(pairIndex), 0));
       return;
     }
-    openImageLightbox(img.getAttribute('src'));
+    const recordedSrc = imageSources.get(img);
+    if (recordedSrc == null) return;
+    openImageLightbox(recordedSrc);
   });
   $(document).on('keydown', function(e) {
     if (e.key === 'Escape' && $('#image-lightbox').hasClass('is-open')) {
@@ -3320,7 +3336,7 @@ $(document).ready(function() {
     const $btn = $(this);
     const $container = $btn.closest('.code-block-container');
     const code = $container.find('pre code').text();
-    const originalHtml = $btn.html();
+    const originalHtml = '<i class="bi bi-clipboard"></i>';
 
     copyToClipboard(code).then(function() {
       $btn.addClass('copied').html('<i class="bi bi-check2"></i>');

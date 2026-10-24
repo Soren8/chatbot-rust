@@ -40,6 +40,38 @@ fn chat_renderer_js_parses() {
     );
 }
 
+/// Image sinks accept only `URL.createObjectURL` results, so DOM/message text
+/// can never become a script URL (CodeQL js/xss-through-dom). `chat.js` also
+/// records sanitized sources in a WeakMap instead of reading `src` back.
+#[test]
+fn image_src_is_only_assigned_object_urls() {
+    let renderer = include_str!("../../static/chat-renderer.js");
+    let chat = include_str!("../../static/chat.js");
+    for (name, source) in [("chat-renderer.js", renderer), ("chat.js", chat)] {
+        let mut rest = source;
+        let mut found = 0;
+        while let Some(at) = rest.find("setAttribute('src',") {
+            let tail = &rest[at + "setAttribute('src',".len()..];
+            assert!(
+                tail.starts_with(" objectUrl)"),
+                "{name} assigns an image src from something other than an object URL: {}",
+                tail.chars().take(40).collect::<String>()
+            );
+            found += 1;
+            rest = &tail[1..];
+        }
+        assert!(found > 0, "{name} must assign image src at least once");
+    }
+    assert!(
+        !chat.contains("getAttribute('src')"),
+        "chat.js must not read image src back from the DOM; use the imageSources WeakMap"
+    );
+    assert!(
+        !chat.contains(".attr('src'"),
+        "chat.js must route image sources through loadHistoryImage, not jQuery .attr('src', ...)"
+    );
+}
+
 /// Ownership: builders and the markdown/history projection live in the shared
 /// unit behind named deps (never a generic getter bag); chat keeps thin
 /// adapters so existing call sites are unchanged.

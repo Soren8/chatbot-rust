@@ -58,6 +58,29 @@
     return 'data:image/' + subtype + ';base64,' + b64;
   }
 
+  // Decode an allowlisted data:image URL into a blob object URL. Image sinks
+  // only ever receive the createObjectURL result, never the source string
+  // (CodeQL js/xss-through-dom); unsupported runtimes or bad input yield null.
+  function dataImageObjectUrl(src) {
+    var dataSrc = sanitizeDataImageSrc(src);
+    if (!dataSrc) return null;
+    try {
+      if (typeof atob !== 'function' || typeof Blob === 'undefined'
+          || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+        return null;
+      }
+      var subtype = /^data:image\/([A-Za-z0-9+.-]+);base64,/.exec(dataSrc)[1];
+      var binary = atob(dataSrc.slice(dataSrc.indexOf(',') + 1));
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i) & 0xff;
+      }
+      return URL.createObjectURL(new Blob([bytes], { type: 'image/' + subtype }));
+    } catch (e) {
+      return null;
+    }
+  }
+
   function createChatRenderer(deps) {
     deps = deps || {};
     var doc = deps.document || null;
@@ -134,10 +157,15 @@
         }
         if (opts && opts.deferSrc) {
           img.setAttribute('data-pending-src', safeSrc);
-        } else if (safeSrc.indexOf('/history_image/') === 0 && deps.loadHistoryImage) {
+        } else if (deps.loadHistoryImage) {
           deps.loadHistoryImage(img, safeSrc);
-        } else {
-          img.setAttribute('src', safeSrc);
+        } else if (safeSrc.indexOf('/history_image/') !== 0) {
+          // No image loader (tests): data images only, and only via a blob URL.
+          var objectUrl = dataImageObjectUrl(safeSrc);
+          if (objectUrl) {
+            img.onload = img.onerror = function () { URL.revokeObjectURL(objectUrl); };
+            img.setAttribute('src', objectUrl);
+          }
         }
         span.appendChild(img);
       }
@@ -383,6 +411,7 @@
       escapeHTML: escapeHTML,
       decodeHTMLEntities: decodeHTMLEntities,
       sanitizeDataImageSrc: sanitizeDataImageSrc,
+      dataImageObjectUrl: dataImageObjectUrl,
       sanitizeLightboxSrc: sanitizeLightboxSrc,
       buildUserMessageSpan: buildUserMessageSpan,
       appendPlainTextWithBreaks: appendPlainTextWithBreaks,
@@ -403,6 +432,7 @@
     escapeHTML: escapeHTML,
     decodeHTMLEntities: decodeHTMLEntities,
     sanitizeDataImageSrc: sanitizeDataImageSrc,
+    dataImageObjectUrl: dataImageObjectUrl,
     createChatRenderer: createChatRenderer
   };
 }));

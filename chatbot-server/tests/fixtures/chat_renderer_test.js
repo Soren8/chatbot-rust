@@ -169,7 +169,14 @@ function makeRenderer(overrides) {
     assert(!('src' in imgs[0].attributes), 'deferred thumbnails must not set src eagerly');
     assert.equal(imgs[0].attributes['data-pair-index'], '3');
     const direct = renderer.buildUserMessageSpan('hi', src, {});
-    assert.equal(findAll(direct, node => node.tagName === 'img')[0].attributes.src, src);
+    const directSrc = findAll(direct, node => node.tagName === 'img')[0].attributes.src;
+    assert(
+      typeof directSrc === 'string' && directSrc.indexOf('blob:') === 0,
+      'non-deferred data images attach a blob object URL, got: ' + directSrc);
+    assert(
+      Renderer.dataImageObjectUrl('data:image/png;base64,aGk=').indexOf('blob:') === 0,
+      'allowlisted data images decode to a blob object URL');
+    assert.equal(Renderer.dataImageObjectUrl('javascript:alert(1)'), null);
     const evil = renderer.buildUserMessageSpan('hi', 'javascript:alert(1)', {});
     assert.deepEqual(findAll(evil, node => node.tagName === 'img'), [], 'unsafe sources attach no image');
   });
