@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::account_service::AccountService;
 use crate::enc_key::EncryptionKey;
@@ -145,11 +145,9 @@ fn aad(owner: &str, id: Uuid, revision: u64) -> Vec<u8> {
 
 fn cipher(key: &EncryptionKey) -> Aes256Gcm {
     let hk = Hkdf::<Sha256>::new(None, key.as_bytes());
-    let mut derived = [0u8; 32];
-    hk.expand(b"chatbot-connection-payload-v1", &mut derived).expect("valid key size");
-    let cipher = Aes256Gcm::new_from_slice(&derived).expect("valid AES key size");
-    derived.zeroize();
-    cipher
+    let mut derived = Zeroizing::new(<[u8; 32]>::default());
+    hk.expand(b"chatbot-connection-payload-v1", derived.as_mut_slice()).expect("valid key size");
+    Aes256Gcm::new_from_slice(derived.as_slice()).expect("valid AES key size")
 }
 
 fn seal(owner: &str, id: Uuid, revision: u64, secret: &SecretRecord, key: &EncryptionKey) -> Result<Vec<u8>, ConnectionError> {

@@ -241,7 +241,7 @@ impl UserStore {
         let normalised = normalise_username(username).map_err(UserStoreError::Crypto)?;
         let salt = self.get_or_create_salt(&normalised)?;
 
-        let mut derived = Zeroizing::new([0u8; KEY_LEN]);
+        let mut derived = Zeroizing::new(<[u8; KEY_LEN]>::default());
         pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived[..]);
         let encoded = Zeroizing::new(STANDARD.encode(&*derived).into_bytes());
         Ok(encoded.to_vec())
@@ -282,7 +282,7 @@ impl UserStore {
         if !legacy.exists() {
             return Ok(None);
         }
-        let mut stored = [0u8; 32];
+        let mut stored = <[u8; 32]>::default();
         let mut file = File::open(&legacy)?;
         file.read_exact(&mut stored)?;
         let record = KeyVerifierRecord {
@@ -389,7 +389,7 @@ impl UserStore {
         let users = self.load_users()?;
 
         if !users.contains_key(&normalised) {
-            let mut salt = [0u8; SALT_LEN];
+            let mut salt = <[u8; SALT_LEN]>::default();
             rand::rng().fill_bytes(&mut salt);
             return Ok(STANDARD.encode(salt));
         }
@@ -400,7 +400,7 @@ impl UserStore {
 
     fn get_or_create_salt(&self, normalised_username: &str) -> Result<[u8; SALT_LEN], UserStoreError> {
         let salt_path = self.salts_dir.join(format!("{normalised_username}_salt"));
-        let mut salt = [0u8; SALT_LEN];
+        let mut salt = <[u8; SALT_LEN]>::default();
         if !salt_path.exists() {
             rand::rng().fill_bytes(&mut salt);
             if publish_once(&salt_path, &salt)? {

@@ -9,7 +9,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const RECEIPT_TTL_SECS: u64 = 24 * 60 * 60;
 
@@ -170,10 +170,8 @@ fn receipt_aad(owner: &str, id: &OperationId) -> Vec<u8> {
 }
 fn receipt_cipher(key: &EncryptionKey) -> Aes256Gcm {
     let hkdf = Hkdf::<Sha256>::new(None, key.as_bytes());
-    let mut derived = [0u8; 32];
-    hkdf.expand(b"chatbot-operation-receipt-v1", &mut derived)
+    let mut derived = Zeroizing::new(<[u8; 32]>::default());
+    hkdf.expand(b"chatbot-operation-receipt-v1", derived.as_mut_slice())
         .expect("valid key size");
-    let cipher = Aes256Gcm::new_from_slice(&derived).expect("valid key size");
-    derived.zeroize();
-    cipher
+    Aes256Gcm::new_from_slice(derived.as_slice()).expect("valid key size")
 }

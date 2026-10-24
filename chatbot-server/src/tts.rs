@@ -233,7 +233,7 @@ pub async fn handle_tts(request: Request<Body>) -> Result<Response<Body>, HttpEr
 
     // Generate a temporary token and store the cleaned text. The decryption
     // key is never stored in the token.
-    let mut token_bytes = [0u8; 16];
+    let mut token_bytes = <[u8; 16]>::default();
     rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
 
