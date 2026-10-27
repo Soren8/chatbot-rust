@@ -4,8 +4,8 @@
 //! `static/chat.js` keeps platform composition (bridge pointer, stop
 //! rendezvous, permission helper, voice-mode session UI) and thin adapters.
 //! Thresholds live in `static/native-audio.js` and the Silero config;
-//! the unit redefines none. Native probabilities control capture; barge-in
-//! remains a separate confirmed-speech duration gate.
+//! the unit redefines none. One Silero utterance gate segments speech on both
+//! platforms; barge-in is the lifecycle's confidence gate.
 
 use std::path::Path;
 use std::process::Command;
@@ -144,7 +144,7 @@ fn voice_capture_single_authority_behind_explicit_hooks() {
         !unit.contains("window.") && !unit.contains("document."),
         "the shared unit must not touch window/document"
     );
-    for redefined in ["SPEECH_START_MS =", "REAL_SPEECH_MS ="] {
+    for redefined in ["SPEECH_START_MS =", "SPEECH_END_SILENCE_MS ="] {
         assert!(
             !unit.contains(redefined),
             "thresholds live in native-audio.js; the unit must use them, never redefine {redefined}"
@@ -152,17 +152,19 @@ fn voice_capture_single_authority_behind_explicit_hooks() {
     }
     let desktop = function_body(unit, "createVAD").expect("createVAD");
     assert!(
-        desktop.contains("positiveSpeechThreshold: 0.3")
-            && desktop.contains("negativeSpeechThreshold: 0.25")
-            && desktop.contains("redemptionMs: 1500")
-            && desktop.contains("minSpeechMs: 400")
-            && desktop.contains("preSpeechPadMs: 500"),
-        "desktop Silero uses bundled speech thresholds and 500 ms pre-roll; got: {desktop}"
+        desktop.contains("DesktopUtteranceVAD") && desktop.contains("onFrameProcessed"),
+        "desktop segments vad-web frame scores with the shared gate; got: {desktop}"
+    );
+    assert!(
+        !desktop.contains("onSpeechStart")
+            && !desktop.contains("onSpeechRealStart")
+            && !desktop.contains("onSpeechEnd"),
+        "vad-web's segmenter misfires on real speech; desktop must not use it; got: {desktop}"
     );
 }
 
-/// Native Silero starts capture and confirmed neural speech interrupts TTS on the
-/// flags-only session; completion never triggers barge-in.
+/// The shared gate starts capture from Silero evidence; barge-in is the
+/// lifecycle confidence gate on every frame, never at start or completion.
 #[test]
 fn voice_capture_gates_stay_split_on_the_flags_only_session() {
     let unit = capture_js();
@@ -170,31 +172,23 @@ fn voice_capture_gates_stay_split_on_the_flags_only_session() {
         unit.contains("probability >= 0.3") && unit.contains("SPEECH_START_MS"),
         "native recording start uses Silero confidence"
     );
+    for phase in ["_beginUtterance", "_accumulateUtterance", "_endUtterance"] {
+        assert!(
+            !function_contains(unit, phase, "onBargeIn"),
+            "barge-in is the confidence gate, not an utterance phase: {phase}"
+        );
+    }
     assert!(
-        !function_contains(unit, "_beginUtterance", "onBargeIn"),
-        "do not barge in at utterance start (that is onSpeechStart / cough-prone)"
+        function_contains(unit, "_onSileroFrame", "noteFrameProcessed")
+            && function_contains(unit, "_onSileroFrame", "onBargeIn")
+            && function_contains(unit, "_onSileroFrame", "speechEvidenceMs"),
+        "every Silero frame feeds the confidence barge-in gate and the start gate"
     );
     assert!(
-        function_contains(unit, "_maybeBargeIn", "onBargeIn")
-            && function_contains(unit, "_maybeBargeIn", "REAL_SPEECH_MS")
-            && function_contains(unit, "_maybeBargeIn", "hasActiveVoiceSession")
-            && function_contains(unit, "_accumulateUtterance", "_maybeBargeIn")
-            && function_contains(unit, "_beginUtterance", "_maybeBargeIn"),
-        "barge-in at neural speech confirmation on the flags-only session"
-    );
-    assert!(
-        !function_contains(unit, "_endUtterance", "onBargeIn"),
-        "do not wait for the utterance to finish before stopping TTS"
-    );
-    assert!(
-        function_contains(unit, "_onNativePcm", "speechEvidenceMs")
-            && function_contains(unit, "_onNativePcm", "hasActiveVoiceSession"),
-        "speech start during a TTS session uses the utterance start gate on the owned flags-only session"
-    );
-    assert!(
-        function_contains(unit, "createVAD", "onSpeechRealStart")
-            && function_contains(unit, "createVAD", "noteFrameProcessed"),
-        "desktop Silero must barge in on confirmed / high-confidence speech, not the first suspected frame"
+        function_contains(unit, "_onNativePcm", "_onSileroFrame")
+            && function_contains(unit, "_onNativePcm", "hasActiveVoiceSession")
+            && function_contains(unit, "createVAD", "onFrame("),
+        "native and desktop feed the same gate"
     );
 }
 

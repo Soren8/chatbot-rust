@@ -742,10 +742,10 @@ fn sticky_scrollback_yields_to_upward_user_scroll() {
     );
 }
 
-/// Record from native Silero confidence. Stop TTS only when
-/// speech is confirmed (REAL_SPEECH_MS), immediately
-/// at that point — not on cough/"hey", not when the utterance ends.
-/// SPEECH_MIN_ACTIVE_MS gates STT acceptance. Desktop Silero is unchanged.
+/// Record from Silero confidence through the shared utterance gate. Stop TTS
+/// only on confident speech (the lifecycle's 0.85 x 4-frame gate), immediately
+/// — not on a cough of any length, not when the utterance ends.
+/// SPEECH_MIN_ACTIVE_MS gates STT acceptance.
 #[test]
 fn native_tts_barge_in_on_initial_speech() {
     let chat_js = include_str!("../../static/chat.js");
@@ -754,7 +754,7 @@ fn native_tts_barge_in_on_initial_speech() {
 
     assert!(
         !chat_js.contains("BARGE_IN_CONFIRM_MS") && !native_audio.contains("BARGE_IN_CONFIRM_MS"),
-        "use REAL_SPEECH_MS (Silero minSpeechMs analog), not BARGE_IN_CONFIRM_MS"
+        "barge-in is confidence-gated, not BARGE_IN_CONFIRM_MS"
     );
     assert!(
         !chat_js.contains("BARGE_IN_RMS_THRESHOLD") && !chat_js.contains("BARGE_IN_RMS_FRAMES"),
@@ -763,8 +763,8 @@ fn native_tts_barge_in_on_initial_speech() {
     assert!(
         !native_audio.contains("function pcm16IsSpeechLike")
             && !native_audio.contains("function pcm16IsVoicedSpeech")
-            && native_audio.contains("REAL_SPEECH_MS"),
-        "native VAD must use Silero confidence and keep the separate barge-in gate"
+            && !native_audio.contains("REAL_SPEECH_MS"),
+        "native VAD must use Silero confidence, never an accumulated speech duration, to barge in"
     );
     assert!(
         capture_js.contains("probability >= 0.3")
@@ -776,30 +776,18 @@ fn native_tts_barge_in_on_initial_speech() {
         "do not barge in at utterance start (that is onSpeechStart / cough-prone)"
     );
     assert!(
-        function_contains(capture_js, "_maybeBargeIn", "onBargeIn")
-            && function_contains(capture_js, "_maybeBargeIn", "REAL_SPEECH_MS")
-            && function_contains(capture_js, "_accumulateUtterance", "_maybeBargeIn")
-            && function_contains(capture_js, "_accumulateUtterance", "speechLikeMs"),
-        "barge-in uses sustained neural speech and is checked during capture, not at end-of-speech"
+        function_contains(capture_js, "_onSileroFrame", "noteFrameProcessed")
+            && function_contains(capture_js, "_onSileroFrame", "onBargeIn"),
+        "barge-in is checked on every Silero frame during capture, not at end-of-speech"
     );
     assert!(
         !function_contains(capture_js, "_endUtterance", "onBargeIn"),
         "do not wait for the utterance to finish before stopping TTS"
     );
-    let real_ms = parse_js_int_const(native_audio, "REAL_SPEECH_MS")
-        .expect("REAL_SPEECH_MS must be declared in native-audio.js");
     assert!(
-        (500..=700).contains(&real_ms),
-        "REAL_SPEECH_MS={real_ms} preserves the delayed barge-in confirmation"
-    );
-    assert!(
-        capture_js.contains("minSpeechMs: 400") || capture_js.contains("minSpeechMs:400"),
-        "desktop Silero minSpeechMs stays 400"
-    );
-    assert!(
-        function_contains(capture_js, "_onNativePcm", "speechEvidenceMs")
+        function_contains(capture_js, "_onNativePcm", "_onSileroFrame")
             && function_contains(capture_js, "_onNativePcm", "hasActiveVoiceSession"),
-        "speech start during TTS uses the native Silero gate on the owned flags-only session"
+        "speech start during TTS uses the shared Silero gate on the owned flags-only session"
     );
     let voice_lifecycle = include_str!("../../static/voice-lifecycle.js");
     assert!(
@@ -808,20 +796,13 @@ fn native_tts_barge_in_on_initial_speech() {
         "desktop barge-in thresholds live in the owned voice lifecycle"
     );
     assert!(
-        function_contains(capture_js, "createVAD", "onSpeechRealStart")
-            && function_contains_near(capture_js, "onSpeechRealStart", "onBargeIn")
-            && function_contains(capture_js, "createVAD", "noteFrameProcessed"),
-        "desktop Silero must barge in on confirmed / high-confidence speech, not the first suspected frame"
+        function_contains(capture_js, "createVAD", "onFrameProcessed")
+            && !function_contains(capture_js, "createVAD", "onSpeechRealStart"),
+        "desktop barges in through the shared confidence gate, not vad-web's duration-based real start"
     );
     assert!(
         !chat_js.contains("if (CURRENT_AUDIO) handleBargeIn()"),
         "first-frame onSpeechStart is cough-prone; do not barge in there"
-    );
-    assert!(
-        function_contains(capture_js, "createVAD", "minSpeechMs")
-            && !function_contains(capture_js, "createVAD", "minSpeechFrames")
-            && !function_contains(capture_js, "createVAD", "redemptionFrames"),
-        "bundled Silero v5 reads minSpeechMs / redemptionMs, not the old frame counts"
     );
     assert!(
         chat_js.contains("ChatVoiceCapture.NativeMicUtteranceVAD")
@@ -863,8 +844,9 @@ fn native_vad_keeps_leading_audio_and_longer_end_silence() {
         "SPEECH_END_SILENCE_MS={end_ms} should ignore short pauses (~1.2–1.8s)"
     );
     assert!(
-        capture_js.contains("redemptionMs: 1500") || capture_js.contains("redemptionMs:1500"),
-        "owned desktop Silero end-silence must match the native hangover"
+        function_contains(capture_js, "_accumulateUtterance", "SPEECH_END_SILENCE_MS")
+            && function_contains(capture_js, "createVAD", "DesktopUtteranceVAD"),
+        "owned desktop Silero end-silence must use the native hangover via the shared gate"
     );
 
     let preroll = parse_js_int_const(native_audio, "SPEECH_PREROLL_SAMPLES")
@@ -1651,8 +1633,9 @@ fn desktop_voice_tts_queues_audio_ahead_and_prevents_mid_sentence_cutoffs() {
     );
     let capture_js = include_str!("../../static/voice-capture.js");
     assert!(
-        function_contains(capture_js, "createVAD", "preSpeechPadMs"),
-        "owned desktop Silero factory must configure millisecond pre-roll to capture speech onset"
+        capture_js.contains("SPEECH_PREROLL_SAMPLES")
+            && function_contains(capture_js, "createVAD", "DesktopUtteranceVAD"),
+        "desktop capture shares native's pre-roll so speech onset reaches STT"
     );
 }
 

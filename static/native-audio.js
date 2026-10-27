@@ -10,8 +10,6 @@
   const VAD_PREFETCH_SAMPLES = 4800; // 300 ms @ 16 kHz
   /** Pre-roll so unvoiced onset samples reach STT after Silero confirms speech. */
   const SPEECH_PREROLL_SAMPLES = 8000; // 500 ms @ 16 kHz
-  /** Silero-positive duration before interrupting TTS. */
-  const REAL_SPEECH_MS = 600;
   const SPEECH_START_MS = 120;
   const SPEECH_END_SILENCE_MS = 1500;
   /** Minimum Silero-positive duration before sending to STT. */
@@ -673,7 +671,6 @@
     NATIVE_MIC_SAMPLE_RATE: NATIVE_MIC_SAMPLE_RATE,
     VAD_PREFETCH_SAMPLES: VAD_PREFETCH_SAMPLES,
     SPEECH_PREROLL_SAMPLES: SPEECH_PREROLL_SAMPLES,
-    REAL_SPEECH_MS: REAL_SPEECH_MS,
     SPEECH_START_MS: SPEECH_START_MS,
     SPEECH_END_SILENCE_MS: SPEECH_END_SILENCE_MS,
     SPEECH_MIN_ACTIVE_MS: SPEECH_MIN_ACTIVE_MS,

@@ -247,8 +247,8 @@ fn voice_lifecycle_thresholds_stay_owned_with_chat_aliases() {
     }
     let capture = include_str!("../../static/voice-capture.js");
     assert!(
-        function_contains(capture, "createVAD", "noteFrameProcessed"),
-        "desktop Silero frames in the owned capture unit delegate to the owned gate"
+        function_contains(capture, "_onSileroFrame", "noteFrameProcessed"),
+        "Silero frames in the owned capture unit delegate to the owned gate"
     );
     assert!(
         function_contains(src, "createVAD", "ChatVoiceCapture.createVAD"),
@@ -299,8 +299,7 @@ fn voice_lifecycle_completion_stopping_and_stale_guards_are_owned() {
     let src = chat_js();
     let capture = include_str!("../../static/voice-capture.js");
     assert!(
-        function_contains(capture, "_maybeBargeIn", "hasActiveVoiceSession")
-            && function_contains(capture, "_onNativePcm", "hasActiveVoiceSession")
+        function_contains(capture, "_onNativePcm", "hasActiveVoiceSession")
             && function_contains(src, "submitVoiceUtterance", "hasActiveVoiceSession"),
         "barge-in and utterance routing use the flags-only session, not currentAudio"
     );

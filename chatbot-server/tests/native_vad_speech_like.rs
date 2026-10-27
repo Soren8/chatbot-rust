@@ -15,7 +15,7 @@ fn native_silero_confidence_metadata_contract() {
     assert!(capture.contains("data.vadProbability") && capture.contains("data.vadDurationMs"));
     assert!(capture.contains("durationMs !== 0 && durationMs !== 32"));
     assert!(audio.contains("const SPEECH_START_MS = 120"));
-    assert!(audio.contains("const REAL_SPEECH_MS = 600"));
+    assert!(!audio.contains("REAL_SPEECH_MS"), "barge-in is confidence-gated, not duration-gated");
     assert!(audio.contains("const SPEECH_MIN_ACTIVE_MS = 400"));
     assert!(capture.contains("SPEECH_END_SILENCE_MS"));
 }
@@ -72,7 +72,6 @@ fn run_native_capture_fixture() {
 fn native_audio_no_longer_exports_waveform_vad() {
     let src = include_str!("../../static/native-audio.js");
     assert!(src.contains("SPEECH_START_MS"));
-    assert!(src.contains("REAL_SPEECH_MS"));
     assert!(src.contains("SPEECH_END_SILENCE_MS"));
     assert!(!src.contains("SPEECH_RMS_THRESHOLD"));
     assert!(!src.contains("SPEECH_PERIODICITY_MIN"));

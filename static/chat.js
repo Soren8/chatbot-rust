@@ -4263,7 +4263,6 @@ $(document).ready(function() {
   // Native mic bridge for Voice Mode on Android
   let nativeMicBridge = null;
   let nativeMicStopPromise = null;
-  let desktopUtteranceBinding = null;
 
   const hasNativeMicVoice = window.nativeMicAvailable && isMobile && typeof vad !== 'undefined';
   if ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof vad !== 'undefined') || hasNativeMicVoice) {
@@ -4330,12 +4329,15 @@ $(document).ready(function() {
   function createDesktopVadHost() {
     return {
       vadLib: vad,
-      log: function (tag, msg) { nativeLog(tag, msg); },
+      nativeAudio: NativeAudio,
       voiceLifecycle: voiceLifecycle,
+      now: function () { return Date.now(); },
+      log: function (tag, msg) { nativeLog(tag, msg); },
+      report: function (kind, msg) { reportVoice(kind, msg); },
       onBargeIn: function () { handleBargeIn(); },
-      onSpeechEnd: function (audio) { handleSpeechEnd(audio, desktopUtteranceBinding); desktopUtteranceBinding = null; },
-      onSpeechStart: function () { lastVoiceUtteranceStartedAt = Date.now(); desktopUtteranceBinding = captureVoiceBinding(); },
-      isTtsActive: function () { return isVoiceTtsActive(); }
+      onSpeechEnd: function (audio, binding) { handleSpeechEnd(audio, binding); },
+      captureBinding: function () { return captureVoiceBinding(); },
+      onUtteranceStartedAt: function (ts) { lastVoiceUtteranceStartedAt = ts; }
     };
   }
 
@@ -4718,8 +4720,8 @@ $(document).ready(function() {
   // Desktop Silero factory lives in static/voice-capture.js; this adapter
   // supplies the message-specific callbacks (utterance timestamps, TTS-active
   // gate, STT handoff) and the frame gate. Thresholds/paths/model unchanged.
-  function createVAD(stream, hooks) {
-    return ChatVoiceCapture.createVAD(createDesktopVadHost(), stream, hooks);
+  function createVAD(stream) {
+    return ChatVoiceCapture.createVAD(createDesktopVadHost(), stream);
   }
 
   async function reinitializeVAD() {

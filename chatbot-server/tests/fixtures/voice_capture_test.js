@@ -34,7 +34,8 @@ function makeHost(lifecycle, hooks) {
     nativeAudio: NativeAudio, voiceLifecycle: lifecycle,
     now: () => Date.now(), log: () => {}, report: () => {}, reportThrottled: () => {},
     isVoiceModeActive: () => true,
-    onBargeIn: hooks.onBargeIn || (() => {}),
+    // handleBargeIn stops TTS, ending the session the gate checks.
+    onBargeIn: () => { lifecycle.stopDesktopPlayback(); if (hooks.onBargeIn) hooks.onBargeIn(); },
     onUtteranceEnd: hooks.onUtteranceEnd || (() => {}),
     onUtteranceStartedAt: hooks.onUtteranceStartedAt || (() => {}),
     recorder: {
@@ -66,6 +67,42 @@ function feedFresh(vad, probability, count, amplitude) {
     } while (duration === 0);
   }
 }
+// Real vad-web FrameProcessor behind a fake MicVAD, dispatching events the way
+// MicVAD.handleFrameProcessorEvent does.
+async function desktopVad(tts, hooks) {
+  hooks = hooks || {};
+  const lifecycle = makeLifecycle(tts);
+  const host = makeHost(lifecycle, hooks);
+  let probability = 0;
+  let options;
+  let processor;
+  host.vadLib = { MicVAD: { new: async (provided) => {
+    options = Object.assign({}, vadBundle.getDefaultRealTimeVADOptions('v5'), provided);
+    processor = new vadBundle.FrameProcessor(async () => ({ isSpeech: probability }), () => {}, options, 32);
+    processor.resume();
+    return processor;
+  } } };
+  host.isTtsActive = () => lifecycle.isTtsActive();
+  host.onSpeechStart = hooks.onSpeechStart || (() => {});
+  host.onSpeechEnd = hooks.onSpeechEnd || (() => {});
+  await capture.createVAD(host, { id: 'desktop-regression' });
+  const M = vadBundle.Message;
+  const dispatch = (e) => {
+    if (e.msg === M.FrameProcessed) options.onFrameProcessed(e.probs, e.frame);
+    else if (e.msg === M.SpeechStart) options.onSpeechStart();
+    else if (e.msg === M.SpeechRealStart) options.onSpeechRealStart();
+    else if (e.msg === M.VADMisfire) options.onVADMisfire();
+    else if (e.msg === M.SpeechEnd) options.onSpeechEnd(e.audio);
+  };
+  return {
+    lifecycle,
+    async feed(p, count) {
+      probability = p;
+      for (let i = 0; i < count; i++) await processor.process(new Float32Array(512).fill(0.01), dispatch);
+    },
+  };
+}
+
 function readyVad(tts, hooks) {
   hooks = hooks || {};
   const host = makeHost(makeLifecycle(tts), hooks);
@@ -104,15 +141,21 @@ function readyVad(tts, hooks) {
     assert.equal(barges, 0);
   });
 
-  check('sustained speech stops TTS at 600 ms confirmation, before silence', () => {
+  check('confident speech stops TTS on four consecutive frames above 0.85, before silence', () => {
     let barges = 0;
-    let at = 0;
-    const hooks = { onBargeIn: () => { barges++; at = vad.speechLikeMs; } };
-    const { vad } = readyVad(true, hooks);
-    feedFresh(vad, 0.7, 19, 1300); // 608 ms total positive evidence
-    assert.equal(barges, 1);
-    assert(at >= 600 && at < 640, 'confirm at ' + at + ' ms');
+    const { vad } = readyVad(true, { onBargeIn: () => { barges++; } });
+    feedFresh(vad, 0.9, 3, 1300);
+    assert.equal(barges, 0, 'three confident frames do not interrupt');
+    feedFresh(vad, 0.9, 1, 1300);
+    assert.equal(barges, 1, 'fourth consecutive confident frame interrupts');
     assert.equal(vad.inSpeech, true, 'barge-in occurs during capture, before end silence');
+  });
+
+  check('a two-second moderate-confidence cough never stops TTS', () => {
+    let barges = 0;
+    const { vad } = readyVad(true, { onBargeIn: () => { barges++; } });
+    feedFresh(vad, 0.7, 62, 20000);
+    assert.equal(barges, 0, 'duration alone must not interrupt; only confidence does');
   });
 
   check('idle listen records without barging in', () => {
@@ -136,7 +179,7 @@ function readyVad(tts, hooks) {
     assert.equal(barges, 0, 'short hey does not interrupt');
 
     const talk = readyVad(true, { onBargeIn: () => { barges++; } }).vad;
-    feedFresh(talk, 0.7, 19, 1300);
+    feedFresh(talk, 0.9, 19, 1300);
     assert.equal(barges, 1, 'sustained speech interrupts exactly once');
     assert(talk.inSpeech, 'barge-in occurs before silence/end-of-utterance');
   });
@@ -197,46 +240,50 @@ function readyVad(tts, hooks) {
     assert.deepEqual(calls, ['permission']);
   });
 
-  await checkAsync('desktop Silero ordinary speech starts promptly and preserves onset padding', async () => {
-    let probability = 0.5;
-    const host = makeHost(makeLifecycle(false));
-    host.vadLib = { MicVAD: { new: async (provided) => {
-      const defaults = vadBundle.getDefaultRealTimeVADOptions('v5');
-      return new vadBundle.FrameProcessor(async () => ({ isSpeech: probability }), () => {},
-        Object.assign({}, defaults, provided), 32);
-    } } };
-    host.isTtsActive = () => false;
-    const processor = await capture.createVAD(host, { id: 'desktop-regression' });
-    processor.resume();
-    const events = [];
-    const frame = new Float32Array(512);
-    probability = 0.1;
-    for (let i = 0; i < 16; i++) await processor.process(frame, (event) => events.push({ event, frame: i }));
-    probability = 0.5;
-    for (let i = 0; i < 100; i++) await processor.process(frame, (event) => events.push({ event, frame: 16 + i }));
-    probability = 0.8;
-    for (let i = 0; i < 7; i++) await processor.process(frame, (event) => events.push({ event, frame: 116 + i }));
-    probability = 0;
-    for (let i = 0; i < 50; i++) await processor.process(frame, (event) => events.push({ event, frame: 123 + i }));
-    const started = events.find(({ event }) => event.msg === vadBundle.Message.SpeechStart);
-    const ended = events.find(({ event }) => event.msg === vadBundle.Message.SpeechEnd);
-    assert(started, 'ordinary speech starts capture');
-    assert.equal(started.frame, 16, 'capture starts with first ordinary speech frame');
-    assert(ended, 'sentence ends normally');
-    assert(!events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire));
-    assert(ended.event.audio.length >= 168 * 512, 'onset padding and sentence audio are retained');
+  await checkAsync('desktop ordinary speech is captured with onset padding', async () => {
+    const ended = [];
+    const d = await desktopVad(false, { onSpeechEnd: (audio) => ended.push(audio) });
+    await d.feed(0.1, 16);
+    await d.feed(0.5, 100);
+    await d.feed(0.8, 7);
+    await d.feed(0, 50);
+    assert.equal(ended.length, 1, 'sentence ends normally');
+    assert(ended[0].length >= (11 + 107) * 512, 'onset padding and sentence audio are retained');
+  });
 
-    processor.reset();
-    events.length = 0;
-    probability = 0.1;
-    for (let i = 0; i < 16; i++) await processor.process(frame, (event) => events.push({ event, frame: i }));
-    probability = 0.5;
-    for (let i = 0; i < 7; i++) await processor.process(frame, (event) => events.push({ event, frame: 16 + i }));
-    probability = 0;
-    for (let i = 0; i < 50; i++) await processor.process(frame, (event) => events.push({ event, frame: 23 + i }));
-    assert(events.some(({ event }) => event.msg === vadBundle.Message.SpeechStart), 'short sound enters candidate state');
-    assert(events.some(({ event }) => event.msg === vadBundle.Message.VADMisfire), '224 ms sound remains a misfire');
-    assert(!events.some(({ event }) => event.msg === vadBundle.Message.SpeechEnd), 'misfire is not submitted as speech');
+  await checkAsync('desktop speech scoring between 0.25 and 0.3 is captured, not misfired', async () => {
+    const ended = [];
+    const d = await desktopVad(false, { onSpeechEnd: (audio) => ended.push(audio) });
+    await d.feed(0.1, 16);
+    for (let i = 0; i < 10; i++) {
+      await d.feed(0.35, 1);
+      await d.feed(0.28, 2);
+    }
+    await d.feed(0, 50);
+    assert.equal(ended.length, 1, 'hysteresis keeps 960 ms of speech that only sometimes reaches 0.3');
+    assert(ended[0].length >= 30 * 512);
+  });
+
+  await checkAsync('desktop short sound is rejected', async () => {
+    const ended = [];
+    const d = await desktopVad(false, { onSpeechEnd: (audio) => ended.push(audio) });
+    await d.feed(0.1, 16);
+    await d.feed(0.5, 7);
+    await d.feed(0, 50);
+    assert.equal(ended.length, 0, '224 ms sound is not submitted as speech');
+  });
+
+  await checkAsync('desktop barge-in uses the same confidence gate as native', async () => {
+    let barges = 0;
+    const cough = await desktopVad(true, { onBargeIn: () => { barges++; } });
+    await cough.feed(0.7, 62);
+    assert.equal(barges, 0, 'a two-second moderate-confidence cough never stops TTS');
+
+    const talk = await desktopVad(true, { onBargeIn: () => { barges++; } });
+    await talk.feed(0.9, 3);
+    assert.equal(barges, 0);
+    await talk.feed(0.9, 1);
+    assert.equal(barges, 1, 'fourth consecutive confident frame interrupts');
   });
 
   await checkAsync('missing VAD metadata fails closed and stops capture despite an error callback', async () => {

@@ -18,7 +18,7 @@ Browser requests capture the initiating conversation identity and history genera
 
 Request policy is injectable through `ConfigSource` in `AppServices` and `RequestIdentity`: CSRF, cookie timeout, default prompt and voice-service base URL. Owned handles use explicit values; global handles retain call-time lookup. Home rendering captures one coherent live configuration when needed. Generation dependencies additionally own fake chunks, tool queries, Brave results, chunk delay and XAI fallback keys; explicit provider constructors do not consult ambient fake inputs.
 
-Browser rendering, playback queues and capture coordination live in `chat-renderer.js`, `tts-playback.js` and `voice-capture.js`. They receive DOM/markdown, transport, lifecycle, clock and platform dependencies from `chat.js`; desktop and native retain their shared session/protocol owners and established retry/barge-in behavior.
+Browser rendering, playback queues and capture coordination live in `chat-renderer.js`, `tts-playback.js` and `voice-capture.js`. They receive DOM/markdown, transport, lifecycle, clock and platform dependencies from `chat.js`; desktop and native retain their shared session/protocol owners and retry behavior, and segment speech through one Silero utterance gate with the lifecycle's confidence-only barge-in.
 
 Settings panel layout lives in `static/style.css`: on desktop widths the System Prompt / Memory cards share leftover space but size to their content (basis auto, no shrink) so header, textarea and Save always fit; the panel scrolls on overflow.
 
@@ -214,7 +214,7 @@ Optional `Idempotency-Key` operation IDs give fork mutations encrypted, owner-sc
 
 - **Voice Mode** — Default TTS provider is `kokoro`.
   - [x] Silero VAD voice activity detection on **desktop/browser** (`static/deps/vad/`, `chat.js`).
-  - [x] Native handheld Silero VAD — CPU ONNX inference on native 16 kHz PCM; the WebView consumes probability/duration metadata for the shared record-versus-interrupt policy and does not use `AudioContext`. Cough/"hey" must not stop TTS; sustained speech must, at confirmation. See [mobile-apps.md](mobile-apps.md#tts-barge-in-dual-invariant-do-not-oscillate). Android Auto `VoiceScreen` stays RMS.
+  - [x] Native handheld Silero VAD — CPU ONNX inference on native 16 kHz PCM; the WebView consumes probability/duration metadata for the shared record-versus-interrupt policy and does not use `AudioContext`. Cough/"hey" must not stop TTS; confident speech must, on Silero confidence alone. See [mobile-apps.md](mobile-apps.md#tts-barge-in-dual-invariant-do-not-oscillate). Android Auto `VoiceScreen` stays RMS.
   - [ ] Whisper Large v3 turbo.
   - [ ] Smart Turn v2 by @trydaily.
   - [x] Kokoro TTS — vertically integrated into `chatbot-cuda` voice-service; select with `tts_provider: "kokoro"` in `.config.yml`. Supports per-sentence streaming (`/v1/tts/kokoro/stream`) using a thread→asyncio-queue bridge for true low-latency first audio. Default voice `af_heart`; configurable via `tts_voice`.

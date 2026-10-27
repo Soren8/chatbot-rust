@@ -190,8 +190,9 @@ Keep `POST /tts` → `GET /tts_stream/{token}` as implemented in
 `chatbot-server/src/tts.rs`. Idempotent admission returns the same token.
 STT results are deduplicated so replay never submits a second chat turn.
 
-The two-phase barge-in invariant in `docs/mobile-apps.md` is unchanged: capture
-starts on speech-like input, while TTS stops only at confirmed sustained speech.
+The two-phase barge-in invariant in `docs/mobile-apps.md` still holds: capture
+starts on speech-like input, while TTS stops only on Silero confidence (4
+consecutive frames above 0.85), never on accumulated duration.
 Confirmed barge-in sends explicit Stop; aborting a view is not cancellation.
 
 Android Auto's native HTTP client in
