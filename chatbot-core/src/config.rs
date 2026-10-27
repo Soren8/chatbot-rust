@@ -558,7 +558,6 @@ fn load_app_config() -> AppConfig {
         PathBuf::from(env::var("HOST_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
     let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "INFO".to_string());
     let raw_config = load_yaml_config().unwrap_or_default();
-    validate_voice_config(&raw_config.tts, &raw_config.stt);
 
     let mut providers = raw_config
         .llms
@@ -782,6 +781,8 @@ fn validate_raw_config(config: &RawConfig) {
         let _ = TtsAccess::parse(access);
     }
 
+    validate_voice_config(&config.tts, &config.stt);
+
     for (idx, provider) in config.llms.iter().enumerate() {
         let provider_type = provider.provider_type.trim().to_lowercase();
         if !ALLOWED_PROVIDER_TYPES.contains(&provider_type.as_str()) {
@@ -844,7 +845,9 @@ fn refuse_removed_voice_keys(value: &Value) {
     };
     for key in REMOVED_VOICE_KEYS {
         if root.contains_key(Value::String((*key).to_string())) {
-            panic!("deprecated config key {key}; configure voice in the tts: and stt: blocks");
+            panic!(
+                "deprecated config key {key}; configure voice in the tts: and stt: blocks (see .config.yml.example)"
+            );
         }
     }
 }
@@ -872,6 +875,11 @@ fn validate_voice_config(tts: &TtsConfig, stt: &SttConfig) {
     for (name, kind) in [("tts", &tts.provider_type), ("stt", &stt.provider_type)] {
         if kind.trim().to_ascii_lowercase() != "openai" {
             panic!("{name}.type must be openai");
+        }
+    }
+    for (name, base_url) in [("tts", &tts.base_url), ("stt", &stt.base_url)] {
+        if crate::agent_egress::CanonicalBase::parse(base_url).is_err() {
+            panic!("{name}.base_url must be an http:// or https:// URL");
         }
     }
     if tts.sample_rate == 0 {
@@ -1742,6 +1750,12 @@ mod tests {
         parse_yaml_config_contents(
             "vars:\n  VOICE_KEY: sk-plaintext\nstt:\n  api_key: '${VOICE_KEY}'\nllms: []\n",
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "tts.base_url must be an http:// or https:// URL")]
+    fn refuses_invalid_voice_base_url() {
+        parse_yaml_config_contents("tts:\n  base_url: localhost:5100\nllms: []\n");
     }
 
     #[test]

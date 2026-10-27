@@ -6,6 +6,14 @@ vars:
 
 # Voice: any OpenAI-compatible audio API. Defaults (blocks omitted) target the
 # standalone chatbot-voice service at localhost:5100.
+# Legacy top-level keys are refused; migrate:
+#   tts_provider, tts_voice                  -> tts.model_name, tts.voice
+#   voice_service_host, voice_service_port   -> tts.base_url, stt.base_url
+#   voice_gpu_device                         -> remove (set in the chatbot-voice deploy)
+#   stt_enabled                              -> remove (stt: is always active)
+#   stt_privacy_level, tts_privacy_level     -> stt.privacy_level, tts.privacy_level
+# TTS providers must return raw mono 16-bit little-endian PCM (WAV and other
+# compressed bodies are not decoded), at `sample_rate` or the X-Sample-Rate header.
 # Wire codec for /tts_stream responses: opus (Ogg-Opus, ~11x smaller, default)
 # or wav (uncompressed PCM fallback for players without an Opus decoder).
 tts_codec: "opus"

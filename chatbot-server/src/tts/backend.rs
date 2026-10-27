@@ -142,6 +142,11 @@ fn apply_pcm_fade(pcm: &mut [u8], sample_rate: u32) {
 
 fn extract_backend_error(status: reqwest::StatusCode, body: &[u8]) -> String {
     if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        if let Some(detail) = value.get("detail").and_then(|v| v.as_str()) {
+            if !detail.trim().is_empty() {
+                return detail.trim().to_string();
+            }
+        }
         if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
             if !error.trim().is_empty() {
                 return error.trim().to_string();

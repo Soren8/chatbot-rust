@@ -1,6 +1,6 @@
 # Bridge-local DNS
 
-The Compose `dns` sidecar polls the Linux host's resolver files through read-only `/etc` and `/run` directory mounts every two seconds. Voice-service and tests use its pinned bridge address (`172.29.0.53`) through Compose `dns:`. Webserver uses host networking to keep browser/Tailscale traffic out of Docker NAT, and bind-mounts `dns/host-resolv.conf` read-only over `/etc/resolv.conf`; the host can reach the sidecar's bridge IP directly. Docker ignores `dns:` in host mode.
+The Compose `dns` sidecar polls the Linux host's resolver files through read-only `/etc` and `/run` directory mounts every two seconds. Tests use its pinned bridge address (`172.29.0.53`) through Compose `dns:`. Webserver uses host networking to keep browser/Tailscale traffic out of Docker NAT, and bind-mounts `dns/host-resolv.conf` read-only over `/etc/resolv.conf`; the host can reach the sidecar's bridge IP directly. Docker ignores `dns:` in host mode.
 
 Override `DNS_SUBNET` and `DNS_ADDRESS` together if that subnet conflicts, and recreate the Compose default network when changing the subnet. The tracked resolver file contains the default address, not a Compose template: when overriding `DNS_ADDRESS`, set `WEB_RESOLV_CONF` to a host file containing `nameserver <DNS_ADDRESS>` before recreating webserver. The standalone chatbot-voice service publishes `127.0.0.1:5100` for the host-networked webserver; point the `tts:`/`stt:` blocks at `localhost` and use `localhost` rather than `host.docker.internal` for host-based providers.
 

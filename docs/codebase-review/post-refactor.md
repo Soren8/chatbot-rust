@@ -185,7 +185,7 @@ Remove sensitive URL/query material at error construction and log bounded status
 
 ### PR-011 — STT staging is outside cancellation-safe file ownership
 
-`chatbot-cuda/src/main.py:145–148, 171–174` awaits `_stage_wav` through `asyncio.to_thread`, then passes its returned pathname to `transcribe_async`. Cancellation while that await is pending does not stop the staging thread: it can finish writing a `delete=False` plaintext WAV after the request loses its result. The inference job's `cleanup_path` owner (`service.py:410–468, 618–625`) has not yet received the path.
+`chatbot-cuda/src/main.py:145–148, 171–174` (now `chatbot-voice`) awaits `_stage_wav` through `asyncio.to_thread`, then passes its returned pathname to `transcribe_async`. Cancellation while that await is pending does not stop the staging thread: it can finish writing a `delete=False` plaintext WAV after the request loses its result. The inference job's `cleanup_path` owner (`service.py:410–468, 618–625`) has not yet received the path.
 
 Current lifetime tests cover cancellation once the transcription worker owns the file, and `test_main.py:296–325` covers successful staging/cleanup. Neither closes this earlier handoff. A staging write failure can similarly leave the just-created file.
 

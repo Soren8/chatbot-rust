@@ -2,6 +2,8 @@
 
 A seven-pass, evidence-backed review for behavior-preserving improvements—not a rewrite or a target number of findings.
 
+References to `chatbot-cuda/*` below record reviews from before the GPU voice service moved to the standalone `chatbot-voice` repo.
+
 ## Passes and status
 
 | Phase | File | Status | Final gate | Open items |

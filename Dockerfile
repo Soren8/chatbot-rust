@@ -68,7 +68,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM rust-tools AS test
 # Execute native scheduler and JS queue behavior tests; js_syntax still uses oxc.
 # python3 runs the DNS sidecar unit tests driven by cargo in dns_sidecar_unit.rs.
-RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless nodejs python3 python3-pip python3-yaml \
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless nodejs python3 python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 # Toolchain lives outside /app so the dev bind-mount (./:/app) cannot hide cargo on CI.
 ENV CARGO_HOME=/opt/cargo

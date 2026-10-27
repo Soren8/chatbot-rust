@@ -46,7 +46,7 @@ The matrix records inventory assignment and pass scope, not a certification that
 | T04 Android tests | `android/app/src/test/*`, `android/app/src/androidTest/*` | R | P | — | P | PERF-G, PERF-H, PERF-I (native regression fixtures) | R | B |
 | N04 Android packaging/resources/tooling | `android/*`, `capacitor.config.json` | B | B | — | B | B — APK build gate pending; no packaging performance finding | B | B |
 | X01 DNS sidecar (post-baseline) | `dns/*` | — | S | S | S | R — reviewed; no performance finding | R | R |
-| G01 GPU voice service | `chatbot-cuda/*` | R | R | R | R | PERF-E, PERF-Q; B-PERF-8 open (host GPU timing); B-PERF-10 retained | P | P |
+| G01 GPU voice service (now standalone `chatbot-voice`) | `chatbot-cuda/*` (reviewed before the split) | R | R | R | R | PERF-E, PERF-Q; B-PERF-8 open (host GPU timing); B-PERF-10 retained | P | P |
 | O01 CI/automation | `.github/*`, `scripts/*` | R | R | R | R | R — reviewed; no performance finding | R | R |
 | O02 Deployment templates | `deploy/*` | R | R | R | R | S-PERF-7 open (host proxy); S-PERF-8 open (COOP/COEP likely inert) | B | R |
 | O03 Repository development environment | `.devcontainer/*`, `.grok/*` | B | B | — | B | B — reviewed boundary; no performance finding | B | B |
