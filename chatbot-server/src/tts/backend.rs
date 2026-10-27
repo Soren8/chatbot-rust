@@ -166,3 +166,17 @@ fn extract_backend_error(status: reqwest::StatusCode, body: &[u8]) -> String {
         .unwrap_or("TTS backend provider error")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::extract_backend_error;
+
+    #[test]
+    fn provider_detail_is_used_for_error_logs() {
+        let body = br#"{"detail":"pcm required"}"#;
+        assert_eq!(
+            extract_backend_error(reqwest::StatusCode::BAD_REQUEST, body),
+            "pcm required"
+        );
+    }
+}
