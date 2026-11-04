@@ -1,5 +1,3 @@
 # Optional Grok profile for *host* use only if you want extra Landlock.
 # The agent devcontainer does NOT set GROK_SANDBOX — the container + secret
 # overlays are the isolation model for every agent (not Grok-specific).
-#
-# Inside .devcontainer/agent-container.sh, just run: grok
