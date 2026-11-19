@@ -122,6 +122,6 @@ jobs:
         run: |
           gh api repos/Soren8/iac/dispatches \
             --method POST \
-            -f event_type=managed-repo-push \
+            -f event_type=chatbot-rust-images \
             -f "client_payload[repo]=Soren8/chatbot-rust" \
             -f "client_payload[sha]=$PUSHED_SHA"
