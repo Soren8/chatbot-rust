@@ -36,6 +36,9 @@ pub struct DestinationPolicy {
     providers: std::collections::HashMap<String, PrivacyLevel>,
     pub brave_search: PrivacyLevel,
     pub xai_native_search: PrivacyLevel,
+    /// Search providers restricted to premium accounts.
+    pub brave_search_premium: bool,
+    pub xai_native_search_premium: bool,
     pub stt: PrivacyLevel,
     pub tts: PrivacyLevel,
 }
@@ -60,6 +63,8 @@ impl DestinationPolicy {
             providers: providers.into_iter().collect(),
             brave_search: search_providers.brave.privacy_level,
             xai_native_search: search_providers.xai_native.privacy_level,
+            brave_search_premium: search_providers.brave.requires_premium(),
+            xai_native_search_premium: search_providers.xai_native.requires_premium(),
             stt, tts,
         }
     }

@@ -29,6 +29,7 @@ mod health;
 pub mod http_error;
 pub mod identity;
 pub mod idempotency;
+pub mod search_access;
 pub mod services;
 pub mod set_privacy_coordinator;
 mod home;

@@ -231,9 +231,16 @@ pub async fn handle_stt(request: Request<Body>) -> Result<Response<Body>, HttpEr
             )
         })?;
 
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("file", audio_part)
         .text("model", stt.model_name.clone());
+    if !stt.allowed_providers.is_empty() {
+        // OpenRouter reads multipart provider routing as a JSON-encoded field.
+        form = form.text(
+            "provider",
+            serde_json::json!({ "only": stt.allowed_providers }).to_string(),
+        );
+    }
 
     let mut request = HTTP_CLIENT.post(&url).multipart(form);
     if let Some(key) = stt.api_key.as_deref().filter(|key| !key.trim().is_empty()) {

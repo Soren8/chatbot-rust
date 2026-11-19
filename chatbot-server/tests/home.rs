@@ -551,3 +551,91 @@ fn settings_cards_cannot_collapse_to_zero_on_desktop() {
         "settings textareas need a usable minimum height instead of collapsing to a sliver, got: {{{textarea}}}",
     );
 }
+
+const PREMIUM_SEARCH_CONFIG: &str = r#"search_providers:
+  brave:
+    tier: premium
+llms:
+  - provider_name: "free-model"
+    type: "openai"
+    model_name: "free"
+    search: true
+default_system_prompt: "Test system prompt"
+"#;
+
+async fn login_cookie(app: &axum::Router, username: &str, password: &str) -> String {
+    let page = app
+        .clone()
+        .oneshot(Request::builder().uri("/login").body(Body::empty()).unwrap())
+        .await
+        .expect("GET /login");
+    let cookie = common::extract_cookie(
+        page.headers()[header::SET_COOKIE].to_str().expect("cookie"),
+    );
+    let body = to_bytes(page.into_body(), 128 * 1024).await.expect("login page");
+    let csrf = common::extract_csrf_token(std::str::from_utf8(&body).expect("utf8"))
+        .expect("csrf token");
+    let form = format!(
+        "username={}&password={}&csrf_token={}",
+        urlencoding::encode(username),
+        urlencoding::encode(password),
+        urlencoding::encode(&csrf),
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .expect("POST /login");
+    assert_eq!(response.status(), StatusCode::FOUND);
+    common::extract_cookie(
+        response.headers()[header::SET_COOKIE].to_str().expect("login cookie"),
+    )
+}
+
+async fn model_search_flag(app: &axum::Router, cookie: Option<&str>) -> bool {
+    let mut request = Request::builder().uri("/");
+    if let Some(cookie) = cookie {
+        request = request.header(header::COOKIE, cookie);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .expect("GET /");
+    let body = to_bytes(response.into_body(), 512 * 1024).await.expect("home body");
+    let app_data = extract_app_data(std::str::from_utf8(&body).expect("utf8"));
+    app_data["availableModels"][0]["search"]
+        .as_bool()
+        .expect("search flag")
+}
+
+#[tokio::test]
+async fn premium_search_provider_is_offered_only_to_premium_accounts() {
+    let _guard = test_mutex().lock().unwrap();
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let workspace = common::TestWorkspace::with_config(PREMIUM_SEARCH_CONFIG);
+    let password = "Sup3rS3cret!";
+    let hashed = hash(password, DEFAULT_COST).expect("hash password");
+    write_users_json(
+        &workspace,
+        &json!({
+            "free-user": { "password": hashed, "tier": "free" },
+            "premium-user": { "password": hashed, "tier": "premium" },
+        }),
+    );
+    let app = build_app();
+
+    assert!(!model_search_flag(&app, None).await, "guest must not be offered premium search");
+    let free = login_cookie(&app, "free-user", password).await;
+    assert!(!model_search_flag(&app, Some(&free)).await, "free account must not be offered premium search");
+    let premium = login_cookie(&app, "premium-user", password).await;
+    assert!(model_search_flag(&app, Some(&premium)).await, "premium account keeps search");
+}

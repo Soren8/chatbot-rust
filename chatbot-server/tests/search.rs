@@ -487,3 +487,79 @@ async fn search_result_injected_into_augmented_messages() {
         "no 5xx errors expected"
     );
 }
+
+#[tokio::test]
+async fn premium_search_provider_rejects_search_from_free_accounts() {
+    common::init_tracing();
+    let _guard = test_mutex().lock().unwrap();
+
+    env::set_var("SECRET_KEY", "search_test_secret");
+    let _workspace = common::TestWorkspace::with_config(
+        r#"
+search_providers:
+  brave:
+    tier: premium
+llms:
+  - provider_name: "default"
+    type: "openai"
+    model_name: "gpt-test"
+    base_url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"
+    context_size: 4096
+    privacy_level: private
+"#,
+    );
+    env::set_var("BRAVE_API_KEY", "test-brave-key");
+    env::set_var(
+        "CHATBOT_TEST_OPENAI_CHUNKS",
+        serde_json::to_string(&vec!["Direct answer.".to_string()]).unwrap(),
+    );
+
+    let app = build_router(resolve_static_root());
+    let home_response = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let cookie = common::extract_cookie(
+        home_response.headers()[header::SET_COOKIE].to_str().unwrap(),
+    );
+    let home_bytes = to_bytes(home_response.into_body(), 256 * 1024).await.unwrap();
+    let csrf_token = CSRF_META_RE
+        .captures(std::str::from_utf8(&home_bytes).unwrap())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
+        .unwrap();
+
+    let chat = |web_search: bool| {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/chat")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("X-CSRF-Token", &csrf_token)
+            .header(header::COOKIE, &cookie)
+            .body(Body::from(
+                serde_json::to_vec(&json!({
+                    "message": "Hello",
+                    "set_name": "default",
+                    "model_name": "default",
+                    "web_search": web_search,
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        app.clone().oneshot(request)
+    };
+
+    let denied = chat(true).await.unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let denial: serde_json::Value =
+        serde_json::from_slice(&to_bytes(denied.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(denial["error"], "Web search requires a Premium account");
+
+    let allowed = chat(false).await.unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK, "chat without search stays available");
+    let _ = to_bytes(allowed.into_body(), 512 * 1024).await.unwrap();
+
+    env::remove_var("BRAVE_API_KEY");
+    env::remove_var("CHATBOT_TEST_OPENAI_CHUNKS");
+}

@@ -71,6 +71,7 @@ impl TtsDestination {
                 model: String::new(),
                 voice: None,
                 sample_rate: 0,
+                allowed_providers: Vec::new(),
             },
             codec: "opus".to_string(),
             required: PrivacyLevel::NonPrivate,

@@ -272,6 +272,62 @@ async fn provider_declared_rate_is_preserved_and_replays_from_cache() {
     assert_eq!(captured_payloads.len(), 1, "replay must not resynthesize");
     assert_eq!(captured_payloads[0]["input"], "Hello declared rate");
     assert_eq!(captured_payloads[0]["response_format"], "pcm");
+    assert!(
+        captured_payloads[0].get("provider").is_none(),
+        "no provider routing without allowed_providers"
+    );
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}
+
+#[tokio::test]
+async fn allowed_providers_restrict_speech_provider_routing() {
+    common::init_tracing();
+    let _lock = tts_boundary_lock();
+
+    let captured = Arc::new(AsyncMutex::new(Vec::<Value>::new()));
+    let stub_wav = Arc::new(ramp_wav(24_000, 960));
+    let router = Router::new().route(
+        "/v1/audio/speech",
+        post({
+            let captured = captured.clone();
+            let stub_wav = stub_wav.clone();
+            move |Json(payload): Json<Value>| {
+                let captured = captured.clone();
+                let stub_wav = stub_wav.clone();
+                async move {
+                    captured.lock().await.push(payload);
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/octet-stream")],
+                        stub_wav[44..].to_vec(),
+                    )
+                }
+            }
+        }),
+    );
+
+    let (addr, shutdown, handle) = spawn_voice_stub(router).await;
+    env::set_var("SECRET_KEY", "integration_test_secret");
+    let config = kokoro_wav_config(&addr.ip().to_string(), addr.port()).replace(
+        "  voice: af_heart\n",
+        "  voice: af_heart\n  allowed_providers: [\"DeepInfra\"]\n",
+    );
+    let _workspace = TestWorkspace::with_config(&config);
+    let app = build_router(resolve_static_root());
+    let (cookie, csrf) = guest_session(&app).await;
+
+    let token = post_tts_token(&app, &cookie, &csrf, "Hello routed provider").await;
+    let response = get_stream(&app, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let captured_payloads = captured.lock().await;
+    assert_eq!(captured_payloads.len(), 1);
+    assert_eq!(
+        captured_payloads[0]["provider"],
+        serde_json::json!({ "only": ["DeepInfra"] })
+    );
 
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");

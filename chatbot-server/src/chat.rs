@@ -333,6 +333,16 @@ pub(crate) async fn handle_chat_legacy(request: Request<Body>) -> Result<Respons
         )?;
     }
 
+    if !crate::search_access::check_search_tier(
+        &services,
+        session_context.username.as_deref(),
+        provider_type.as_str(),
+        provider_config.xai_search,
+        payload.web_search.unwrap_or(false),
+    )? {
+        allow_native_search_fallback = false;
+    }
+
     if feedback.is_none()
         && payload.web_search.unwrap_or(false)
         && provider_type == "xai"

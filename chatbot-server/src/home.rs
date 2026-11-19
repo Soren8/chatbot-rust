@@ -170,7 +170,7 @@ pub async fn handle_home(request: Request<Body>) -> Result<Response<Body>, HttpE
     );
 
     let policy = services.config_source().destination_policy();
-    let available_models = build_available_models_from_summaries(settings.models, &services, policy.as_deref());
+    let available_models = build_available_models_from_summaries(settings.models, &services, policy.as_deref(), &user_details.tier);
     let tts_access = match services.tts_policy().access() {
         TtsAccess::Anyone => "anyone",
         TtsAccess::Authenticated => "authenticated",
@@ -280,6 +280,7 @@ fn build_available_models_from_summaries(
     summaries: Vec<crate::generation_deps::ProviderSummary>,
     services: &AppServices,
     policy: Option<&chatbot_core::config_source::DestinationPolicy>,
+    user_tier: &str,
 ) -> Vec<FrontendModel> {
     summaries
         .into_iter()
@@ -291,7 +292,8 @@ fn build_available_models_from_summaries(
             FrontendModel {
                 provider_name: summary.provider_name,
                 tier: summary.tier,
-                search: summary.search,
+                search: summary.search
+                    && crate::search_access::search_allowed_for_tier(policy, native_search, user_tier),
                 privacy_level: classification.unwrap_or(PrivacyLevel::default_destination()),
                 search_privacy_level: if native_search {
                     policy.map_or(PrivacyLevel::default_destination(), |p| p.xai_native_search)

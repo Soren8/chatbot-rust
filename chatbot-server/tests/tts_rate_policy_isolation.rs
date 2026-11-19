@@ -655,6 +655,7 @@ async fn owned_tts_access_isolates_per_router_without_touching_live() {
             model: "kokoro".to_string(),
             voice: None,
             sample_rate: 24_000,
+            allowed_providers: Vec::new(),
         },
     );
     let open = TtsPolicy::new(
@@ -666,6 +667,7 @@ async fn owned_tts_access_isolates_per_router_without_touching_live() {
             model: "kokoro".to_string(),
             voice: None,
             sample_rate: 24_000,
+            allowed_providers: Vec::new(),
         },
     );
     let app_gated = build_router_with_services(
@@ -736,6 +738,7 @@ async fn owned_tts_codec_isolates_per_router() {
             model: "kokoro".to_string(),
             voice: None,
             sample_rate: 24_000,
+            allowed_providers: Vec::new(),
         },
     );
     let opus_policy = TtsPolicy::new(
@@ -747,6 +750,7 @@ async fn owned_tts_codec_isolates_per_router() {
             model: "kokoro".to_string(),
             voice: None,
             sample_rate: 24_000,
+            allowed_providers: Vec::new(),
         },
     );
     let app_wav = build_router_with_services(
@@ -843,6 +847,7 @@ async fn owned_tts_synthesis_ignores_live_config_and_routes_to_explicit_backend(
             model: "kokoro".to_string(),
             voice: Some("owned-voice".to_string()),
             sample_rate: 24_000,
+            allowed_providers: Vec::new(),
         },
     );
     let remote_owned = TtsPolicy::new(
@@ -854,6 +859,7 @@ async fn owned_tts_synthesis_ignores_live_config_and_routes_to_explicit_backend(
             model: "openai/gpt-4o-mini-tts".to_string(),
             voice: Some("alloy".to_string()),
             sample_rate: 24_000,
+            allowed_providers: Vec::new(),
         },
     );
     let app_kokoro = build_router_with_services(

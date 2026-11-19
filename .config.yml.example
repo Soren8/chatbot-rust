@@ -41,18 +41,22 @@ stt:
 # tts:
 #   base_url: https://openrouter.ai/api/v1
 #   api_key: '${OPENROUTER_API_KEY}'
-#   model_name: openai/gpt-4o-mini-tts
-#   voice: alloy
+#   model_name: hexgrad/kokoro-82m
+#   voice: af_heart
+#   allowed_providers: ["DeepInfra"]      # Route only to these upstream providers
 # stt:
 #   base_url: https://openrouter.ai/api/v1
 #   api_key: '${OPENROUTER_API_KEY}'
 #   model_name: openai/whisper-large-v3-turbo
+#   allowed_providers: ["DeepInfra"]
 
 # Search destinations are shared across LLMs; absent classifications default to non_private.
+# tier: free (default) or premium limits a search provider to premium accounts.
 search_providers:
   # Brave standard retains anonymized logs for 90 days; enterprise ZDR can qualify as private after verification.
   brave:
     privacy_level: standard
+    tier: free
   # Team-ZDR covers xAI storage; upstream provider logging is undocumented.
   xai_native:
     privacy_level: standard

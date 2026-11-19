@@ -254,6 +254,7 @@ struct CapturedTranscription {
     authorization: Option<String>,
     model: Option<String>,
     file_bytes: Option<usize>,
+    provider: Option<String>,
 }
 
 fn capturing_transcription_router(captured: Arc<std::sync::Mutex<Vec<CapturedTranscription>>>) -> Router {
@@ -273,6 +274,7 @@ fn capturing_transcription_router(captured: Arc<std::sync::Mutex<Vec<CapturedTra
                     match field.name() {
                         Some("model") => seen.model = field.text().await.ok(),
                         Some("file") => seen.file_bytes = field.bytes().await.ok().map(|b| b.len()),
+                        Some("provider") => seen.provider = field.text().await.ok(),
                         _ => {}
                     }
                 }
@@ -343,7 +345,47 @@ stt:
     for request in &seen {
         assert_eq!(request.model.as_deref(), Some("openai/whisper-large-v3-turbo"));
         assert_eq!(request.file_bytes, Some(5));
+        assert_eq!(request.provider, None, "no provider routing without allowed_providers");
     }
+
+    shutdown.send(()).ok();
+    handle.join().expect("join voice stub thread");
+}
+
+#[tokio::test]
+async fn stt_allowed_providers_restrict_transcription_provider_routing() {
+    common::init_tracing();
+    let _lock = STT_TEST_MUTEX.lock().unwrap();
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (addr, shutdown, handle) = spawn_voice_stub(capturing_transcription_router(captured.clone())).await;
+    let config = format!(
+        r#"
+llms:
+  - provider_name: "default"
+    type: "openai"
+    model_name: "gpt-test"
+    base_url: "https://api.openai.com/v1"
+    api_key: "${{OPENAI_API_KEY}}"
+    context_size: 4096
+stt:
+  base_url: "http://{}:{}/api/v1"
+  model_name: openai/whisper-large-v3-turbo
+  allowed_providers: ["DeepInfra"]
+"#,
+        addr.ip(),
+        addr.port()
+    );
+    {
+        let _workspace = TestWorkspace::with_config(&config);
+        let (status, _) = post_stt_audio(&build_router(resolve_static_root())).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let seen = captured.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    let provider: Value = serde_json::from_str(seen[0].provider.as_deref().expect("provider field"))
+        .expect("provider field is JSON");
+    assert_eq!(provider, json!({ "only": ["DeepInfra"] }));
 
     shutdown.send(()).ok();
     handle.join().expect("join voice stub thread");

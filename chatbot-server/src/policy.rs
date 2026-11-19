@@ -85,6 +85,8 @@ pub struct TtsSynthesis {
     pub model: String,
     pub voice: Option<String>,
     pub sample_rate: u32,
+    /// Upstream providers the endpoint may route to; empty is unrestricted.
+    pub allowed_providers: Vec<String>,
 }
 
 impl std::fmt::Debug for TtsSynthesis {
@@ -95,6 +97,7 @@ impl std::fmt::Debug for TtsSynthesis {
             .field("model", &self.model)
             .field("voice", &self.voice)
             .field("sample_rate", &self.sample_rate)
+            .field("allowed_providers", &self.allowed_providers)
             .finish()
     }
 }
@@ -150,6 +153,7 @@ impl TtsPolicy {
                     model: config.tts.model_name.clone(),
                     voice: config.tts.voice.clone(),
                     sample_rate: config.tts.sample_rate,
+                    allowed_providers: config.tts.allowed_providers.clone(),
                 }
             }
         }

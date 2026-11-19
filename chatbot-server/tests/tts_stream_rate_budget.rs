@@ -140,6 +140,7 @@ async fn tts_stream_and_cancel_do_not_consume_the_per_user_budget() {
             model: "kokoro".to_string(),
             voice: None,
             sample_rate: 24_000,
+            allowed_providers: Vec::new(),
         },
     );
     let identity =

@@ -47,6 +47,14 @@ struct SpeechRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     voice: Option<String>,
     response_format: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<ProviderRouting>,
+}
+
+/// OpenRouter provider routing: route only to the listed upstream providers.
+#[derive(Debug, Serialize)]
+struct ProviderRouting {
+    only: Vec<String>,
 }
 
 /// Synthesize through an OpenAI-compatible `POST {base_url}/audio/speech`
@@ -71,6 +79,9 @@ pub(super) async fn synthesize_pcm(
         input: cleaned,
         voice: synthesis.voice,
         response_format: "pcm",
+        provider: (!synthesis.allowed_providers.is_empty()).then(|| ProviderRouting {
+            only: synthesis.allowed_providers,
+        }),
     };
     let mut builder = HTTP_CLIENT.post(&url).json(&request);
     if let Some(key) = synthesis.api_key.as_deref() {

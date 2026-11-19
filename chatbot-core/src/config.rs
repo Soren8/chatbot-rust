@@ -171,6 +171,18 @@ pub struct SearchProvidersConfig {
 pub struct SearchProviderConfig {
     #[serde(default = "PrivacyLevel::default_destination")]
     pub privacy_level: PrivacyLevel,
+    /// Account tier allowed to search through this provider (`free` or
+    /// `premium`); omitted means free.
+    #[serde(default)]
+    pub tier: Option<String>,
+}
+
+impl SearchProviderConfig {
+    pub fn requires_premium(&self) -> bool {
+        self.tier
+            .as_deref()
+            .is_some_and(|tier| tier.trim().eq_ignore_ascii_case("premium"))
+    }
 }
 
 fn default_true() -> bool {
@@ -264,6 +276,10 @@ pub struct TtsConfig {
     pub privacy_level: PrivacyLevel,
     #[serde(default)]
     pub health_url: Option<String>,
+    /// Upstream providers an aggregator such as OpenRouter may route to;
+    /// empty leaves routing unrestricted.
+    #[serde(default, deserialize_with = "deserialize_trimmed_allowed_providers")]
+    pub allowed_providers: Vec<String>,
 }
 
 /// OpenAI-compatible speech-to-text provider
@@ -282,6 +298,10 @@ pub struct SttConfig {
     pub privacy_level: PrivacyLevel,
     #[serde(default)]
     pub health_url: Option<String>,
+    /// Upstream providers an aggregator such as OpenRouter may route to;
+    /// empty leaves routing unrestricted.
+    #[serde(default, deserialize_with = "deserialize_trimmed_allowed_providers")]
+    pub allowed_providers: Vec<String>,
 }
 
 /// An omitted `tts:` block targets the local chatbot-voice service.
@@ -296,6 +316,7 @@ impl Default for TtsConfig {
             sample_rate: default_tts_sample_rate(),
             privacy_level: PrivacyLevel::default_destination(),
             health_url: Some(DEFAULT_VOICE_HEALTH_URL.to_string()),
+            allowed_providers: Vec::new(),
         }
     }
 }
@@ -310,6 +331,7 @@ impl Default for SttConfig {
             model_name: default_stt_model(),
             privacy_level: PrivacyLevel::default_destination(),
             health_url: Some(DEFAULT_VOICE_HEALTH_URL.to_string()),
+            allowed_providers: Vec::new(),
         }
     }
 }
@@ -783,6 +805,21 @@ fn validate_raw_config(config: &RawConfig) {
 
     validate_voice_config(&config.tts, &config.stt);
 
+    for (name, provider) in [
+        ("brave", &config.search_providers.brave),
+        ("xai_native", &config.search_providers.xai_native),
+    ] {
+        if let Some(tier) = provider.tier.as_deref() {
+            let normalized = tier.trim().to_lowercase();
+            if !ALLOWED_PROVIDER_TIERS.contains(&normalized.as_str()) {
+                panic!(
+                    "search_providers.{name}.tier '{tier}' is invalid; expected one of {}",
+                    ALLOWED_PROVIDER_TIERS.join(", ")
+                );
+            }
+        }
+    }
+
     for (idx, provider) in config.llms.iter().enumerate() {
         let provider_type = provider.provider_type.trim().to_lowercase();
         if !ALLOWED_PROVIDER_TYPES.contains(&provider_type.as_str()) {
@@ -1027,6 +1064,17 @@ pub fn fallback_provider() -> ProviderConfig {
         xai_search: true,
         xai_zdr: false,
     }
+}
+
+fn deserialize_trimmed_allowed_providers<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(deserialize_allowed_providers(deserializer)?
+        .into_iter()
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect())
 }
 
 fn deserialize_allowed_providers<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -1585,6 +1633,31 @@ mod tests {
         let _secret_guard = EnvVarGuard::set("SECRET_KEY", "unit_test_secret");
         reset();
         let _ = app_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "search_providers.brave.tier 'enterprise' is invalid")]
+    fn refuses_invalid_search_provider_tier() {
+        parse_yaml_config_contents("search_providers:\n  brave:\n    tier: enterprise\nllms: []\n");
+    }
+
+    #[test]
+    fn search_provider_tier_defaults_to_free() {
+        let config = parse_yaml_config_contents(
+            "search_providers:\n  brave:\n    tier: Premium\nllms: []\n",
+        );
+        assert!(config.search_providers.brave.requires_premium());
+        assert!(!config.search_providers.xai_native.requires_premium());
+    }
+
+    #[test]
+    fn voice_allowed_providers_accept_a_list_or_a_single_name() {
+        let config = parse_yaml_config_contents(
+            "tts:\n  allowed_providers: [\" DeepInfra \", \"\"]\nstt:\n  allowed_providers: DeepInfra\nllms: []\n",
+        );
+        assert_eq!(config.tts.allowed_providers, vec!["DeepInfra"]);
+        assert_eq!(config.stt.allowed_providers, vec!["DeepInfra"]);
+        assert!(parse_yaml_config_contents("llms: []\n").tts.allowed_providers.is_empty());
     }
 
     #[test]
