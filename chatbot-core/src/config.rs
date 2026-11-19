@@ -759,7 +759,9 @@ fn parse_yaml_config_contents(contents: &str) -> RawConfig {
             let user_vars = extract_user_vars(&value);
             let replaced = replace_vars(value, &user_vars);
             match serde_yaml::from_value::<RawConfig>(replaced) {
-                Ok(config) => {
+                Ok(mut config) => {
+                    config.tts.api_key = voice_api_key(config.tts.api_key.take(), &config.tts.base_url);
+                    config.stt.api_key = voice_api_key(config.stt.api_key.take(), &config.stt.base_url);
                     validate_raw_config(&config);
                     config
                 }
@@ -773,6 +775,16 @@ fn parse_yaml_config_contents(contents: &str) -> RawConfig {
         }
     }
 }
+/// A voice block pointing at OpenRouter without its own `api_key` uses
+/// `OPENROUTER_API_KEY`, as OpenRouter `llms` entries do.
+fn voice_api_key(configured: Option<String>, base_url: &str) -> Option<String> {
+    let configured = configured.filter(|key| !key.trim().is_empty());
+    if configured.is_some() || !base_url.contains("openrouter.ai") {
+        return configured;
+    }
+    env::var("OPENROUTER_API_KEY").ok().filter(|key| !key.trim().is_empty())
+}
+
 const ALLOWED_PROVIDER_TYPES: &[&str] = &["openai", "xai", "stub"];
 
 const ALLOWED_PROVIDER_TIERS: &[&str] = &["free", "premium"];
@@ -1809,6 +1821,24 @@ mod tests {
         assert_eq!(raw.stt.api_key.as_deref(), Some("or-test-key"));
         assert_eq!(raw.stt.model_name, "openai/whisper-large-v3-turbo");
         assert_eq!(raw.stt.health_url, None);
+    }
+
+    #[test]
+    fn openrouter_voice_blocks_without_api_key_use_the_openrouter_env_key() {
+        let _lock = test_lock();
+        let _key_guard = EnvVarGuard::set("OPENROUTER_API_KEY", "or-env-key");
+        let _explicit_guard = EnvVarGuard::set("OPENROUTER_VOICE_TEST_KEY", "or-explicit-key");
+        let raw = parse_yaml_config_contents(
+            "tts:\n  base_url: https://openrouter.ai/api/v1\nstt:\n  base_url: https://openrouter.ai/api/v1\nllms: []\n",
+        );
+        assert_eq!(raw.tts.api_key.as_deref(), Some("or-env-key"));
+        assert_eq!(raw.stt.api_key.as_deref(), Some("or-env-key"));
+
+        let explicit = parse_yaml_config_contents(
+            "tts:\n  base_url: https://openrouter.ai/api/v1\n  api_key: '${OPENROUTER_VOICE_TEST_KEY}'\nstt:\n  base_url: http://localhost:5100/v1\nllms: []\n",
+        );
+        assert_eq!(explicit.tts.api_key.as_deref(), Some("or-explicit-key"));
+        assert_eq!(explicit.stt.api_key, None);
     }
 
     #[test]
