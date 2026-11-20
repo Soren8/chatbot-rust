@@ -367,6 +367,8 @@ Capacitor dependency requirements in `package.json` must match the root entry in
 
 Scoped `xcode -> uuid` override (GHSA-w5hq-g745-h8pq): `uuid` before `11.1.1` misses buffer-bounds checks in `v3`/`v5`/`v6` when a caller supplies `buf`, so the root `overrides.xcode.uuid` floor (`^11.1.1`) resolves that transitive copy to the patched release. `11.1.1` keeps a CommonJS entry (`dist/cjs`) so `xcode`'s `require('uuid').v4()` path is unchanged.
 
+`xcode` 4.0.0 dropped its `uuid` dependency. The distribution test accepts a lockfile without `uuid` and requires every npm `uuid` entry it finds to be a stable release of `11.1.1` or later.
+
 ### Automated staging releases
 
 The private `iac` repository owns the Android staging release workflow and its
