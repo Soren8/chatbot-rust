@@ -114,6 +114,19 @@ fn server_url_resolver_junit_tests() {
 }
 
 #[test]
+fn iap_sign_in_junit_tests() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let source = root.join("android/app/src/test/java/com/chatbot/app/util/IapSignInTest.java");
+    let methods = count_test_methods(&source);
+    run_junit_class(
+        "com.chatbot.app.util.IapSignInTest",
+        &source,
+        methods,
+        &[root.join("android/app/src/main/java/com/chatbot/app/util/IapSignIn.java")],
+    );
+}
+
+#[test]
 fn file_logger_junit_tests() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let source = root.join("android/app/src/test/java/com/chatbot/app/util/FileLoggerTest.java");

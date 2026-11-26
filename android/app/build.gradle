@@ -26,6 +26,12 @@ if (!(emulatorServerUrl instanceof String) || emulatorServerUrl.isEmpty()
             "capacitor.config.json must define serverUrls.emulator and serverUrls.physical "
             + "(looked in " + capacitorConfigFile + ")")
 }
+// App Link host for the identity-aware proxy sign-in callback. A non-https
+// origin (emulator loopback) gets a reserved host that can never verify.
+def iapCallbackHostFor = { String url ->
+    def uri = new URI(url)
+    uri.scheme == 'https' && uri.host ? uri.host : 'iap-callback.invalid'
+}
 
 android {
     namespace = "com.chatbot.app"
@@ -67,10 +73,12 @@ android {
         emulator {
             dimension "environment"
             resValue "string", "server_url", emulatorServerUrl
+            manifestPlaceholders.put("iapCallbackHost", iapCallbackHostFor(emulatorServerUrl))
         }
         physical {
             dimension "environment"
             resValue "string", "server_url", physicalServerUrl
+            manifestPlaceholders.put("iapCallbackHost", iapCallbackHostFor(physicalServerUrl))
         }
     }
 }

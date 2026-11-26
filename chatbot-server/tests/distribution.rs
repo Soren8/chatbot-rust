@@ -38,6 +38,9 @@ const CLIENT_LOG_REPORTER: &str = include_str!(
 );
 const VOICE_SCREEN: &str =
     include_str!("../../android/app/src/main/java/com/chatbot/app/car/VoiceScreen.java");
+const IAP_SIGN_IN_FLOW: &str =
+    include_str!("../../android/app/src/main/java/com/chatbot/app/IapSignInFlow.java");
+const ANDROID_MANIFEST: &str = include_str!("../../android/app/src/main/AndroidManifest.xml");
 
 const CAPACITOR_CONFIG: &str = include_str!("../../capacitor.config.json");
 const BUILD_GRADLE: &str = include_str!("../../android/app/build.gradle");
@@ -672,6 +675,165 @@ fn all_native_consumers_read_only_the_flavor_resource() {
         VOICE_SCREEN.contains("ServerUrlResolver.resolveCanonical"),
         "car VoiceScreen must use the canonical flavor origin (car context has no Bridge)"
     );
+}
+
+#[test]
+fn iap_callback_app_link_is_verified_https_on_flavor_host() {
+    let main_activity = ANDROID_MANIFEST
+        .split("android:name=\".MainActivity\"")
+        .nth(1)
+        .expect("manifest must declare MainActivity")
+        .split("</activity>")
+        .next()
+        .unwrap();
+    let filter = main_activity
+        .split("<intent-filter android:autoVerify=\"true\">")
+        .nth(1)
+        .expect("MainActivity must declare a verified App Link filter for the sign-in callback")
+        .split("</intent-filter>")
+        .next()
+        .unwrap();
+    for required in [
+        "<action android:name=\"android.intent.action.VIEW\" />",
+        "<category android:name=\"android.intent.category.DEFAULT\" />",
+        "<category android:name=\"android.intent.category.BROWSABLE\" />",
+        "<data android:scheme=\"https\" android:host=\"${iapCallbackHost}\" />",
+        "<data android:path=\"/oauth2/google/callback\" />",
+        "<data android:path=\"/oauth2/github/callback\" />",
+    ] {
+        assert!(filter.contains(required), "sign-in App Link filter must declare `{required}`");
+    }
+    assert!(
+        !filter.contains("pathPrefix") && !filter.contains("pathPattern"),
+        "sign-in App Link must match only the exact callback paths"
+    );
+    for scheme in ANDROID_MANIFEST.split("android:scheme=\"").skip(1) {
+        assert!(
+            scheme.starts_with("https\""),
+            "manifest must not declare a custom URL scheme: any app could claim it"
+        );
+    }
+}
+
+#[test]
+fn gradle_derives_iap_callback_host_per_flavor_from_shared_urls() {
+    let flavors = BUILD_GRADLE
+        .split("productFlavors {")
+        .nth(1)
+        .expect("android/app/build.gradle must define product flavors");
+    for (flavor, url) in [("emulator", "emulatorServerUrl"), ("physical", "physicalServerUrl")] {
+        let block = flavors
+            .split(&format!("{flavor} {{"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("missing `{flavor}` flavor"))
+            .split('}')
+            .next()
+            .unwrap();
+        assert!(
+            block.contains(&format!(
+                "manifestPlaceholders.put(\"iapCallbackHost\", iapCallbackHostFor({url}))"
+            )),
+            "`{flavor}` must derive iapCallbackHost from its shared server URL"
+        );
+    }
+    assert!(
+        BUILD_GRADLE.contains("new URI(url)")
+            && BUILD_GRADLE.contains("uri.scheme == 'https' && uri.host ? uri.host : 'iap-callback.invalid'"),
+        "callback host must be parsed from the https server URL, with a never-verifying host otherwise"
+    );
+    for host in ["malakar.xyz", "ts.net", "chat."] {
+        assert!(
+            !BUILD_GRADLE.contains(host),
+            "android/app/build.gradle must not hardcode server hostnames (`{host}`); CI rewrites capacitor.config.json"
+        );
+    }
+}
+
+#[test]
+fn iap_sign_in_routes_start_and_callback_through_shared_matchers() {
+    let client = MAIN_ACTIVITY
+        .split("public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {")
+        .nth(1)
+        .expect("WebView client must intercept sign-in start navigations")
+        .split("return super.shouldOverrideUrlLoading(view, request);")
+        .next()
+        .unwrap();
+    assert!(
+        client.contains("request.isForMainFrame()")
+            && client.contains("IapSignIn.isStartUrl(resolveServerUrl(), request.getUrl().toString())")
+            && client.contains("startSignIn(request.getUrl().toString());")
+            && client.contains("return true;"),
+        "only main-frame start URLs on the selected origin may leave the WebView"
+    );
+    let callback = MAIN_ACTIVITY
+        .split("private void handleSignInCallback(Intent intent) {")
+        .nth(1)
+        .expect("MainActivity must handle sign-in callback intents")
+        .split("private void finishSignIn(")
+        .next()
+        .unwrap();
+    let matcher = callback
+        .find("IapSignIn.isCallbackUrl(serverUrl, callbackUrl)")
+        .expect("callback intents must pass the shared callback matcher");
+    let pending = callback
+        .find("IapSignInFlow.consumePending(this)")
+        .expect("callback intents require a fresh pending sign-in");
+    let complete = callback.find("IapSignInFlow.complete(").expect("callback completes natively");
+    assert!(matcher < pending && pending < complete, "callback must be matched and pending before completing");
+    assert_eq!(
+        MAIN_ACTIVITY.matches("IapSignInFlow.complete(").count(),
+        1,
+        "the gated callback handler is the only completion path"
+    );
+    assert!(!MAIN_ACTIVITY.contains("IapSignIn.complete("), "completion must go through the gated flow");
+    let new_intent = MAIN_ACTIVITY
+        .split("public void onNewIntent(Intent intent) {")
+        .nth(1)
+        .expect("singleTask activity must receive callback App Links in onNewIntent")
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(
+        new_intent.contains("super.onNewIntent(intent);")
+            && new_intent.contains("handleSignInCallback(intent);"),
+        "onNewIntent must keep Capacitor dispatch and handle the callback"
+    );
+    assert!(
+        MAIN_ACTIVITY.contains("if (savedInstanceState == null) {\n            handleSignInCallback(getIntent());"),
+        "cold-start callback must be handled once, not again on activity recreation"
+    );
+}
+
+#[test]
+fn iap_transport_skips_redirects_and_logs_no_urls_or_cookies() {
+    assert!(
+        IAP_SIGN_IN_FLOW.contains("connection.setInstanceFollowRedirects(false);")
+            && !IAP_SIGN_IN_FLOW.contains("setInstanceFollowRedirects(true)"),
+        "sign-in transport must surface each redirect and its Set-Cookie headers"
+    );
+    assert!(
+        IAP_SIGN_IN_FLOW.contains("\"Set-Cookie\".equalsIgnoreCase(")
+            && IAP_SIGN_IN_FLOW.contains("connection.disconnect();"),
+        "transport must collect every Set-Cookie value and always disconnect"
+    );
+    let sign_in = MAIN_ACTIVITY
+        .split("private void startSignIn(String startUrl) {")
+        .nth(1)
+        .expect("MainActivity sign-in section")
+        .split("private void installCrashReporter() {")
+        .next()
+        .unwrap();
+    for (name, source) in [("IapSignInFlow", IAP_SIGN_IN_FLOW), ("MainActivity sign-in", sign_in)] {
+        for line in source.lines().filter(|l| l.contains("FileLogger.log(") || l.contains("Log.")) {
+            let lower = line.to_lowercase();
+            for sensitive in ["url", "cookie", "location", "getmessage", "+ next", ", e)"] {
+                assert!(
+                    !lower.contains(sensitive),
+                    "{name} sign-in logs must stay coarse ({sensitive}): {line}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

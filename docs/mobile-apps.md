@@ -530,3 +530,40 @@ validated persisted override, else the flavor default.
 - **Persistence**: the override survives restarts and app updates (app
   prefs outlive APK updates). Reset restores the build default
   (`ServerUrlSettingStore.resetAsync`); already-default reset is a no-op.
+
+### Sign-in through the identity-aware proxy
+
+Staging and production servers sit behind an identity-aware proxy (nginx
+`auth_request` + oauth2-proxy) that gates every path: an unauthenticated
+request is redirected to a provider chooser page whose links point at
+`/oauth2/google/start` and `/oauth2/github/start`. Google refuses OAuth in
+embedded WebViews, and Capacitor's proxied loads keep only the final
+response's cookies, so the provider round trip cannot happen inside the
+WebView.
+
+`MainActivity`'s WebView client intercepts main-frame navigations to a start
+URL on the selected origin (`IapSignIn.isStartUrl`). `IapSignInFlow` performs
+the start request natively without following redirects, stores the proxy's
+CSRF cookie in the WebView `CookieManager`, records a pending-sign-in marker
+(valid for 10 minutes, persisted so it survives process death) and opens the
+provider URL in the system browser. If the start fails or no browser exists,
+a toast reports it and the chooser stays. The provider redirects to
+`https://<flavor host>/oauth2/<provider>/callback`, which a verified Android
+App Link hands back to the `singleTask` `MainActivity` (`onNewIntent`, or
+`onCreate` on a cold start). Only a callback matching `IapSignIn.isCallbackUrl`
+with a fresh pending marker is accepted; the app completes it natively,
+stores the session cookies and loads the returned page, or the server root
+(showing the chooser again) on failure. The biometric lock is not bypassed:
+the page loads behind the lock overlay. Logs record only coarse outcomes,
+never callback queries, provider URLs or cookies.
+
+The App Link host is the build flavor's server host, derived in
+`android/app/build.gradle` from `capacitor.config.json` `serverUrls` (staging
+CI rewrites those before building); a non-https flavor gets the reserved
+`iap-callback.invalid` host. A user-selected override server behind a proxy is
+therefore not supported: its callback stays in the browser. Verification
+requires the server to publish `/.well-known/assetlinks.json` listing the app
+id and the SHA-256 fingerprint of the signing certificate; the `iac` nginx
+configuration serves it outside the proxy gate. A debug-signed APK verifies
+only if its debug certificate fingerprint is listed as well. The proxy
+session lasts about 7 days, after which the chooser appears again.

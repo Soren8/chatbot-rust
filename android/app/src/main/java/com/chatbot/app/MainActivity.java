@@ -1,7 +1,9 @@
 package com.chatbot.app;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -20,6 +22,7 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
@@ -32,6 +35,7 @@ import com.chatbot.app.NativeVoiceTtsPlugin;
 import com.chatbot.app.audio.VoiceModeForegroundSession;
 import com.chatbot.app.util.ClientLogReporter;
 import com.chatbot.app.util.FileLogger;
+import com.chatbot.app.util.IapSignIn;
 import com.chatbot.app.util.NativeUnlockGate;
 import com.chatbot.app.util.ServerUiStyle;
 import com.chatbot.app.util.ServerUrlSettingStore;
@@ -90,6 +94,16 @@ public class MainActivity extends BridgeActivity {
             lockApp();
         }
         installOfflineErrorHandler();
+        if (savedInstanceState == null) {
+            handleSignInCallback(getIntent());
+        }
+    }
+
+    @Override
+    public void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleSignInCallback(intent);
     }
 
     /**
@@ -103,6 +117,16 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         getBridge().setWebViewClient(new BridgeWebViewClient(getBridge()) {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (request != null && request.isForMainFrame() && request.getUrl() != null
+                        && IapSignIn.isStartUrl(resolveServerUrl(), request.getUrl().toString())) {
+                    startSignIn(request.getUrl().toString());
+                    return true;
+                }
+                return super.shouldOverrideUrlLoading(view, request);
+            }
+
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request,
                     WebResourceError error) {
@@ -121,6 +145,69 @@ public class MainActivity extends BridgeActivity {
                 }
             }
         });
+    }
+
+    /**
+     * Identity-aware proxy sign-in: providers refuse embedded WebViews, so
+     * the start request runs natively and the provider page opens in the
+     * system browser. The verified App Link callback returns here.
+     */
+    private void startSignIn(String startUrl) {
+        IapSignInFlow.begin(this, resolveServerUrl(), startUrl,
+                providerUrl -> runOnUiThread(() -> openSignInBrowser(providerUrl)));
+    }
+
+    private void openSignInBrowser(String providerUrl) {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        if (providerUrl == null) {
+            signInStartFailed();
+            return;
+        }
+        Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(providerUrl));
+        browser.addCategory(Intent.CATEGORY_BROWSABLE);
+        try {
+            startActivity(browser);
+            FileLogger.log(TAG, "sign-in opened in system browser");
+        } catch (ActivityNotFoundException e) {
+            FileLogger.log(TAG, "sign-in has no browser to open");
+            IapSignInFlow.clearPending(this);
+            signInStartFailed();
+        }
+    }
+
+    private void signInStartFailed() {
+        Toast.makeText(this, "Sign-in could not be started", Toast.LENGTH_SHORT).show();
+    }
+
+    private void handleSignInCallback(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())
+                || intent.getData() == null) {
+            return;
+        }
+        String serverUrl = resolveServerUrl();
+        String callbackUrl = intent.getData().toString();
+        if (!IapSignIn.isCallbackUrl(serverUrl, callbackUrl)) {
+            return;
+        }
+        if (!IapSignInFlow.consumePending(this)) {
+            FileLogger.log(TAG, "sign-in callback ignored: no fresh pending sign-in");
+            return;
+        }
+        IapSignInFlow.complete(serverUrl, callbackUrl,
+                next -> runOnUiThread(() -> finishSignIn(next)));
+    }
+
+    private void finishSignIn(String next) {
+        if (isFinishing() || isDestroyed() || getBridge() == null
+                || getBridge().getWebView() == null) {
+            return;
+        }
+        if (offlineOverlay != null) {
+            offlineOverlay.setVisibility(View.GONE);
+        }
+        getBridge().getWebView().loadUrl(next != null ? next : resolveServerUrl());
     }
 
     /**
