@@ -83,7 +83,14 @@ public class FileLogger {
     }
 
     public static void log(String tag, String msg, Throwable t) {
-        String trace = t != null ? Log.getStackTraceString(t) : "";
+        String trace = "";
+        if (t != null) {
+            try {
+                trace = Log.getStackTraceString(t);
+            } catch (Throwable ignored) {
+                trace = t.toString();
+            }
+        }
         log(tag, (msg != null ? msg : "") + " | " + trace);
     }
 
