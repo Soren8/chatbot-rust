@@ -16,7 +16,7 @@ Not a single line of code in this repository was written manually. Human work in
 
 ## Repository Layout
 - `chatbot-core/` – core business logic, configuration, history store (redb), permanent `legacy_sets_json` migration, Fernet helpers, and session manager.
-- `chatbot-server/` – Axum HTTP server, route handlers, LLM/TTS providers, middleware, and integration tests.
+- `chatbot-server/` – Axum HTTP server, route handlers, LLM/TTS providers, middleware, and integration tests (one shared `tests/integration/` binary per crate plus isolated targets; see [AGENTS.md](AGENTS.md#running-tests)).
 - `chatbot-test-support/` – shared fixtures and helpers for integration tests.
 - `data/` – gitignored persistence for chats, sessions, and users.
 - `static/` – static assets and Minijinja templates.

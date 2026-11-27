@@ -10,7 +10,7 @@ import java.util.List;
  * selection over the flavor default, https-origin validation via java.net.URI
  * (including IPv6), collision-free origin slot tokens, and legacy fallback
  * semantics for corrupt overrides. Compiled together with the production
- * files by the cargo harness (chatbot-server/tests/distribution.rs) and run
+ * files by the cargo harness (chatbot-server/tests/integration/distribution.rs) and run
  * with plain {@code java}; each scenario throws on mismatch.
  */
 public final class ServerSettingBehaviorTest {

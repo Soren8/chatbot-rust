@@ -11,8 +11,12 @@ Current privacy and agent-connection behavior: [docs/design-privacy.md](docs/des
 **Use targeted tests by default for faster iteration.** Run the smallest relevant package and test target via `testctl`, adding a test-name filter when appropriate. Do not run `cargo test` on the host or agent toolchain. GitHub Actions runs the full suite before publishing; a full local run is not a routine completion requirement.
 
 ```bash
-testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package chatbot-server --test js_syntax
+testctl --project chatbot-rust --suite test --repo /workspace/chatbot-rust --package chatbot-server --test integration --filter js_syntax::
 ```
+
+Integration tests are consolidated so each crate links few test executables. `chatbot-core/tests/integration/` and `chatbot-server/tests/integration/` each build one `integration` binary: `main.rs` declares one `mod <file>;` per former test file, and the server's `main.rs` declares the shared `tests/common/mod.rs` once (modules use `crate::common`). Run one former file with `--test integration --filter <file>::`. Files that change process-global state (cwd, env vars, global config/rate-limit resets, `TestWorkspace`, global error counter or log capture) stay as top-level `tests/<file>.rs` targets with their own process and run with `--test <file>`; the header comment of each `main.rs` lists why.
+
+To add a test file: if it does not touch process-global state, create `tests/integration/<name>.rs`, add `mod <name>;` to `tests/integration/main.rs`, use `crate::common` instead of `mod common;`, and write `include_str!` paths relative to `tests/integration/` (one more `../`). Otherwise add it as a top-level `tests/<name>.rs` target.
 
 The `tests` service caps CPU pressure at half the physical cores (`CARGO_BUILD_JOBS` / `RUST_TEST_THREADS`, min 1; SMT threads excluded) plus a hard `cpus` quota in cores' worth of CPU time (default 3, `TEST_CPUS` override) that also bounds single-rustc LLVM threads; adjust there if needed, not per-invocation.
 

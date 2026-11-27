@@ -281,7 +281,7 @@ Native and desktop share one Silero gate, but recording and interruption remain 
 
 Interruption is confidence-gated only. Do not add an accumulated speech-duration rule (such as vad-web `onSpeechRealStart`): a long cough passes it. Do not barge in at capture start or utterance end.
 
-The record-versus-interrupt invariant is covered by `cough_and_hey_do_not_barge_in_sustained_noisy_speech_does` in `chatbot-server/tests/native_vad_speech_like.rs`. The Java test also runs the packaged ONNX model against silence; Java stream and JS voice fixtures supply controlled probabilities to verify frame and boundary handling. These checks do not validate real cough rejection or far-field speech on an Android device.
+The record-versus-interrupt invariant is covered by `cough_and_hey_do_not_barge_in_sustained_noisy_speech_does` in `chatbot-server/tests/integration/native_vad_speech_like.rs`. The Java test also runs the packaged ONNX model against silence; Java stream and JS voice fixtures supply controlled probabilities to verify frame and boundary handling. These checks do not validate real cough rejection or far-field speech on an Android device.
 
 Android Auto remains RMS-based and has separate car-noise limitations. Handheld native voice mode uses Silero; probability fixtures verify the stream logic, while cough rejection and far-field performance still require real-device validation.
 

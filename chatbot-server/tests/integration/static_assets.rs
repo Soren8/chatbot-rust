@@ -1,0 +1,641 @@
+use axum::{
+    body::{to_bytes, Body},
+    http::{Request, StatusCode},
+};
+use chatbot_server::build_router;
+use tower::ServiceExt;
+
+#[test]
+fn connections_client_returns_before_requests_when_disabled() {
+    let script = include_str!("../../../static/agent-connections.js");
+    let guard = script.find("if (!window.APP_DATA || window.APP_DATA.agentConnectionsEnabled !== true) return;")
+        .expect("connections must be explicitly enabled before client initialization");
+    assert!(guard < script.find("document.getElementById").unwrap());
+    assert!(guard < script.find("activitySync.request").unwrap());
+    assert!(guard < script.find("perform(function () { return load(false)").unwrap());
+}
+
+#[tokio::test]
+async fn serves_static_files_from_configured_root() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let css_path = temp_dir.path().join("style.css");
+    std::fs::write(&css_path, "body { color: red; }").unwrap();
+
+    let app = build_router(temp_dir.path().to_path_buf());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/static/style.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("static file request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-cache, must-revalidate")
+    );
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    assert!(body.starts_with(b"body"));
+}
+
+#[tokio::test]
+async fn serves_placeholder_favicon() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let app = build_router(temp_dir.path().to_path_buf());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/favicon.ico")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("favicon request");
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn rejects_dotfiles_and_sensitive_paths() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let app = build_router(temp_dir.path().to_path_buf());
+
+    for path in ["/.env", "/.config.yml"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .expect("dotfile request");
+
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::NOT_FOUND | StatusCode::FORBIDDEN
+            ),
+            "{path} should not be served (status was {})",
+            response.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn blocks_static_directory_traversal() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let app = build_router(temp_dir.path().to_path_buf());
+
+    for path in [
+        "/static/../.env",
+        "/static/../.config.yml",
+        "/static/%2e%2e/.env",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .expect("traversal request");
+
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::NOT_FOUND | StatusCode::FORBIDDEN
+            ),
+            "Traversal path {path} should be blocked (status was {})",
+            response.status()
+        );
+    }
+}
+
+/// Regression: editing a user message that has an image must not dump the
+/// base64 payload into the textarea (browser freezes on ~1MB of text), and
+/// the edit box must be tall enough for multiline text.
+#[test]
+fn message_edit_ui_shows_image_preview_not_base64_in_textarea() {
+    let chat_js = include_str!("../../../static/chat.js");
+    let style_css = include_str!("../../../static/style.css");
+
+    assert!(
+        chat_js.contains("function parseUserMessageContent"),
+        "expected parseUserMessageContent helper to strip [IMAGE:...] from edit text"
+    );
+    assert!(
+        chat_js.contains("function composeUserMessageContent"),
+        "expected composeUserMessageContent to reattach image on save"
+    );
+    assert!(
+        chat_js.contains("edit-image-preview") && chat_js.contains("edit-image-thumb"),
+        "edit mode should render an image preview alongside the text box"
+    );
+    assert!(
+        chat_js.contains(".val(parsed.text)"),
+        "edit textarea must be seeded with text only (not the full original with base64)"
+    );
+    assert!(
+        !chat_js.contains(".val(originalText)"),
+        "must not put full data-original (incl. base64 image) into the edit textarea"
+    );
+    assert!(
+        chat_js.contains("sizeEditTextarea") && style_css.contains("min-height: 140px"),
+        "edit textarea should grow beyond the default ~3-line height"
+    );
+}
+
+/// History paging calls formatAiMessage from a top-level helper. A nested
+/// definition inside document.ready is a ReferenceError on Capacitor/WebView.
+#[test]
+fn format_ai_message_is_top_level_for_history_paging() {
+    let chat_js = include_str!("../../../static/chat.js");
+    let fmt = chat_js
+        .find("function formatAiMessage(text)")
+        .expect("formatAiMessage helper");
+    let append = chat_js
+        .find("function appendHistoryPair(")
+        .expect("appendHistoryPair");
+    assert!(
+        fmt < append,
+        "formatAiMessage must be defined at top level before appendHistoryPair"
+    );
+    assert_eq!(
+        chat_js.matches("function formatAiMessage(text)").count(),
+        1,
+        "formatAiMessage must not also be nested inside document.ready"
+    );
+    let html = include_str!("../../../static/templates/chat.html");
+    assert!(
+        html.contains("id=\"reload-ui\""),
+        "Capacitor/WebView needs a reload control (no browser refresh chrome)"
+    );
+    assert!(
+        chat_js.contains("function historyImageUrl")
+            && chat_js.contains("openImageLightbox(historyImageUrl"),
+        "thumbnail expand must use a GET /history_image URL, not POST JSON"
+    );
+    assert!(
+        !chat_js.contains("hist_enc_key"),
+        "<img src> sends the HttpOnly Path=/ enc_key cookie; JS must not write hist_enc_key"
+    );
+}
+
+/// CodeQL js/xss-through-dom: getAttribute('data-pending-src') is DOM text and
+/// must not flow into img src. Reconstruct via sanitizeLightboxSrc first.
+#[test]
+fn deferred_thumbs_resanitize_dom_src() {
+    let chat_js = include_str!("../../../static/chat.js");
+    let start = chat_js
+        .find("function startDeferredThumbs(")
+        .expect("startDeferredThumbs helper");
+    let next = chat_js[start + 1..]
+        .find("\nfunction ")
+        .map(|i| start + 1 + i)
+        .expect("function after startDeferredThumbs");
+    let body = &chat_js[start..next];
+    assert!(
+        body.contains("sanitizeLightboxSrc("),
+        "data-pending-src is DOM text; must reconstruct via sanitizeLightboxSrc before img src"
+    );
+    assert!(
+        !body.contains("setAttribute('src', url)"),
+        "must not assign unsanitized getAttribute('data-pending-src') to img src"
+    );
+
+    // The allowlist itself moved to the owned renderer unit; chat keeps the
+    // thin adapter above (startDeferredThumbs still resolves through it).
+    let renderer_js = include_str!("../../../static/chat-renderer.js");
+    let sanitize_body = function_body(renderer_js, "sanitizeLightboxSrc")
+        .expect("sanitizeLightboxSrc helper in the owned renderer");
+    assert!(
+        !sanitize_body.contains("u.pathname + u.search"),
+        "sanitizeLightboxSrc must reconstruct history_image URLs, not pass through URL components"
+    );
+    assert!(
+        sanitize_body.contains(".replace(/[^A-Za-z0-9._~-]/g, '')")
+            && sanitize_body.contains("?size=thumb"),
+        "history_image path segments must be character-class-filtered; thumb query is a literal"
+    );
+}
+
+/// Regression: AI message body supports speak-from-sentence (hover highlight +
+/// click speaks that exact DOM sentence list; restartable HTMLAudio playback).
+#[test]
+fn ai_message_supports_speak_from_text_position() {
+    let chat_js = include_str!("../../../static/chat.js");
+    let style_css = include_str!("../../../static/style.css");
+
+    assert!(
+        chat_js.contains("function getDomPlainText"),
+        "highlight and caret offsets must use textContent (not innerText)"
+    );
+    assert!(
+        chat_js.contains("function splitSentences")
+            && chat_js.contains("function sentenceIndexAtOffset"),
+        "highlight and click must share one sentence splitter"
+    );
+    let voice_text_js = include_str!("../../../static/voice-text.js");
+    assert!(
+        voice_text_js.contains("Consume the whole run")
+            && voice_text_js.contains("text.charAt(end) === '.'"),
+        "ellipsis \"...\" must be one terminator, not three \".\" sentences"
+    );
+    assert!(
+        chat_js.contains("ChatVoiceText.splitSentences")
+            && chat_js.contains("ChatVoiceText.sentenceEndsWithTerminator"),
+        "highlight and click must resolve through the shared voice-text unit"
+    );
+    assert!(
+        chat_js.contains("function highlightSentenceInElement"),
+        "expected hover sentence highlight under the cursor"
+    );
+    assert!(
+        chat_js.contains("options.sentences")
+            && chat_js.contains("stopCurrentDesktopTts")
+            && chat_js.contains("playFixedSentenceList"),
+        "click path must pass exact sentence strings into a fixed playlist"
+    );
+    assert!(
+        chat_js.contains("getCaretOffsetInElement(textEl, e.clientX, e.clientY)")
+            && chat_js.contains("splitSentences(domText)"),
+        "click must resolve the sentence from click coordinates, not a hover cache"
+    );
+    assert!(
+        chat_js.contains("resetDesktopTtsAudioElement")
+            && chat_js.contains("getDesktopTtsAudio"),
+        "HTMLAudioElement must be fully reset between plays (2nd play after stop)"
+    );
+    assert!(
+        chat_js.contains("e.detail !== 1") || chat_js.contains("e.detail != 1"),
+        "only single-clicks should start speech"
+    );
+    assert!(
+        chat_js.contains("tts-is-playing") && style_css.contains("tts-can-play"),
+        "play/stop affordances on AI text"
+    );
+    assert!(
+        style_css.contains(".tts-sentence-highlight")
+            && style_css.contains(".tts-hover-play-icon"),
+        "CSS for highlight and play/stop badge"
+    );
+    assert!(
+        chat_js.contains("function sentenceEndsWithTerminator"),
+        "shared complete-sentence check for streaming discover"
+    );
+
+    let click_handler = ai_message_text_click_handler(chat_js);
+    assert!(
+        click_handler.contains("playTTS(playBtn, { sentences: toPlay })")
+            || click_handler.contains("playMessageTts(playBtn, { sentences: toPlay })"),
+        "sentence click must start TTS with the clicked sentence list, not the full message"
+    );
+    assert!(
+        !click_handler.contains("playTTSVoiceMode(playBtn)"),
+        "voice-mode must not hijack sentence click into full-message playTTSVoiceMode(playBtn)"
+    );
+    assert!(
+        function_contains(chat_js, "playTTS", "playFixedSentenceList")
+            && function_contains(chat_js, "playTTS", "options.sentences"),
+        "playTTS must speak options.sentences via playFixedSentenceList"
+    );
+}
+
+fn ai_message_text_click_handler(chat_js: &str) -> &str {
+    const START: &str = "$(document).on('click', '.ai-message-text', function (e) {";
+    const END: &str = "// Delegation for play, delete, and edit";
+    let start = chat_js
+        .find(START)
+        .expect("ai-message-text click handler");
+    let rest = &chat_js[start..];
+    let end = rest.find(END).expect("end of ai-message-text click handler");
+    &rest[..end]
+}
+
+fn function_contains(src: &str, fn_name: &str, needle: &str) -> bool {
+    let header = format!("function {fn_name}(");
+    let Some(start) = src.find(&header) else {
+        return false;
+    };
+    let body = &src[start..];
+    let Some(open) = body.find('{') else {
+        return false;
+    };
+    let mut depth = 0i32;
+    for (i, ch) in body[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return body[open..=open + i].contains(needle);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Version numbers like "4.6" must NOT be split as two sentences. Otherwise
+/// TTS pauses between "4" and "6" — the whole reason this regression exists.
+#[test]
+fn split_sentences_keeps_version_numbers_together() {
+    let chat_js = include_str!("../../../static/chat.js");
+    let voice_text_js = include_str!("../../../static/voice-text.js");
+
+    assert!(
+        voice_text_js.contains("function isAsciiDigit"),
+        "isAsciiDigit helper is required for the digit-digit period rule"
+    );
+    assert!(
+        chat_js.contains("ChatVoiceText.splitSentences"),
+        "chat must resolve splitting through the shared voice-text unit"
+    );
+    let body = function_body(voice_text_js, "splitSentences").expect("splitSentences body");
+    assert!(
+        body.contains("isAsciiDigit")
+            && body.contains("Decimal/version dot")
+            && body.contains("continue;"),
+        "splitSentences must skip a '.' when both sides are digits (decimals / versions); got: {body}"
+    );
+}
+
+/// Initialisms (U.S., A.I., e.g.) and honorifics (Dr., Mr.) must NOT be split as separate sentences.
+#[test]
+fn split_sentences_keeps_initialisms_and_abbreviations_together() {
+    let voice_text_js = include_str!("../../../static/voice-text.js");
+    let chat_js = include_str!("../../../static/chat.js");
+    let body = function_body(voice_text_js, "splitSentences").expect("splitSentences body");
+    assert!(
+        body.contains("Letter on BOTH sides")
+            && body.contains("Honorific / Title")
+            && body.contains("Common abbreviation"),
+        "splitSentences must not split on initialisms or abbreviations; got: {body}"
+    );
+
+    let sanitize_body = function_body(voice_text_js, "sanitizeForTTS").expect("sanitizeForTTS body");
+    assert!(
+        chat_js.contains("ChatVoiceText.sanitizeForTTS"),
+        "chat must resolve speech normalization through the shared voice-text unit"
+    );
+    assert!(
+        sanitize_body.contains("Expand currency with magnitude")
+            && sanitize_body.contains("Expand Latin abbreviations")
+            && sanitize_body.contains("Dotted initialisms"),
+        "sanitizeForTTS must expand currency, abbreviations, and initialisms; got: {sanitize_body}"
+    );
+}
+
+/// Streaming TTS must react to new visible text quickly. After the web-search /
+/// tool-calling change the final answer only streams once the search + second
+/// LLM hop completes — a 120 ms poll cycle on top of that felt high latency.
+/// We now wake the pump from a MutationObserver and shrink the polling fallback.
+#[test]
+fn streaming_tts_reacts_to_text_updates_immediately() {
+    let chat_js = include_str!("../../../static/chat.js");
+
+    let desktop_body = function_body(chat_js, "playMessageBodyTts")
+        .expect("playMessageBodyTts body");
+    assert!(
+        desktop_body.contains("MutationObserver"),
+        "playMessageBodyTts must use MutationObserver to react to streaming text"
+    );
+    assert!(
+        desktop_body.contains("disconnect()"),
+        "playMessageBodyTts must disconnect the observer when the session ends"
+    );
+    assert!(
+        !desktop_body.contains(", 120)"),
+        "playMessageBodyTts polling interval should no longer be 120 ms; got: {desktop_body}"
+    );
+
+    let native_body = function_body(chat_js, "playNativeVoiceModeTts")
+        .expect("playNativeVoiceModeTts body");
+    assert!(
+        native_body.contains("MutationObserver"),
+        "playNativeVoiceModeTts must use MutationObserver to react to streaming text"
+    );
+    assert!(
+        !native_body.contains(", 200)"),
+        "playNativeVoiceModeTts polling interval should no longer be 200 ms; got: {native_body}"
+    );
+}
+
+fn function_body<'a>(src: &'a str, fn_name: &str) -> Option<&'a str> {
+    let header = format!("function {fn_name}(");
+    let start = src.find(&header)?;
+    let body = &src[start..];
+    let open = body.find('{')?;
+    let mut depth = 0i32;
+    for (i, ch) in body[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[open..=open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Regression: the code block copy button used to call
+/// `navigator.clipboard.writeText` directly. On insecure origins (plain HTTP,
+/// sandboxed iframes) `navigator.clipboard` is undefined, so the call threw
+/// synchronously and `.catch()` never ran — the click appeared to do nothing.
+/// The handler must now go through a helper that falls back to
+/// `document.execCommand('copy')` so the button works in any context and the
+/// failure path stays visible (no modal alert).
+#[test]
+fn code_block_copy_works_in_insecure_contexts() {
+    let chat_js = include_str!("../../../static/chat.js");
+    let style_css = include_str!("../../../static/style.css");
+
+    let handler = ai_message_text_click_handler_region(
+        chat_js,
+        "$(document).on('click', '.copy-code-button'",
+        "// Load sets for logged-in users (HttpOnly enc_key cookie is sent automatically)",
+    )
+    .expect("copy-code-button click handler");
+    assert!(
+        handler.contains("copyToClipboard("),
+        "copy-code-button handler must call the copyToClipboard helper, not navigator.clipboard.writeText directly; got: {handler}"
+    );
+    assert!(
+        !handler.contains("navigator.clipboard.writeText"),
+        "copy-code-button handler must not call navigator.clipboard.writeText directly; got: {handler}"
+    );
+
+    let helper = function_body(chat_js, "copyToClipboard").expect("copyToClipboard helper");
+    assert!(
+        helper.contains("navigator.clipboard")
+            && helper.contains("document.execCommand('copy')"),
+        "copyToClipboard must use navigator.clipboard when available and fall back to document.execCommand('copy') otherwise; got: {helper}"
+    );
+
+    assert!(
+        style_css.contains(".copy-code-button.copy-failed"),
+        ".copy-code-button.copy-failed rule must exist so the failure state is visible"
+    );
+}
+
+/// Regression: the Trusted-Types commit (57f8421) overrode `jQuery.fn.html`
+/// so every setter value passed through `ttHtml`, which returns a TrustedHTML
+/// object on TT-enforcing browsers (Chrome/Edge/Android WebView). jQuery
+/// 3.6.0's `.html()` cannot handle TrustedHTML: the value fails the
+/// `typeof value === "string"` innerHTML fast path and falls through to
+/// `this.empty().append(value)`, where `buildFragment` sees a non-node object
+/// (`jQuery.merge` reads no array-like `.length`) — so every `.html(string)`
+/// call EMPTIED its element. That blanked streamed AI output text, the
+/// thinking toggle labels, the per-message TTS play/reset icons, and the mic
+/// button's stop icon. jQuery `.html()` sinks must rely on the identity
+/// `default` TT policy instead (static/tt.js); `ttHtml` stays reserved for
+/// direct `element.innerHTML` assignments, which accept TrustedHTML natively.
+#[test]
+fn jquery_html_setter_not_wrapped_with_trusted_html() {
+    let chat_js = include_str!("../../../static/chat.js");
+    assert!(
+        !chat_js.contains("jQuery.fn.html"),
+        "do not override jQuery.fn.html: feeding ttHtml (TrustedHTML) into .html() empties the target element in jQuery 3.6.0 instead of rendering it"
+    );
+    assert!(
+        !chat_js.contains("origHtml"),
+        "stale jQuery.fn.html wrapper remnant must be removed"
+    );
+    assert!(
+        !chat_js.contains(".html(ttHtml(") && !chat_js.contains(".html( ttHtml("),
+        "ttHtml is only for direct element.innerHTML sinks; jQuery .html() must receive plain strings"
+    );
+}
+
+#[test]
+fn navbar_account_dropdown_is_on_top_in_z_order() {
+    let style_css = include_str!("../../../static/style.css");
+    assert!(
+        style_css.contains(".navbar .dropdown-menu") || style_css.contains(".dropdown-menu"),
+        "style.css must specify dropdown-menu styling"
+    );
+    assert!(
+        style_css.contains("2100"),
+        "dropdown-menu must have high z-index (2100) to stay on top of everything z-order wise"
+    );
+    assert!(
+        style_css.contains(".navbar .navbar-nav") && style_css.contains(".navbar .dropdown"),
+        "navbar-nav and dropdown container must have explicit positioning above brand"
+    );
+    assert!(
+        style_css.contains(".navbar .dropdown {\n    position: relative !important;\n}"),
+        "dropdown container must remain position: relative !important so toggle stays anchored when menu expands"
+    );
+    assert!(
+        style_css.contains("position: absolute !important;")
+            && style_css.contains("top: 100% !important;")
+            && style_css.contains("right: 0 !important;")
+            && style_css.contains("left: auto !important;"),
+        "dropdown-menu must float below navbar with position: absolute, top: 100%, right: 0 across all viewports"
+    );
+    assert!(
+        style_css.contains(".navbar .navbar-brand-center {\n    z-index: 0;\n}"),
+        "navbar-brand-center must remain at z-index: 0 so controls and dropdowns stay on top"
+    );
+}
+
+/// UI accent policy: account tier is minor muted text (no pill), and the Web
+/// Search / STT / Voice Mode active states share one filled light-blue
+/// background highlight (dark glyph), not mixed background-vs-glyph tints.
+#[test]
+fn input_toggles_share_single_light_blue_active_state() {
+    let html = include_str!("../../../static/templates/chat.html");
+    assert!(
+        !html.contains("}success"),
+        "Premium tier must not render a green success highlight"
+    );
+    assert!(
+        !html.contains("badge"),
+        "account tier is minor text and must not use a badge pill"
+    );
+    assert!(
+        html.contains("account-tier"),
+        "account tier text needs a plain hook without badge background"
+    );
+
+    let theme = include_str!("../../../static/opencode-theme.css");
+    assert!(
+        theme.contains("#web-search-toggle.btn-primary"),
+        "web search active state needs an explicit override (it inherits orange btn-primary otherwise)"
+    );
+    assert!(
+        theme.contains("#chat-area .input-group #voice-mode-btn.active")
+            && theme.contains("#chat-area .input-group #mic-button.recording"),
+        "active voice highlights must out-specify the input-group button rules"
+    );
+    let pos = theme
+        .find("#chat-area .input-group #voice-mode-btn.active")
+        .expect("voice active rule");
+    let window = &theme[pos..(pos + 900).min(theme.len())];
+    assert!(
+        window.contains("#mic-button.recording"),
+        "voice mode and mic recording must share one highlight rule"
+    );
+    assert!(
+        window.contains("background: var(--oc-blue)"),
+        "voice/mic active must fill the background like web search, not just tint the glyph"
+    );
+    assert!(
+        window.contains("color: #0a0a0a"),
+        "active toggles use a dark glyph on the light-blue fill"
+    );
+    assert!(
+        !window.contains("var(--oc-success)"),
+        "voice mode active must not use green success highlight"
+    );
+    assert!(
+        !theme.contains("#mic-button.recording {\n  color: var(--oc-danger)"),
+        "mic recording must not use red danger highlight"
+    );
+
+    let style = include_str!("../../../static/style.css");
+    let pos = style
+        .find("#chat-area .input-group #voice-mode-btn.active")
+        .expect("base voice active rule");
+    let window = &style[pos..(pos + 900).min(style.len())];
+    assert!(
+        window.contains("#mic-button.recording"),
+        "base voice mode and mic recording must share one highlight rule"
+    );
+    assert!(
+        window.contains("background: #5c9cf5"),
+        "base voice/mic active must fill the background like web search"
+    );
+    assert!(
+        window.contains("color: #0a0a0a"),
+        "base active toggles use a dark glyph on the light-blue fill"
+    );
+    assert!(
+        !window.contains("#4bb543"),
+        "voice mode active must not use green highlight in base stylesheet"
+    );
+    assert!(
+        !window.contains("#e06a6a"),
+        "mic recording must not use red highlight in base stylesheet"
+    );
+}
+
+fn ai_message_text_click_handler_region<'a>(
+    src: &'a str,
+    start_marker: &str,
+    end_marker: &str,
+) -> Option<&'a str> {
+    let start = src.find(start_marker)?;
+    let rest = &src[start..];
+    let end = rest.find(end_marker)?;
+    Some(&rest[..end])
+}

@@ -31,3 +31,9 @@ full debug info, and Cargo never prunes superseded copies. Planned fixes:
    workspace crates keep full debug info.
 3. Schedule pruning of the shared target cache (for example `cargo sweep --time
    14` from a weekly timer), approved by the operator.
+
+Status 2026-11-27: the workspace `dev` profile (inherited by tests) uses
+`debug = "line-tables-only"` for all crates, and each crate's isolation-free
+integration tests link into one `tests/integration/` binary; tests that change
+process-global state keep their own targets (see `AGENTS.md`). Pruning is
+unchanged.

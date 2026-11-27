@@ -4,7 +4,7 @@ import com.chatbot.app.util.ServerUrlResolver;
  * Pure-Java behavior of the shipped {@link ServerUrlResolver} with no Android
  * framework and no Bridge: raw strings in, canonical origin out. Compiled
  * together with the production file by the cargo harness
- * (see chatbot-server/tests/distribution.rs) and executed with plain
+ * (see chatbot-server/tests/integration/distribution.rs) and executed with plain
  * {@code java}; each scenario throws on mismatch.
  */
 public final class ServerUrlResolverBehaviorTest {
