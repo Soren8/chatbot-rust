@@ -120,7 +120,7 @@ public class MainActivity extends BridgeActivity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (request != null && request.isForMainFrame() && request.getUrl() != null
-                        && IapSignIn.isStartUrl(resolveServerUrl(), request.getUrl().toString())) {
+                        && isSignInStart(request.getUrl().toString())) {
                     startSignIn(request.getUrl().toString());
                     return true;
                 }
@@ -145,69 +145,6 @@ public class MainActivity extends BridgeActivity {
                 }
             }
         });
-    }
-
-    /**
-     * Identity-aware proxy sign-in: providers refuse embedded WebViews, so
-     * the start request runs natively and the provider page opens in the
-     * system browser. The verified App Link callback returns here.
-     */
-    private void startSignIn(String startUrl) {
-        IapSignInFlow.begin(this, resolveServerUrl(), startUrl,
-                providerUrl -> runOnUiThread(() -> openSignInBrowser(providerUrl)));
-    }
-
-    private void openSignInBrowser(String providerUrl) {
-        if (isFinishing() || isDestroyed()) {
-            return;
-        }
-        if (providerUrl == null) {
-            signInStartFailed();
-            return;
-        }
-        Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(providerUrl));
-        browser.addCategory(Intent.CATEGORY_BROWSABLE);
-        try {
-            startActivity(browser);
-            FileLogger.log(TAG, "sign-in opened in system browser");
-        } catch (ActivityNotFoundException e) {
-            FileLogger.log(TAG, "sign-in has no browser to open");
-            IapSignInFlow.clearPending(this);
-            signInStartFailed();
-        }
-    }
-
-    private void signInStartFailed() {
-        Toast.makeText(this, "Sign-in could not be started", Toast.LENGTH_SHORT).show();
-    }
-
-    private void handleSignInCallback(Intent intent) {
-        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())
-                || intent.getData() == null) {
-            return;
-        }
-        String serverUrl = resolveServerUrl();
-        String callbackUrl = intent.getData().toString();
-        if (!IapSignIn.isCallbackUrl(serverUrl, callbackUrl)) {
-            return;
-        }
-        if (!IapSignInFlow.consumePending(this)) {
-            FileLogger.log(TAG, "sign-in callback ignored: no fresh pending sign-in");
-            return;
-        }
-        IapSignInFlow.complete(serverUrl, callbackUrl,
-                next -> runOnUiThread(() -> finishSignIn(next)));
-    }
-
-    private void finishSignIn(String next) {
-        if (isFinishing() || isDestroyed() || getBridge() == null
-                || getBridge().getWebView() == null) {
-            return;
-        }
-        if (offlineOverlay != null) {
-            offlineOverlay.setVisibility(View.GONE);
-        }
-        getBridge().getWebView().loadUrl(next != null ? next : resolveServerUrl());
     }
 
     /**
@@ -346,6 +283,73 @@ public class MainActivity extends BridgeActivity {
             Log.w(TAG, "server selection resolve failed, using flavor resource", e);
             return ServerUrlSettingStore.flavorDefault(this);
         }
+    }
+
+    private boolean isSignInStart(String url) {
+        return IapSignIn.isStartUrl(resolveServerUrl(), url);
+    }
+
+    /**
+     * Identity-aware proxy sign-in: providers refuse embedded WebViews, so
+     * the start request runs natively and the provider page opens in the
+     * system browser. The verified App Link callback returns here.
+     */
+    private void startSignIn(String startUrl) {
+        IapSignInFlow.begin(this, resolveServerUrl(), startUrl,
+                providerUrl -> runOnUiThread(() -> openSignInBrowser(providerUrl)));
+    }
+
+    private void openSignInBrowser(String providerUrl) {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        if (providerUrl == null) {
+            signInStartFailed();
+            return;
+        }
+        Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(providerUrl));
+        browser.addCategory(Intent.CATEGORY_BROWSABLE);
+        try {
+            startActivity(browser);
+            FileLogger.log(TAG, "sign-in opened in system browser");
+        } catch (ActivityNotFoundException e) {
+            FileLogger.log(TAG, "sign-in has no browser to open");
+            IapSignInFlow.clearPending(this);
+            signInStartFailed();
+        }
+    }
+
+    private void signInStartFailed() {
+        Toast.makeText(this, "Sign-in could not be started", Toast.LENGTH_SHORT).show();
+    }
+
+    private void handleSignInCallback(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())
+                || intent.getData() == null) {
+            return;
+        }
+        String serverUrl = resolveServerUrl();
+        String callbackUrl = intent.getData().toString();
+        if (!IapSignIn.isCallbackUrl(serverUrl, callbackUrl)) {
+            return;
+        }
+        if (!IapSignInFlow.consumePending(this)) {
+            FileLogger.log(TAG, "sign-in callback ignored: no fresh pending sign-in");
+            return;
+        }
+        IapSignInFlow.complete(serverUrl, callbackUrl,
+                next -> runOnUiThread(() -> finishSignIn(next)));
+    }
+
+    private void finishSignIn(String next) {
+        if (isFinishing() || isDestroyed() || getBridge() == null
+                || getBridge().getWebView() == null) {
+            return;
+        }
+        if (offlineOverlay != null) {
+            offlineOverlay.setVisibility(View.GONE);
+        }
+        getBridge().getWebView().loadUrl(next != null ? next : resolveServerUrl());
     }
 
     @Override

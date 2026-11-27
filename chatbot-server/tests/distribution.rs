@@ -760,7 +760,10 @@ fn iap_sign_in_routes_start_and_callback_through_shared_matchers() {
         .unwrap();
     assert!(
         client.contains("request.isForMainFrame()")
-            && client.contains("IapSignIn.isStartUrl(resolveServerUrl(), request.getUrl().toString())")
+            && client.contains("isSignInStart(request.getUrl().toString())")
+            && MAIN_ACTIVITY.contains(
+                "private boolean isSignInStart(String url) {\n        return IapSignIn.isStartUrl(resolveServerUrl(), url);"
+            )
             && client.contains("startSignIn(request.getUrl().toString());")
             && client.contains("return true;"),
         "only main-frame start URLs on the selected origin may leave the WebView"
@@ -820,7 +823,7 @@ fn iap_transport_skips_redirects_and_logs_no_urls_or_cookies() {
         .split("private void startSignIn(String startUrl) {")
         .nth(1)
         .expect("MainActivity sign-in section")
-        .split("private void installCrashReporter() {")
+        .split("protected void onActivityResult(")
         .next()
         .unwrap();
     for (name, source) in [("IapSignInFlow", IAP_SIGN_IN_FLOW), ("MainActivity sign-in", sign_in)] {
