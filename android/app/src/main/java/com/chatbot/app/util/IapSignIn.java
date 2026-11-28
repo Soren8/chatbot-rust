@@ -87,6 +87,20 @@ public final class IapSignIn {
     }
 
     /**
+     * True when {@code url} is on serverUrl's exact origin and its path is
+     * {@code /oauth2} or under {@code /oauth2/} (the proxy's own pages).
+     */
+    public static boolean isProxyPageUrl(String serverUrl, String url) {
+        Origin server = serverOrigin(serverUrl);
+        URI uri = parseAbsolute(url);
+        if (server == null || uri == null || !server.matches(uri)) {
+            return false;
+        }
+        String path = uri.getRawPath();
+        return "/oauth2".equals(path) || (path != null && path.startsWith("/oauth2/"));
+    }
+
+    /**
      * Runs the start request. Returns the provider authorization URL to open in
      * the system browser, or null when the response is not a usable sign-in
      * redirect. Stores the response's Set-Cookie values in the jar (for

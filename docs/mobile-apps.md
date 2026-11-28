@@ -504,7 +504,12 @@ validated persisted override, else the flavor default.
   browsers. `ServerSettings.open` delegates to
   `MainActivity.openServerSettings`, preserving the activity-result reload
   path. When the server is unreachable, the native offline screen offers
-  Retry and Change server.
+  Retry and Change server. While the WebView shows one of the selected
+  server's identity-aware proxy pages (main-frame path `/oauth2` or under
+  `/oauth2/`, decided by `IapSignIn.isProxyPageUrl`), a native outlined
+  Change server button sits at the bottom of the screen above the system
+  bars; it is hidden on every other page, behind the offline screen and
+  while the app is locked.
 - **Apply**: a real change purges the OLD origin's session + credential
   cookies first (cookie jars are host-scoped, NOT host+port+scheme, so
   nothing transfers across a port or scheme change), persists the override

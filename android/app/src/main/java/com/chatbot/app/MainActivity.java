@@ -3,6 +3,9 @@ package com.chatbot.app;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.LayerDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -27,6 +30,9 @@ import android.widget.Toast;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import java.util.concurrent.Executor;
 
@@ -55,6 +61,8 @@ public class MainActivity extends BridgeActivity {
     private boolean entryLocked = false;
     private FrameLayout lockOverlay = null;
     private FrameLayout offlineOverlay = null;
+    private Button proxyServerButton = null;
+    private boolean onProxyPage = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -125,6 +133,24 @@ public class MainActivity extends BridgeActivity {
                     return true;
                 }
                 return super.shouldOverrideUrlLoading(view, request);
+            }
+
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                trackMainFrameUrl(url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                trackMainFrameUrl(url);
+            }
+
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                super.doUpdateVisitedHistory(view, url, isReload);
+                trackMainFrameUrl(url);
             }
 
             @Override
@@ -365,6 +391,8 @@ public class MainActivity extends BridgeActivity {
         try {
             NativeSecureKeyPlugin.onServerSelectionChanged();
         } catch (Throwable ignored) {}
+        onProxyPage = false;
+        updateProxyServerButton();
         recreate();
     }
 
@@ -460,6 +488,7 @@ public class MainActivity extends BridgeActivity {
             if (offlineOverlay != null) {
                 offlineOverlay.setVisibility(View.GONE);
             }
+            updateProxyServerButton();
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().loadUrl(resolveServerUrl());
             }
@@ -490,7 +519,71 @@ public class MainActivity extends BridgeActivity {
             if (overlay != null) {
                 overlay.setVisibility(View.VISIBLE);
             }
+            updateProxyServerButton();
         });
+    }
+
+    /**
+     * The proxy's own sign-in pages sit outside the app's pages, so they
+     * carry no settings link; a native button offers Change server there.
+     */
+    private void trackMainFrameUrl(String url) {
+        onProxyPage = IapSignIn.isProxyPageUrl(resolveServerUrl(), url);
+        updateProxyServerButton();
+    }
+
+    private void updateProxyServerButton() {
+        boolean offlineShown = offlineOverlay != null
+                && offlineOverlay.getVisibility() == View.VISIBLE;
+        boolean show = onProxyPage && !isLocked && !offlineShown;
+        if (!show) {
+            if (proxyServerButton != null) {
+                proxyServerButton.setVisibility(View.GONE);
+            }
+            return;
+        }
+        Button button = ensureProxyServerButton();
+        if (button != null) {
+            button.setVisibility(View.VISIBLE);
+            button.bringToFront();
+        }
+    }
+
+    private Button ensureProxyServerButton() {
+        if (proxyServerButton != null) {
+            return proxyServerButton;
+        }
+        FrameLayout root = findViewById(android.R.id.content);
+        if (root == null) {
+            return null;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        int margin = (int) (16 * density);
+        Button button = new Button(this);
+        button.setText("Change server");
+        ServerUiStyle.styleOutlineButton(button, density);
+        button.setBackground(new LayerDrawable(new Drawable[] {
+                ServerUiStyle.fieldBackground(density),
+                ServerUiStyle.outlineButtonBackground(density)}));
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        params.setMargins(margin, margin, margin, margin);
+        button.setLayoutParams(params);
+        button.setOnClickListener(v -> openServerSettings());
+        ViewCompat.setOnApplyWindowInsetsListener(button, (v, insets) -> {
+            Insets bars = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) v.getLayoutParams();
+            lp.setMargins(margin + bars.left, margin, margin + bars.right, margin + bars.bottom);
+            v.setLayoutParams(lp);
+            return insets;
+        });
+        root.addView(button);
+        ViewCompat.requestApplyInsets(button);
+        proxyServerButton = button;
+        return button;
     }
 
     private boolean isUserLoggedIn() {
@@ -535,6 +628,7 @@ public class MainActivity extends BridgeActivity {
         getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_NATIVE_UNLOCK_REQUIRED, true).apply();
         runOnUiThread(() -> {
             updateWindowSecurity(hasWindowFocus());
+            updateProxyServerButton();
             ensureLockOverlay();
             if (lockOverlay != null) {
                 lockOverlay.setVisibility(View.VISIBLE);
@@ -675,6 +769,7 @@ public class MainActivity extends BridgeActivity {
         if (getBridge() != null && getBridge().getWebView() != null) {
             getBridge().getWebView().setVisibility(View.VISIBLE);
         }
+        updateProxyServerButton();
         updateWindowSecurity(hasWindowFocus());
     }
 

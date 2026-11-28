@@ -68,6 +68,36 @@ public class IapSignInTest {
         }
     }
 
+    @Test
+    public void proxyPageUrlMatchesOauth2PathsOnServerOrigin() {
+        assertTrue(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/oauth2"));
+        assertTrue(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/oauth2/"));
+        assertTrue(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/oauth2/sign_in?rd=%2Fchat"));
+        assertTrue(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/oauth2/start#top"));
+        assertTrue(IapSignIn.isProxyPageUrl(SERVER, GOOGLE_START));
+        assertTrue(IapSignIn.isProxyPageUrl(SERVER + "/", "https://CHAT.example.com:443/oauth2/sign_in"));
+        assertTrue(IapSignIn.isProxyPageUrl("https://chat.example.com:8443",
+                "https://chat.example.com:8443/oauth2/sign_in"));
+    }
+
+    @Test
+    public void proxyPageUrlRejectsOtherPathsAndOrigins() {
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, SERVER));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/chat"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/oauth2x"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/oauth2-sign_in"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, SERVER + "/login?next=/oauth2/sign_in"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, "https://other.example.com/oauth2/sign_in"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, "http://chat.example.com/oauth2/sign_in"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, "https://chat.example.com:8443/oauth2/sign_in"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, "https://user@chat.example.com/oauth2/sign_in"));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, null));
+        assertFalse(IapSignIn.isProxyPageUrl(SERVER, ""));
+        assertFalse(IapSignIn.isProxyPageUrl(null, SERVER + "/oauth2/sign_in"));
+        assertFalse(IapSignIn.isProxyPageUrl("http://10.0.2.2:80", "http://10.0.2.2:80/oauth2/sign_in"));
+    }
+
     private FakeTransport transport;
     private FakeJar jar;
 
